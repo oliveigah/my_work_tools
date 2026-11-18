@@ -120,8 +120,37 @@ defmodule MWTClient.HandoffsCase do
     bin = Path.join(base, "bin")
     File.mkdir_p!(bin)
 
-    # Both ways at once, as socat does: git's remote helper (`git fetch
-    # origin`, through MWT) talks while it reads.
+    fake_socat!(bin)
+
+    File.cp!(
+      Path.expand("../../priv/sandbox/mwt-git-remote", __DIR__),
+      Path.join(bin, "git-remote-mwt")
+    )
+
+    File.chmod!(Path.join(bin, "git-remote-mwt"), 0o755)
+
+    fn args ->
+      System.cmd("bash", [cli | args],
+        cd: cwd,
+        env:
+          [
+            {"PATH", bin <> ":" <> System.get_env("PATH")},
+            {"MWT_CHANNEL", "UNIX-CONNECT:" <> Channel.socket_path(username)},
+            {"MWT_AGENT", "claude"},
+            {"MWT_THREAD", nil},
+            {"CLAUDE_CODE_SESSION_ID", nil},
+            {"CLAUDE_PID", nil},
+            {"CODEX_THREAD_ID", nil}
+          ] ++ git_env(),
+        stderr_to_stdout: true
+      )
+    end
+  end
+
+  # Stands in for socat in `bin`, so tests don't need it installed. Both
+  # ways at once, as socat does: git's remote helper (`git fetch origin`,
+  # through MWT) talks while it reads.
+  def fake_socat!(bin) do
     File.write!(Path.join(bin, "socat"), """
     #!/usr/bin/env python3
     import os, socket, sys, threading
@@ -147,29 +176,5 @@ defmodule MWTClient.HandoffsCase do
     """)
 
     File.chmod!(Path.join(bin, "socat"), 0o755)
-
-    File.cp!(
-      Path.expand("../../priv/sandbox/mwt-git-remote", __DIR__),
-      Path.join(bin, "git-remote-mwt")
-    )
-
-    File.chmod!(Path.join(bin, "git-remote-mwt"), 0o755)
-
-    fn args ->
-      System.cmd("bash", [cli | args],
-        cd: cwd,
-        env:
-          [
-            {"PATH", bin <> ":" <> System.get_env("PATH")},
-            {"MWT_CHANNEL", "UNIX-CONNECT:" <> Channel.socket_path(username)},
-            {"MWT_AGENT", "claude"},
-            {"MWT_THREAD", nil},
-            {"CLAUDE_CODE_SESSION_ID", nil},
-            {"CLAUDE_PID", nil},
-            {"CODEX_THREAD_ID", nil}
-          ] ++ git_env(),
-        stderr_to_stdout: true
-      )
-    end
   end
 end

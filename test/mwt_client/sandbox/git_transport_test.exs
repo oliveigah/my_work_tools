@@ -10,6 +10,7 @@ defmodule MWTClient.Sandbox.GitTransportTest do
     {:ok, project} = Server.call(context.username, {:add_project, project})
     bin = Path.join(context.base, "git-bin")
     File.mkdir!(bin)
+    fake_socat!(bin)
     File.cp!(@helper, Path.join(bin, "git-remote-mwt"))
     File.chmod!(Path.join(bin, "git-remote-mwt"), 0o755)
 

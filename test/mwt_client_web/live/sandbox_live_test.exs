@@ -208,7 +208,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
         env: "STRIPE_API_KEY",
         hosts: "api.stripe.com",
         prefix: "sk_test_",
-        value: "sk_test_1"
+        value: "sk_test_real-value"
       }
     )
     |> render_submit()
@@ -221,7 +221,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert [%{placeholder: "sk_test_" <> _}] = added(username)
     assert has_element?(view, "#grant-value-card")
     refute has_element?(view, "#grant-no-value")
-    refute render(view) =~ "sk_test_1"
+    refute render(view) =~ "sk_test_real-value"
 
     view |> form("#grant-value-form", value: %{value: "sk_test_2"}) |> render_submit()
     assert has_element?(view, "#notices", "Value replaced")
