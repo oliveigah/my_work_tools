@@ -1,0 +1,86 @@
+defmodule MWTClient.VaultTest do
+  use ExUnit.Case, async: true
+
+  alias MWTClient.Vault
+
+  setup do
+    salt = Vault.salt()
+    %{salt: salt, key: Vault.derive("correct horse", salt)}
+  end
+
+  test "seals and opens a term", %{key: key} do
+    term = %{history: [{1, "GET", ~U[2026-09-21 10:00:00Z]}]}
+
+    assert {:ok, ^term} = key |> Vault.seal(term) |> then(&Vault.open(key, &1))
+  end
+
+  test "a different password cannot open the blob", %{key: key, salt: salt} do
+    blob = Vault.seal(key, "secret")
+
+    assert Vault.open(Vault.derive("wrong horse", salt), blob) == :error
+  end
+
+  test "the same password with a different salt derives a different key", %{key: key} do
+    other = Vault.derive("correct horse", Vault.salt())
+
+    refute other == key
+    assert Vault.open(other, Vault.seal(key, "secret")) == :error
+  end
+
+  test "a tampered blob is rejected", %{key: key} do
+    <<head::binary-20, byte, rest::binary>> = Vault.seal(key, "secret")
+
+    assert Vault.open(key, <<head::binary, Bitwise.bxor(byte, 1), rest::binary>>) == :error
+  end
+
+  test "a truncated or foreign blob is rejected", %{key: key} do
+    assert Vault.open(key, "") == :error
+    assert Vault.open(key, "not a vault blob") == :error
+    assert Vault.open(key, <<99, 0::96, 0::128>>) == :error
+  end
+
+  test "the ciphertext carries no plaintext", %{key: key} do
+    blob = Vault.seal(key, %{url: "https://api.example.test/health", note: "Health check"})
+
+    refute String.contains?(blob, "api.example.test")
+    refute String.contains?(blob, "Health check")
+  end
+
+  test "every seal uses a fresh nonce", %{key: key} do
+    refute Vault.seal(key, "same") == Vault.seal(key, "same")
+  end
+
+  # The bug this guards: `binary_to_term/2` with `:safe` refuses to create
+  # atoms the VM has not seen. A freshly started VM has not loaded the modules
+  # whose struct names are in the history, so every restore after a restart
+  # failed and the history looked empty.
+  test "opens terms naming modules this VM has not loaded", %{key: key} do
+    name = "atom_that_has_never_existed_#{System.unique_integer([:positive])}"
+    unknown_atom = <<131, 119, byte_size(name), name::binary>>
+
+    nonce = :crypto.strong_rand_bytes(12)
+
+    {ciphertext, tag} =
+      :crypto.crypto_one_time_aead(:aes_256_gcm, key, nonce, unknown_atom, "", true)
+
+    blob = <<1, nonce::binary, tag::binary, ciphertext::binary>>
+
+    assert {:ok, decoded} = Vault.open(key, blob)
+    assert Atom.to_string(decoded) == name
+  end
+
+  test "round trips a Req request, which carries captured functions", %{key: key} do
+    request = Req.new(url: "https://api.example.test/health", headers: [{"accept", "json"}])
+
+    assert {:ok, restored} = key |> Vault.seal(request) |> then(&Vault.open(key, &1))
+    assert URI.to_string(restored.url) == "https://api.example.test/health"
+  end
+
+  test "derive honours stored parameters", %{salt: salt} do
+    # Other than what a new key takes, whatever this build's count is.
+    params = %{"iterations" => Vault.kdf_params()["iterations"] + 1, "length" => 32}
+
+    assert byte_size(Vault.derive("pw", salt, params)) == 32
+    refute Vault.derive("pw", salt, params) == Vault.derive("pw", salt)
+  end
+end

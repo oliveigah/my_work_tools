@@ -1,0 +1,368 @@
+defmodule MWTClient.Sandbox.InstructionsTest do
+  use ExUnit.Case, async: true
+
+  alias MWTClient.Sandbox.{Allowance, Grant, Instructions, Param}
+
+  doctest Instructions
+
+  test "the block is replaced where it is, and what's around it stays" do
+    once = Instructions.put_block("my own notes\n", "first")
+    twice = Instructions.put_block(once, "second")
+
+    assert twice =~ "second"
+    refute twice =~ "first"
+    assert String.ends_with?(twice, "my own notes\n")
+    assert Instructions.put_block(twice, "second") == twice
+    assert Instructions.put_block("", "only") =~ ~r/^<!-- mwt:begin.*only\n<!-- mwt:end -->\n$/s
+  end
+
+  # The VM puts the block in its own files, after every boot, with the script
+  # MWT runs in it. Here the script runs on this machine, pointed at folders
+  # of the test's.
+  describe "the boot script" do
+    setup do
+      base = Path.join(System.tmp_dir!(), "boot-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(base) end)
+      inbox = Path.join(base, "inbox")
+      home = Path.join(base, "home")
+      File.mkdir_p!(inbox)
+      File.mkdir_p!(home)
+      File.write!(Path.join(inbox, "agents-block.md"), Instructions.block())
+
+      etc = Path.join(base, "etc")
+      File.mkdir_p!(etc)
+
+      boot = fn args ->
+        # POSIX sh, as in an image without bash. XDG_CONFIG_HOME is unset so
+        # Zed's settings go under the test's home, not this machine's config
+        # folder (GitHub's runners set it).
+        System.cmd(
+          "sh",
+          [Path.join([:code.priv_dir(:mwt_client), "sandbox", "mwt-boot"]) | args],
+          env: [
+            {"MWT_INBOX", inbox},
+            {"HOME", home},
+            {"MWT_ETC", etc},
+            {"XDG_CONFIG_HOME", nil}
+          ],
+          stderr_to_stdout: true
+        )
+      end
+
+      %{inbox: inbox, home: home, etc: etc, boot: fn -> boot.([]) end, boot_as: boot}
+    end
+
+    test "writes which VM this is, and a line for every interactive login shell", %{
+      inbox: inbox,
+      etc: etc,
+      boot_as: boot_as
+    } do
+      assert {"", 0} =
+               boot_as.(["3f2a9c1e", "2026-11-13T20:29:32Z", "img:2026-11-13.4", "mwt-4790"])
+
+      assert File.read!(Path.join(etc, "mwt-vm")) ==
+               "id=3f2a9c1e\ncreated=2026-11-13T20:29:32Z\nimage=img:2026-11-13.4\nname=mwt-4790\n"
+
+      # The line asks `mwt vm`: dim when this is MWT's VM, red when it isn't.
+      fake = Path.join(inbox, "bin/mwt")
+      File.mkdir_p!(Path.dirname(fake))
+      profile = Path.join(etc, "profile.d/mwt-vm.sh")
+
+      shell = fn mode, status ->
+        File.write!(fake, "#!/bin/sh\necho \"answer for $1\"\nexit #{status}\n")
+        File.chmod!(fake, 0o755)
+        # An interactive bash with no terminal complains about job control on
+        # stderr; only what the line prints counts.
+        System.cmd("sh", [
+          "-c",
+          ~S(exec bash --norc "$0" -c '. "$1"' shell "$1" 2>/dev/null),
+          mode,
+          profile
+        ])
+      end
+
+      assert {"\e[2manswer for vm\e[0m\n", 0} = shell.("-i", 0)
+      assert {"\e[1;31manswer for vm\e[0m\n", 0} = shell.("-i", 3)
+      # Agents' shells aren't interactive: they hear nothing.
+      assert {"", 0} = shell.("+m", 3)
+    end
+
+    test "writes no record when MWT names no VM", %{etc: etc, boot: boot} do
+      assert {"", 0} = boot.()
+      refute File.exists?(Path.join(etc, "mwt-vm"))
+      refute File.exists?(Path.join(etc, "profile.d/mwt-vm.sh"))
+    end
+
+    test "Claude Code and Codex both get the block in Home", %{home: home, boot: boot} do
+      File.mkdir_p!(Path.join(home, ".codex"))
+      File.write!(Path.join(home, ".codex/AGENTS.md"), "Prefer small commits.\n")
+
+      assert {"", 0} = boot.()
+
+      claude = File.read!(Path.join(home, ".claude/CLAUDE.md"))
+      codex = File.read!(Path.join(home, ".codex/AGENTS.md"))
+      assert claude == Instructions.block()
+      assert codex == Instructions.block() <> "\nPrefer small commits.\n"
+    end
+
+    test "what an MDT boot left goes: its block, its Codex server, its VM record", %{
+      inbox: inbox,
+      home: home,
+      etc: etc,
+      boot: boot
+    } do
+      File.mkdir_p!(Path.join(home, ".claude"))
+
+      File.write!(
+        Path.join(home, ".claude/CLAUDE.md"),
+        "<!-- mdt:begin -->\nMDT's words\n<!-- mdt:end -->\n\nMy own notes.\n"
+      )
+
+      fake = Path.join(inbox, "bin/mwt")
+      File.mkdir_p!(Path.dirname(fake))
+      File.write!(fake, "#!/bin/sh\n")
+      File.chmod!(fake, 0o755)
+      config = Path.join(home, ".codex/config.toml")
+      File.mkdir_p!(Path.dirname(config))
+
+      File.write!(config, """
+      model = "gpt-5"
+
+      # MDT's own tools (notes, diagrams, flash cards, HTTP samples), from its boot script.
+      [mcp_servers.mdt]
+      command = "/mnt/mdt/bin/mdt"
+      args = ["mcp"]
+
+      [mcp_servers.mine]
+      command = "mine"
+      """)
+
+      File.mkdir_p!(Path.join(etc, "profile.d"))
+      File.write!(Path.join(etc, "mdt-vm"), "id=old\n")
+      File.write!(Path.join(etc, "profile.d/mdt-vm.sh"), "echo old\n")
+
+      assert {"", 0} = boot.()
+
+      assert File.read!(Path.join(home, ".claude/CLAUDE.md")) ==
+               Instructions.block() <> "\nMy own notes.\n"
+
+      written = File.read!(config)
+      refute written =~ "mdt"
+      assert written =~ "[mcp_servers.mine]\ncommand = \"mine\"\n"
+      assert [_] = Regex.scan(~r/^\[mcp_servers\.mwt\]$/m, written)
+      refute File.exists?(Path.join(etc, "mdt-vm"))
+      refute File.exists?(Path.join(etc, "profile.d/mdt-vm.sh"))
+    end
+
+    test "MWT's tools are registered with Codex once, and one there already is left as it is",
+         %{inbox: inbox, home: home, boot: boot} do
+      fake = Path.join(inbox, "bin/mwt")
+      File.mkdir_p!(Path.dirname(fake))
+      File.write!(fake, "#!/bin/sh\n")
+      File.chmod!(fake, 0o755)
+      config = Path.join(home, ".codex/config.toml")
+      File.mkdir_p!(Path.dirname(config))
+      File.write!(config, "model = \"gpt-5\"\n")
+
+      assert {"", 0} = boot.()
+      assert {"", 0} = boot.()
+
+      written = File.read!(config)
+      assert written =~ ~r/\Amodel = "gpt-5"\n\n# MWT's own tools/
+      assert [_] = Regex.scan(~r/^\[mcp_servers\.mwt\]$/m, written)
+      assert written =~ ~s(command = "#{fake}"\nargs = ["mcp"]\n)
+
+      # One the user changed stays theirs.
+      File.write!(config, "[mcp_servers.mwt]\ncommand = \"/usr/local/bin/mine\"\n")
+      assert {"", 0} = boot.()
+      assert File.read!(config) == "[mcp_servers.mwt]\ncommand = \"/usr/local/bin/mine\"\n"
+    end
+
+    test "/handoff is a command for Claude Code and Codex, put back at every boot", %{
+      inbox: inbox,
+      home: home,
+      boot: boot
+    } do
+      command =
+        File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", "handoff-command.md"]))
+
+      File.write!(Path.join(inbox, "handoff-command.md"), command)
+
+      assert {"", 0} = boot.()
+      claude = Path.join(home, ".claude/commands/handoff.md")
+      codex = Path.join(home, ".codex/prompts/handoff.md")
+      assert File.read!(claude) == command and File.read!(codex) == command
+
+      # Both read the description from its front matter and put the words
+      # typed after /handoff where $ARGUMENTS is.
+      assert command =~ ~r/\A---\ndescription: .+\nargument-hint: .+\n---\n/
+      assert command =~ "mwt handoff --title" and command =~ "$ARGUMENTS"
+
+      File.write!(claude, "changed in the VM\n")
+      assert {"", 0} = boot.()
+      assert File.read!(claude) == command
+    end
+
+    test "a later boot replaces the block and leaves the rest", %{
+      inbox: inbox,
+      home: home,
+      boot: boot
+    } do
+      assert {"", 0} = boot.()
+      file = Path.join(home, ".claude/CLAUDE.md")
+      File.write!(file, File.read!(file) <> "\nmy own notes\n")
+
+      File.write!(Path.join(inbox, "agents-block.md"), Instructions.put_block("", "changed"))
+      assert {"", 0} = boot.()
+
+      assert File.read!(file) == Instructions.put_block("", "changed") <> "\nmy own notes\n"
+      # The script and `put_block/2` agree on where the block goes.
+      assert File.read!(file) == Instructions.put_block(File.read!(file), "changed")
+    end
+
+    test "the memo tool is copied into the VM's memory folder, which gets a memory", %{
+      inbox: inbox,
+      home: home,
+      boot: boot
+    } do
+      File.mkdir_p!(Path.join(inbox, "bin"))
+      memo = Path.join(inbox, "bin/memo")
+      File.write!(memo, "#!/bin/sh\nmkdir -p \"$MEMORY_DIR\" && : > \"$MEMORY_DIR/LOG.txt\"\n")
+      File.chmod!(memo, 0o755)
+
+      assert {"", 0} = boot.()
+      assert File.read!(Path.join(home, ".optmem/memo")) == File.read!(memo)
+      assert File.regular?(Path.join(home, ".optmem/memory/LOG.txt"))
+    end
+
+    test "MWT's agents go into the VM's Zed settings, when the inbox has the ACP shell", %{
+      inbox: inbox,
+      home: home,
+      boot: boot
+    } do
+      # Without the shell, Zed's settings aren't touched.
+      assert {"", 0} = boot.()
+      refute File.exists?(Path.join(home, ".config/zed/settings.json"))
+
+      File.mkdir_p!(Path.join(inbox, "bin"))
+      shell = Path.join(inbox, "bin/mwt-acp")
+      File.write!(shell, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/acp-args\"\n")
+      File.chmod!(shell, 0o755)
+
+      assert {"", 0} = boot.()
+
+      assert File.read!(Path.join(home, "acp-args")) ==
+               "--zed-settings\n#{home}/.config/zed/settings.json\n--command\n#{shell}\n"
+    end
+  end
+
+  test "the standing text forbids the usual login steps and explains MWT's answers" do
+    text = Instructions.text()
+    assert text =~ "gh auth login"
+    assert text =~ "mwt_grant_off"
+    assert text =~ "/mnt/mwt/grants.md"
+    assert text =~ "mwt request GRANT_ID --reason"
+    assert text =~ "mwt request --need"
+    assert text =~ "~/.optmem/memo wake"
+    # Agent threads: a message from MWT, and a thread MWT can't reach.
+    assert text =~ "A message from MWT"
+    assert text =~ "Is this an MWT thread?"
+    assert text =~ "**Claude (MWT)**"
+  end
+
+  test "the grants list says what each is for and how to use it, never values" do
+    github = %Grant{
+      id: "github",
+      name: "GitHub",
+      kind: :token,
+      purpose: "Push to\nmy repos",
+      state: :on,
+      expires_at: ~U[2026-11-12 13:00:00Z],
+      placeholder: "ghp_placeholder",
+      env: ["GH_TOKEN"],
+      git: true,
+      hosts: ["api.github.com", "github.com"]
+    }
+
+    vpn = %Grant{
+      id: "vpn",
+      name: "VPN",
+      kind: :network,
+      purpose: "Grafana",
+      destinations: ["10.0.0.0/8:443"],
+      allowances: [%Allowance{id: "a", pattern: :all}],
+      state: :on
+    }
+
+    text = Instructions.grants([github, vpn], ~U[2026-11-12 12:00:00Z])
+    assert text =~ "## GitHub"
+    assert text =~ "id: `github` · Token or API key · on until 13:00 UTC (60 min left)"
+    assert text =~ "for: Push to my repos"
+    assert text =~ "$GH_TOKEN, /mnt/mwt/tokens/github"
+    assert text =~ "only to api.github.com, github.com"
+    assert text =~ "git over HTTPS to api.github.com, github.com"
+    assert text =~ "each request waits for the user's approval"
+    assert text =~ "connect directly to 10.0.0.0/8:443"
+    assert text =~ "every connection goes through for now"
+    refute text =~ "ghp_placeholder"
+    assert Instructions.grants([], ~U[2026-11-12 12:00:00Z]) =~ "No grants yet."
+  end
+
+  test "subgrants are listed under their grant, with how to call them; Ask to run commands says to keep it small" do
+    any = %Grant{
+      id: "commands",
+      name: "Ask to run commands",
+      kind: :command,
+      purpose: "Escape hatch"
+    }
+
+    saved =
+      for name <- ~w(pods logs) do
+        %Grant{
+          id: name,
+          name: name,
+          kind: :command,
+          purpose: "Show #{name}",
+          script: "kubectl get #{name} -n \"$NAMESPACE\"",
+          dir: "/home/me",
+          parent: "commands",
+          params: [
+            %Param{name: "NAMESPACE", shape: {:one_of, ["web", "jobs"]}, about: "the namespace"}
+          ],
+          state: :on
+        }
+      end
+
+    text = Instructions.grants([any | saved], ~U[2026-11-12 12:00:00Z])
+    assert text =~ "id: `commands` · Ask to run commands · off"
+    assert text =~ "-- COMMAND. The escape hatch"
+    assert text =~ "Send the smallest command that gets what you need"
+    assert text =~ "propose it as a subgrant instead: mwt propose"
+    assert text =~ ~s(mwt call ID NAME=value --reason "why now")
+
+    # Under their grant: how to call each, its state, what it is for, and
+    # each parameter with its shape.
+    assert text =~ """
+             - `mwt call pods NAMESPACE=…` · on until the user turns it off · Show pods
+               - NAMESPACE is one of: web, jobs. It is: the namespace
+             - `mwt call logs NAMESPACE=…` · on until the user turns it off · Show logs
+           """
+
+    [_before, under] = String.split(text, "## Ask to run commands", parts: 2)
+    assert under =~ "mwt call pods"
+
+    # What it is for, not its script.
+    refute text =~ "## pods"
+    refute text =~ "kubectl get pods"
+  end
+
+  test "the standing text says to keep commands small and to transform in the VM" do
+    text = Instructions.text()
+    assert text =~ "Bring the raw output back and do the rest here in the VM"
+    # Subgrants come first: called by id, proposed with their design in mind.
+    assert text =~ "mwt call gh-repo-view REPO_NAME=oliveigah/klife"
+    assert text =~ "mwt propose commands"
+    assert text =~ "The narrowest shape that works"
+    assert text =~ "You send an id and values, never a command"
+  end
+end

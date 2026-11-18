@@ -1,0 +1,68 @@
+#!/bin/bash
+# Git's remote helper for mwt::<project-id> (origin: the user's repository
+# on their machine) and mwt::<project-id>/upstream (its own remote's
+# branches). Only the transport crosses into MWT: branches, indexes,
+# commits and working trees remain Git's. A push is refused.
+set -u
+
+project=${2#mwt::}
+remote=origin
+case $project in
+  */upstream)
+    project=${project%/upstream}
+    remote=upstream
+    ;;
+esac
+channel=${MWT_CHANNEL:-VSOCK-CONNECT:2:5000}
+case ${GIT_PROTOCOL:-} in
+  version=1 | version=2) protocol=$GIT_PROTOCOL ;;
+  *) protocol= ;;
+esac
+writer=
+link=
+
+fail() { printf 'mwt: %s\n' "$1" >&2; exit 1; }
+cleanup() {
+  [ -z "$writer" ] || kill "$writer" 2>/dev/null || true
+  [ -z "$link" ] || kill "$link" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+[[ $project =~ ^[0-9a-f]{64}$ ]] || fail "this remote needs an open project's ID (mwt::<project-id>, or mwt::<project-id>/upstream)."
+
+connect() {
+  [ "$1" = git-upload-pack ] || fail "pushes go through review; use mwt handoff."
+  command -v socat >/dev/null 2>&1 || fail "socat is missing, so MWT cannot be reached."
+
+  coproc MWT_LINK { exec socat -t 1 -T 600 - "$channel"; }
+  link=$MWT_LINK_PID
+  exec 3<&"${MWT_LINK[0]}" 4>&"${MWT_LINK[1]}"
+  printf '{"command":"git","project":"%s","service":"git-upload-pack","protocol":"%s","remote":"%s"}\n' "$project" "$protocol" "$remote" >&4
+  IFS= read -r status <&3 || fail "MWT is not answering; it may be locked or closed."
+  if [ "$status" != 0 ]; then
+    cat <&3 >&2
+    exit 1
+  fi
+
+  # The empty line tells Git the helper protocol has ended. Everything
+  # after it is Git's binary pack protocol, streamed without buffering it.
+  printf '\n'
+  cat <&0 >&4 &
+  writer=$!
+  cat <&3
+  wait "$link"
+  exit $?
+}
+
+while IFS= read -r line; do
+  case $line in
+    capabilities) printf 'connect\noption\n\n' ;;
+    'option git-protocol version=2') protocol=version=2; printf 'ok\n' ;;
+    'option git-protocol version=1') protocol=version=1; printf 'ok\n' ;;
+    option\ *) printf 'unsupported\n' ;;
+    connect\ *) connect "${line#connect }" ;;
+    '') exit 0 ;;
+    *) fail "unsupported Git transport operation." ;;
+  esac
+done

@@ -1,0 +1,21 @@
+{
+  "id": "hex",
+  "kind": "token",
+  "name": "Hex",
+  "icon": "hero-cube",
+  "blurb": "mix hex.publish, owners and private packages.",
+  "guide": [
+    "On this machine, run mix hex.user key generate --key-name agent-sandbox --permission api:write, or create a key at hex.pm/dashboard/keys.",
+    "Prefer a key limited to the packages the agent publishes.",
+    "Paste it below. In the VM, mwt exec GRANT_ID -- mix … supplies the placeholder as HEX_API_KEY only to that command."
+  ],
+  "grant": {
+    "purpose": "Hex: publishing packages and reading private ones.",
+    "env": "HEX_API_KEY",
+    "hosts": "hex.pm, repo.hex.pm",
+    "prefix": "mwt_",
+    "source": "stored"
+  },
+  "request_headers": "Authorization: {token}\nAccept: application/json",
+  "tools": ["mix hex"]
+}

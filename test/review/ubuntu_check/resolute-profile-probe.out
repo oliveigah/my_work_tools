@@ -1,0 +1,7 @@
+label inside:        mwt-bubble//&mwt-bwrap (enforce)
+net_admin (allowed): yes
+chown (refused):     chown: changing ownership of '/tmp/x': Invalid argument (os error 22)
+mknod (refused):     mknod: Operation not permitted (os error 1)
+net_raw (refused):   PermissionError: [Errno 1] Operation not permitted
+system bwrap, same:  RTNETLINK answers: Operation not permitted
+after removal: ls: cannot access '/usr/lib/mwt': No such file or directory ls: cannot access '/etc/apparmor.d/mwt-bwrap': No such file or directory  loaded: 1

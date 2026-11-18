@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html
+  lang="en"
+  class="h-full"
+  data-theme={
+    MWTClient.Preferences.get("theme") != "system" && MWTClient.Preferences.get("theme")
+  }
+  data-theme-source={MWTClient.Preferences.get("theme") != "system" && "user"}
+>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+    <.live_title default="MWT" suffix=" · MWT">{assigns[:page_title]}</.live_title>
+    <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
+    <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
+    </script>
+    <script>
+      // Applies the theme and panel sizes before the first paint, so the app
+      // never flashes the wrong colors or layout. See Layouts.theme_toggle/1 and
+      // the ".Resize" hook in MWTClientWeb.PanelComponents.
+      (() => {
+        const systemTheme = () => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+
+        const setTheme = (theme) => {
+          if (theme === "system") {
+            localStorage.removeItem("phx:theme");
+            document.documentElement.setAttribute("data-theme", systemTheme());
+            document.documentElement.setAttribute("data-theme-source", "system");
+          } else {
+            localStorage.setItem("phx:theme", theme);
+            document.documentElement.setAttribute("data-theme", theme);
+            document.documentElement.setAttribute("data-theme-source", "user");
+          }
+        };
+        if (!document.documentElement.hasAttribute("data-theme")) {
+          setTheme(localStorage.getItem("phx:theme") || "system");
+        }
+        window.addEventListener("storage", (e) => e.key === "phx:theme" && setTheme(e.newValue || "system"));
+        window.addEventListener("phx:set-theme", (e) => setTheme(e.target.dataset.phxTheme));
+
+        matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
+          if (document.documentElement.getAttribute("data-theme-source") === "system") {
+            document.documentElement.setAttribute("data-theme", systemTheme());
+          }
+        });
+
+        for (const [key, variable] of [
+          ["mwt:history-width", "--history-width"],
+          ["mwt:request-height", "--request-height"],
+          ["mwt:request-width", "--request-width"],
+          ["mwt:git-branches-width", "--git-branches-width"],
+          ["mwt:git-inspector-width", "--git-inspector-width"],
+          ["mwt:diagram-list-width", "--diagram-list-width"],
+          ["mwt:note-list-width", "--note-list-width"],
+          ["mwt:note-editor-width", "--note-editor-width"],
+        ]) {
+          const size = localStorage.getItem(key);
+          if (size) { document.documentElement.style.setProperty(variable, size); }
+        }
+      })();
+    </script>
+  </head>
+  <body class="flex h-full flex-col">
+    <header
+      id="window-titlebar"
+      data-tauri-drag-region="deep"
+      class="relative hidden h-7 shrink-0 items-center justify-between border-b border-line-soft bg-panel pl-2 text-ink select-none"
+    >
+      <.logo class="pointer-events-none size-3.5" />
+      <span
+        id="window-title"
+        class="pointer-events-none absolute inset-y-0 left-24 right-24 truncate text-center text-[11px] leading-7 font-semibold tracking-wide"
+      >
+        MWT
+      </span>
+      <div class="flex h-full items-stretch" data-tauri-drag-region="false">
+        <button
+          id="window-minimize"
+          type="button"
+          title="Minimize"
+          aria-label="Minimize window"
+          class="flex w-8 items-center justify-center text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+        >
+          <.icon name="hero-minus" class="size-3.5" />
+        </button>
+        <button
+          id="window-maximize"
+          type="button"
+          title="Maximize or restore"
+          aria-label="Maximize or restore window"
+          class="flex w-8 items-center justify-center text-muted transition-colors hover:bg-hover hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+        >
+          <.icon name="hero-stop" class="size-3.5" />
+        </button>
+        <button
+          id="window-close"
+          type="button"
+          title="Close"
+          aria-label="Close window"
+          class="flex w-8 items-center justify-center text-muted transition-colors hover:bg-bad hover:text-white focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+        >
+          <.icon name="hero-x-mark" class="size-3.5" />
+        </button>
+      </div>
+    </header>
+    <div id="window-content" class="min-h-0 flex-1">
+      {@inner_content}
+    </div>
+    <div id="window-resize" class="hidden" aria-hidden="true">
+      <div data-resize-direction="North" class="fixed inset-x-2 top-0 z-[60] h-1 cursor-n-resize">
+      </div>
+      <div
+        data-resize-direction="South"
+        class="fixed inset-x-2 bottom-0 z-[60] h-1 cursor-s-resize"
+      >
+      </div>
+      <div data-resize-direction="West" class="fixed inset-y-2 left-0 z-[60] w-1 cursor-w-resize">
+      </div>
+      <div data-resize-direction="East" class="fixed inset-y-2 right-0 z-[60] w-1 cursor-e-resize">
+      </div>
+      <div
+        data-resize-direction="NorthWest"
+        class="fixed left-0 top-0 z-[60] size-2 cursor-nwse-resize"
+      >
+      </div>
+      <div
+        data-resize-direction="NorthEast"
+        class="fixed right-0 top-0 z-[60] size-2 cursor-nesw-resize"
+      >
+      </div>
+      <div
+        data-resize-direction="SouthWest"
+        class="fixed bottom-0 left-0 z-[60] size-2 cursor-nesw-resize"
+      >
+      </div>
+      <div
+        data-resize-direction="SouthEast"
+        class="fixed bottom-0 right-0 z-[60] size-2 cursor-nwse-resize"
+      >
+      </div>
+    </div>
+  </body>
+</html>

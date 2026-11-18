@@ -1,0 +1,113 @@
+defmodule MWTClient.Vault do
+  @moduledoc """
+  Password derived encryption: the key a password makes, and terms sealed
+  under it.
+
+  `derive/2` stretches the password with PBKDF2 and `seal/2` encrypts a
+  term under the result. Sealed with it: the verifier that proves a
+  password, the data key the identity's databases are encrypted with
+  (`MWTClient.Accounts.data_key/2`, `MWTClient.Storage`), exports, and the
+  `.bin` files of builds before the databases. Changing a password only
+  needs the data key sealed again; the databases stay as they are.
+
+  Every primitive here comes from `:crypto`; nothing is hand rolled. The
+  databases' own encryption is SQLite3 Multiple Ciphers' (docs/storage.md).
+  """
+
+  @version 1
+  # Each new identity is written with this many. The test suite builds with
+  # fewer (config/test.exs): it makes over a thousand identities, and the
+  # derivation is the same whatever the count.
+  @iterations Application.compile_env(:mwt_client, [__MODULE__, :iterations], 600_000)
+  @key_bytes 32
+  @salt_bytes 16
+  @nonce_bytes 12
+  @tag_bytes 16
+
+  @type key :: binary()
+
+  @doc "The KDF parameters written into a new vault file."
+  @spec kdf_params() :: map()
+  def kdf_params do
+    %{"algorithm" => "pbkdf2-hmac-sha512", "iterations" => @iterations, "length" => @key_bytes}
+  end
+
+  @doc "A fresh random salt."
+  @spec salt() :: binary()
+  def salt, do: :crypto.strong_rand_bytes(@salt_bytes)
+
+  @doc """
+  Stretches a password into an encryption key.
+
+  Roughly 150ms by design: that cost is the whole defence against someone
+  brute forcing a stolen vault offline.
+  """
+  @spec derive(String.t(), binary()) :: key()
+  def derive(password, salt) when is_binary(password) and is_binary(salt) do
+    :crypto.pbkdf2_hmac(:sha512, password, salt, @iterations, @key_bytes)
+  end
+
+  @doc "Same as `derive/2`, honouring the parameters stored in a vault file."
+  @spec derive(String.t(), binary(), map()) :: key()
+  def derive(password, salt, %{} = params) do
+    :crypto.pbkdf2_hmac(
+      :sha512,
+      password,
+      salt,
+      Map.get(params, "iterations", @iterations),
+      Map.get(params, "length", @key_bytes)
+    )
+  end
+
+  @doc """
+  Encrypts a term under `key`.
+
+  The nonce is random per call and never reused: repeating one under the same
+  key would leak the plaintexts and allow forgery.
+  """
+  @spec seal(key(), term()) :: binary()
+  def seal(key, term) do
+    nonce = :crypto.strong_rand_bytes(@nonce_bytes)
+    plain = :erlang.term_to_binary(term)
+
+    {ciphertext, tag} =
+      :crypto.crypto_one_time_aead(:aes_256_gcm, key, nonce, plain, "", true)
+
+    <<@version, nonce::binary, tag::binary, ciphertext::binary>>
+  end
+
+  @doc """
+  Decrypts a blob produced by `seal/2`.
+
+  Returns `:error` for the wrong key, a tampered blob, or one this version
+  cannot read. The GCM tag is checked before anything is deserialised, which
+  is what makes the plain `binary_to_term/1` below safe: only a holder of this
+  key could have produced a blob that authenticates, so the term is one we
+  wrote ourselves.
+
+  It deliberately does *not* pass `:safe`. That flag refuses to create atoms
+  the VM has not seen, and a freshly started VM has not yet loaded the modules
+  whose struct names are in here — so `:safe` rejects our own data on every
+  restart, which is exactly when restoring matters.
+  """
+  @spec open(key(), binary()) :: {:ok, term()} | :error
+  def open(
+        key,
+        <<@version, nonce::binary-size(@nonce_bytes), tag::binary-size(@tag_bytes),
+          ciphertext::binary>>
+      ) do
+    case :crypto.crypto_one_time_aead(:aes_256_gcm, key, nonce, ciphertext, "", tag, false) do
+      :error -> :error
+      plain -> decode(plain)
+    end
+  end
+
+  def open(_key, _blob), do: :error
+
+  # What MDT sealed is read as MWT's (`MWTClient.FormerName`).
+  defp decode(plain) do
+    {:ok, MWTClient.FormerName.binary_to_term(plain)}
+  rescue
+    ArgumentError -> :error
+  end
+end

@@ -1,0 +1,21 @@
+{
+  "id": "google",
+  "kind": "token",
+  "name": "Google Cloud",
+  "icon": "hero-cloud",
+  "blurb": "Short-lived tokens minted on this machine for gcloud and Google APIs.",
+  "guide": [
+    "Log in on this machine as you normally do: gcloud auth login.",
+    "MWT runs the command below whenever the VM needs a token and keeps the result until shortly before it expires. Your login stays here; the VM only sees a placeholder.",
+    "gcloud auth print-access-token acts as you. Add --impersonate-service-account=NAME@PROJECT.iam.gserviceaccount.com to act as a narrower service account instead."
+  ],
+  "grant": {
+    "purpose": "Google Cloud: gcloud and Google APIs.",
+    "file_env": "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE",
+    "hosts": "*.googleapis.com",
+    "prefix": "ya29.mwt",
+    "source": "minted",
+    "mint": "gcloud auth print-access-token"
+  },
+  "tools": ["gcloud", "gsutil", "bq"]
+}

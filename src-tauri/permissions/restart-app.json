@@ -1,0 +1,11 @@
+{
+  "permission": [
+    {
+      "identifier": "allow-restart-app",
+      "description": "Restart MWT once its update package has installed.",
+      "commands": {
+        "allow": ["restart_app"]
+      }
+    }
+  ]
+}

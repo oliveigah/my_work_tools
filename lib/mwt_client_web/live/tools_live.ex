@@ -1,0 +1,175 @@
+defmodule MWTClientWeb.ToolsLive do
+  @moduledoc """
+  Picks the tool to work on. The agent sandbox leads, across the whole row,
+  with what waits for you there.
+  """
+  use MWTClientWeb, :live_view
+
+  alias MWTClient.Tools
+
+  @featured :sandbox
+
+  @impl true
+  def mount(_params, _session, socket) do
+    {featured, others} = Enum.split_with(Tools.all(), &(&1.id == @featured))
+
+    {:ok,
+     socket
+     |> assign(:page_title, "Tools")
+     |> assign(:featured, featured)
+     |> assign(:tools, others)}
+  end
+
+  @impl true
+  def render(assigns) do
+    ~H"""
+    <Layouts.app
+      flash={@flash}
+      current_scope={@current_scope}
+      notices={@notices}
+      update={@update}
+      sandbox_waiting={@sandbox_waiting}
+      notifications={@notifications}
+      places={@places}
+    >
+      <div class="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
+        <div class="w-full max-w-2xl">
+          <header class="mb-6">
+            <h1 class="text-lg font-semibold tracking-tight">
+              Welcome back, {@current_scope.user.username}
+            </h1>
+            <p class="text-[13px] text-muted">Pick a tool to get to work.</p>
+          </header>
+
+          <div id="tools" class="grid gap-3 sm:grid-cols-2">
+            <.featured_card
+              :for={tool <- @featured}
+              tool={tool}
+              path={Map.get(@places, tool.id, tool.path)}
+              waiting={@sandbox_waiting}
+            />
+            <.tool_card
+              :for={tool <- @tools}
+              tool={tool}
+              path={Map.get(@places, tool.id, tool.path)}
+            />
+          </div>
+
+          <.link
+            navigate={~p"/agents"}
+            id="connect-agent"
+            class="mt-5 flex items-center gap-3 rounded-xl border border-line-soft px-4 py-3 text-xs text-muted transition-colors hover:border-accent/40 hover:bg-panel hover:text-ink"
+          >
+            <.icon name="hero-command-line" class="size-4 text-accent" />
+            <span class="flex-1">Connect an agent to save work in MWT through MCP.</span>
+            <.icon name="hero-arrow-right" class="size-3.5" />
+          </.link>
+        </div>
+      </div>
+    </Layouts.app>
+    """
+  end
+
+  attr :tool, :map, required: true
+  attr :path, :string, required: true, doc: "where the tool was left, else its first page"
+  attr :waiting, :integer, default: 0
+
+  # The tool that leads: as wide as the grid, with what waits for you in it.
+  defp featured_card(assigns) do
+    ~H"""
+    <.link
+      navigate={@path}
+      id={"tool-#{@tool.id}"}
+      data-featured
+      class={[
+        "group relative flex flex-col gap-4 overflow-hidden rounded-xl border border-line bg-panel p-5 sm:col-span-2 sm:flex-row sm:items-center",
+        "transition-all hover:-translate-y-0.5 hover:border-accent/60 hover:shadow-lg hover:shadow-black/10 dark:hover:shadow-black/30",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      ]}
+    >
+      <span
+        aria-hidden="true"
+        class="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,var(--color-accent-soft),transparent_60%)] opacity-50 transition-opacity group-hover:opacity-90"
+      ></span>
+      <span class="relative flex size-12 shrink-0 items-center justify-center rounded-xl bg-deep text-accent transition-colors group-hover:bg-accent-soft">
+        <.icon name={@tool.icon} class="size-6" />
+      </span>
+      <div class="relative min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <h2 class="text-[15px] font-semibold">{@tool.name}</h2>
+          <span
+            :if={@waiting > 0}
+            id={"tool-#{@tool.id}-waiting"}
+            class="inline-flex items-center gap-1 rounded-full bg-warn px-2 py-0.5 text-[10px] font-bold tabular-nums text-deep"
+          >
+            <.icon name="hero-hand-raised-micro" class="size-3" />
+            {@waiting} waiting
+          </span>
+        </div>
+        <p class="text-xs text-muted">{@tool.tagline}</p>
+        <p class="mt-2 max-w-xl text-[13px] leading-relaxed text-muted">{@tool.description}</p>
+      </div>
+      <div class="relative flex shrink-0 items-center gap-1.5 text-xs text-faint transition-colors group-hover:text-accent">
+        Open
+        <.icon
+          name="hero-arrow-right"
+          class="size-3.5 transition-transform group-hover:translate-x-0.5"
+        />
+      </div>
+    </.link>
+    """
+  end
+
+  attr :tool, :map, required: true
+  attr :path, :string, required: true, doc: "where the tool was left, else its first page"
+
+  defp tool_card(assigns) do
+    ~H"""
+    <.link
+      navigate={@path}
+      id={"tool-#{@tool.id}"}
+      class={[
+        "group flex h-full flex-col gap-3 rounded-xl border border-line bg-panel p-4",
+        "transition-all hover:-translate-y-0.5 hover:border-accent/60 hover:shadow-lg hover:shadow-black/10 dark:hover:shadow-black/30",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      ]}
+    >
+      <div class="flex items-center gap-3">
+        <span class="flex size-9 items-center justify-center rounded-lg bg-deep text-accent transition-colors group-hover:bg-accent-soft">
+          <.icon name={@tool.icon} class="size-5" />
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2">
+            <h2 class="truncate text-sm font-semibold">{@tool.name}</h2>
+            <span
+              :if={@tool.status == :soon}
+              class="rounded border border-warn/40 bg-warn-soft/50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-warn"
+            >
+              Soon
+            </span>
+            <span
+              :if={@tool.status == :preview}
+              id={"tool-#{@tool.id}-preview"}
+              title="The screens work on sample data; nothing runs yet"
+              class="rounded border border-violet/40 bg-violet/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-strong"
+            >
+              Preview
+            </span>
+          </div>
+          <p class="truncate text-xs text-muted">{@tool.tagline}</p>
+        </div>
+      </div>
+
+      <p class="text-[13px] leading-relaxed text-muted">{@tool.description}</p>
+
+      <div class="mt-auto flex items-center gap-1.5 pt-1 text-xs text-faint transition-colors group-hover:text-accent">
+        Open
+        <.icon
+          name="hero-arrow-right"
+          class="size-3.5 transition-transform group-hover:translate-x-0.5"
+        />
+      </div>
+    </.link>
+    """
+  end
+end

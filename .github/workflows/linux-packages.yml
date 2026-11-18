@@ -1,0 +1,126 @@
+name: Release Linux packages
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }} package
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Debian
+            script: ./scripts/build-deb.sh
+            extension: deb
+          - label: Fedora
+            script: ./scripts/build-rpm.sh
+            extension: rpm
+
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      PACKAGE_EXTENSION: ${{ matrix.extension }}
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set package version from release tag
+        run: |
+          package_version="$(python3 scripts/set-release-version.py "$RELEASE_TAG")"
+          printf 'PACKAGE_VERSION=%s\n' "$package_version" >> "$GITHUB_ENV"
+
+      - name: Build ${{ matrix.label }} package
+        run: ${{ matrix.script }}
+
+      - name: Name package for release
+        run: |
+          shopt -s nullglob
+          packages=(dist/*."$PACKAGE_EXTENSION")
+          if (( ${#packages[@]} != 1 )); then
+            printf 'Expected one .%s package, found %s\n' "$PACKAGE_EXTENSION" "${#packages[@]}" >&2
+            exit 1
+          fi
+          target="dist/MWT_${PACKAGE_VERSION}.${PACKAGE_EXTENSION}"
+          if [[ "${packages[0]}" != "$target" ]]; then
+            mv -- "${packages[0]}" "$target"
+          fi
+
+      - name: Record package checksum
+        run: sha256sum "dist/MWT_${PACKAGE_VERSION}.${PACKAGE_EXTENSION}"
+
+      - name: Store ${{ matrix.label }} package for publishing
+        uses: actions/upload-artifact@v7
+        with:
+          name: MWT_${{ env.PACKAGE_VERSION }}.${{ matrix.extension }}
+          path: dist/MWT_${{ env.PACKAGE_VERSION }}.${{ matrix.extension }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Attach packages to release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+    steps:
+      - name: Check out the release key
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          sparse-checkout: priv/release_signing_key.pub
+          sparse-checkout-cone-mode: false
+
+      - name: Download built packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: MWT_*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: release-assets
+        run: sha256sum -- ./*.deb ./*.rpm | tee SHA256SUMS
+
+      # MWT installs a release only when SHA256SUMS.sig verifies with the key
+      # it ships, so a release can't go out unsigned or signed by another key.
+      - name: Sign checksums
+        working-directory: release-assets
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [[ -z "$RELEASE_SIGNING_KEY" ]]; then
+            printf 'The RELEASE_SIGNING_KEY secret is not set. See docs/releases.md.\n' >&2
+            exit 1
+          fi
+          umask 077
+          key="$(mktemp)"
+          trap 'rm -f -- "$key"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in SHA256SUMS -out SHA256SUMS.sig
+          openssl pkeyutl -verify -rawin -pubin -inkey ../priv/release_signing_key.pub \
+            -in SHA256SUMS -sigfile SHA256SUMS.sig
+
+      - name: Upload packages to GitHub Release
+        run: >-
+          gh release upload "$RELEASE_TAG"
+          release-assets/*.deb
+          release-assets/*.rpm
+          release-assets/SHA256SUMS
+          release-assets/SHA256SUMS.sig
+          --clobber
+          --repo "$GITHUB_REPOSITORY"
