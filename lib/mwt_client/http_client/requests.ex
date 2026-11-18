@@ -1,0 +1,200 @@
+defmodule MWTClient.HttpClient.Requests do
+  @moduledoc """
+  Runs HTTP requests outside LiveView processes.
+
+  One executor exists per unlocked identity. Requests therefore keep running
+  while the user changes tools or reconnects, but are cancelled when the vault
+  is locked. PubSub messages contain only response metadata and a history ID;
+  response bodies stay out of LiveView mailboxes until the UI asks for one.
+  """
+
+  use GenServer
+
+  require Logger
+
+  alias MWTClient.Accounts
+  alias MWTClient.HttpClient.Core
+  alias MWTClient.HttpClient.Translation
+  alias MWTClient.Vault.Store
+
+  @task_supervisor MWTClient.HttpClient.TaskSupervisor
+
+  @type request_id :: String.t()
+  @type completion :: %{history_id: pos_integer(), response: map()}
+
+  def start_link(opts) do
+    username = Keyword.fetch!(opts, :username)
+    GenServer.start_link(__MODULE__, opts, name: Store.via(__MODULE__, username))
+  end
+
+  @doc "Subscribes the caller to compact request lifecycle events for an identity."
+  @spec subscribe(String.t()) :: :ok | {:error, term()}
+  def subscribe(username), do: Phoenix.PubSub.subscribe(MWTClient.PubSub, topic(username))
+
+  @doc "Starts a request unless the supplied request ID is already running."
+  @spec start(String.t(), request_id(), Req.Request.t(), map()) ::
+          :ok | {:error, :already_running}
+  def start(username, request_id, %Req.Request{} = request, metadata)
+      when is_binary(request_id) do
+    GenServer.call(Store.via(__MODULE__, username), {:start, request_id, request, metadata})
+  end
+
+  @doc "Cancels one request without affecting requests in other tabs."
+  @spec cancel(String.t(), request_id()) :: :ok
+  def cancel(username, request_id) do
+    GenServer.call(Store.via(__MODULE__, username), {:cancel, request_id})
+  end
+
+  @doc "Lists request IDs that are still running for an identity."
+  @spec running(String.t()) :: [request_id()]
+  def running(username) do
+    GenServer.call(Store.via(__MODULE__, username), :running)
+  end
+
+  @doc """
+  What became of a request: still `:running`, `{:finished, completion}` or
+  `{:failed, reason}` as broadcast when it ended, or `:unknown` once it was
+  cancelled or is older than the last 20 that ended. For a page that
+  wasn't listening when it ended, as the HTTP client left for another tool.
+  """
+  @spec outcome(String.t(), request_id()) ::
+          :running | {:finished, completion()} | {:failed, String.t()} | :unknown
+  def outcome(username, request_id) do
+    GenServer.call(Store.via(__MODULE__, username), {:outcome, request_id})
+  end
+
+  # How many ended requests `outcome/2` still knows about. Each holds a
+  # history ID and response metadata, never a body.
+  @ended 20
+
+  @impl true
+  def init(opts) do
+    Process.flag(:trap_exit, true)
+    {:ok, %{username: Keyword.fetch!(opts, :username), requests: %{}, refs: %{}, ended: []}}
+  end
+
+  @impl true
+  def handle_call({:start, request_id, request, metadata}, _from, state) do
+    if Map.has_key?(state.requests, request_id) do
+      {:reply, {:error, :already_running}, state}
+    else
+      username = state.username
+
+      task =
+        Task.Supervisor.async_nolink(@task_supervisor, fn ->
+          {result, history_id, duration_ms} = Core.request_recorded(username, request, metadata)
+
+          %{
+            history_id: history_id,
+            response: Translation.response_summary(result, duration_ms)
+          }
+        end)
+
+      state = %{
+        state
+        | requests: Map.put(state.requests, request_id, task),
+          refs: Map.put(state.refs, task.ref, request_id)
+      }
+
+      {:reply, :ok, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:cancel, request_id}, _from, state) do
+    case Map.pop(state.requests, request_id) do
+      {nil, _requests} ->
+        {:reply, :ok, state}
+
+      {%Task{} = task, requests} ->
+        Process.demonitor(task.ref, [:flush])
+        terminate_task(task.pid)
+        broadcast(state.username, {:http_request_cancelled, request_id})
+        Logger.info("request cancelled", user: state.username, system: :http_client)
+
+        {:reply, :ok, %{state | requests: requests, refs: Map.delete(state.refs, task.ref)}}
+    end
+  end
+
+  @impl true
+  def handle_call(:running, _from, state) do
+    {:reply, Map.keys(state.requests), state}
+  end
+
+  def handle_call({:outcome, request_id}, _from, state) do
+    outcome =
+      cond do
+        Map.has_key?(state.requests, request_id) -> :running
+        ended = List.keyfind(state.ended, request_id, 0) -> elem(ended, 1)
+        true -> :unknown
+      end
+
+    {:reply, outcome, state}
+  end
+
+  @impl true
+  def handle_info({ref, completion}, state) when is_reference(ref) do
+    case Map.pop(state.refs, ref) do
+      {nil, _refs} ->
+        {:noreply, state}
+
+      {request_id, refs} ->
+        Process.demonitor(ref, [:flush])
+        broadcast(state.username, {:http_request_finished, request_id, completion})
+
+        {:noreply,
+         %{state | refs: refs, requests: Map.delete(state.requests, request_id)}
+         |> ended(request_id, {:finished, completion})}
+    end
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    case Map.pop(state.refs, ref) do
+      {nil, _refs} ->
+        {:noreply, state}
+
+      {request_id, refs} ->
+        broadcast(state.username, {:http_request_failed, request_id, inspect(reason)})
+        state = ended(state, request_id, {:failed, inspect(reason)})
+
+        Logger.warning("request task exited kind=#{exit_kind(reason)}",
+          user: state.username,
+          system: :http_client
+        )
+
+        {:noreply, %{state | refs: refs, requests: Map.delete(state.requests, request_id)}}
+    end
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    Enum.each(state.requests, fn {_request_id, task} ->
+      Process.demonitor(task.ref, [:flush])
+      terminate_task(task.pid)
+    end)
+
+    :ok
+  end
+
+  defp ended(state, request_id, outcome),
+    do: %{state | ended: Enum.take([{request_id, outcome} | state.ended], @ended)}
+
+  defp broadcast(username, message) do
+    Phoenix.PubSub.broadcast(MWTClient.PubSub, topic(username), message)
+  end
+
+  defp terminate_task(pid) do
+    case Task.Supervisor.terminate_child(@task_supervisor, pid) do
+      :ok -> :ok
+      {:error, :not_found} -> :ok
+    end
+  end
+
+  defp topic(username), do: "http-requests:" <> Accounts.id(username)
+
+  defp exit_kind({%{__struct__: module}, _stack}), do: inspect(module)
+  defp exit_kind(%{__struct__: module}), do: inspect(module)
+  defp exit_kind(reason) when is_atom(reason), do: to_string(reason)
+  defp exit_kind(_reason), do: "other"
+end

@@ -1,0 +1,57 @@
+# The directory Mix will write compiled artifacts to.
+/_build/
+
+# If you run "mix test --cover", coverage assets end up here.
+/cover/
+
+# The directory Mix downloads your dependencies sources to.
+/deps/
+
+# Where 3rd-party dependencies like ExDoc output generated docs.
+/doc/
+
+# Ignore .fetch files in case you like to edit your project deps locally.
+/.fetch
+
+# If the VM crashes, it generates a dump, let's ignore it too.
+erl_crash.dump
+
+# Also ignore archive artifacts (built via "mix archive.build").
+*.ez
+
+# Temporary files, for example, from tests.
+/tmp/
+
+# Shareable desktop builds.
+/dist/
+
+# Ignore package tarball (built via "mix hex.build").
+mwt_client-*.tar
+
+# Ignore assets that are produced by build tools.
+/priv/static/assets/
+
+# MWT's microsandbox runtime, built by scripts/build-microsandbox.sh.
+/priv/microsandbox/
+
+# Ignore digested assets cache.
+/priv/static/cache_manifest.json
+
+# In case you use Node.js/npm, you want to ignore these.
+npm-debug.log
+/assets/node_modules/
+
+# Agents in the sandbox work in worktrees here; see AGENTS.md.
+/.worktrees/
+
+# Each developer's own editor and language server folders, and local agent
+# settings: none of them belong to the project.
+/.zed/
+/.expert/
+/.elixir_ls/
+/.lexical/
+/.vscode/
+/.idea/
+/.claude/settings.local.json
+.DS_Store
+*.swp

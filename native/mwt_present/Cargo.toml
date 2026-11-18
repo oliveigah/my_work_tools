@@ -1,0 +1,17 @@
+[package]
+name = "mwt-present"
+version = "0.1.0"
+edition = "2021"
+description = "MWT's presentations: a token grant's placeholder shown the way a tool family looks for its credential, for one command's lifetime"
+publish = false
+
+# No dependencies, as for mwt-relay and mwt-acp: the build needs no network,
+# and there is less to trust. It holds only placeholders.
+[dependencies]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

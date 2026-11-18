@@ -1,0 +1,22 @@
+{
+  "id": "github",
+  "kind": "token",
+  "name": "GitHub",
+  "icon": "git-branch",
+  "blurb": "gh, git over HTTPS and the REST and GraphQL APIs.",
+  "guide": [
+    "Create a fine-grained token at github.com/settings/personal-access-tokens with an expiry.",
+    "Give it only the repositories the agent works on, and only what it needs: Contents read and write to push, Pull requests to open them.",
+    "Paste it below. In the VM, use mwt exec GRANT_ID -- gh … or git … to give only that command a placeholder."
+  ],
+  "grant": {
+    "purpose": "GitHub: gh, git over HTTPS and the GitHub API.",
+    "env": "GITHUB_TOKEN, GH_TOKEN",
+    "hosts": "api.github.com, github.com, uploads.github.com",
+    "git": "true",
+    "prefix": "ghp_",
+    "source": "stored"
+  },
+  "request_headers": "Authorization: Bearer {token}\nAccept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28",
+  "tools": ["gh"]
+}

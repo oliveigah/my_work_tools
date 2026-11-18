@@ -1,0 +1,1552 @@
+defmodule MWTClient.Sandbox.Channel do
+  @moduledoc """
+  How agents in the VM ask MWT for access: a Unix socket that microsandbox
+  joins to the VM's vsock port 5000 (`msb create --vsock`). The VM has no
+  network route to MWT, so this is the only way in, and all it offers is
+  reading the grants and the host's description, asking for a grant,
+  asking to run a command on the host, working in projects: what a
+  project is, a worktree of one's own, and handoffs
+  (`MWTClient.Sandbox.Projects`, `MWTClient.Sandbox.Handoffs`), and MWT's
+  own tools over MCP (`mwt mcp`, `serve_mcp/3`,
+  `MWTClient.Sandbox.MwtTools`).
+
+  Inside the VM, `/mnt/mwt/bin/mwt` (`priv/sandbox/mwt-cli`) speaks it with
+  socat, one ask per connection:
+
+    * the client sends one line of JSON: `{"command": "grants"}`,
+      `{"command": "host"}`, `{"command": "why", "target": "HOST[:PORT]"}`
+      (`MWTClient.Sandbox.Why`), `{"command": "ports"}` (with `"report"` from
+      the VM's watcher, what listens in it), `{"command": "request", "grant": "...",
+      "need": "...", "minutes": 60, "reason": "...", "agent": "...",
+      "thread": "...", "thread_id": "...", "folder": "...", "wait": 60}`, `{"command": "run", "script": "...", "dir": "...",
+      "timeout": 120, "reason": "...", "agent": "...", "thread": "...",
+      "thread_id": "...", "folder": "...", "wait": 60}` or
+      `{"command": "wait", "id": "...", "wait": 60}`;
+    * MWT answers with the exit status the command should end with on the
+      first line, then text for the agent, and closes.
+
+  Exit statuses for grants: 0 the grant is on, 1 something is wrong with the
+  ask, 2 still waiting for the user, 3 declined or given up. The command
+  itself uses 4 when MWT doesn't answer: locked, or not running.
+
+  A command that ran answers `ran STATUS` on the first line, a note for the
+  agent's stderr on the second (often empty), then the output. MWT's own
+  outcomes for runs use statuses commands rarely use: 120 still waiting,
+  121 it didn't run or its output didn't come back, 122 something is wrong
+  with the ask, and the command itself uses 123 when MWT doesn't answer.
+  Asks to run have ids starting with `run-`, so `mwt wait` knows which set
+  of statuses applies.
+
+  An ask waits for you as an activation approval (`MWTClient.Sandbox.Approval`)
+  for 30 minutes; the agent waits at most `"wait"` seconds of it, then hears
+  it is still pending and can come back with `mwt wait`. Any process in the
+  VM can ask, which is accepted: all it can do is ask. The server keeps one
+  waiting ask per grant and ten in all.
+
+  One ask keeps its connection: `{"command": "attach", ...}`, from an
+  `mwt-acp` in the VM, which `MWTClient.Sandbox.AgentThreads` serves for as
+  long as it stays open.
+
+  One listener per unlocked identity. Microsandbox opens the socket for each
+  connection, so when MWT restarts, the channel works again without touching
+  the VM.
+
+  Any process in the VM can connect, as often as it likes, so what it can
+  hold of MWT is bounded: 64 connections served at once (one more is closed
+  unanswered, and `mwt` says MWT isn't answering), an ask's line within 10
+  s, and an MCP message whole within 30 s, at most 8 of them read at once.
+  """
+
+  use GenServer
+
+  require Logger
+
+  alias MWTClient.Sandbox.{
+    AgentThread,
+    AgentThreads,
+    Approval,
+    Gate,
+    Grant,
+    GitTransport,
+    Handoff,
+    Handoffs,
+    HostCommand,
+    HostGit,
+    Inbound,
+    Instructions,
+    Param,
+    Policy,
+    Projects,
+    Routes,
+    Server,
+    Shown,
+    Slots,
+    Sockets,
+    Why,
+    Zed
+  }
+
+  alias MWTClient.MCP.Protocol
+  alias MWTClient.Sandbox.MwtTools
+  alias MWTClient.Vault.Store
+
+  @port 5000
+  @line_limit 64 * 1024
+  @mcp_limit 2_000_000
+  @read_timeout 10_000
+  # What the VM can hold of MWT through the channel: connections served at
+  # once (an attached `mwt-acp` keeps one, an ask waiting for you another),
+  # MCP messages being read at once (up to `@mcp_limit` each), and how long
+  # one may take to arrive, whole.
+  @max_connections 64
+  @max_mcp_reading 8
+  @mcp_read_ms 30_000
+  @default_wait 60
+  @max_wait 600
+
+  @run_waiting 120
+  @run_not_done 121
+  @run_wrong 122
+  @run_unreachable 123
+
+  # What acts on the user's behalf, refused while the VM is isolated.
+  @acting ~w(request run call propose handoff)
+  @isolated "MWT's firewall isolated this VM: nothing it sends leaves through MWT until the user releases it. The user has been told. Stop, and tell them what you were doing."
+
+  @doc "The vsock port agents connect to inside the VM."
+  @spec port() :: pos_integer()
+  def port, do: @port
+
+  @doc "The host socket of one identity's channel (`MWTClient.Sandbox.Sockets`)."
+  @spec socket_path(String.t()) :: Path.t()
+  def socket_path(username), do: Sockets.path(username, "channel.sock")
+
+  @doc "Starts the channel of one unlocked identity."
+  def start_link(opts) do
+    username = Keyword.fetch!(opts, :username)
+    GenServer.start_link(__MODULE__, username, name: Store.via(__MODULE__, username))
+  end
+
+  @doc false
+  def child_spec(opts) do
+    %{id: {__MODULE__, Keyword.fetch!(opts, :username)}, start: {__MODULE__, :start_link, [opts]}}
+  end
+
+  @impl true
+  def init(username) do
+    Process.flag(:trap_exit, true)
+    Sockets.ensure!(username)
+    path = socket_path(username)
+    File.rm(path)
+
+    case :gen_tcp.listen(0, [
+           :binary,
+           ifaddr: {:local, path},
+           active: false,
+           packet: :line,
+           packet_size: @line_limit,
+           backlog: 64
+         ]) do
+      {:ok, socket} ->
+        File.chmod(path, 0o600)
+        acceptor = spawn_link(fn -> accept(socket, username, %{}) end)
+
+        {:ok, %{username: username, path: path, socket: socket, acceptor: acceptor, reading: %{}}}
+
+      {:error, reason} ->
+        # The VM loses only its way to ask; everything else keeps working.
+        Logger.warning("sandbox channel could not listen on #{path}: #{inspect(reason)}",
+          system: :sandbox
+        )
+
+        {:ok, %{username: username, path: path, socket: nil, acceptor: nil, reading: %{}}}
+    end
+  end
+
+  @impl true
+  def handle_info({:EXIT, pid, reason}, %{acceptor: pid} = state) do
+    {:stop, reason, state}
+  end
+
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state),
+    do: {:noreply, %{state | reading: Map.delete(state.reading, ref)}}
+
+  # A place to read one MCP message in, while fewer than `@max_mcp_reading`
+  # are: given back by `{:mcp_read, ref}`, or when its reader ends.
+  @impl true
+  def handle_call(:mcp_reading, {pid, _tag}, state) do
+    if map_size(state.reading) >= @max_mcp_reading do
+      {:reply, :busy, state}
+    else
+      ref = Process.monitor(pid)
+      {:reply, {:ok, ref}, %{state | reading: Map.put(state.reading, ref, pid)}}
+    end
+  end
+
+  @impl true
+  def handle_cast({:mcp_read, ref}, state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, %{state | reading: Map.delete(state.reading, ref)}}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    if state.socket, do: :gen_tcp.close(state.socket)
+    File.rm(state.path)
+    :ok
+  end
+
+  # Each connection is served in a task of its own, at most
+  # `@max_connections` at once: `open` holds the monitors of those that
+  # run. One more is closed unanswered.
+  defp accept(socket, username, open) do
+    case :gen_tcp.accept(socket) do
+      {:ok, client} ->
+        open = ended(open)
+
+        if map_size(open) >= @max_connections do
+          :gen_tcp.close(client)
+          accept(socket, username, open)
+        else
+          accept(socket, username, serve_in_task(client, username, open))
+        end
+
+      {:error, :closed} ->
+        exit(:normal)
+
+      {:error, reason} ->
+        exit(reason)
+    end
+  end
+
+  defp serve_in_task(client, username, open) do
+    case Task.Supervisor.start_child(MWTClient.Sandbox.TaskSupervisor, fn ->
+           receive do
+             {:go, client} -> serve(client, username)
+           after
+             5_000 -> :ok
+           end
+         end) do
+      {:ok, pid} ->
+        :ok = :gen_tcp.controlling_process(client, pid)
+        send(pid, {:go, client})
+        Map.put(open, Process.monitor(pid), pid)
+
+      {:error, _reason} ->
+        :gen_tcp.close(client)
+        open
+    end
+  end
+
+  defp ended(open) do
+    receive do
+      {:DOWN, ref, :process, _pid, _reason} -> ended(Map.delete(open, ref))
+    after
+      0 -> open
+    end
+  end
+
+  @doc "How many connections the channel serves at once."
+  @spec max_connections() :: pos_integer()
+  def max_connections, do: @max_connections
+
+  @doc false
+  # One ask: a line of JSON in, an exit status and text out. An `mcp` ask is
+  # followed by one MCP message, a line of its own (`serve_mcp/3`); an
+  # `attach` keeps its connection, for `AgentThreads`.
+  def serve(client, username) do
+    ask =
+      case :gen_tcp.recv(client, 0, @read_timeout) do
+        {:ok, line} -> read(line)
+        {:error, _reason} -> :none
+      end
+
+    case ask do
+      %{"command" => "attach"} -> attach(client, username, ask)
+      %{"command" => "mcp"} -> serve_mcp(client, ask, username)
+      %{"command" => "git"} -> GitTransport.serve(client, username, ask)
+      _other -> serve_ask(client, ask, username)
+    end
+  end
+
+  # An `mwt-acp` keeping its connection: served by `AgentThreads` until it
+  # ends, instead of one answer and close.
+  defp attach(client, username, ask) do
+    AgentThreads.attach(username, client, ask)
+  catch
+    :exit, _locked ->
+      :gen_tcp.send(client, encode({4, "MWT is locked. Ask the user to unlock it."}))
+  after
+    :gen_tcp.close(client)
+  end
+
+  defp serve_ask(client, ask, username) do
+    reply =
+      try do
+        case ask do
+          :unreadable -> {1, "MWT couldn't read that ask. Use the mwt command."}
+          :none -> {1, "MWT got no ask."}
+          %{"command" => command} -> answer(command, ask, username)
+        end
+      catch
+        :exit, _locked ->
+          status = if run?(ask), do: @run_unreachable, else: 4
+          {status, "MWT is locked. Ask the user to unlock it."}
+      end
+
+    :gen_tcp.send(client, encode(reply))
+    :gen_tcp.close(client)
+  end
+
+  @doc """
+  Reads one line from the VM as an ask, or `:unreadable`.
+
+  The line is the VM's, so nothing in it is taken on trust. An ask carries
+  text, whole numbers and yes or no; anything else in it (a list, a map, a
+  fraction) is dropped. Its text is made to show all it holds
+  (`MWTClient.Sandbox.Shown`), since most of it ends on an approval. A
+  script is the exception: it runs as it was sent or not at all, so it is
+  left as it is here and checked in `MWTClient.Sandbox.HostCommand`. So are
+  the `values` of a call, a map of texts checked against the subgrant's
+  parameters (`MWTClient.Sandbox.Param`); `params`, `headers` and what a
+  proposed grant lists (`hosts`, `env`, `file_env`, `carriers`,
+  `destinations`) are lists of texts.
+  """
+  @lists ~w(params headers hosts env file_env carriers destinations)
+
+  @spec read(binary()) :: map() | :unreadable
+  def read(line) do
+    case Jason.decode(line) do
+      {:ok, %{"command" => command} = ask} when is_binary(command) ->
+        Map.new(ask, fn
+          {"script", value} when is_binary(value) -> {"script", value}
+          {"values", %{} = values} -> {"values", texts(values)}
+          {key, list} when key in @lists and is_list(list) -> {key, lines(list)}
+          {key, value} when is_binary(value) -> {key, Shown.text(value)}
+          {key, value} when is_integer(value) or is_boolean(value) -> {key, value}
+          {key, _other} -> {key, nil}
+        end)
+
+      _other ->
+        :unreadable
+    end
+  end
+
+  # A call's values: the texts among them, as they were sent.
+  defp texts(values) do
+    for {name, value} <- Enum.take(values, 32), is_binary(name), is_binary(value), into: %{} do
+      {name, value}
+    end
+  end
+
+  defp lines(list),
+    do: for(line <- Enum.take(list, 32), is_binary(line), do: Shown.text(line))
+
+  @doc false
+  # One MCP message from `mwt mcp`, the server agents in the VM run on
+  # stdio: a line of JSON-RPC after the ask, up to 2 MB, answered by MWT's
+  # own server (`MWTClient.MCP.Protocol`) as an agent in the VM
+  # (`MWTClient.Sandbox.MwtTools`). Back: 0, then the response on a line,
+  # or an empty line for a notification.
+  def serve_mcp(client, ask, username) do
+    :ok = :inet.setopts(client, packet: :raw)
+    deadline = System.monotonic_time(:millisecond) + mcp_read_ms()
+
+    reply =
+      case read_mcp(client, username, deadline) do
+        {:ok, line} ->
+          "0\n" <> mcp_answer(line, ask, username) <> "\n"
+
+        :too_big ->
+          "0\n" <>
+            Jason.encode!(Protocol.error(nil, -32600, "An MCP message is at most 2 MB.")) <> "\n"
+
+        :too_slow ->
+          "1\nMWT got no whole MCP message in time.\n"
+
+        :busy ->
+          "1\nMWT is reading #{@max_mcp_reading} MCP messages from this VM already. Try again.\n"
+
+        :none ->
+          "1\nMWT got no MCP message.\n"
+      end
+
+    :gen_tcp.send(client, reply)
+    :gen_tcp.close(client)
+  end
+
+  # Only tests configure `config :mwt_client, MWTClient.Sandbox.Channel,
+  # mcp_read_ms: …`, so a slow message gives up sooner.
+  defp mcp_read_ms,
+    do: Application.get_env(:mwt_client, __MODULE__, [])[:mcp_read_ms] || @mcp_read_ms
+
+  # One message, read while the channel gives a place to read it in.
+  defp read_mcp(client, username, deadline) do
+    channel = Store.via(__MODULE__, username)
+
+    case GenServer.call(channel, :mcp_reading) do
+      {:ok, ref} ->
+        try do
+          read_message(client, [], 0, deadline)
+        after
+          GenServer.cast(channel, {:mcp_read, ref})
+        end
+
+      :busy ->
+        :busy
+    end
+  catch
+    :exit, _locked -> :none
+  end
+
+  defp read_message(client, acc, size, deadline) do
+    case :gen_tcp.recv(client, 0, max(deadline - System.monotonic_time(:millisecond), 0)) do
+      {:ok, chunk} ->
+        size = size + byte_size(chunk)
+        acc = [chunk | acc]
+
+        cond do
+          :binary.match(chunk, "\n") != :nomatch ->
+            [line | _rest] = acc |> Enum.reverse() |> IO.iodata_to_binary() |> String.split("\n")
+            {:ok, line}
+
+          size > @mcp_limit ->
+            :too_big
+
+          true ->
+            read_message(client, acc, size, deadline)
+        end
+
+      {:error, :timeout} ->
+        if acc == [], do: :none, else: :too_slow
+
+      {:error, _closed} ->
+        if acc == [], do: :none, else: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}
+    end
+  end
+
+  defp mcp_answer(line, ask, username) do
+    claims =
+      Map.new([:agent, :thread, :thread_id, :folder], fn key ->
+        case ask[Atom.to_string(key)] do
+          text when is_binary(text) and text != "" -> {key, text}
+          _none -> {key, nil}
+        end
+      end)
+
+    case Jason.decode(line) do
+      {:ok, message} ->
+        # A result enters the VM: no real value goes with it, in any
+        # form. Shapes aren't looked for: your notes are yours.
+        case Protocol.handle(message, MwtTools.caller(username, claims)) do
+          :accepted -> ""
+          response -> response |> Jason.encode!() |> Inbound.scrub(Gate.secrets(username))
+        end
+
+      {:error, _reason} ->
+        Jason.encode!(Protocol.error(nil, -32700, "Invalid JSON."))
+    end
+  end
+
+  # The output ends with a dot, so a shell reading it with `$(...)` keeps
+  # its trailing newlines; the mwt command takes the dot off.
+  defp encode({{:ran, status}, note, output}), do: "ran #{status}\n#{note}\n#{output}."
+  defp encode({status, text}), do: "#{status}\n#{String.trim_trailing(text)}\n"
+
+  defp handed_words(handoff, how) do
+    first =
+      case how do
+        :opened ->
+          "Handed off as ##{handoff.id}: #{handoff.source.branch} based on #{Handoff.base_label(handoff)}."
+
+        :updated ->
+          "Updated handoff ##{handoff.id} (revision #{handoff.revision}): #{handoff.source.branch} based on #{Handoff.base_label(handoff)}."
+      end
+
+    Enum.join(
+      [
+        first,
+        "#{count(handoff.stats[:commits] || 0, "commit")}, #{count(handoff.stats[:files] || 0, "file")} changed, at #{String.slice(handoff.head, 0, 12)}. It is caught up with #{Handoff.base_label(handoff)} as the user has it now.",
+        "The user reviews this exact revision: work you do from here doesn't change it. They land it on its base or another branch they choose: as it is (a fast-forward, these same commits) when that branch hasn't moved, or as one commit.",
+        "If they say it came too soon, undo its commits but keep the work, uncommitted for them to see: git reset $(git merge-base HEAD #{handoff.base_ref || "origin/" <> Handoff.base_label(handoff)})",
+        "More work stays uncommitted until they ask for the handoff again: mwt handoff then folds it into the handoff's commit, as a new revision.",
+        "See what they decide with: mwt handoffs"
+      ],
+      "\n"
+    )
+  end
+
+  defp handoff_words({handoff, facts}, where, look) do
+    state =
+      case handoff.status do
+        :open -> "open, waiting for the user"
+        :sent_back -> "sent back to you"
+        :withdrawn -> "withdrawn: taken back for more work; mwt handoff again updates it"
+        :accepted -> "landed: " <> Handoffs.accepted_words(handoff.accepted)
+        :closed -> "closed by the user"
+      end
+
+    held = look && Enum.find(look.worktrees, &(&1.branch == handoff.source.branch))
+    yours = if held && where == {:worktree, held.path}, do: " (this branch)", else: ""
+
+    lines =
+      [
+        "##{handoff.id}  #{state}#{yours}",
+        "  #{handoff.title}",
+        "  #{handoff.source.branch}, compared with origin/#{Handoff.base_label(handoff)}; revision #{handoff.revision}"
+      ] ++
+        place_lines(handoff, look, held) ++ fact_lines(handoff, facts) ++ note_lines(handoff)
+
+    Enum.join(lines, "\n")
+  end
+
+  # Where an unfinished handoff's branch is now, so its thread finds it.
+  defp place_lines(_handoff, nil, _held), do: []
+
+  defp place_lines(%{status: status} = handoff, look, held)
+       when status in [:open, :sent_back, :withdrawn] do
+    case held do
+      nil ->
+        [
+          "  Its branch is in no worktree now. To continue it, ask the user to start a thread in a free slot, which runs: mwt worktree resume #{handoff.source.branch}"
+        ]
+
+      %{missing?: true} ->
+        [
+          "  Its worktree's folder is gone; the branch stays. To continue it, ask the user to start a thread in a free slot, which runs: mwt worktree resume #{handoff.source.branch}"
+        ]
+
+      %{path: path} ->
+        case Slots.slot_at(look, path) do
+          %{name: name} -> ["  In #{name}, #{path}."]
+          nil -> ["  In #{path}."]
+        end
+    end
+  end
+
+  defp place_lines(_handoff, _look, _held), do: []
+
+  defp fact_lines(_handoff, nil), do: []
+
+  defp fact_lines(handoff, facts) do
+    behind =
+      if facts.behind > 0,
+        do: [
+          "  Their #{Handoff.base_label(handoff)} has #{count(facts.behind, "commit")} this branch doesn't have."
+        ],
+        else: []
+
+    conflicts =
+      case facts.conflicts do
+        [] when facts.behind > 0 ->
+          [
+            "  It applies cleanly to their #{Handoff.base_label(handoff)}, but wasn't built or tested with those commits.",
+            "  The user may land it as one commit anyway; a revision catches up with them first (mwt handoff does)."
+          ]
+
+        [] ->
+          ["  It applies cleanly to their #{Handoff.base_label(handoff)}."]
+
+        files ->
+          [
+            "  It conflicts with their #{Handoff.base_label(handoff)} in: " <>
+              Enum.join(files, ", "),
+            "  It lands only once caught up: the next mwt handoff rebases onto it and stops at the conflicts for you to resolve."
+          ]
+      end
+
+    behind ++ conflicts
+  end
+
+  # What the user said the last time they sent it back.
+  defp note_lines(%{status: :sent_back, timeline: timeline}) do
+    case timeline |> Enum.filter(&(&1.kind == :sent_back)) |> List.last() do
+      %{note: note, catch_up: true} ->
+        [
+          "  Sent back to catch up: #{note}",
+          "  It is the user's ask to hand off again: run mwt handoff until it hands off."
+        ]
+
+      %{note: note} when note not in [nil, ""] ->
+        ["  The user's note: #{note}"]
+
+      _ ->
+        []
+    end
+  end
+
+  defp note_lines(%{status: :withdrawn, timeline: timeline}) do
+    case timeline |> Enum.filter(&(&1.kind == :withdrawn)) |> List.last() do
+      %{note: note} when note not in [nil, ""] -> ["  Taken back for: #{note}"]
+      _ -> []
+    end
+  end
+
+  defp note_lines(_handoff), do: []
+
+  # Who commits in the project, set by the mirror from the user's own
+  # repository (`MWTClient.Sandbox.Mirror`), and what agents leave alone.
+  defp identity_words(%{name: name, email: email}),
+    do:
+      "Commits here are the user's: #{Shown.text(name)} <#{Shown.text(email)}>, as in their repository on their machine, set by MWT. Don't change user.name or user.email, don't pass --author, and add no Co-Authored-By or \"Generated with\" lines."
+
+  defp identity_words(nil),
+    do:
+      "Commits here are the user's, but their repository has no user.name and user.email on their machine, so MWT set none here. Tell the user before you commit, rather than set one."
+
+  @review_words [
+    "Leave your work uncommitted, so the user sees every change in Zed: never commit unless they say so. When it is done and tested, tell them it is ready for review and where, and wait.",
+    "Hand off only when they ask (/handoff is that ask): write a title and notes, git add the new files that belong to the work, then mwt handoff --title \"…\" --body FILE. It fetches origin, commits the changes to files git has with the title (folding them into the handoff's commit for a new revision), catches up with the task's base by rebasing onto origin/BASE, runs the project's checks, if any, and sends that exact commit; when it stops, do what it says and run it again.",
+    "If they say a handoff came too soon, undo its commits but keep the work, uncommitted for them to see: git reset $(git merge-base HEAD origin/BASE)",
+    "origin is the user's repository on their machine, through MWT: git fetch origin brings their branches as origin/BRANCH. A push to it is refused: work goes back by mwt handoff."
+  ]
+
+  defp branch_words(nil),
+    do: "The user's branches are origin/BRANCH here (git fetch origin brings them)."
+
+  defp branch_words(branches) do
+    shown = Enum.take(branches, 30)
+    more = if length(branches) > length(shown), do: ", …", else: ""
+
+    "The user's branches, as origin/BRANCH (git fetch origin brings them): " <>
+      Enum.map_join(shown, ", ", &("origin/" <> &1)) <> more <> "."
+  end
+
+  defp project_words(project, where, look, thread, branches) do
+    clone = if look, do: look.mirror, else: "/work/#{project.name}"
+
+    {:worktree, top} = where
+
+    here = look && Slots.slot_at(look, top)
+
+    place =
+      case here do
+        %{free?: true} = slot ->
+          "You are in #{slot_label(slot)}, #{slot.path}, which is #{Slots.words(slot)}. Take it now, before anything else, even if the ask may change no code: mwt worktree new TASK --from BRANCH, with TASK named for what the user asked (fix-login-timeout, explain-handoff-sync; never task or wip) and BRANCH the branch they want the work based on: if they named none, ask them which first (their branches are origin/BRANCH here). Until then it shows as free, and the user may start another thread in it."
+
+        %{branch: nil} = slot ->
+          "You are in #{slot_label(slot)}, #{slot.path}: #{Slots.words(slot)}. It isn't free: if that work isn't your thread's, stop and tell the user."
+
+        %{} = slot ->
+          held_place(slot, Slots.holder(slot, thread))
+
+        nil ->
+          "You are in the worktree #{top}, which isn't a slot: no task starts here, and nothing is handed off from it. Read and run things here; to change code, ask the user to start a thread in a free slot (below) and give it the task there."
+      end
+
+    targets =
+      "#{branch_words(branches)} Each task names the branch it is based on when it starts: mwt worktree new TASK --from BRANCH, the branch the user named, or the one they answer when you ask; it fetches origin first. mwt handoff rebases the task onto origin/BRANCH before it sends the work. The user lands a handoff on its base or another branch they choose, or on a new mwt/ branch: as it is (a fast-forward) when that branch hasn't moved since, or as one commit."
+
+    checks =
+      case project.checks do
+        "" ->
+          "No checks are set: mwt handoff runs none before it sends the work (the user sets them on MWT's Projects page)."
+
+        command ->
+          "Before it sends the work, mwt handoff runs the project's checks: #{command}"
+      end
+
+    Enum.join(
+      [
+        "Project #{project.name}: a clone of the user's repository, #{clone}, whose origin is that repository on their machine, through MWT.",
+        place,
+        targets,
+        checks,
+        "The clone's branches are the VM's: MWT never moves, resets or deletes one. Use refs/heads/TASK to base work on another VM task, or a commit ID for a snapshot."
+      ] ++
+        slot_lines(look, here) ++ [identity_words(HostGit.identity(project.path)) | @review_words],
+      "\n"
+    )
+  end
+
+  defp slot_label(%{name: "slot-0"}), do: "slot-0 (the clone itself)"
+  defp slot_label(%{name: name}), do: name
+
+  # Whether MWT can say something in this thread (`AgentThreads`): only a
+  # thread open through mwt-acp, one of MWT's agents in Zed.
+  @doc false
+  def reach_words(%AgentThread{open?: true} = thread),
+    do:
+      "MWT can reach this thread (#{AgentThread.agent_name(thread)}): what MWT says to it, such as a handoff the user sends back with a note, arrives here as a message from MWT."
+
+  def reach_words(_not_reachable),
+    do:
+      "MWT can't reach this thread: it wasn't started with Claude (MWT) or Codex (MWT) in Zed's agent panel. So a handoff the user sends back, and other news from MWT, won't arrive here by themselves. Tell the user once, early: to have that, they start a thread with Claude (MWT) or Codex (MWT) in Zed's agent panel, in the same folder, and give it the task there; a task this thread holds moves there with mwt worktree resume BRANCH. Until then, look at mwt handoffs yourself when the user mentions a handoff."
+
+  # A slot on a task branch: yours, another thread's (read-only here), or
+  # either, when MWT has no thread on record or the agent names none.
+  defp held_place(slot, :yours),
+    do:
+      "You are in #{slot_label(slot)}, #{slot.path}, which your thread holds for its task #{slot.branch} until its handoff lands or is closed: yours to change, and to hand off from once the user asks. If the user asks for more: #{Slots.more_work_words(slot)}"
+
+  defp held_place(slot, :another),
+    do:
+      "You are in #{slot_label(slot)}, #{slot.path}, which another thread holds for its task #{slot.branch}. Tell the user. #{Slots.read_only_words(slot)}"
+
+  defp held_place(slot, _unknown),
+    do:
+      "You are in #{slot_label(slot)}, #{slot.path}, held by the task branch #{slot.branch} until its handoff lands or is closed. If #{slot.branch} is your thread's task, it is yours to change, and to hand off from once the user asks; if it isn't, another thread holds this slot: tell the user, and go on here only read-only (no edits, no git changes, no builds or tests, no mwt worktree or mwt handoff)."
+
+  defp slot_lines(nil, _here), do: []
+
+  defp slot_lines(look, here) do
+    width = look.slots |> Enum.map(&String.length(&1.name)) |> Enum.max(fn -> 0 end)
+
+    [
+      "Worktree slots, each holding one task branch at a time (slot-0 is the clone itself; what git ignores stays between tasks):"
+    ] ++
+      Enum.map(look.slots, fn slot ->
+        mark =
+          cond do
+            here && slot.path == here.path -> "  (here)"
+            slot.free? -> "  (open: #{Zed.command(slot.path)})"
+            true -> ""
+          end
+
+        "  #{String.pad_trailing(slot.name, width)}  #{Slots.words(slot)}#{mark}"
+      end) ++
+      [
+        "Each thread works only in the slot it is in: never change, build or run things in another slot, not even by absolute path. In your slot: take it first with mwt worktree new TASK --from BRANCH, named for what the user asked, even for a question, from the branch they want it based on (ask them when they named none); it stays yours until its handoff lands or is closed. More work while its handoff is open goes into its next revision. Free it with mwt worktree free only when the user says its task is done or dropped. Continue a sent-back branch with mwt worktree resume BRANCH."
+      ]
+  end
+
+  defp taken_words(slot, outcome, onto, where) do
+    here? = where == {:worktree, slot.path}
+
+    what =
+      case outcome do
+        :started ->
+          "Started the task #{slot.branch} in #{slot.name}, #{slot.path}: a new branch from origin/#{onto}, the user's #{onto} as just fetched. What git ignores there (deps, _build, …) stays from the slot's last task."
+
+        :resumed ->
+          "Put the branch #{slot.branch}, as it was, in #{slot.name}, #{slot.path}. Its recorded base stays with it. mwt handoff fetches origin, catches up with that base and runs the checks before sending."
+
+        :already ->
+          "#{slot.branch} is in #{slot.name} already, #{slot.path}."
+
+        :adopted ->
+          "#{slot.branch} is in #{slot.name} already, #{slot.path}, and another thread held it: this thread holds it now. Carry on its task as the user asked; the other thread only reads there from now on."
+      end
+
+    go =
+      if here?,
+        do: ["You are in it: continue here. In Zed: #{Zed.command(slot.path)}"],
+        else: [
+          "It isn't the slot you are in: don't work in it from here. Ask the user to go on in a thread there. In Zed: #{Zed.command(slot.path)}",
+          "or from MWT's Projects page."
+        ]
+
+    Enum.join([what | go], "\n")
+  end
+
+  defp freed_words(%{state: state} = slot) when state in [:absent, :missing],
+    do: "#{slot.name} is free already: #{Slots.words(slot)}."
+
+  defp freed_words(%{task?: false, branch: branch} = slot) when is_binary(branch),
+    do:
+      "#{slot.name} is free already: it is on #{branch}, which no task started, and a task can start in it with mwt worktree new TASK --from BRANCH."
+
+  defp freed_words(%{branch: nil} = slot),
+    do:
+      "#{slot.name} is free already: a task can start in it with mwt worktree new TASK --from BRANCH."
+
+  defp freed_words(slot) do
+    after_words =
+      case slot.handoff do
+        %{status: status, id: id} when status in [:open, :sent_back, :withdrawn] ->
+          " Its handoff ##{id} is #{Slots.status_word(status)}: if the user sends it back, continue it with mwt worktree resume #{slot.branch}."
+
+        nil ->
+          " It has no handoff."
+
+        _done ->
+          ""
+      end
+
+    "Freed #{slot.name}, #{slot.path}: it is on no branch now, and a task can start in it with mwt worktree new TASK --from BRANCH. The branch #{slot.branch} stays, with its commits." <>
+      after_words
+  end
+
+  defp count(1, word), do: "1 #{word}"
+  defp count(n, word), do: "#{n} #{word}s"
+
+  defp run?(%{"command" => command}) when command in ["run", "call"], do: true
+  defp run?(%{"command" => "wait", "id" => "run-" <> _}), do: true
+  defp run?(_ask), do: false
+
+  @doc """
+  The answer to one ask, as `{exit_status, text}`. Public for the tests,
+  which ask without a socket.
+
+  While MWT's firewall holds the VM isolated, what acts (`@acting`) is
+  refused before anything else; what only reads still answers, so the
+  agent can tell the user what happened. It hears that the VM is isolated,
+  never which rule fired.
+  """
+  @spec answer(String.t(), map(), String.t()) ::
+          {non_neg_integer(), String.t()} | {{:ran, integer()}, String.t(), String.t()}
+  def answer(command, ask, username) when command in @acting do
+    if Server.call(username, :firewall_isolated?),
+      do: {isolated_status(command), @isolated},
+      else: reply(command, ask, username)
+  end
+
+  def answer(command, ask, username), do: reply(command, ask, username)
+
+  defp isolated_status(command) when command in ["run", "call"], do: @run_not_done
+  defp isolated_status(command) when command in ["request", "propose"], do: 3
+  defp isolated_status(_handoff), do: 1
+
+  defp reply("grants", _ask, username) do
+    grants = Server.call(username, :agent_grants)
+    {0, Instructions.grants(grants, DateTime.utc_now())}
+  end
+
+  defp reply("host", _ask, username), do: {0, Server.call(username, :host_text)}
+
+  # Which grant covers a destination, and why the VM doesn't reach it now
+  # (`MWTClient.Sandbox.Why`): read from the view the network path decides
+  # from, without asking the server.
+  defp reply("why", ask, username) do
+    case Gate.view(username) do
+      nil ->
+        {4, "MWT is locked or closing. Ask the user to unlock it."}
+
+      view ->
+        world = %{
+          snapshot:
+            view.grants
+            |> Policy.snapshot()
+            |> Map.put(:answered, Gate.answered_map(username)),
+          firewall: view.firewall,
+          isolated: Gate.isolated?(username, view),
+          now: DateTime.utc_now(),
+          route: &Routes.via/1
+        }
+
+        target = if is_binary(ask["target"]), do: String.slice(ask["target"], 0, 300), else: ""
+
+        case Why.explain(target, world) do
+          {:ok, answer} -> {0, answer}
+          {:error, message} -> {1, message}
+        end
+    end
+  end
+
+  # From the VM's watcher (`mwt ports --watch`), what listens in it; asked
+  # bare (`mwt ports`), where its servers open on this machine. Any process
+  # in the VM can report: all a false report does is have MWT listen on more
+  # of the VM's own address here (`MWTClient.Sandbox.Ports`).
+  defp reply("ports", %{"report" => report}, username) when is_binary(report) do
+    :ok = Server.call(username, {:ports_report, report})
+    {0, "ok"}
+  end
+
+  defp reply("ports", _ask, username), do: {0, Server.call(username, :ports_text)}
+
+  defp reply("project", ask, username) do
+    case Projects.place(username, ask["cwd"]) do
+      {:ok, project, where, look} ->
+        reach = reach_words(AgentThreads.get(username, ask["thread_id"]))
+        branches = Projects.mirrored(username, project.name)
+
+        {0, project_words(project, where, look, ask["thread_id"], branches) <> "\n" <> reach}
+
+      {:error, reason} ->
+        {1, Projects.explain(reason)}
+    end
+  end
+
+  # A worktree slot: taken for a new task (`new`, also an ask without an
+  # action, as older mwt commands send), for a branch to continue
+  # (`resume`), or freed (`free`).
+  defp reply("worktree", %{"action" => "free"} = ask, username) do
+    case Projects.free_slot(username, ask["cwd"], ask["slot"], ask["thread_id"]) do
+      {:ok, _project, slot} -> {0, freed_words(slot)}
+      {:error, reason} -> {1, Projects.explain(reason)}
+    end
+  end
+
+  defp reply("worktree", ask, username) do
+    how = if ask["action"] == "resume", do: :resume, else: :new
+
+    case Projects.take_slot(username, ask["cwd"], how, ask["name"],
+           from: ask["from"] || ask["onto"],
+           thread: ask["thread_id"]
+         ) do
+      {:ok, _project, slot, outcome, onto, where} ->
+        reach = reach_words(AgentThreads.get(username, ask["thread_id"]))
+        {0, taken_words(slot, outcome, onto, where) <> "\n" <> reach}
+
+      {:error, reason} ->
+        {1, Projects.explain(reason)}
+    end
+  end
+
+  # A handoff, opened or updated from the folder the agent is in. Nothing is
+  # written on your machine but MWT's own store, so nothing is asked.
+  # What `mwt handoff` needs before it commits, catches up and runs the
+  # checks in the VM, as `key=value` lines for the script to read.
+  defp reply("handoff", %{"stage" => "prepare"} = ask, username) do
+    case Handoffs.prepare(username, %{
+           cwd: ask["cwd"],
+           title: ask["title"],
+           onto: ask["onto"],
+           thread_id: ask["thread_id"]
+         }) do
+      {:ok, plan} ->
+        landed =
+          case plan.landed do
+            nil -> []
+            l -> [landed: l.commit, landed_from: l.from, landed_branch: l.branch]
+          end
+
+        amend = if plan.amend, do: [amend: plan.amend], else: []
+
+        {0,
+         Enum.map_join(
+           [onto: plan.onto, ref: plan.ref, title: plan.title, checks: plan.checks] ++
+             landed ++ amend,
+           "\n",
+           fn
+             {key, value} -> "#{key}=#{String.replace(value, ~r/[\r\n]+/, " ")}"
+           end
+         )}
+
+      {:error, reason} ->
+        {1, Handoffs.explain(reason)}
+    end
+  end
+
+  # The agent takes its open handoff back, to work on it again.
+  defp reply("handoff", %{"stage" => "withdraw"} = ask, username) do
+    case Handoffs.withdraw(username, %{
+           cwd: ask["cwd"],
+           reason: ask["reason"],
+           agent: ask["agent"],
+           thread: ask["thread"],
+           thread_id: ask["thread_id"]
+         }) do
+      {:ok, handoff} ->
+        {0,
+         "Took handoff ##{handoff.id} back: the user can't land it until you hand off again. Continue working on #{handoff.source.branch}, and submit again once the user asks (mwt handoff): that updates ##{handoff.id}."}
+
+      {:error, reason} ->
+        {1, Handoffs.explain(reason)}
+    end
+  end
+
+  defp reply("handoff", ask, username) do
+    case Handoffs.open(username, %{
+           cwd: ask["cwd"],
+           head: ask["head"],
+           title: ask["title"],
+           body: ask["body"],
+           agent: ask["agent"],
+           thread: ask["thread"],
+           thread_id: ask["thread_id"],
+           onto: ask["onto"]
+         }) do
+      {:ok, handoff, how} -> {0, handed_words(handoff, how)}
+      {:error, reason} -> {1, Handoffs.explain(reason)}
+    end
+  end
+
+  defp reply("handoffs", ask, username) do
+    case Handoffs.for_agent(username, ask["cwd"]) do
+      {:ok, project, [], _where, _look} ->
+        {0, "No handoffs in #{project.name} yet."}
+
+      {:ok, _project, handoffs, where, look} ->
+        {0, Enum.map_join(handoffs, "\n\n", &handoff_words(&1, where, look))}
+
+      {:error, reason} ->
+        {1, Projects.explain(reason)}
+    end
+  end
+
+  # A subgrant, called by its id with a value for each parameter: MWT runs
+  # the user's own script, and the agent sends no text.
+  defp reply("call", ask, username) do
+    request = %{
+      grant: ask["grant"],
+      script: nil,
+      values: ask["values"] || %{},
+      dir: nil,
+      timeout: ask["timeout"],
+      reason: ask["reason"],
+      agent: ask["agent"],
+      thread: ask["thread"],
+      thread_id: ask["thread_id"],
+      folder: ask["folder"]
+    }
+
+    case Server.call(username, {:call, request}) do
+      {:ok, approval} ->
+        await(username, approval.id, wait(ask))
+
+      {:error, :no_script} ->
+        {@run_wrong,
+         ~s[#{ask["grant"]} is no subgrant: it takes the command you write. ] <>
+           ~s[Run one with: mwt run #{ask["grant"]} --reason "..." -- COMMAND]}
+
+      {:error, {:no_such_grant, _ids}} ->
+        {@run_wrong,
+         "No subgrant has the id #{ask["grant"]}. mwt grants lists them under their grant, " <>
+           "with how to call each; the id is exact."}
+
+      {:error, :no_command_grant} ->
+        {@run_wrong,
+         "No subgrant has the id #{ask["grant"]}. mwt grants lists them under their grant."}
+
+      {:error, reason} ->
+        {@run_wrong, run_refusal(reason)}
+    end
+  end
+
+  # A grant an agent proposes: a token or network grant, or a subgrant.
+  # MWT saves it at once, off, for the user to review on its page; the
+  # agent waits as for an ask for a grant, which accepting it answers.
+  defp reply("propose", ask, username) do
+    request = %{
+      grant: ask["grant"],
+      name: ask["name"],
+      purpose: ask["for"],
+      script: ask["script"],
+      params: ask["params"] || [],
+      dir: ask["dir"],
+      method: ask["method"],
+      url: ask["url"],
+      headers: ask["headers"] || [],
+      body: ask["data"],
+      preset: ask["preset"],
+      hosts: List.wrap(ask["hosts"]),
+      env: List.wrap(ask["env"]),
+      file_env: List.wrap(ask["file_env"]),
+      carriers: List.wrap(ask["carriers"]),
+      git: ask["git"] == true,
+      mint: ask["mint"],
+      subgrants_only: ask["subgrants_only"] == true,
+      destinations: List.wrap(ask["destinations"]),
+      resolver: ask["resolver"],
+      anchor: ask["via"],
+      minutes: ask["minutes"],
+      reason: ask["reason"],
+      agent: ask["agent"],
+      thread: ask["thread"],
+      thread_id: ask["thread_id"],
+      folder: ask["folder"]
+    }
+
+    case Server.call(username, {:propose, request}) do
+      {:ok, approval} ->
+        {status, text} = await(username, approval.id, wait(ask))
+        {status, proposed_words(approval, status) <> text}
+
+      {:error, reason} ->
+        {1, proposal_refusal(reason, ask)}
+    end
+  end
+
+  defp reply("run", ask, username) do
+    request = %{
+      grant: ask["grant"],
+      script: ask["script"],
+      values: nil,
+      dir: ask["dir"],
+      timeout: ask["timeout"],
+      reason: ask["reason"],
+      agent: ask["agent"],
+      thread: ask["thread"],
+      thread_id: ask["thread_id"],
+      folder: ask["folder"],
+      suggest_save: ask["suggest_save"],
+      save_for: ask["save_for"]
+    }
+
+    case Server.call(username, {:request_command, request}) do
+      {:ok, approval} ->
+        username |> await(approval.id, wait(ask)) |> renamed(ask, approval.grant_id)
+
+      {:error, reason} ->
+        {@run_wrong, run_refusal(reason)}
+    end
+  end
+
+  defp reply("request", ask, username) do
+    request = %{
+      grant: ask["grant"],
+      need: ask["need"],
+      minutes: ask["minutes"],
+      reason: ask["reason"],
+      agent: ask["agent"],
+      thread: ask["thread"],
+      thread_id: ask["thread_id"],
+      folder: ask["folder"]
+    }
+
+    case Server.call(username, {:request_access, request}) do
+      {:ok, approval} ->
+        username |> await(approval.id, wait(ask)) |> renamed(ask, approval.grant_id)
+
+      {:already_on, grant} ->
+        renamed({0, "#{grant.name} is already on #{until(grant)}. #{uses(grant)}"}, ask, grant.id)
+
+      {:error, reason} ->
+        {1, refusal(reason, ask)}
+    end
+  end
+
+  defp reply("wait", %{"id" => id} = ask, username) when is_binary(id),
+    do: await(username, id, wait(ask))
+
+  # Which VM is asking, against the one MWT runs: an old VM, still running
+  # after a recreate or a move, looks like this one from inside.
+  defp reply("vm", ask, username) do
+    %{name: name, status: status, record: record} = Server.call(username, :vm_record)
+    mine = if is_binary(ask["id"]), do: String.trim(ask["id"]), else: ""
+
+    cond do
+      is_nil(record) ->
+        {1, "MWT has no record of its VM yet. Ask the user to stop and start it once in MWT."}
+
+      mine == "" ->
+        {1,
+         "This VM has no record of which it is: its boot script hasn't written one. " <>
+           "MWT runs #{vm_words(name, record)}. Ask the user to stop and start the VM in MWT."}
+
+      mine == record.id and status == :running ->
+        {0, "This is the VM MWT runs: #{vm_words(name, record)}."}
+
+      true ->
+        {3,
+         "This is NOT the VM MWT runs. This one is vm #{mine}; MWT runs #{vm_words(name, record)}" <>
+           if(status == :running, do: ".", else: ", and it is #{status}.") <>
+           " Work here isn't where the user's MWT looks: tell them to reconnect to the VM."}
+    end
+  end
+
+  defp reply(_command, _ask, _username),
+    do:
+      {1,
+       "MWT knows these commands: grants, host, request, run, call, propose, wait, mcp, project, worktree, handoff, handoffs, vm. Run mwt help."}
+
+  defp vm_words(name, record) do
+    created =
+      case record.created_at do
+        nil ->
+          "created before MWT kept records"
+
+        at ->
+          minutes = max(DateTime.diff(DateTime.utc_now(), at, :minute), 0)
+          "created #{ago(minutes)} (#{Calendar.strftime(at, "%Y-%m-%d %H:%M")} UTC)"
+      end
+
+    image = if record.image, do: ", image #{record.image}", else: ""
+    "#{name} (vm #{record.id}), #{created}#{image}"
+  end
+
+  defp ago(minutes) when minutes < 1, do: "just now"
+  defp ago(minutes) when minutes < 60, do: "#{minutes} min ago"
+  defp ago(minutes) when minutes < 48 * 60, do: "#{div(minutes, 60)} h ago"
+  defp ago(minutes), do: "#{div(minutes, 1440)} days ago"
+
+  # An agent that asked by the id Ask to run commands had before it was
+  # built in hears the one it has now.
+  defp renamed(result, %{"grant" => asked}, id) when is_binary(id) and asked != id do
+    if asked == Grant.former_ask_to_run_id() do
+      note = "#{asked} is called #{id} now (Ask to run commands): use that id from now on."
+
+      case result do
+        {status, "", output} -> {status, "mwt: " <> note, output}
+        {status, text, output} -> {status, text <> " " <> note, output}
+        {status, text} -> {status, text <> "\n" <> note}
+      end
+    else
+      result
+    end
+  end
+
+  defp renamed(result, _ask, _id), do: result
+
+  defp await(username, id, seconds) do
+    ms = seconds * 1_000
+
+    case Server.call(username, {:await, id, ms}, ms + 5_000) do
+      {:pending, %Approval{kind: :command} = approval} -> run_pending(id, approval)
+      {:pending, _approval} -> pending(id)
+      {:ok, %Approval{kind: :command} = approval, _grant} -> ran(approval)
+      {:ok, %Approval{kind: :tool} = approval, _grant} -> tool_settled(approval)
+      {:ok, %Approval{status: :allowed} = approval, grant} -> on(username, approval, grant)
+      {:ok, approval, grant} -> settled(approval, grant)
+      {:error, :not_found} -> not_found(id)
+    end
+  end
+
+  defp not_found("run-" <> _ = id),
+    do: {@run_not_done, "No run #{id} is known. MWT forgets asks when it restarts."}
+
+  defp not_found(id), do: {1, "No ask #{id} is known. MWT forgets asks when it restarts."}
+
+  defp run_pending(id, approval) do
+    what =
+      case approval do
+        %Approval{status: :waiting, stage: :output} ->
+          "It ran; the user is looking at its output before it comes back to you."
+
+        %Approval{run: %{state: :running}} ->
+          "The user approved it, and it is running on their machine."
+
+        %Approval{} ->
+          "Still waiting for the user to approve it."
+      end
+
+    {@run_waiting,
+     """
+     #{what} Keep working on what doesn't need it, then run: mwt wait #{id}
+     """}
+  end
+
+  # The final answer to an ask to run: the command's own status and output,
+  # or why there is none; with how to run it by name when it is a saved
+  # command now.
+  defp ran(%Approval{saved_as: id} = approval) when is_binary(id) do
+    saved =
+      "It is the user's subgrant #{id} now: next time, call it by id with " <>
+        ~s[mwt call #{id} --reason "..." and send no command (mwt grants shows its parameters).]
+
+    case ran_once(approval) do
+      {{:ran, _} = status, "", output} -> {status, "mwt: " <> saved, output}
+      {{:ran, _} = status, note, output} -> {status, note <> " " <> saved, output}
+      {status, text} -> {status, text <> " " <> saved}
+    end
+  end
+
+  defp ran(approval), do: ran_once(approval)
+
+  # A request subgrant's answer: its body back, its status on stderr.
+  defp ran_once(%Approval{
+         status: :allowed,
+         call: %{host: host},
+         run: %{state: :done, error: nil} = run
+       }) do
+    note =
+      [
+        run[:status] && "HTTP #{run.status} from #{host}",
+        run.timed_out && "it got no answer within its time limit",
+        run.cut > 0 && "#{run.cut} bytes of the body were cut from its end"
+      ]
+      |> Enum.filter(&is_binary/1)
+      |> Enum.join("; ")
+
+    {{:ran, run.exit}, "mwt: " <> note <> ".", run.output}
+  end
+
+  defp ran_once(%Approval{call: %{}, run: %{state: :done, error: error}}) when is_binary(error),
+    do: {@run_not_done, "MWT couldn't send it: #{error}"}
+
+  # A typed result whose run failed: its status, and no output.
+  defp ran_once(%Approval{
+         status: :allowed,
+         decision: decision,
+         run: %{state: :done, error: nil, withheld: true} = run
+       })
+       when decision != :send_output do
+    {{:ran, run.exit},
+     "mwt: ran on the user's machine and exited #{run.exit}; a typed result comes back only from a run that succeeds, so its output stays with the user.",
+     ""}
+  end
+
+  defp ran_once(%Approval{status: :allowed, run: %{state: :done, error: nil} = run}) do
+    note =
+      [
+        run.stopped && "the user stopped it",
+        run.timed_out && "it hit its time limit",
+        run.cut > 0 && "#{run.cut} bytes of output were cut from the middle"
+      ]
+      |> Enum.filter(&is_binary/1)
+      |> case do
+        [] -> ""
+        notes -> "mwt: ran on the user's machine; " <> Enum.join(notes, ", ") <> "."
+      end
+
+    {{:ran, run.exit}, note, String.replace(run.output, <<0>>, "")}
+  end
+
+  defp ran_once(%Approval{run: %{state: :done, error: error}}) when is_binary(error),
+    do: {@run_not_done, "It couldn't start on the user's machine: #{error}"}
+
+  defp ran_once(%Approval{status: :denied, decision: :keep_output, run: run}),
+    do:
+      {@run_not_done,
+       "It ran (exit #{run.exit}), but the user kept its output from you. Ask them about it if you need it."}
+
+  defp ran_once(%Approval{status: :timed_out, stage: :output, run: run}),
+    do:
+      {@run_not_done,
+       "It ran (exit #{run.exit}), but the user didn't release its output in 30 minutes. Ask them about it if you need it."}
+
+  defp ran_once(%Approval{status: :denied, decision: :isolated}),
+    do: {@run_not_done, @isolated}
+
+  defp ran_once(%Approval{status: :denied, decision: :simpler}),
+    do:
+      {@run_not_done,
+       "The user declined it as more than they want to review. Send the smallest command " <>
+         "that gets the raw data you need, one they can read at a glance, and filter, parse " <>
+         "or transform its output here in the VM."}
+
+  defp ran_once(%Approval{status: :denied}),
+    do:
+      {@run_not_done,
+       "The user declined to run it. Don't ask again for the same thing unless they say so."}
+
+  defp ran_once(%Approval{status: :timed_out}),
+    do:
+      {@run_not_done,
+       "The user didn't answer in 30 minutes. Tell them what you need to run, then ask again."}
+
+  defp pending(id) do
+    {2,
+     """
+     Still waiting for the user (ask #{id}). Keep working on what doesn't need it, then run: mwt wait #{id}
+     The ask stays for 30 minutes.
+     """}
+  end
+
+  # A call of MWT's tools that waited for the user: made once they allowed it.
+  defp tool_settled(%Approval{status: :allowed, applied: {:ok, text}}), do: {0, text}
+
+  defp tool_settled(%Approval{status: :allowed, applied: {:error, text}}),
+    do: {1, "The user allowed it, but it was not made: #{text}"}
+
+  defp tool_settled(%Approval{status: :allowed}),
+    do: {0, "The user allowed it, and MWT makes it as you sent it. Read the item to see it."}
+
+  defp tool_settled(%Approval{status: :timed_out}),
+    do: {3, "The user didn't answer in 30 minutes. Nothing changed."}
+
+  defp tool_settled(%Approval{}),
+    do:
+      {3,
+       "The user declined. Nothing changed. Don't ask again for the same thing unless they say so."}
+
+  # What the agent does next with a grant just turned on reads /mnt/mwt
+  # (`mwt exec` loads the grant's environment there): it hears it is on once
+  # the VM's copy has it, or after a few seconds at worst.
+  defp on(username, approval, grant) do
+    try do
+      Server.call(username, :inbox_copied, 10_000)
+    catch
+      :exit, _ -> :ok
+    end
+
+    settled(approval, grant)
+  end
+
+  defp settled(%Approval{status: :allowed} = approval, %Grant{} = grant) do
+    saved =
+      if approval.proposal,
+        do:
+          "The user reviewed it and accepted it as #{grant.id}, as they chose to: read it below.\n",
+        else: ""
+
+    {0,
+     """
+     #{saved}#{grant.name} is on #{until(grant)}. #{uses(grant)}
+     #{Instructions.usage(grant)}
+     """}
+  end
+
+  defp settled(%Approval{status: :denied, decision: :grant_off}, _grant),
+    do: {3, "The grant was removed while you waited."}
+
+  defp settled(%Approval{status: :denied, decision: :isolated}, _grant),
+    do: {3, @isolated}
+
+  defp settled(%Approval{status: :denied, proposal: %{}}, _grant),
+    do:
+      {3,
+       "The user declined it, and the proposal is removed. Don't propose it again unless they say so."}
+
+  defp settled(%Approval{status: :denied}, _grant),
+    do: {3, "The user declined. Don't ask again for the same thing unless they say so."}
+
+  defp settled(%Approval{status: :timed_out}, _grant),
+    do: {3, "The user didn't answer in 30 minutes. Tell them what you need, then ask again."}
+
+  defp settled(%Approval{}, nil), do: {3, "The grant no longer exists."}
+
+  defp until(%Grant{expires_at: nil}), do: "until the user turns it off"
+
+  defp until(%Grant{expires_at: at}),
+    do: "until #{Calendar.strftime(at, "%H:%M")} UTC"
+
+  defp uses(%Grant{kind: :command} = grant) do
+    if Grant.auto_approved?(grant),
+      do: "Every run goes through without asking while it stays on.",
+      else: "Each run still waits for the user's approval."
+  end
+
+  defp uses(%Grant{} = grant) do
+    if Enum.any?(grant.allowances, &(&1.pattern == :all)),
+      do: "Every use goes through without asking.",
+      else:
+        "Each use still waits for the user's approval, so a request can hang for a few minutes: wait, don't retry in a loop."
+  end
+
+  defp refusal(:isolated, _ask), do: @isolated
+
+  defp refusal(:firewall, _ask),
+    do: "MWT's firewall refused this ask. The user has been told."
+
+  defp refusal({:subgrants_only, id}, _ask),
+    do:
+      "#{id} is only for its subgrants, requests MWT sends itself: there is nothing of it to turn on. " <>
+        "mwt grants lists them under it; call one with mwt call ID, or ask for one that is off with mwt request ID."
+
+  defp refusal(:unknown_grant, ask) do
+    """
+    No grant is called "#{ask["grant"]}". Run mwt grants to see them. To ask for access none of them gives:
+      mwt request --need "the access, and the service or host it is for" --reason "why"
+    """
+  end
+
+  defp refusal(:no_reason, _ask),
+    do: ~s[Say why: --reason "what you are about to do with it". The user reads it.]
+
+  defp refusal(:bad_minutes, _ask), do: "--minutes is from 1 to 1440."
+
+  defp refusal(:nothing_asked, _ask),
+    do: ~s[Name a grant (mwt request GRANT --reason "...") or describe a need (--need "...").]
+
+  defp refusal(:too_many, _ask),
+    do: "Ten asks already wait for the user. Wait for their answers first (mwt wait ID)."
+
+  # What the agent hears first of what it proposed: where it is, and that
+  # nothing turns it on until the user accepts it.
+  defp proposed_words(%Approval{grant_id: id, proposal: proposal}, status) do
+    saved =
+      if Map.get(proposal || %{}, :updated),
+        do: "Your proposal #{id} is changed: still off, still to review.",
+        else: "Saved as #{id}, off, for the user to review on its page in MWT."
+
+    if status == 2,
+      do:
+        saved <>
+          " It turns on only once they accept it there; the answer below says when.\n",
+      else: saved <> "\n"
+  end
+
+  defp proposal_refusal(:unknown_grant, ask),
+    do:
+      ~s[No grant is called "#{ask["grant"]}". A new grant is mwt propose token ... or mwt propose network ...; a command to run on the user's machine is a subgrant of Ask to run commands: mwt propose commands ... See mwt help.]
+
+  defp proposal_refusal({:no_subgrants, name}, _ask),
+    do:
+      "#{name} takes no subgrants. A new grant is mwt propose token ... or mwt propose network ...; a command to run on the user's machine is a subgrant of Ask to run commands: mwt propose commands ..."
+
+  defp proposal_refusal(:no_name, _ask),
+    do: ~s[Name it: --name NAME, a few words that say what it does, like "gh repo view".]
+
+  defp proposal_refusal(:no_purpose, _ask),
+    do:
+      ~s[Say what it does: --for "...", in words for any time it runs. The user and other agents read it to know when to call it. --reason stays why you need it.]
+
+  defp proposal_refusal(:no_script, _ask),
+    do: "Give the script after --, or on stdin. See: mwt help"
+
+  defp proposal_refusal({:proposal, message}, _ask),
+    do: "Not proposed: #{message} See mwt help for what mwt propose takes."
+
+  defp proposal_refusal({:no_preset, id, kind}, _ask),
+    do:
+      "No #{kind} preset is called #{id}. Leave out --preset and give its hosts, variables or destinations yourself."
+
+  defp proposal_refusal(:too_many_proposals, _ask),
+    do:
+      "Twenty of your proposals already wait for the user to review them. Wait for them first, or propose a change to one by its name."
+
+  defp proposal_refusal(:isolated, _ask), do: @isolated
+
+  defp proposal_refusal(reason, ask), do: refusal(reason, ask)
+
+  defp run_refusal({:values, %Grant{} = grant, problem}),
+    do:
+      Param.explain(problem) <>
+        ~s[\nCall it as: #{Grant.signature(grant)} --reason "why now"]
+
+  defp run_refusal({:check_failing, name, why}),
+    do: "#{name} is paused: #{why}. Tell the user; asking for it won't help until that changes."
+
+  defp run_refusal({:credential_endpoint, host, entry}),
+    do:
+      "#{host} is a credential endpoint on the firewall's list (#{entry}): its answer would be a new credential in the VM, so MWT doesn't send there. Tell the user if you need it."
+
+  defp run_refusal({:wrong_host, name}),
+    do:
+      "Its grant, #{name}, no longer lists the host it sends to. Tell the user: they can edit the subgrant or the grant."
+
+  defp run_refusal({:takes_no_values, id}),
+    do:
+      ~s[#{id} takes the command you write, not values: mwt run #{id} --reason "..." -- COMMAND. Values go to a subgrant: mwt call ID NAME=value.]
+
+  defp run_refusal(:no_reason),
+    do:
+      ~s[Say why: --reason "what it does, and why it must run on the user's machine". The user reads it.]
+
+  defp run_refusal(:no_script),
+    do: "Give the command after --, or the script on stdin. See: mwt help"
+
+  defp run_refusal(:script_too_long),
+    do:
+      "The script is over #{div(HostCommand.max_script(), 1024)} KiB, far more than the user can review. " <>
+        "Send the smallest command that gets the raw data you need, and work on its output here in the VM."
+
+  defp run_refusal({:hidden, what}),
+    do:
+      "The script has characters that don't show (#{Enum.join(what, ", ")}), so the user can't read what would run. Send it without them: write a control or invisible character as an escape, such as printf '\\033'."
+
+  defp run_refusal(:no_save_for),
+    do:
+      ~s[--suggest-save needs --save-for "what it does", in words for any time it runs, not this one: they become the subgrant's description. --reason stays why you need it now.]
+
+  defp run_refusal(:bad_timeout),
+    do: "--timeout is from 1 to #{elem(HostCommand.timeouts(), 1)} seconds."
+
+  defp run_refusal(:no_command_grant),
+    do:
+      ~s[No grant lets you run a command on the user's machine. If a job needs one, describe it: mwt request --need "run ... on your machine" --reason "why"]
+
+  defp run_refusal({:name_a_grant, ids}),
+    do:
+      "Name the command grant: mwt run GRANT --reason ... The command grants: #{Enum.join(ids, ", ")}."
+
+  defp run_refusal({:no_such_grant, ids}),
+    do:
+      "No command grant by that name. The command grants: #{Enum.join(ids, ", ")}. See: mwt grants"
+
+  defp run_refusal({:grant_off, id}),
+    do: ~s[#{id} is off. Ask for it with: mwt request #{id} --reason "..."]
+
+  defp run_refusal({:fixed_script, id}),
+    do:
+      ~s[#{id} runs the user's own script: send no command. Call it with: mwt call #{id} --reason "..."]
+
+  defp run_refusal(:isolated), do: @isolated
+
+  defp run_refusal(:firewall),
+    do: "MWT's firewall refused this command. The user has been told; don't send it again."
+
+  defp run_refusal(:too_many),
+    do: "Ten commands already wait for the user. Wait for their answers first (mwt wait ID)."
+
+  defp wait(ask) do
+    case ask["wait"] do
+      seconds when is_integer(seconds) and seconds >= 0 -> min(seconds, @max_wait)
+      _ -> @default_wait
+    end
+  end
+end

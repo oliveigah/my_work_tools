@@ -1,0 +1,29 @@
+# Send only inputs used by the Linux package build, never host build artifacts.
+**
+!scripts/
+!scripts/linux-packages.Dockerfile
+!scripts/build-microsandbox.sh
+!mix.exs
+!mix.lock
+!.gitignore
+!config/
+!config/**
+!lib/
+!lib/**
+!assets/
+!assets/**
+!priv/
+!priv/**
+!src-tauri/
+!src-tauri/**
+# The relay and the ACP shell, built in a stage of their own.
+!native/
+!native/**
+native/*/target/
+assets/node_modules/
+priv/static/assets/
+priv/static/cache_manifest.json
+src-tauri/target/
+src-tauri/gen/
+# Built inside the image, for the package's glibc.
+priv/microsandbox/

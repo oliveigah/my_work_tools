@@ -1,0 +1,24 @@
+[package]
+name = "mwt-acp"
+version = "0.1.0"
+edition = "2021"
+description = "MWT's ACP shell: Zed starts it in the agent sandbox's VM instead of an agent's ACP adapter"
+publish = false
+
+# No dependencies, as for mwt-relay: the build needs no network, and there is
+# less to trust. Downloads and archives go through the VM's own curl, tar,
+# sha256sum and npm; the channel to MWT through socat.
+[dependencies]
+
+# The proxy tests run their own main, so the test binary can also play the
+# agent and MWT (see tests/proxy.rs).
+[[test]]
+name = "proxy"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

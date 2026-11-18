@@ -1,0 +1,170 @@
+# Microsandbox live-sharing fix
+
+**Not needed since 2026-11-16.** Nothing of your machine is mounted in the
+VM any more (shared folders and `/mnt/mwt` are copied in, and the VM's
+OptMem is a disk), so MWT builds `msb` from the stock v0.7.15 release
+again. What follows is kept for the record, and for upstream.
+
+The fix now lives in MWT's fork of microsandbox, as commit
+[`6626e7cb2`](https://github.com/oliveigah/microsandbox/commit/6626e7cb280069f522c03a815c760ace8931b370)
+("fix: ESTALE for host replaced files") on top of v0.7.15. It was first
+written as a local patch against v0.7.14 (commit `60fc507`); the validation
+below is from that version. The fork commit changes the same two returns in
+`passthroughfs/unix/inode.rs` and carries the same tests, plus one for a file
+the host really deletes. Until upstream takes the fix, MWT builds `msb` from
+that commit.
+
+Host atomic replacements previously made cached guest inode references return
+ENOENT. Git treated the apparently missing index as empty. Our live probe
+reproduced this on all 100 host-side index replacements.
+
+The fix:
+
+- Retains Microsandbox's normal five-second entry/attribute caches. The
+  earlier zero-timeout policy was removed after excessive CPU use was measured.
+- Keeps buffered I/O and invalidation on open; it does not select DIRECT_IO,
+  so applications using mmap remain supported.
+- Returns ESTALE for an obsolete Linux inode reference, allowing pathname
+  operations to retry lookup. Host errors such as EACCES, EIO and EMFILE
+  remain errors rather than being hidden as missing files.
+- Preserves existing open handles and valid hard-link aliases.
+
+This changes live runtime behavior, without changing saved configuration,
+wire messages, metadata formats, snapshots or firmware. It takes effect when
+the VM starts under the patched runtime. Replacing the CLI does not replace
+the already-running VM process. The earlier debug build plus uncached metadata
+and one-second polling consumed about 5.8 host CPU cores during a 20-second
+sample. The replacement uses an optimized release build, normal caching and
+five-second polling. See the post-restart validation below for the measured results.
+
+MWT separately configures Zed's remote server with
+`ZED_FILE_WATCHER_MODE=poll` and `ZED_FILE_WATCHER_POLL_MS=5000`. Host writes
+still do not generate guest inotify mutation events. Other development
+watchers need their own polling configuration or separate validation.
+
+## How MWT ships it
+
+MWT carries the runtime itself; nothing is installed over your own `msb`.
+`scripts/build-microsandbox.sh` fetches the pinned fork commit by hash,
+refuses a checkout with local changes, runs the filesystem suite, and builds
+the CLI with release optimizations (no whole-program LTO). The guest agent
+it embeds and the `libkrunfw` beside it are the v0.7.15 release's own files,
+checked against pinned SHA-256s; the fix changes neither. The result goes to
+`priv/microsandbox` (`bin/msb`, `lib/libkrunfw.so.5.6.1`, and `VERSION`,
+`0.7.15+6626e7cb2`), which the release, and so the .deb and .rpm, carry. See
+the sandbox doc's Runtime section for the home and launcher MWT runs it with.
+
+```sh
+./scripts/build-microsandbox.sh
+```
+
+It needs Git, Rust/Cargo, a C compiler, strace (two filesystem tests use it;
+they are skipped without it), and internet access to GitHub and crates.io.
+`MWT_MSB_SOURCE` may point at your own clone of the fork, as long as it is at
+the pinned commit with no local changes. A VM picks up a new build when it
+next starts; stop and start it in MWT, then reconnect Zed.
+
+Checked for the fork commit on 2026-11-13, in the VM: without the fix (its
+parent with only the new tests added), the three tests for replaced and
+deleted files fail with ENOENT (2) instead of ESTALE (116); with it, all 686
+filesystem tests pass. The built `msb` reports 0.7.15 and accepts every flag
+MWT passes. It has not yet run a VM on the host.
+
+The validation below predates the fork: it ran with the v0.7.14 patch
+installed over the host's own `msb`.
+
+## Validation
+
+The earlier uncached variant passed live host-to-VM validation on 2026-11-12 after installation and a VM
+restart: zero failed content/index/lock checks, including all 100 host-side
+Git index replacements. Evidence:
+`tmp/sandbox-sharing-probes/cross-j1wi5zdm/cross-results.json`.
+The user also confirmed automatic host-to-Zed refresh.
+
+The cached, optimized variant passed a fresh live host-to-VM check after the
+2026-11-12 restart, with zero failed content/index/lock checks and all 100
+immediate host-side Git index replacements passing. Evidence:
+`tmp/sandbox-sharing-probes/cross-wkfzn7om/cross-results.json`.
+Only the project directory was shared, read-write. The running Zed remote
+server had polling enabled at 5000 ms. A 20-second guest sample before the
+app checks showed 3.5% total CPU utilization across 12 vCPUs; the main Zed
+remote server used 10.8% of one core and 84.3 MiB RSS. Guest CPU does not
+measure the host runtime's CPU cost.
+
+The user then ran a separate 20-second sample on the host, saved in
+`tmp/sandbox-host-resource-usage.json` (its top-level `guest` label is an
+artifact of invoking the sampler without `--sandbox`). The VM process used
+77.6% of one core and 2255 MiB RSS, versus 578.6% and 2370.9 MiB in the
+earlier sample: about 87% less VM CPU. Total host CPU utilization was 6.6%
+across 24 logical CPUs. These were separate live samples, not a controlled
+benchmark; the remaining roughly 0.78-core VM cost is still noticeable.
+
+Before the patch, the new file and directory replacement tests failed with
+ENOENT instead of ESTALE. With the patch, all five new regressions and all
+680 filesystem unit tests passed. The full CLI compiled and reported
+`msb 0.7.14`. These checks do not replace the live cross-host check.
+
+The 60 VM-construction tests also passed. The broader upstream runtime suite
+was not clean in this VM: writer/mmap detection and crash-membership tests
+failed on both the patched and unpatched source, and the patched parallel
+run also observed a cache-age test failure. These failures are retained in
+the diagnostic logs; they were not changed or hidden by the patch.
+
+MWT's `mix precommit` passed all 624 checks with system/global Git config
+isolated (`GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null`). The sandbox's
+system SSH-to-HTTPS rewrite otherwise changes two Git URL test expectations.
+An Elixir 1.20 compiler warning was fixed by pinning the outer bitstring-size
+variable, and the grant-duration test now checks its actual deadline rather
+than requiring an exact countdown string across a clock-second boundary.
+
+For the cached release candidate, all 680 filesystem tests and six focused
+shell/inbox tests passed. The optimized CLI built successfully and reports
+`msb 0.7.14`. A full app check during debug-VM/build load passed 519/624 checks;
+the remaining 105 all exceeded existing 100 ms async deadlines. These are
+not reported as passing. Logs and the before-change CPU sample are under
+`tmp/microsandbox-sharing-runtime/validation-cached-release`.
+
+After the restart, the full `mix precommit` passed: 624 checks (5 doctests,
+619 tests), with 3 excluded. System/global Git config was isolated as above.
+The log is `validation-cached-release/mwt-sharing-post-restart-precommit.log`
+under the same runtime directory.
+
+After restarting the VM under the new runtime, run on the host:
+
+```sh
+python3 scripts/sandbox_shared_fs_probe.py check --sandbox SANDBOX_NAME
+```
+
+The host command launches the guest half with `msb exec` and runs the host
+half itself. It uses new disposable files and repositories under
+`tmp/sandbox-sharing-probes`; it does not change the project's index.
+It allows up to ten seconds for file-content visibility and records the
+observed delay, including size-changing writes. The 100 host-side Git index
+replacement checks remain immediate and strict. It exits nonzero when any
+content/index/lock check fails. Raw inotify observations are reported separately
+because Zed now uses polling. Confirm the remote-server environment and
+automatic editor refresh after reconnecting as a separate UI check.
+
+For rollback, stop the sandbox, atomically restore the saved runtime backup,
+and start the sandbox again. The polling environment can remain enabled.
+
+## Refresh and access scope
+
+These are live mounts, not two copies synchronized by a background copier.
+Save a file before checking it from the other side. Normal metadata caching
+and five-second polling allow a few seconds of display lag; scan time can
+add further delay.
+
+`git status` refreshes Git's view in whichever terminal runs it. In Zed's
+command palette, `editor: reload file` reloads the active file from disk
+(save wanted edits first). `workspace: reload` is a heavier restart/reload
+of the editor. `sync` flushes pending writes; it does not invalidate the
+VM's metadata cache or refresh the editor. There is no generic cross-side
+force-refresh command for these mounts.
+
+For this session's intended scope, set MWT's shared folders to exactly
+`/home/oliveigah/projects/mwt/mwt_client`, read-write. Remove the broader
+`/home/oliveigah/projects/mwt` and `/home/oliveigah/projects/msb_test` shares
+before adding it, because overlapping shares are refused. Recreate the VM
+with Home and Cache kept to apply that mount change. This is a host-side MWT
+setting; editing files inside the VM does not change its grants or mounts.

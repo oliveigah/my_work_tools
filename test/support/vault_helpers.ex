@@ -1,0 +1,94 @@
+defmodule MWTClient.VaultHelpers do
+  @moduledoc """
+  Sets up an unlocked identity for tests that need somewhere to persist.
+  """
+
+  alias MWTClient.Accounts
+  alias MWTClient.Vault.Store
+
+  @doc "Unlocks a unique identity and cleans up only its stores and directory on exit."
+  def unlocked_identity(username \\ "tester", password \\ "correct horse") do
+    username = unique_username(username)
+    directory = Accounts.dir(username)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      Store.close(username)
+      File.rm_rf!(directory)
+    end)
+
+    {:ok, profile, key} = Accounts.sign_in(username, password)
+    :ok = Store.open(profile.username, key)
+
+    %{username: profile.username, password: password, key: key}
+  end
+
+  @doc "Unlocks an extra identity alongside the current one."
+  def also_unlock(username, password \\ "correct horse") do
+    unlocked_identity(username, password).username
+  end
+
+  @doc """
+  What anyone who can read the folder sees of one of an identity's
+  databases (`:library` or `:journal`): the file and its write-ahead log,
+  as they are now.
+  """
+  def on_disk(username, name \\ :library) do
+    path = MWTClient.Storage.Database.path(username, name)
+
+    # Right after a lock, SQLite may be closing the last connection, which
+    # removes the log (`lock_settled/2`): one gone meanwhile holds nothing.
+    for suffix <- ["", "-wal"], into: "" do
+      case File.read(path <> suffix) do
+        {:ok, bytes} -> bytes
+        {:error, :enoent} -> ""
+      end
+    end
+  end
+
+  @doc """
+  Runs `fun` with only the identity's databases open, while it is locked:
+  as a test edits what an earlier MWT, or a crash, left saved.
+  """
+  def with_storage(username, key, fun) do
+    supervisor = Store.supervisor(username)
+
+    {:ok, pid} =
+      DynamicSupervisor.start_child(supervisor, {MWTClient.Storage, username: username, key: key})
+
+    try do
+      fun.()
+    after
+      DynamicSupervisor.terminate_child(supervisor, pid)
+    end
+  end
+
+  @doc """
+  Locks the identity and leaves its database files as they will stay, for a
+  test that reads or changes them next.
+
+  Locking stops the connections without closing them one by one: SQLite
+  closes each a moment later, and the last to close checkpoints what the
+  write-ahead log holds into the file, or, when two close at once, leaves
+  the log behind. Opened again on their own, the databases are checkpointed
+  whole: whatever closes later finds nothing to write.
+  """
+  def lock_settled(username, key) do
+    :ok = Store.close(username)
+
+    with_storage(username, key, fn ->
+      for name <- MWTClient.Storage.Database.names() do
+        MWTClient.Storage.run(username, name, & &1.query!("PRAGMA wal_checkpoint(TRUNCATE)"))
+      end
+    end)
+
+    :ok
+  end
+
+  @doc "Returns a username that cannot collide with another test's identity."
+  def unique_username(prefix) do
+    prefix <> "-#{System.unique_integer([:positive, :monotonic])}"
+  end
+
+  @doc "Removes all application data. Only use in synchronous tests that need global state reset."
+  def reset_data_dir!, do: File.rm_rf!(Accounts.root())
+end

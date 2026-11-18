@@ -1,0 +1,1072 @@
+#!/usr/bin/env bash
+# mwt: ask MWT, the user's control panel, for access. Written by MWT to
+# /mnt/mwt/bin/mwt. It reaches MWT over vsock (socat), and can only read the
+# grants and the host's description, ask the user to turn a grant on, ask
+# them to run a command on their machine, and work in projects: take a
+# worktree slot, hand work off. See MWTClient.Sandbox.Channel.
+set -u
+
+channel=${MWT_CHANNEL:-VSOCK-CONNECT:2:5000}
+# git finds the helper of a project's origin (git-remote-mwt) beside this
+# command, even from a shell that didn't read /etc/profile.d.
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+case ":$PATH:" in
+  *":$here:"*) ;;
+  *) PATH="$here:$PATH" ;;
+esac
+vm_file=${MWT_VM_FILE:-/etc/mwt-vm}
+unreachable="MWT isn't answering. It may be locked or closed: tell the user."
+max_script=16384
+
+usage() {
+  cat <<'USAGE'
+mwt - ask MWT, the user's control panel, for access
+
+  mwt grants
+      Every grant: its id, what it is for, how to use it, whether it is on.
+
+  mwt exec GRANT_ID -- COMMAND [ARG...]
+      Run a command here in the VM with that token grant's placeholders.
+      Only this command and its children get the credential environment.
+      The grant must be on; every authenticated request still goes through
+      the proxy's approval rules. Arguments, stdin and exit status pass
+      through unchanged. This does not run anything on the user's machine.
+      When mwt doesn't run the command (the grant is off or unknown, or the
+      use is wrong) it exits 125, as env and timeout do, with a line on
+      stderr; any other status is the command's own. Nested, as in
+      mwt exec github -- mwt exec hex -- COMMAND, the command gets both.
+      For an API call, look for a subgrant of the grant first (mwt call):
+      MWT sends it for you, and nothing in the VM needs the token.
+
+  mwt request GRANT_ID --reason "what you are about to do" [--minutes 60] [--wait 60]
+      Ask the user to turn a grant on (by id or name). Waits up to --wait
+      seconds (60 by default, 0 not at all) for their answer.
+
+  mwt request --need "the access, and the service or host" --reason "why" [--minutes 60]
+      Ask for access no grant gives yet. The user sets it up.
+
+  mwt host
+      The user's machine: OS, architecture, shell, shared folders, tools.
+
+  mwt why HOST[:PORT]
+      Which grant covers a host or an address, and why this VM doesn't
+      reach it now: the grant is off (and how to ask for it), it lists
+      another port, the Internet is off, no grant covers it, or the
+      firewall refused it. Run it when a lookup or a connection fails. It
+      never looks up a name no grant covers.
+
+  mwt ports
+      The servers running in this VM and where they open on the user's
+      machine: a server you start here on a port from 4100 to 4199, on any
+      address in the VM, opens there by itself, at this VM's address and
+      the same port. Other ports stay in the VM. Give the user the URL.
+
+  mwt call ID [NAME=value ...] --reason "why now" [--timeout 120] [--wait 60]
+      Call a subgrant: one fixed use of a grant, which MWT carries out for
+      you. mwt grants lists them under their grant, with their parameters.
+      You send its id and a value for each parameter, never a command or a
+      request. A command subgrant runs the user's own script on their
+      machine with your values as variables, and its output comes back. A
+      request subgrant is a request MWT sends with a token grant's real
+      value: the answer's body comes back on stdout, its HTTP status on
+      stderr, and mwt exits 0 for a 2xx answer, 22 for any other. Look for
+      one first. The user approves every call, unless its line says it runs
+      without asking; ask for one that is off with mwt request ID.
+
+  Proposing a grant: mwt propose saves what you propose at once in the
+  user's grants, off, tagged as proposed by you and to review. Nothing
+  turns it on until they read it on its page and accept it, which answers
+  you as mwt request does (exit 0 once on; 2 while it waits, then mwt wait
+  ID; 3 if they decline it, which removes it). Proposing again under the
+  same --name, before they review it, changes it. It never holds a value,
+  a check, an approval mode or a start setting: those are the user's.
+  Propose one when no grant fits and you know what the work needs; design
+  it for the person approving it: the narrowest access that does the job,
+  a name that says what it is, --for in words for any time it is used.
+
+  mwt propose token --name NAME --for "what it is for" --host HOST [--host ...] [--env VAR ...] [--file-env VAR ...] [--carrier HEADER ...] [--git] [--mint 'COMMAND'] [--subgrants-only] [--preset ID] --reason "why you need it"
+      Example: mwt propose token --name "GitHub, read-only, klife" --for "gh and git over HTTPS, reading oliveigah/klife" --preset github --reason "..."
+      Propose a token grant: a secret MWT keeps and swaps into requests to
+      the hosts it lists (*.example.com for its subdomains), in the
+      Authorization header unless --carrier names others. The VM gets a
+      placeholder in each --env variable, and the path of a file holding it
+      in each --file-env one, only under mwt exec. --git lets git's
+      credential helper answer for its hosts. --mint is a command the user's
+      machine runs to print a short-lived value (gcloud auth print-access-token),
+      instead of one they paste. --subgrants-only keeps it out of the VM:
+      only its request subgrants use it. --preset starts from one of the
+      user's presets (github, google, hex, or theirs), whose fields you
+      override. Say in --for what the token should be allowed to do: the user
+      creates it, as narrow as the service allows, and pastes it as they
+      review it.
+
+  mwt propose network --name NAME --for "what it is for" --destination 'HOST_OR_RANGE:PORTS' [--destination ...] [--resolver ADDRESS] [--via INTERFACE] --reason "why you need it"
+      Example: mwt propose network --name "Staging database" --for "Postgres on the staging network" --destination 'db.staging.corp:5432' --resolver 10.8.0.1 --via wg0 --reason "..."
+      Propose a network grant: what the VM may reach on a private network,
+      each destination a name (db.corp.example:5432), every name under one
+      (*.corp.example:443), an address or a range (10.20.0.0/16:443,5432).
+      --resolver is the DNS server that answers its names; --via the
+      interface they are reached through on the user's machine (their VPN's,
+      wg0 or tun0).
+
+  mwt propose commands --name NAME --for "what it does, any time it runs" [--param 'NAME:shape:what it is' ...] [--dir DIR] --reason "why you need it" [--minutes 60] [--wait 60] -- 'SCRIPT'
+      Example: mwt propose commands --name "gh repo view" --for "Shows a GitHub repository: description, default branch, visibility" --param 'REPO_NAME:word:the repository, as owner/name' --reason "..." -- 'gh repo view "$REPO_NAME"'
+      Propose a subgrant, when you expect to need the same job again: a
+      script under Ask to run commands (id commands), which you then call
+      by id. The script reads each parameter as a variable, "$NAME", and is
+      otherwise fixed. A shape is word (letters, digits and _ . - @ : +, in
+      parts joined by /), number, date, time, decimal, text, or the values
+      it may take as a|b|c. The user reads it once and may let it run
+      without asking from then on, so design it for them: one job, a name
+      that says what it does, the fewest parameters, each of the narrowest
+      shape that works, a script they read at a glance, raw output. --for
+      describes it for any call; --reason is why you need it. It needs
+      nothing to be on. They may change it before accepting it: the answer
+      says its id and how to call it.
+
+  mwt propose TOKEN_GRANT --name NAME --for "what it does, any time it runs" --method GET --url 'https://HOST/path/$NAME' [--param 'NAME:shape:what it is' ...] [--header 'Name: value' ...] [--data 'JSON'] --reason "why you need it"
+      Example: mwt propose github --name "pr view" --for "Shows a pull request of a GitHub repository, as JSON" --param 'REPO:word:the repository, as owner/name' --param 'PR:number:the pull request' --method GET --url 'https://api.github.com/repos/$REPO/pulls/$PR' --reason "..."
+      Propose a request subgrant of a token grant: one HTTP request MWT
+      sends itself with that grant's real value, so it needs no tool or
+      placeholder in the VM. The host is fixed, and one the grant lists;
+      parameters go in the path or the query, or as a whole JSON value in
+      --data ("$TITLE"), never inside a longer text. Headers are fixed;
+      without --header, MWT uses the ones that service expects, with the
+      token in place. Called, its answer's body comes back on stdout, its
+      HTTP status on stderr, and mwt exits 0 for a 2xx answer, 22 for any
+      other. Design it as a command subgrant: one job, read-only unless
+      changing something is its job.
+
+  mwt run commands --reason "why it must run on the user's machine" [--dir DIR] [--timeout 120] [--wait 60] -- COMMAND [ARG...]
+  mwt run commands --reason "..." [options] <<'EOF'
+  script
+  EOF
+      Ask the user to run a command you write on their machine, as them,
+      outside this VM. Last resort: call a subgrant, or use another grant,
+      when one can do it. Ask to run commands (id commands), the escape
+      hatch, built in: only while it is on may you ask (mwt request
+      commands), and the user reads and approves every run. Send the
+      smallest command that gets what you need, one the user can read at a
+      glance: bring the raw output back and filter, parse or transform it
+      here in the VM. --dir defaults to the current directory; outside a
+      shared folder it runs in the user's home folder. --timeout is in
+      seconds (1 to 3600). After --, one argument is a shell line as it is
+      and several are quoted and joined; with none the script is read from
+      stdin (16 KiB max).
+
+  mwt wait ID [--wait 60]
+      Keep waiting for the answer to an earlier ask or run, or a change to
+      MWT's notes, diagrams or flash cards that waited for the user.
+
+  mwt mcp
+      MWT's own tools over MCP, on stdio: read, add and change the user's
+      notes, diagrams, flash cards and HTTP request samples in MWT. Already
+      set up for Claude Code and Codex in this VM; for another agent, run
+      it as a stdio MCP server. No token: the grants mwt-read, mwt-create
+      and mwt-change decide each call, and a change may wait for the user.
+
+  mwt project
+      Where you are in a project: its clone, /work/NAME (slot-0), or one
+      of its worktree slots, /work/NAME.wt/slot-N; the user's branches,
+      origin/BRANCH here; who holds each slot; and the rules.
+
+  mwt worktree new TASK --from BASE
+      Take the worktree slot you are in when it is free: first, before
+      anything else, even for a question. It fetches origin, then starts
+      a new branch TASK from BASE: the user's branch the work is based on
+      (origin/BASE here; ask them which when they named none, mwt project
+      lists them), refs/heads/TASK for another VM task, or a commit ID.
+      Without --from nothing starts, and the answer lists their branches.
+      The task is named for what the user asked (fix-login-timeout, not
+      task or wip), and holds the slot for your thread until its handoff
+      lands or is closed. What git ignores (deps, _build) stays there
+      from the slot's last task. A task starts only in its thread's own
+      slot: in a slot that isn't free, it says who holds it and lists the
+      free slots, for the user to start a thread in one. In a slot
+      another thread holds, you only read.
+
+  mwt worktree resume BRANCH
+      Put an existing branch, such as one whose handoff was sent back after
+      its slot went to another task, in the slot you are in, when it is
+      free. Run in the slot that has BRANCH, held by another thread, it
+      moves the hold to yours: only when the user asks you to carry on
+      that task.
+
+  mwt worktree free
+      Free the slot you are in, only when the user says its task is done
+      or dropped: it goes off its branch, which stays with its commits.
+      Refused with uncommitted work. A slot whose handoff has landed or is
+      closed is free already. Other slots are their own threads' to free,
+      or the user's.
+
+  mwt handoff --title "what this is" [--body FILE] [--onto BASE] [--no-checks]
+      Only once the user asks for it (/handoff), after they reviewed your
+      uncommitted work in the VM. In your slot, it does every step that
+      needs no judgment: fetches origin; commits the changes to files git
+      has, with the title as the message (for a new revision, folded into
+      the handoff's commit while nothing was committed after it); catches
+      up with the task's base (rebases the task's commits onto
+      origin/BASE); runs the project's checks, if it has any (mwt project
+      names them); then hands that exact commit off to the user. It stops,
+      saying what to do, at new files git doesn't know (git add those that
+      belong to the work first), conflicts (resolve and git add them: the
+      next run goes on with the rebase) and failing checks: deal with
+      those and run it again. The user lands it on the task's base unless
+      they choose another branch, or on a new mwt/ branch: as it is (a
+      fast-forward) when that branch hasn't moved, or as one commit.
+      --onto BASE changes the base it catches up with (and the branch it
+      lands on unless they choose another). --body takes the description
+      from a file (- for stdin). --no-checks skips the checks, only when
+      the user says so. Run it again on the same branch, when they ask
+      again, to update it with a new revision. A git push to origin is
+      refused: work goes back this way.
+
+  mwt handoff withdraw --reason "what the user asked now"
+      Take your open handoff back, so the user can't land it until you
+      hand off again. Optional: work you do after a handoff never changes
+      the revision they have.
+
+  mwt handoffs
+      The project's handoffs: open, sent back (with the user's note),
+      withdrawn, landed, closed; and whether each still applies to its
+      branch.
+
+  mwt vm
+      Which VM this is, and whether it is the one MWT runs. When the network
+      or mwt stops answering, this says whether you are in an old VM: then
+      tell the user to reconnect.
+
+Exit status of grants, request, propose and wait on an ask: 0 the grant is on, 1 the
+ask was wrong, 2 still waiting for the user, 3 declined or given up, 4 MWT
+isn't answering (locked or closed). Of project, worktree, handoff and handoffs: 0 done,
+1 not done (the reason is printed), 4 MWT isn't answering. Of vm: 0 this is
+the VM MWT runs, 1 there is no record to compare, 3 this is not the VM MWT
+runs, 4 MWT isn't answering.
+
+Exit status of run, call, and wait on either: the command's own status when it ran
+and its output came back (124 if it hit its time limit). Otherwise, with a
+line on stderr: 120 still waiting for the user, 121 it didn't run or its
+output didn't come back, 122 the ask was wrong, 123 MWT isn't answering.
+USAGE
+}
+
+# A JSON string: quotes, backslashes and control characters escaped.
+json() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  s=$(printf '%s' "$s" | LC_ALL=C tr -d '\001-\010\013\014\016-\037')
+  printf '"%s"' "$s"
+}
+
+number() {
+  case $2 in
+    '' | *[!0-9]*)
+      echo "mwt: $1 takes a whole number" >&2
+      exit "$3"
+      ;;
+  esac
+  printf '%s' "$2"
+}
+
+# Who is asking, so the user can tell which thread an ask comes from: the
+# agent (from the processes above this one), its thread's id and title, and
+# the folder it works in. All claims, shown to the user as such. MWT_AGENT
+# and MWT_THREAD override the agent and the title.
+agent="" agent_pid="" thread_id="" thread="" folder=""
+identify() {
+  local pid=$PPID comm _
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    [ "$pid" -gt 1 ] 2>/dev/null || break
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null) || break
+    case $comm in
+      claude* | codex* | gemini* | aider* | opencode* | goose* | cursor* | amp* | zed*)
+        agent=$comm agent_pid=$pid
+        break
+        ;;
+    esac
+    pid=$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$pid/status" 2>/dev/null)
+  done
+  [ -n "${CLAUDE_PID:-}" ] && [ -d "/proc/$CLAUDE_PID" ] && agent_pid=$CLAUDE_PID
+  [ -n "${MWT_AGENT:-}" ] && agent=$MWT_AGENT
+  [ -z "$agent" ] && agent="an agent"
+
+  [ -n "$agent_pid" ] && folder=$(readlink "/proc/$agent_pid/cwd" 2>/dev/null)
+  [ -z "$folder" ] && folder=$PWD
+
+  if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+    thread_id=$CLAUDE_CODE_SESSION_ID
+    thread=$(claude_title "$thread_id")
+  elif [ -n "${CODEX_THREAD_ID:-}" ]; then
+    thread_id=$CODEX_THREAD_ID
+    thread=$(codex_title "$thread_id")
+  fi
+  [ -n "${MWT_THREAD:-}" ] && thread=$MWT_THREAD
+}
+
+# A JSON string's value, from `"key":"value"`: the common escapes undone.
+json_value() {
+  local s=${1#*\":\"}
+  s=${s%\"}
+  s=${s//\\\"/\"}
+  s=${s//\\n/ }
+  printf '%s' "${s//\\\\/\\}"
+}
+
+# Claude Code's title for a session, as it shows it: the last rename, else
+# the last title it made up.
+claude_title() {
+  case $1 in *[!0-9a-fA-F-]*) return ;; esac
+  local file key found
+  for file in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1".jsonl; do
+    [ -f "$file" ] || continue
+    for key in customTitle aiTitle; do
+      found=$(LC_ALL=C command grep -ao "\"$key\":\"\\([^\"\\\\]\\|\\\\.\\)*\"" "$file" 2>/dev/null | tail -n 1)
+      if [ -n "$found" ]; then
+        json_value "$found"
+        return
+      fi
+    done
+  done
+}
+
+# Codex's title for a thread: the name it was given, else the one it made up.
+codex_title() {
+  case $1 in *[!0-9a-fA-F-]*) return ;; esac
+  command -v sqlite3 >/dev/null 2>&1 || return
+  local db
+  for db in "${CODEX_HOME:-$HOME/.codex}"/state_*.sqlite; do
+    [ -f "$db" ] || continue
+    sqlite3 -readonly "$db" \
+      "select coalesce(nullif(name, ''), title) from threads where id = '$1'" 2>/dev/null | head -n 1
+    return
+  done
+}
+
+# The identity fields of an ask, as JSON members.
+identity() {
+  printf '"agent":%s,"thread":%s,"thread_id":%s,"folder":%s' \
+    "$(json "$agent")" "$(json "$thread")" "$(json "$thread_id")" "$(json "$folder")"
+}
+
+# Sends one ask and prints MWT's answer. $2 is the status when MWT can't be
+# reached.
+exchange() {
+  if ! command -v socat >/dev/null 2>&1; then
+    echo "mwt: socat is missing from this VM's image, so MWT can't be reached. Tell the user." >&2
+    exit "$2"
+  fi
+  # ignoreeof: the ask stays open until MWT answers and closes.
+  reply=$(printf '%s\n' "$1" | socat -t 1 -,ignoreeof "$channel" 2>/dev/null)
+  if [ -z "$reply" ]; then
+    echo "mwt: $unreachable" >&2
+    exit "$2"
+  fi
+}
+
+# What a handoff needs that no agent has to do, here in the agent's own
+# slot: MWT names the selected base, the title, the project's checks and,
+# for a new revision, the commit to fold it into (its "prepare" answer);
+# then origin is fetched, the changes to files git has are committed with
+# the title (into the last revision's commit, while nothing was committed
+# on it since), the task's commits rebased onto origin/BASE, and the
+# checks run, if the project has any. It stops, saying what to do, where
+# only the agent can go on: new files git doesn't know (which belong to
+# the work is the agent's to say), conflicts, failing checks. Nothing is
+# sent until all of it went through.
+handoff_steps() {
+  local reply status plan top gitdir subject checks conflicts fresh head log branch base_ref base_name landed landed_from landed_branch upstream amend onto="$onto"
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "mwt: this folder is in no git repository. Hand off from your slot." >&2
+    exit 1
+  }
+  gitdir=$(git -C "$top" rev-parse --absolute-git-dir) || exit 1
+
+  # A rebase stopped at conflicts the last time: it goes on once they are
+  # resolved, and may stop again at the next commit. First of all, since
+  # until it ends the worktree is on no branch, and MWT asks which.
+  if [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then
+    base_name=$(cat "$gitdir/rebase-merge/onto_name" 2>/dev/null || echo "its base")
+    conflicts=$(git -C "$top" diff --name-only --diff-filter=U)
+    if [ -n "$conflicts" ]; then
+      printf 'mwt: the rebase still has conflicts in:\n%s\nResolve them, git add each, and run mwt handoff again. Nothing was handed off.\n' \
+        "$(printf '%s\n' "$conflicts" | sed 's/^/  /')" >&2
+      exit 1
+    fi
+    (cd "$top" && git add --update) || exit 1
+    if (cd "$top" && GIT_EDITOR=true git rebase --continue) >"$gitdir/mwt-rebase.log" 2>&1; then
+      echo "Continued the rebase you resolved."
+    else
+      (cd "$top" && rebase_stopped)
+      exit 1
+    fi
+  fi
+
+  exchange "{\"command\":\"handoff\",\"stage\":\"prepare\",\"cwd\":$(json "$(pwd -P)"),\"title\":$(json "$title"),\"onto\":$(json "$onto"),$(identity)}" 4
+  status=$(first_line "$reply")
+  plan=$(after_first "$reply")
+  if [ "$status" != 0 ]; then
+    printf '%s\n' "$plan"
+    case $status in 1 | 2 | 3 | 4) exit "$status" ;; *) exit 1 ;; esac
+  fi
+  onto=$(plan_value onto "$plan")
+  base_ref=$(plan_value ref "$plan")
+  base_ref=${base_ref:-refs/remotes/origin/$onto}
+  base_name=${base_ref#refs/remotes/}
+  subject=$(plan_value title "$plan")
+  checks=$(plan_value checks "$plan")
+  landed=$(plan_value landed "$plan")
+  landed_from=$(plan_value landed_from "$plan")
+  landed_branch=$(plan_value landed_branch "$plan")
+  amend=$(plan_value amend "$plan")
+  cd "$top" || exit 1
+
+  # 0. The user's branches as they are now: the catch-up rebases onto them.
+  case $base_ref in
+    refs/remotes/origin/*)
+      if ! git fetch -q origin 2>"$gitdir/mwt-fetch.log"; then
+        cat "$gitdir/mwt-fetch.log" >&2
+        echo "mwt: fetching origin failed (git's words are above), so the task couldn't catch up with $base_name. Nothing was handed off." >&2
+        exit 1
+      fi
+      ;;
+  esac
+
+  if [ -f "$gitdir/CHERRY_PICK_HEAD" ] || [ -f "$gitdir/REVERT_HEAD" ]; then
+    echo "mwt: a cherry-pick or revert is in progress: finish or abort it, then run mwt handoff again. Nothing was handed off." >&2
+    exit 1
+  fi
+
+  branch=$(git symbolic-ref --quiet --short HEAD) || {
+    echo "mwt: this worktree is on no branch. Hand off from your task's branch." >&2
+    exit 1
+  }
+
+  # A merge of your own stopped at conflicts, still unresolved.
+  if [ -f "$gitdir/MERGE_HEAD" ]; then
+    conflicts=$(git diff --name-only --diff-filter=U)
+    if [ -n "$conflicts" ]; then
+      printf 'mwt: the merge still has conflicts in:\n%s\nResolve them, git add each, and run mwt handoff again. Nothing was handed off.\n' \
+        "$(printf '%s\n' "$conflicts" | sed 's/^/  /')" >&2
+      exit 1
+    fi
+  fi
+
+  # 1. New files: only the agent knows which belong to the work, so none
+  # goes into the user's history unless it was added.
+  fresh=$(git ls-files --others --exclude-standard --directory)
+  if [ -n "$fresh" ]; then
+    printf 'mwt: these files are new and not in git:\n%s\ngit add those that belong to the work; delete the others, or have git ignore them. Then run mwt handoff again. Nothing was handed off.\n' \
+      "$(printf '%s\n' "$fresh" | sed -e 's/^/  /' -e '31{s/.*/  and more: git status lists them/;q;}')" >&2
+    exit 1
+  fi
+
+  # A merge of your own, resolved since. Its message as git prepared it,
+  # without the "# Conflicts:" lines an editor would have dropped.
+  if [ -f "$gitdir/MERGE_HEAD" ]; then
+    git add --update && git commit -q --no-edit --cleanup=strip || {
+      echo "mwt: committing the merge failed (git's words are above). Nothing was handed off." >&2
+      exit 1
+    }
+    echo "Committed the merge you resolved."
+  fi
+
+  # 2. The changes to files git has, committed as the user, with the title:
+  # into the last revision's commit while the branch is still at it (that
+  # revision stays with MWT as it was), else as a commit of their own.
+  # Commits made since the last revision, the user's own, stay as they are.
+  if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+    git add --update || exit 1
+    if [ -n "$amend" ] && [ "$(git rev-parse HEAD)" = "$amend" ]; then
+      if ! git commit -q --amend -m "$subject"; then
+        echo "mwt: the commit failed (git's words are above), so nothing was handed off." >&2
+        exit 1
+      fi
+      echo "Folded what was uncommitted into the handoff's commit: $subject"
+    else
+      if ! git commit -q -m "$subject"; then
+        echo "mwt: the commit failed (git's words are above), so nothing was handed off." >&2
+        exit 1
+      fi
+      echo "Committed what was uncommitted: $subject"
+    fi
+  fi
+
+  # 3. Caught up with the selected base as the user has it now: the task's
+  # own commits replayed on top of it, so the branch reads as its work
+  # alone, and lands as it is when that branch doesn't move meanwhile.
+  # When the user landed this task before as one commit, which shares no
+  # history with it, only what came after the head that commit was made
+  # from is replayed: the rest is in it already.
+  upstream=$base_ref
+  if [ -n "$landed" ] && git cat-file -e "$landed^{commit}" 2>/dev/null &&
+    git merge-base --is-ancestor "$landed" "$base_ref" &&
+    ! git merge-base --is-ancestor "$landed" HEAD &&
+    git merge-base --is-ancestor "$landed_from" HEAD; then
+    upstream=$landed_from
+  fi
+  if ! git merge-base --is-ancestor "$base_ref" HEAD; then
+    if git rebase -q --onto "$base_ref" "$upstream" >"$gitdir/mwt-rebase.log" 2>&1; then
+      if [ "$upstream" = "$base_ref" ]; then
+        echo "Rebased onto $base_name, the task's current base."
+      else
+        echo "Rebased onto $base_name, the task's current base, after what landed on $landed_branch before."
+      fi
+    else
+      rebase_stopped
+    fi
+  fi
+
+  submitted_head=$(git rev-parse HEAD) || exit 1
+
+  # 4. The project's checks, once per commit, unless the user said not to.
+  if [ -n "$no_checks" ]; then
+    echo "The checks were skipped (--no-checks)."
+  elif [ -z "$checks" ]; then
+    echo "No checks are set for this project, so none ran."
+  else
+    head=$(git rev-parse HEAD)
+    log=$gitdir/mwt-checks.log
+    if [ "$(cat "$gitdir/mwt-checks.ok" 2>/dev/null)" = "$head $checks" ]; then
+      echo "The checks passed at this commit already: $checks"
+    else
+      rm -f "$gitdir/mwt-checks.ok"
+      echo "Running the project's checks: $checks"
+      if ! sh -c "$checks" >"$log" 2>&1 </dev/null; then
+        tail -n 40 "$log"
+        printf 'mwt: the checks failed: the end of their output is above, all of it in %s. Fix what is yours, and run mwt handoff again. Nothing was handed off. If what fails is not yours, tell the user: they may say to hand off with --no-checks.\n' "$log" >&2
+        exit 1
+      fi
+      if [ -n "$(git status --porcelain)" ]; then
+        printf 'mwt: the checks passed but changed these files:\n%s\nLook at them, and run mwt handoff again: it commits the changes to files git has, and stops at new ones. Nothing was handed off.\n' \
+          "$(git status --porcelain | sed 's/^/  /')" >&2
+        exit 1
+      fi
+      printf '%s %s\n' "$head" "$checks" >"$gitdir/mwt-checks.ok"
+      echo "The checks passed: $checks"
+    fi
+  fi
+  if [ "$(git rev-parse HEAD)" != "$submitted_head" ]; then
+    echo "mwt: the branch changed while the checks ran. Run mwt handoff again, to check that commit. Nothing was handed off." >&2
+    exit 1
+  fi
+}
+
+# A rebase that didn't go through: at conflicts, for the agent to resolve
+# (the next mwt handoff goes on with it), or for a reason git gives.
+rebase_stopped() {
+  local conflicts
+  conflicts=$(git diff --name-only --diff-filter=U)
+  if [ -n "$conflicts" ]; then
+    printf 'mwt: rebasing onto %s stopped at conflicts in:\n%s\nResolve them, git add each, and run mwt handoff again: it goes on with the rebase (git rebase --abort puts the branch back as it was). Nothing was handed off.\n' \
+      "$base_name" "$(printf '%s\n' "$conflicts" | sed 's/^/  /')" >&2
+  else
+    cat "$gitdir/mwt-rebase.log" >&2
+    echo "mwt: rebasing onto $base_name stopped (git's words are above). Nothing was handed off." >&2
+  fi
+  exit 1
+}
+
+plan_value() { printf '%s\n' "$2" | sed -n "s/^$1=//p" | head -n 1; }
+
+# The first line of $1, and the rest after it (empty when there is none).
+first_line() { printf '%s' "${1%%$'\n'*}"; }
+after_first() {
+  case $1 in
+    *$'\n'*) printf '%s' "${1#*$'\n'}" ;;
+  esac
+}
+
+send() {
+  local reply status
+  exchange "$1" 4
+  status=$(first_line "$reply")
+  printf '%s\n' "$(after_first "$reply")"
+  case $status in
+    0 | 1 | 2 | 3 | 4) exit "$status" ;;
+    *) exit 1 ;;
+  esac
+}
+
+# A run's answer: `ran STATUS`, a note for stderr, then the output and a
+# dot, which keeps its trailing newlines through $(...); or one of MWT's own
+# statuses and a message for stderr.
+send_run() {
+  local reply first rest note output status
+  exchange "$1" 123
+  first=$(first_line "$reply")
+  rest=$(after_first "$reply")
+  case $first in
+    "ran "*)
+      status=${first#ran }
+      note=$(first_line "$rest")
+      output=$(after_first "$rest")
+      [ -n "$note" ] && printf '%s\n' "$note" >&2
+      printf '%s' "${output%.}"
+      case $status in
+        '' | *[!0-9]*) exit 1 ;;
+        *) exit "$status" ;;
+      esac
+      ;;
+    120 | 121 | 122 | 123)
+      printf 'mwt: %s\n' "$rest" >&2
+      exit "$first"
+      ;;
+    *)
+      printf 'mwt: %s\n' "$rest" >&2
+      exit 121
+      ;;
+  esac
+}
+
+# What listens in this VM on the ports MWT opens on the user's machine,
+# 4100 to 4199 (MWTClient.Sandbox.Ports.range/0): `ss` lines, then a
+# `cwd PID FOLDER` line for each process holding a port, so MWT can tell
+# which worktree slot a server runs in. Other ports, such as language
+# servers' and test runs', are left out, so their coming and going sends
+# nothing. Sent when it changes,
+# and once a minute anyway, so a restarted MWT hears it again; while MWT
+# doesn't answer, tried again every 2 seconds. The boot script starts it as
+# root (-p names every process only then). One watcher at a time.
+watch_ports() {
+  local now last="" ticks=0 pid reply
+  exec 9>/run/mwt-ports.lock || exit 1
+  flock -n 9 || exit 0
+  while :; do
+    now=$(ss -ltnpH '( sport >= :4100 and sport <= :4199 )' 2>/dev/null)
+    for pid in $(printf '%s\n' "$now" | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -un); do
+      now+=$'\n'"cwd $pid $(readlink "/proc/$pid/cwd" 2>/dev/null)"
+    done
+    if [ "$now" != "$last" ] || [ "$ticks" -ge 30 ]; then
+      reply=$(printf '%s\n' "{\"command\":\"ports\",\"report\":$(json "$now")}" |
+        socat -t 1 -,ignoreeof "$channel" 2>/dev/null)
+      if [ "$(first_line "$reply")" = 0 ]; then
+        last=$now
+        ticks=0
+      fi
+    fi
+    ticks=$((ticks + 1))
+    sleep 2
+  done
+}
+
+command=${1:-help}
+[ $# -gt 0 ] && shift
+
+# MWT's tools over MCP, as a server on stdio for an agent's configuration.
+# Each JSON-RPC message goes to MWT on a connection of its own, after an
+# `mcp` ask saying who calls, so MWT restarting or locking costs only the
+# calls made meanwhile. MWT answers 0 and the response on a line (empty for
+# a notification). When it doesn't answer, a request gets a JSON-RPC error
+# from here, and a notification nothing.
+mcp_server() {
+  local header reply line id down
+  if ! command -v socat >/dev/null 2>&1; then
+    echo "mwt: socat is missing from this VM's image, so MWT can't be reached. Tell the user." >&2
+    exit 4
+  fi
+  identify
+  header="{\"command\":\"mcp\",$(identity)}"
+  down=$(json "MWT isn't answering: it may be locked or closed. Tell the user, and try again once it is unlocked.")
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in *[![:space:]]*) ;; *) continue ;; esac
+    reply=$(printf '%s\n%s\n' "$header" "$line" | socat -t 1 -,ignoreeof "$channel" 2>/dev/null)
+    if [ "$(first_line "$reply")" = 0 ]; then
+      reply=$(after_first "$reply")
+      [ -n "$reply" ] && printf '%s\n' "$reply"
+    else
+      id=$(mcp_id "$line")
+      [ -n "$id" ] && printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":%s}}\n' "$id" "$down"
+    fi
+  done
+}
+
+# A request's id, read without a JSON parser: clients write it first, or
+# right after "jsonrpc", or last. Nothing for a notification.
+mcp_id() {
+  local value='("([^"\\]|\\.)*"|-?[0-9]+)' s='[[:space:]]*'
+  local first="^$s\\{$s\"id\"$s:$s$value"
+  local second="^$s\\{$s\"jsonrpc\"$s:$s\"2\\.0\"$s,$s\"id\"$s:$s$value"
+  local last="[,{]$s\"id\"$s:$s$value$s\\}$s\$"
+  if [[ $1 =~ $first ]] || [[ $1 =~ $second ]] || [[ $1 =~ $last ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
+
+if [ "$command" = mcp ]; then
+  mcp_server
+  exit 0
+fi
+
+# This is local execution, with exact arguments, not a host-command ask.
+# Handle it before the shared option parser: tool options belong to the tool.
+# When it doesn't run the command, it exits 125, as env and timeout do: any
+# other status is the command's own.
+if [ "$command" = exec ]; then
+  token_grant=${1:-}
+  case $token_grant in
+    '' | *[!a-zA-Z0-9_-]*)
+      echo 'mwt: use mwt exec GRANT_ID -- COMMAND [ARG...]' >&2
+      exit 125
+      ;;
+  esac
+  shift
+  if [ "${1:-}" != -- ] || [ $# -lt 2 ]; then
+    echo 'mwt: use mwt exec GRANT_ID -- COMMAND [ARG...]' >&2
+    exit 125
+  fi
+  shift
+  # The installed CLI and its inbox travel together, including in tests.
+  token_inbox=$(cd -- "$(dirname -- "$0")/.." && pwd -P) || exit 125
+  token_env=$token_inbox/grant-env/$token_grant.sh
+  if [ ! -r "$token_env" ]; then
+    echo "mwt: no token grant '$token_grant'. See mwt grants." >&2
+    exit 125
+  fi
+  # shellcheck source=/dev/null
+  . "$token_env" || exit 125
+  # Nested, each grant's git hosts are answered: the list keeps them all.
+  case ,${MWT_TOKEN_GRANT:-}, in
+    *,"$token_grant",*) ;;
+    *) MWT_TOKEN_GRANT=${MWT_TOKEN_GRANT:+$MWT_TOKEN_GRANT,}$token_grant ;;
+  esac
+  export MWT_TOKEN_GRANT
+  # A grant that asks for a presentation (a metadata server, say) runs the
+  # command under it, which owns the child, its signals and its status.
+  if [ -n "${MWT_PRESENT:-}" ]; then
+    present=$MWT_PRESENT
+    unset MWT_PRESENT
+    if [ ! -x "$token_inbox/bin/mwt-present" ]; then
+      echo "mwt: $token_grant asks for a presentation ($present), and this VM has no mwt-present. Tell the user." >&2
+      exit 125
+    fi
+    exec -- "$token_inbox/bin/mwt-present" "$present" -- "$@"
+  fi
+  exec -- "$@"
+fi
+
+# Options of run are wrong with 122, of the rest with 1.
+wrong=1
+[ "$command" = run ] && wrong=122
+[ "$command" = call ] && wrong=122
+
+grant="" need="" reason="" minutes=60 wait=60 id="" dir="" timeout=120 timeout_given="" title="" body="" onto="" from="" suggest_save="" save_for="" no_checks="" name="" purpose="" method="" url="" data="" watch=0
+preset="" mint="" resolver="" via="" git=false subgrants_only=false
+headers=()
+params=()
+hosts=()
+envs=()
+file_envs=()
+carriers=()
+destinations=()
+values=()
+positional=()
+words=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --reason) reason=${2-}; shift 2 || shift ;;
+    --reason=*) reason=${1#*=}; shift ;;
+    --title) title=${2-}; shift 2 || shift ;;
+    --title=*) title=${1#*=}; shift ;;
+    --body) body=${2-}; shift 2 || shift ;;
+    --body=*) body=${1#*=}; shift ;;
+    --no-checks) no_checks=1; shift ;;
+    --from) from=${2-}; shift 2 || shift ;;
+    --from=*) from=${1#*=}; shift ;;
+    --onto) onto=${2-}; shift 2 || shift ;;
+    --onto=*) onto=${1#*=}; shift ;;
+    --need) need=${2-}; shift 2 || shift ;;
+    --need=*) need=${1#*=}; shift ;;
+    --minutes) minutes=$(number --minutes "${2-}" "$wrong") || exit "$wrong"; shift 2 || shift ;;
+    --minutes=*) minutes=$(number --minutes "${1#*=}" "$wrong") || exit "$wrong"; shift ;;
+    --wait) wait=$(number --wait "${2-}" "$wrong") || exit "$wrong"; shift 2 || shift ;;
+    --wait=*) wait=$(number --wait "${1#*=}" "$wrong") || exit "$wrong"; shift ;;
+    --suggest-save) suggest_save=${2-}; shift 2 || shift ;;
+    --suggest-save=*) suggest_save=${1#*=}; shift ;;
+    --save-for) save_for=${2-}; shift 2 || shift ;;
+    --save-for=*) save_for=${1#*=}; shift ;;
+    --name) name=${2-}; shift 2 || shift ;;
+    --name=*) name=${1#*=}; shift ;;
+    --for) purpose=${2-}; shift 2 || shift ;;
+    --for=*) purpose=${1#*=}; shift ;;
+    --method) method=${2-}; shift 2 || shift ;;
+    --method=*) method=${1#*=}; shift ;;
+    --url) url=${2-}; shift 2 || shift ;;
+    --url=*) url=${1#*=}; shift ;;
+    --header) headers+=("${2-}"); shift 2 || shift ;;
+    --header=*) headers+=("${1#*=}"); shift ;;
+    --data) data=${2-}; shift 2 || shift ;;
+    --data=*) data=${1#*=}; shift ;;
+    --param) params+=("${2-}"); shift 2 || shift ;;
+    --param=*) params+=("${1#*=}"); shift ;;
+    --dir) dir=${2-}; shift 2 || shift ;;
+    --dir=*) dir=${1#*=}; shift ;;
+    --preset) preset=${2-}; shift 2 || shift ;;
+    --preset=*) preset=${1#*=}; shift ;;
+    --host) hosts+=("${2-}"); shift 2 || shift ;;
+    --host=*) hosts+=("${1#*=}"); shift ;;
+    --env) envs+=("${2-}"); shift 2 || shift ;;
+    --env=*) envs+=("${1#*=}"); shift ;;
+    --file-env) file_envs+=("${2-}"); shift 2 || shift ;;
+    --file-env=*) file_envs+=("${1#*=}"); shift ;;
+    --carrier) carriers+=("${2-}"); shift 2 || shift ;;
+    --carrier=*) carriers+=("${1#*=}"); shift ;;
+    --git) git=true; shift ;;
+    --mint) mint=${2-}; shift 2 || shift ;;
+    --mint=*) mint=${1#*=}; shift ;;
+    --subgrants-only) subgrants_only=true; shift ;;
+    --destination) destinations+=("${2-}"); shift 2 || shift ;;
+    --destination=*) destinations+=("${1#*=}"); shift ;;
+    --resolver) resolver=${2-}; shift 2 || shift ;;
+    --resolver=*) resolver=${1#*=}; shift ;;
+    --via) via=${2-}; shift 2 || shift ;;
+    --via=*) via=${1#*=}; shift ;;
+    --timeout) timeout=$(number --timeout "${2-}" "$wrong") || exit "$wrong"; timeout_given=1; shift 2 || shift ;;
+    --timeout=*) timeout=$(number --timeout "${1#*=}" "$wrong") || exit "$wrong"; timeout_given=1; shift ;;
+    --watch) watch=1; shift ;;
+    -h | --help) usage; exit 0 ;;
+    --)
+      shift
+      words=("$@")
+      break
+      ;;
+    -*)
+      echo "mwt: unknown option $1" >&2
+      exit "$wrong"
+      ;;
+    *)
+      if [ "$command" = run ]; then
+        # The one word before -- is the command grant; the command comes
+        # after --, so a typo is never run as a command.
+        if [ -n "$grant" ]; then
+          echo "mwt: put the command after --: mwt run GRANT --reason \"...\" -- COMMAND" >&2
+          exit 122
+        fi
+        grant=$1
+      elif [ "$command" = call ]; then
+        # The first word is the subgrant's id; the rest are its values.
+        if [ -z "$grant" ]; then
+          grant=$1
+        else
+          case $1 in
+            [A-Z]*=*) values+=("$1") ;;
+            *)
+              echo "mwt: $1 is no value. A call is: mwt call ID NAME=value --reason \"...\"" >&2
+              exit 122
+              ;;
+          esac
+        fi
+      elif [ "$command" = wait ]; then
+        id=$1
+      elif [ "$command" = worktree ] || [ "$command" = handoff ]; then
+        positional+=("$1")
+      else
+        grant=$1
+      fi
+      shift
+      ;;
+  esac
+done
+
+case $command in
+  grants | list)
+    send '{"command":"grants"}'
+    ;;
+  host)
+    send '{"command":"host"}'
+    ;;
+  why)
+    if [ -z "$grant" ]; then
+      echo "mwt: name a host or an address: mwt why HOST[:PORT]" >&2
+      exit 1
+    fi
+    send "{\"command\":\"why\",\"target\":$(json "$grant")}"
+    ;;
+  ports)
+    if [ "$watch" = 1 ]; then
+      watch_ports
+    else
+      send '{"command":"ports"}'
+    fi
+    ;;
+  request | ask)
+    identify
+    if [ -z "$grant" ] && [ -z "$need" ]; then
+      echo "mwt: name a grant, or describe a --need. See: mwt help" >&2
+      exit 1
+    fi
+    send "{\"command\":\"request\",\"grant\":$(json "$grant"),\"need\":$(json "$need"),\"reason\":$(json "$reason"),\"minutes\":$minutes,\"wait\":$wait,$(identity)}"
+    ;;
+  run)
+    if [ ${#words[@]} -eq 1 ]; then
+      script=${words[0]}
+    elif [ ${#words[@]} -gt 1 ]; then
+      script=$(printf '%q ' "${words[@]}")
+      script=${script% }
+    elif [ -t 0 ] || ! read -r -t 0; then
+      # No command and nothing waiting on stdin: right for a grant that runs
+      # the user's own script. Stdin is only read when something is there,
+      # so an open pipe with nothing in it is never waited on.
+      script=""
+    else
+      script=$(cat)
+    fi
+    bytes=$(printf '%s' "$script" | LC_ALL=C wc -c)
+    if [ "$bytes" -gt "$max_script" ]; then
+      echo "mwt: the script is over 16 KiB, far more than the user can review. Send the smallest command that gets the raw data you need, and work on its output here in the VM." >&2
+      exit 122
+    fi
+    identify
+    [ -z "$dir" ] && dir=$PWD
+    dir=$( (cd "$dir" 2>/dev/null && pwd -P) || printf '%s' "$dir")
+    send_run "{\"command\":\"run\",\"grant\":$(json "$grant"),\"script\":$(json "$script"),\"dir\":$(json "$dir"),\"timeout\":$timeout,\"reason\":$(json "$reason"),\"suggest_save\":$(json "$suggest_save"),\"save_for\":$(json "$save_for"),\"wait\":$wait,$(identity)}"
+    ;;
+  call)
+    if [ -z "$grant" ]; then
+      echo "mwt: name the subgrant: mwt call ID NAME=value --reason \"...\". See: mwt grants" >&2
+      exit 122
+    fi
+    if [ ${#words[@]} -gt 0 ]; then
+      echo "mwt: a call sends no command, only values: mwt call $grant NAME=value --reason \"...\"" >&2
+      exit 122
+    fi
+    # Unless given, each kind's own default: 30 s for a request, 120 for a command.
+    call_timeout=null
+    [ -n "$timeout_given" ] && call_timeout=$timeout
+    given=""
+    for pair in ${values[@]+"${values[@]}"}; do
+      given="$given,$(json "${pair%%=*}"):$(json "${pair#*=}")"
+    done
+    identify
+    send_run "{\"command\":\"call\",\"grant\":$(json "$grant"),\"values\":{${given#,}},\"timeout\":$call_timeout,\"reason\":$(json "$reason"),\"wait\":$wait,$(identity)}"
+    ;;
+  propose)
+    if [ "$grant" = token ] || [ "$grant" = network ]; then
+      # A new grant has no script.
+      if [ ${#words[@]} -gt 0 ]; then
+        echo "mwt: a $grant grant takes no script. See: mwt help" >&2
+        exit 1
+      fi
+      script=""
+    elif [ ${#words[@]} -eq 1 ]; then
+      script=${words[0]}
+    elif [ ${#words[@]} -gt 1 ]; then
+      # Quoting each word would turn "$NAME" into text the script never reads.
+      echo "mwt: give the script as one argument in single quotes, so its \$NAME stay as they are: -- 'gh repo view \"\$REPO_NAME\"'. Or send it on stdin." >&2
+      exit 1
+    elif [ -n "$url" ] || [ -t 0 ] || ! read -r -t 0; then
+      # A request subgrant has a URL and no script.
+      script=""
+    else
+      script=$(cat)
+    fi
+    bytes=$(printf '%s' "$script" | LC_ALL=C wc -c)
+    if [ "$bytes" -gt "$max_script" ]; then
+      echo "mwt: the script is over 16 KiB, far more than the user can review. A subgrant is a script they read at a glance." >&2
+      exit 1
+    fi
+    sent=""
+    for header in ${headers[@]+"${headers[@]}"}; do
+      sent="$sent,$(json "$header")"
+    done
+    listed=""
+    for param in ${params[@]+"${params[@]}"}; do
+      listed="$listed,$(json "$param")"
+    done
+    # What a new token or network grant lists, each a JSON array.
+    json_list() {
+      local out="" item
+      for item in "$@"; do out="$out,$(json "$item")"; done
+      printf '[%s]' "${out#,}"
+    }
+    identify
+    [ -z "$dir" ] && dir=$PWD
+    dir=$( (cd "$dir" 2>/dev/null && pwd -P) || printf '%s' "$dir")
+    send "{\"command\":\"propose\",\"grant\":$(json "$grant"),\"name\":$(json "$name"),\"for\":$(json "$purpose"),\"script\":$(json "$script"),\"params\":[${listed#,}],\"dir\":$(json "$dir"),\"method\":$(json "$method"),\"url\":$(json "$url"),\"headers\":[${sent#,}],\"data\":$(json "$data"),\"preset\":$(json "$preset"),\"hosts\":$(json_list ${hosts[@]+"${hosts[@]}"}),\"env\":$(json_list ${envs[@]+"${envs[@]}"}),\"file_env\":$(json_list ${file_envs[@]+"${file_envs[@]}"}),\"carriers\":$(json_list ${carriers[@]+"${carriers[@]}"}),\"git\":$git,\"mint\":$(json "$mint"),\"subgrants_only\":$subgrants_only,\"destinations\":$(json_list ${destinations[@]+"${destinations[@]}"}),\"resolver\":$(json "$resolver"),\"via\":$(json "$via"),\"reason\":$(json "$reason"),\"minutes\":$minutes,\"wait\":$wait,$(identity)}"
+    ;;
+  wait)
+    if [ -z "$id" ]; then
+      echo "mwt: wait needs the ask's id. See: mwt help" >&2
+      exit 1
+    fi
+    case $id in
+      run-*) send_run "{\"command\":\"wait\",\"id\":$(json "$id"),\"wait\":$wait}" ;;
+      *) send "{\"command\":\"wait\",\"id\":$(json "$id"),\"wait\":$wait}" ;;
+    esac
+    ;;
+  project)
+    identify
+    send "{\"command\":\"project\",\"cwd\":$(json "$(pwd -P)"),$(identity)}"
+    ;;
+  worktree)
+    action=${positional[0]:-}
+    case $action in
+      new | resume)
+        if [ -z "${positional[1]:-}" ]; then
+          echo "mwt: name the task: mwt worktree $action TASK" >&2
+          exit 1
+        fi
+        name=${positional[1]}
+        # A task starts from origin/BASE as the user has it now.
+        if git rev-parse --git-dir >/dev/null 2>&1 && ! git fetch -q origin; then
+          echo "mwt: fetching origin failed (git's words are above), so the user's branches here may be old. Nothing was started." >&2
+          exit 1
+        fi
+        ;;
+      free)
+        if [ -n "${positional[1]:-}" ]; then
+          echo "mwt: mwt worktree free frees the slot you are in; other slots are their own threads' to free, or the user's on MWT's Projects page" >&2
+          exit 1
+        fi
+        name=""
+        ;;
+      *)
+        echo "mwt: mwt worktree new TASK --from BASE, mwt worktree resume BRANCH, or mwt worktree free" >&2
+        exit 1
+        ;;
+    esac
+    identify
+    send "{\"command\":\"worktree\",\"action\":$(json "$action"),\"cwd\":$(json "$(pwd -P)"),\"name\":$(json "$name"),\"from\":$(json "${from:-$onto}"),$(identity)}"
+    ;;
+  handoff)
+    case ${positional[0]:-} in
+      "") ;;
+      withdraw)
+        identify
+        send "{\"command\":\"handoff\",\"stage\":\"withdraw\",\"cwd\":$(json "$(pwd -P)"),\"reason\":$(json "$reason"),$(identity)}"
+        ;;
+      *)
+        echo "mwt: mwt handoff --title \"…\" [--body FILE], or mwt handoff withdraw --reason \"…\"" >&2
+        exit 1
+        ;;
+    esac
+    text=""
+    if [ "$body" = - ]; then
+      text=$(cat)
+    elif [ -n "$body" ]; then
+      text=$(cat -- "$body") || exit 1
+    fi
+    identify
+    handoff_steps
+    send "{\"command\":\"handoff\",\"cwd\":$(json "$(pwd -P)"),\"head\":$(json "$submitted_head"),\"title\":$(json "$title"),\"body\":$(json "$text"),\"onto\":$(json "$onto"),$(identity)}"
+    ;;
+  handoffs)
+    send "{\"command\":\"handoffs\",\"cwd\":$(json "$(pwd -P)")}"
+    ;;
+  vm)
+    vm_id=""
+    [ -r "$vm_file" ] && vm_id=$(sed -n 's/^id=//p' "$vm_file" | head -n 1)
+    unreachable="MWT isn't answering. It is locked or closed, or this VM is no longer the one MWT runs: tell the user."
+    send "{\"command\":\"vm\",\"id\":$(json "$vm_id")}"
+    ;;
+  help | -h | --help)
+    usage
+    ;;
+  *)
+    echo "mwt: unknown command $command. See: mwt help" >&2
+    exit 1
+    ;;
+esac

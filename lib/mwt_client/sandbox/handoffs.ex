@@ -1,0 +1,1024 @@
+defmodule MWTClient.Sandbox.Handoffs do
+  @moduledoc """
+  The handoffs of one identity, as the agent channel and the pages use
+  them: opened by agents with `mwt handoff` once you reviewed their work
+  in the VM and asked, then landed on your branch (`accept/3`), sent back
+  or closed by you. Landing syncs what you reviewed there; it isn't where
+  you review it.
+
+  The sandbox (`MWTClient.Sandbox.Server`) keeps the records. The git work
+  (in the VM, the store, your repository) runs here, in the caller's
+  process, so the sandbox never waits on it. Opening one goes into the VM,
+  which must be running (`MWTClient.Sandbox.Projects.guest/2`).
+  """
+
+  alias MWTClient.Sandbox.{
+    Accept,
+    AgentThreads,
+    CatchUp,
+    Handoff,
+    HandoffStore,
+    HostGit,
+    MwtTools,
+    Project,
+    Projects,
+    Secrets,
+    Server,
+    Slots,
+    TaskBase
+  }
+
+  @type error ::
+          :vm_not_running
+          | :not_found
+          | :not_open
+          | :withdrawn
+          | {:not_your_task, String.t()}
+          | {:not_a_task, String.t()}
+          | {:not_withdrawable, Handoff.t() | nil, String.t()}
+          | :not_accepted
+          | :not_closed
+          | Handoff.refusal()
+          | Accept.problem()
+          | String.t()
+
+  ## What agents ask through the channel
+
+  @doc """
+  Opens a handoff from the branch the agent is on, in the folder `ask.cwd`
+  in the VM, or makes a new revision of the one that branch has open.
+
+  `ask` holds the agent's words: `cwd`, `title`, `body`, `agent`,
+  `thread`, `thread_id`. The baseline is the task's chosen branch or commit. Agents
+  are told to hand off only once you ask (`priv/sandbox/agents.md`); one
+  that hands off too soon is closed and told so in its thread. Returns the
+  handoff and whether it was `:opened` or `:updated`.
+  """
+  @spec open(String.t(), map()) :: {:ok, Handoff.t(), :opened | :updated} | {:error, error()}
+  def open(username, ask) do
+    :global.trans({{__MODULE__, username}, self()}, fn -> open_revision(username, ask) end)
+  end
+
+  defp open_revision(username, ask) do
+    %{handoffs: handoffs, vm: vm, dir: dir} = Server.call(username, :projects)
+    words = Handoff.words(ask)
+
+    with {:ok, guest} <- Projects.guest(username, vm),
+         {:ok, %{project: project}} <- submission_project(username, Map.get(ask, :cwd)),
+         {:ok, %{source: source, head: current}} <- Handoff.look(guest, Map.get(ask, :cwd)),
+         :ok <- holding(guest, source, words.thread_id),
+         :ok <- handing_off(username, project, source),
+         {:ok, submitted} <- submitted_commit(ask, current),
+         existing = open_from(handoffs, source),
+         true <- words.title != "" or existing != nil or {:error, :no_title},
+         {:ok, base} <- task_base(project, guest, source, ask, existing),
+         store = HandoffStore.path(dir, project.path),
+         :ok <- HandoffStore.ensure(store, project.path),
+         id = if(existing, do: existing.id, else: Server.call(username, :next_handoff_id)),
+         :ok <- keep_previous(store, existing),
+         {:ok, head} <-
+           HandoffStore.receive(
+             store,
+             guest,
+             source.folder,
+             submitted,
+             id,
+             Handoff.size_limit_mib()
+           ) do
+      handoff = build(existing, id, words, project, base, source, head)
+      handoff = %{handoff | base_commit: comparison_base(guest, source, base, existing, head)}
+
+      result =
+        with {:ok, facts} <- Handoff.facts(store, handoff),
+             :ok <- caught_up(handoff, facts),
+             nil <- real_value(username, store, handoff, facts.merge_base) do
+          handoff = %{handoff | base_commit: facts.merge_base, stats: Handoff.stats(facts)}
+
+          with :ok <- HandoffStore.keep_revision(store, id, handoff.revision, head) do
+            opened(username, dir, project, existing, handoff)
+          end
+        else
+          {:error, {:catch_up, _, _, _}} = refused ->
+            refused
+
+          {:error, _} ->
+            {:error, :unrelated}
+
+          {grant, where} ->
+            Server.call(username, {:found, {:value, grant}, "handoff ##{id}, #{where}", :handoff})
+            {:error, {:real_value, grant, where}}
+        end
+
+      if match?({:error, _}, result), do: restore(store, id, existing)
+      result
+    end
+  end
+
+  # The grant Git: hand off decides it, as any use of MWT's own tools.
+  defp handing_off(username, project, source) do
+    MwtTools.authorize(username, %{
+      grant: :git_handoff,
+      tool: "mwt handoff",
+      title: "#{source.branch} of #{project.name}",
+      args: %{"project" => project.name, "branch" => source.branch}
+    })
+  end
+
+  # Behind its base, it was never built or tested with what the user
+  # committed since, even when it merges cleanly: refused, and the next
+  # `mwt handoff` catches up (it fetches and rebases) before it sends.
+  defp caught_up(_handoff, %{behind: 0, conflicts: []}), do: :ok
+
+  defp caught_up(handoff, %{behind: behind, conflicts: files}),
+    do: {:error, {:catch_up, Handoff.base_label(handoff), behind, files}}
+
+  # Only the thread holding a task's branch hands it off or takes its
+  # handoff back, and only from a task branch (`mwt worktree new` made it,
+  # in a slot): another thread opened in the same slot only reads there.
+  defp holding(guest, source, thread_id) do
+    holder = Slots.thread_of(guest, source.folder, source.branch)
+
+    cond do
+      holder != nil and thread_id not in [nil, ""] and holder != thread_id ->
+        {:error, {:not_your_task, source.branch}}
+
+      holder == nil and not Slots.task?(guest, source.folder, source.branch) ->
+        {:error, {:not_a_task, source.branch}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp submission_project(username, cwd) do
+    with {:ok, %{project: project} = info} <- Projects.inspect(username, cwd) do
+      %{shares: shares} = Server.call(username, :projects)
+
+      cond do
+        project.closed ->
+          {:error, "This project is closed. Open it in MWT before submitting."}
+
+        is_nil(Projects.share_of(project.path, shares)) ->
+          {:error, "This project's host folder is no longer shared."}
+
+        true ->
+          {:ok, info}
+      end
+    end
+  end
+
+  defp submitted_commit(ask, current) do
+    case Map.get(ask, :head) || current do
+      head when is_binary(head) ->
+        if head =~ ~r/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/,
+          do: {:ok, head},
+          else: {:error, "The submitted commit is invalid."}
+
+      _ ->
+        {:error, "The submitted commit is invalid."}
+    end
+  end
+
+  defp keep_previous(_store, nil), do: :ok
+
+  defp keep_previous(store, handoff),
+    do: HandoffStore.keep_revision(store, handoff.id, handoff.revision, handoff.head)
+
+  defp restore(store, id, nil), do: HandoffStore.drop(store, id)
+  defp restore(store, id, previous), do: HandoffStore.point(store, id, previous.head)
+
+  defp comparison_base(_guest, _source, %{branch: nil, commit: commit}, nil, _head), do: commit
+  defp comparison_base(_guest, _source, _base, nil, _head), do: nil
+
+  defp comparison_base(guest, source, base, previous, head) do
+    cond do
+      previous.landed &&
+          match?(
+            {:ok, _},
+            guest.exec.([
+              "git",
+              "-C",
+              source.top,
+              "merge-base",
+              "--is-ancestor",
+              previous.landed.head,
+              head
+            ])
+          ) ->
+        previous.landed.head
+
+      previous.landed ->
+        nil
+
+      # Not the last revision's base: since then the thread may have caught
+      # up with the branch, and what it brings is measured from where it
+      # is now. Reusing the old one counted the branch's own new commits as
+      # the handoff's, and called them conflicts.
+      is_nil(base.branch) ->
+        base.commit
+
+      true ->
+        nil
+    end
+  end
+
+  defp opened(username, dir, project, existing, handoff) do
+    verb = if existing, do: "updated", else: "handed off"
+
+    {:ok, dropped} =
+      Server.call(
+        username,
+        {:put_handoff, handoff, "#{who(handoff)} #{verb} ##{handoff.id}: \"#{handoff.title}\""}
+      )
+
+    Enum.each(dropped, &forget(dir, &1))
+    Projects.used(username, project.name)
+    {:ok, handoff, if(existing, do: :updated, else: :opened)}
+  end
+
+  # The grant whose real value the handoff brings, and where, or nil: in
+  # its words, its commits or its files. Nothing in the VM should hold one.
+  defp real_value(username, store, handoff, base) do
+    secrets = Server.call(username, :secrets)
+    words = [handoff.title, handoff.body] |> Enum.filter(&is_binary/1)
+
+    case Enum.find_value(words, &Secrets.find(secrets, &1)) do
+      {:value, grant} ->
+        {grant, "its title or notes"}
+
+      nil ->
+        case HandoffStore.find(store, handoff.head, base, secrets) do
+          {{:value, grant}, where} -> {grant, where}
+          _nothing_or_unreadable -> nil
+        end
+    end
+  end
+
+  @doc "Preparation selects a comparison base and checks without changing the clone."
+  @spec prepare(String.t(), map()) :: {:ok, map()} | {:error, error()}
+  def prepare(username, ask) do
+    %{handoffs: handoffs, vm: vm} = Server.call(username, :projects)
+    words = Handoff.words(ask)
+
+    with {:ok, guest} <- Projects.guest(username, vm),
+         {:ok, %{project: project}} <- submission_project(username, Map.get(ask, :cwd)),
+         {:ok, %{source: source, head: head}} <-
+           Handoff.look(guest, Map.get(ask, :cwd), uncommitted: :allowed),
+         :ok <- holding(guest, source, words.thread_id),
+         existing = open_from(handoffs, source),
+         title = if(words.title != "", do: words.title, else: existing && existing.title),
+         true <- title not in [nil, ""] or {:error, :no_title},
+         {:ok, base} <- task_base(project, guest, source, ask, existing),
+         :ok <- TaskBase.remember(guest, source, base) do
+      {:ok,
+       %{
+         onto: TaskBase.label(base),
+         ref: base.ref,
+         title: title,
+         checks: project.checks,
+         landed: landed(project, existing),
+         amend: amend(existing, head)
+       }}
+    end
+  end
+
+  # The commit a new revision folds its changes into: the last revision's,
+  # while the branch is still at it (nothing committed on it since, by
+  # the user or anyone) and it hasn't landed. Its revision stays in the
+  # store as it was; a commit made after it is never rewritten.
+  defp amend(%Handoff{head: head, landed: nil}, head), do: head
+  defp amend(_existing, _head), do: nil
+
+  # What the last landing made, when it landed as one commit that is still
+  # on the branch it landed on: one commit with the task's changes, which
+  # shares no history with the task, and the head it was made from. `mwt
+  # handoff` rebases only the commits after that head onto the branch: the
+  # rest is in that commit. A fast-forward landing needs none of this: the
+  # task's own commits are on the branch.
+  defp landed(project, %Handoff{landed: %{commit: commit, head: head, branch: branch}})
+       when commit != head do
+    tip = Accept.tip(project.path, branch)
+
+    if tip &&
+         match?(
+           {:ok, _},
+           MWTClient.Sandbox.HostGit.run(project.path, [
+             "merge-base",
+             "--is-ancestor",
+             commit,
+             tip
+           ])
+         ),
+       do: %{commit: commit, from: head, branch: branch}
+  end
+
+  defp landed(_project, _existing), do: nil
+
+  # A revision of a handoff that landed goes on from where it landed, while
+  # that branch is there: its catch-up brings what you added to it since.
+  defp task_base(project, guest, source, ask, existing) do
+    continuation =
+      existing && existing.host_branch && Accept.tip(project.path, existing.host_branch) &&
+        existing.host_branch
+
+    override = Map.get(ask, :onto)
+    override = if override in [nil, ""], do: continuation, else: override
+    TaskBase.read(project, guest, source, override, existing)
+  end
+
+  @doc """
+  Takes back the open handoff of the branch the agent is on, in the folder
+  `ask.cwd` in the VM: as when you ask its thread for more work before
+  landing it. Withdrawn, it can't be landed; the agent's next
+  `mwt handoff` from that branch makes a new revision of it, open again.
+  You can still close it, or send it back. Only the thread holding the
+  branch takes it back. `ask` holds `cwd`, `reason` (what you asked for
+  now) and who asks.
+  """
+  @spec withdraw(String.t(), map()) :: {:ok, Handoff.t()} | {:error, error()}
+  def withdraw(username, ask) do
+    %{handoffs: handoffs, vm: vm} = Server.call(username, :projects)
+    words = Handoff.words(ask)
+
+    with {:ok, guest} <- Projects.guest(username, vm),
+         {:ok, %{project: project}} <- submission_project(username, Map.get(ask, :cwd)),
+         {:ok, %{source: source}} <-
+           Handoff.look(guest, Map.get(ask, :cwd), uncommitted: :allowed),
+         :ok <- holding(guest, source, words.thread_id),
+         %Handoff{status: :open, id: id} <-
+           Slots.latest_handoff(handoffs, project, source.branch) ||
+             {:error, {:not_withdrawable, nil, source.branch}} do
+      reason = ask |> Map.get(:reason) |> to_string() |> String.trim() |> String.slice(0, 500)
+
+      update(username, id, "##{id} withdrawn", fn handoff ->
+        %{
+          handoff
+          | status: :withdrawn,
+            timeline:
+              handoff.timeline ++
+                [event(:withdrawn, "#{who(words)} took it back for more work", %{note: reason})]
+        }
+      end)
+    else
+      %Handoff{} = handoff -> {:error, {:not_withdrawable, handoff, handoff.source.branch}}
+      error -> error
+    end
+  end
+
+  defp build(nil, id, words, project, base, source, head) do
+    now = now()
+
+    %Handoff{
+      id: id,
+      title: words.title,
+      body: words.body,
+      agent: words.agent,
+      thread: words.thread,
+      thread_id: words.thread_id,
+      project: project.name,
+      repo: project.path,
+      onto: base.branch || base.ref,
+      mirrored_branch: base.branch,
+      base_branch: base.branch,
+      base_ref: base.ref,
+      base_commit: base.commit,
+      source: source,
+      head: head,
+      opened_at: now,
+      updated_at: now,
+      timeline: [event(:opened, "#{who(words)} handed it off")]
+    }
+  end
+
+  # A new revision may come from another folder than the last: its branch
+  # moved to another worktree slot.
+  defp build(%Handoff{} = handoff, _id, words, _project, base, source, head) do
+    moved? = handoff.head != head
+
+    %{
+      handoff
+      | title: if(words.title == "", do: handoff.title, else: words.title),
+        body: if(words.body == "", do: handoff.body, else: words.body),
+        agent: words.agent || handoff.agent,
+        thread: words.thread || handoff.thread,
+        thread_id: words.thread_id || handoff.thread_id,
+        onto: base.branch || base.ref,
+        mirrored_branch: base.branch,
+        base_branch: base.branch,
+        base_ref: base.ref,
+        base_commit: base.commit,
+        source: source,
+        head: head,
+        status: :open,
+        updated_at: now(),
+        revision: if(moved?, do: handoff.revision + 1, else: handoff.revision),
+        timeline:
+          handoff.timeline ++
+            [
+              event(
+                :updated,
+                if(moved?,
+                  do: "#{who(words)} handed off new commits (revision #{handoff.revision + 1})",
+                  else: "#{who(words)} updated it, with no new commits"
+                )
+              )
+            ]
+    }
+  end
+
+  # One handoff per branch of a repository in the VM while it is open.
+  defp open_from(handoffs, source) do
+    Enum.find(handoffs, fn handoff ->
+      handoff.status in [:open, :sent_back, :withdrawn] and
+        handoff.source.folder == source.folder and
+        handoff.source.branch == source.branch
+    end)
+  end
+
+  @doc """
+  The handoffs of the project `cwd` is in, in the VM, newest first, each
+  with what MWT can say of it now; the folder `cwd` is in; and the
+  project's worktrees as the VM has them now (`Projects.place/2`), to say
+  where each handoff's branch is.
+  """
+  @spec for_agent(String.t(), String.t()) ::
+          {:ok, Project.t(), [{Handoff.t(), map() | nil}], {:worktree, String.t()},
+           MWTClient.Sandbox.Slots.look() | nil}
+          | {:error, error()}
+  def for_agent(username, cwd) do
+    %{handoffs: handoffs, dir: dir} = Server.call(username, :projects)
+
+    with {:ok, project, where, look} <- Projects.place(username, cwd) do
+      mine =
+        handoffs
+        |> Enum.filter(&(&1.project == project.name))
+        |> Enum.sort_by(& &1.id, :desc)
+        |> Enum.map(fn handoff ->
+          facts =
+            if handoff.status in [:open, :sent_back, :withdrawn],
+              do: ok(Handoff.facts(HandoffStore.path(dir, handoff.repo), handoff))
+
+          {handoff, facts}
+        end)
+
+      {:ok, project, mine, where, look}
+    end
+  end
+
+  ## What you do with one
+
+  @doc "Every handoff, newest first."
+  @spec list(String.t()) :: [Handoff.t()]
+  def list(username), do: Enum.sort_by(Server.call(username, :projects).handoffs, & &1.id, :desc)
+
+  @doc """
+  What MWT works out about one against your repository as it is now. The
+  size and conflicts the list shows are kept up to date with it.
+  """
+  @spec facts(String.t(), pos_integer()) :: {:ok, Handoff.facts()} | {:error, error()}
+  def facts(username, id) do
+    with {:ok, handoff, store} <- find(username, id),
+         {:ok, facts} <- Handoff.facts(store, handoff) do
+      stats = Handoff.stats(facts)
+
+      if handoff.status in [:open, :sent_back, :withdrawn] and stats != handoff.stats,
+        do: Server.call(username, {:handoff_stats, id, stats})
+
+      {:ok, facts}
+    end
+  end
+
+  @doc "Works out again the size and conflicts of a project's open handoffs, as after your branch moved."
+  @spec refresh(String.t(), String.t()) :: :ok
+  def refresh(username, project) do
+    for %Handoff{project: ^project, status: status, id: id} <- list(username),
+        status in [:open, :sent_back, :withdrawn],
+        do: facts(username, id)
+
+    :ok
+  end
+
+  @doc "Its change, file by file, against the commit it was built on."
+  @spec diff(String.t(), pos_integer(), String.t()) :: {:ok, map()} | {:error, error()}
+  def diff(username, id, merge_base) do
+    with {:ok, handoff, store} <- find(username, id),
+         do: Handoff.diff(store, handoff, merge_base)
+  end
+
+  @doc """
+  What the landing form offers for a handoff: every host branch (with
+  the worktree it is checked out in, and which is the project's default
+  branch), the branch it lands on unless you choose another (`onto`: the
+  task's base, the branch an earlier revision landed on being its base
+  by then; the default branch when the base is no host branch), and for
+  a new branch, the prefix MWT puts before its name and the name it
+  suggests: the task's branch.
+  """
+  @spec landing(String.t(), pos_integer()) :: {:ok, map()} | {:error, error()}
+  def landing(username, id) do
+    with {:ok, handoff, _store} <- find(username, id) do
+      trees = Map.new(Accept.worktrees(handoff.repo), &{&1.branch, &1.path})
+      default = default_branch(username, handoff)
+
+      branches =
+        for branch <- Project.branches(handoff.repo) do
+          %{branch: branch, worktree: trees[branch], default?: branch == default}
+        end
+
+      names = MapSet.new(branches, & &1.branch)
+
+      onto =
+        Enum.find([handoff.base_branch, default], &MapSet.member?(names, &1)) ||
+          Enum.find_value(branches, & &1.branch)
+
+      {:ok,
+       %{
+         branches: branches,
+         onto: onto,
+         prefix: Accept.prefix(handoff.repo),
+         name: handoff.source.branch
+       }}
+    end
+  end
+
+  defp default_branch(username, handoff) do
+    case Enum.find(Projects.list(username), &(&1.name == handoff.project)) do
+      nil -> nil
+      project -> project.mirrored_branch
+    end
+  end
+
+  @doc """
+  What landing would do (`Accept.preview/4`): on `destination`, or on the
+  branch `landing/2` offers first; as it is when it can, unless `opts`
+  says `one_commit: true`.
+  """
+  @spec preview(String.t(), pos_integer(), Accept.destination() | nil, keyword()) ::
+          {:ok, map()} | {:error, error()}
+  def preview(username, id, destination \\ nil, opts \\ []) do
+    with {:ok, handoff, store} <- find(username, id),
+         {:ok, destination} <- destination(username, id, destination) do
+      Accept.preview(store, handoff, destination, opts)
+    end
+  end
+
+  @doc """
+  Lands an open handoff (`Accept.run/4`): on `destination`, or on the
+  branch `landing/2` offers first; as it is (a fast-forward, its own
+  commits) when that branch hasn't moved, else as one commit, or as one
+  commit anyway with `one_commit: true` in `opts`.
+  """
+  @spec accept(String.t(), pos_integer(), Accept.destination() | nil, keyword()) ::
+          {:ok, Handoff.t()} | {:error, error()}
+  def accept(username, id, destination \\ nil, opts \\ []) do
+    :global.trans({{__MODULE__, username}, self()}, fn ->
+      with {:ok, %Handoff{status: status} = handoff, store} <- find(username, id),
+           true <- status != :withdrawn or {:error, :withdrawn},
+           true <- status in [:open, :sent_back] or {:error, :not_open},
+           {:ok, destination} <- destination(username, id, destination),
+           {:ok, accepted} <- Accept.run(store, handoff, destination, opts) do
+        Projects.used(username, handoff.project)
+
+        result =
+          update(username, id, "##{id} landed", fn record ->
+            %{
+              record
+              | status: :accepted,
+                onto: accepted.branch,
+                host_branch: accepted.branch,
+                host_head: accepted.undo.after,
+                landed: %{commit: accepted.undo.after, head: record.head, branch: accepted.branch},
+                accepted: accepted,
+                timeline:
+                  record.timeline ++ [event(:accepted, "You landed " <> accepted_words(accepted))]
+            }
+          end)
+
+        # Mirror following also runs in the background; make this landing visible now.
+        _ = Projects.fresh(username, handoff.project)
+        _ = refresh(username, handoff.project)
+        result
+      end
+    end)
+  end
+
+  @doc """
+  Catches an open handoff up with the branch it is on (`CatchUp`): its
+  commits replayed onto the branch's tip in MWT's store, never in your
+  repository, as a new revision, which then lands as it is. Only for a
+  handoff on one of your branches that moved under it, where every commit
+  applies cleanly; the committer is you. Its thread's own branch keeps
+  the commits it had; its next handoff catches up the same way.
+  """
+  @spec catch_up(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
+  def catch_up(username, id) do
+    :global.trans({{__MODULE__, username}, self()}, fn ->
+      with {:ok, %Handoff{status: status} = handoff, store} <- find(username, id),
+           true <- status in [:open, :sent_back] or {:error, :not_open},
+           branch when is_binary(branch) <- handoff.base_branch || {:error, :no_branch},
+           tip when is_binary(tip) <-
+             Accept.tip(handoff.repo, branch) || {:error, {:branch_gone, branch}},
+           {:ok, facts} <- Handoff.facts(store, handoff),
+           {:ok, moved} <-
+             caught_up(
+               CatchUp.rebase(
+                 store,
+                 facts.merge_base,
+                 handoff.head,
+                 tip,
+                 HostGit.identity(handoff.repo)
+               )
+             ),
+           :ok <- HandoffStore.keep_revision(store, id, handoff.revision, handoff.head),
+           :ok <- HandoffStore.point(store, id, moved.head),
+           :ok <- HandoffStore.keep_revision(store, id, handoff.revision + 1, moved.head),
+           next = %{handoff | head: moved.head, base_commit: tip},
+           {:ok, after_facts} <- Handoff.facts(store, next) do
+        commits = if moved.commits == 1, do: "its commit", else: "its #{moved.commits} commits"
+
+        update(username, id, "##{id} caught up with #{branch}", fn record ->
+          %{
+            record
+            | head: moved.head,
+              base_commit: tip,
+              revision: record.revision + 1,
+              stats: Handoff.stats(after_facts),
+              updated_at: now(),
+              timeline:
+                record.timeline ++
+                  [
+                    event(
+                      :caught_up,
+                      "You caught it up with #{branch}: MWT replayed #{commits} onto it " <>
+                        "(revision #{record.revision + 1}). Its checks ran before that.",
+                      %{onto: tip, commits: moved.commits}
+                    )
+                  ]
+          }
+        end)
+      end
+    end)
+  end
+
+  defp caught_up({:ok, moved}), do: {:ok, moved}
+  defp caught_up({:error, problem}), do: {:error, {:catch_up, problem}}
+
+  defp destination(username, id, nil) do
+    case landing(username, id) do
+      {:ok, %{onto: onto}} when is_binary(onto) -> {:ok, {:commit, onto}}
+      {:ok, _no_branch} -> {:error, :bad_destination}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp destination(_username, _id, {:commit, branch}) when is_binary(branch),
+    do: {:ok, {:commit, String.trim(branch)}}
+
+  defp destination(_username, _id, {:branch, from, name})
+       when is_binary(from) and is_binary(name),
+       do: {:ok, {:branch, String.trim(from), String.trim(name)}}
+
+  defp destination(_username, _id, _other), do: {:error, :bad_destination}
+
+  @doc "What landed and where, in words."
+  @spec accepted_words(Handoff.accepted()) :: String.t()
+  def accepted_words(%{how: :as_is, new_branch?: true, branch: branch, from: from} = accepted),
+    do: "#{commits_words(accepted)} on a new branch, #{branch}, from #{from}"
+
+  def accepted_words(%{how: :as_is, branch: branch} = accepted),
+    do: "#{commits_words(accepted)} onto #{branch} (a fast-forward)"
+
+  def accepted_words(%{how: :commit, new_branch?: true, branch: branch, from: from}),
+    do: "one commit on a new branch, #{branch}, from #{from}"
+
+  def accepted_words(%{how: :commit, branch: branch}), do: "one commit onto #{branch}"
+
+  # Older MWTs landed a handoff's own commits.
+  def accepted_words(%{how: :commits, branch: branch}), do: "its commits onto #{branch}"
+
+  # Older MWTs also took a handoff as uncommitted changes.
+  def accepted_words(%{how: :changes, branch: branch}),
+    do: "the changes onto #{branch}, uncommitted"
+
+  defp commits_words(%{commits: 1}), do: "its commit as it is"
+  defp commits_words(%{commits: n}) when is_integer(n), do: "its #{n} commits as they are"
+  defp commits_words(_accepted), do: "its commits as they are"
+
+  @doc """
+  Where an unfinished handoff's branch is in the VM now, to open it in Zed
+  and look at it again: the worktree that has it checked out, with its
+  slot's name when it is a slot; nil when no worktree has it. The VM must
+  be running.
+  """
+  @spec worktree(String.t(), pos_integer()) ::
+          {:ok, %{path: String.t(), slot: String.t() | nil} | nil} | {:error, error()}
+  def worktree(username, id) do
+    with {:ok, handoff, _store} <- find(username, id),
+         {:ok, look} <- Projects.slots(username, handoff.project) do
+      case Enum.find(look.worktrees, &(&1.branch == handoff.source.branch and not &1.missing?)) do
+        nil ->
+          {:ok, nil}
+
+        %{path: path} ->
+          slot = Slots.slot_at(look, path)
+          {:ok, %{path: path, slot: slot && slot.name}}
+      end
+    end
+  end
+
+  @doc "Takes a landed handoff back out, and opens it again."
+  @spec undo(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
+  def undo(username, id) do
+    with {:ok, %Handoff{status: :accepted, accepted: %{} = accepted} = handoff, _store} <-
+           find(username, id),
+         :ok <- Accept.undo(handoff.repo, accepted) do
+      update(username, id, "##{id} taken back out", fn handoff ->
+        %{
+          handoff
+          | status: :open,
+            host_head:
+              if(handoff.host_branch == handoff.accepted.branch,
+                do: handoff.accepted.undo.before,
+                else: handoff.host_head
+              ),
+            landed: nil,
+            accepted: nil,
+            timeline: handoff.timeline ++ [event(:reopened, "You took it back out")]
+        }
+      end)
+    else
+      {:ok, _handoff, _store} -> {:error, :not_accepted}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Sends a handoff back to its thread with a note: an open one, or one you
+  landed and want more work on. What landed stays where it went (undo it
+  first to take it out); the agent's next handoff from that branch updates
+  this one.
+
+  The note goes to the thread that made the handoff, as a message, when
+  MWT can reach it (`MWTClient.Sandbox.AgentThreads`): open in Zed, started
+  with an MWT agent. Either way the agent can read it with `mwt handoffs`.
+  The `:sent_back` event says which (`delivery`).
+
+  With `catch_up: true` it is a catch-up (`ask_to_catch_up/2`): the
+  thread hears it as one, and that the note is also your ask to hand off
+  again once it has caught up.
+  """
+  @spec send_back(String.t(), pos_integer(), String.t(), keyword()) ::
+          {:ok, Handoff.t()} | {:error, error()}
+  def send_back(username, id, note, opts \\ []) do
+    note = String.trim(note)
+    catch_up? = Keyword.get(opts, :catch_up, false)
+
+    with {:ok, %Handoff{status: status}, _store} <- find(username, id),
+         true <- status in [:open, :sent_back, :withdrawn, :accepted] or {:error, :not_open},
+         {:ok, handoff} <-
+           update(username, id, "##{id} sent back", fn handoff ->
+             text =
+               cond do
+                 catch_up? -> "You asked its thread to catch up and hand off again"
+                 handoff.status == :accepted -> "You sent it back for more, after landing it"
+                 true -> "You sent it back"
+               end
+
+             %{
+               handoff
+               | status: :sent_back,
+                 accepted: nil,
+                 timeline:
+                   handoff.timeline ++
+                     [event(:sent_back, text, %{note: note, catch_up: catch_up?})]
+             }
+           end) do
+      {:ok, tell_thread(username, handoff, note, catch_up?)}
+    end
+  end
+
+  @doc """
+  Sends an open handoff back to catch up with the branch it is on, which
+  moved under it: in one click, with a note MWT writes (`catch_up_note/3`),
+  naming the branch, how far it moved and the files that conflict. The
+  note is also your ask to hand off again, so the thread rebases,
+  resolves, runs the checks and hands off without waiting for you.
+  """
+  @spec ask_to_catch_up(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
+  def ask_to_catch_up(username, id) do
+    with {:ok, %Handoff{base_branch: branch} = handoff, store} <- find(username, id),
+         true <- is_binary(branch) or {:error, :no_branch},
+         {:ok, facts} <- Handoff.facts(store, handoff) do
+      send_back(username, id, catch_up_note(branch, facts.behind, facts.conflicts),
+        catch_up: true
+      )
+    end
+  end
+
+  @doc """
+  The note a catch-up sends: what moved, what conflicts, what to do, and
+  that it is the ask to hand off again.
+
+      iex> MWTClient.Sandbox.Handoffs.catch_up_note("master", 1, ["a.txt"])
+      "Catch up with master: it has 1 commit this handoff doesn't, which changes the same lines in a.txt. Run mwt handoff: it fetches and rebases onto origin/master, and stops at the conflicts. Resolve them keeping what both sides meant, git add each, and run mwt handoff again until it hands off. This note is the user's ask to hand off again once it has caught up and its checks pass."
+  """
+  @spec catch_up_note(String.t(), non_neg_integer(), [String.t()]) :: String.t()
+  def catch_up_note(branch, behind, conflicts) do
+    commits = if behind == 1, do: "1 commit", else: "#{behind} commits"
+
+    moved =
+      case conflicts do
+        [] ->
+          "it has #{commits} this handoff wasn't built or tested with."
+
+        files ->
+          "it has #{commits} this handoff doesn't, which changes the same lines in #{Enum.join(files, ", ")}."
+      end
+
+    steps =
+      case conflicts do
+        [] ->
+          "Run mwt handoff: it fetches, rebases onto origin/#{branch} and runs the checks."
+
+        _files ->
+          "Run mwt handoff: it fetches and rebases onto origin/#{branch}, and stops at the conflicts. " <>
+            "Resolve them keeping what both sides meant, git add each, and run mwt handoff again until it hands off."
+      end
+
+    "Catch up with #{branch}: #{moved} #{steps} " <>
+      "This note is the user's ask to hand off again once it has caught up and its checks pass."
+  end
+
+  # After the handoff says it is sent back, so the agent that hears it finds
+  # it so in `mwt handoffs`.
+  defp tell_thread(username, handoff, note, catch_up?) do
+    text = if note == "", do: "No note: ask the user what they want.", else: note
+
+    delivery =
+      case AgentThreads.say(username, handoff.thread_id, text,
+             from:
+               if(catch_up?,
+                 do: "handoff ##{handoff.id} sent back to catch up",
+                 else: "handoff ##{handoff.id} sent back"
+               )
+           ) do
+        :ok -> %{said?: true}
+        {:error, reason} -> %{said?: false, why: AgentThreads.explain(reason)}
+      end
+
+    summary =
+      if delivery.said?,
+        do: "##{handoff.id}: the note went to its thread",
+        else: "##{handoff.id}: the note didn't go to its thread. #{delivery.why}"
+
+    marked =
+      update(username, handoff.id, summary, fn handoff ->
+        %{handoff | timeline: deliveries(handoff.timeline, delivery)}
+      end)
+
+    case marked do
+      {:ok, handoff} -> handoff
+      {:error, _reason} -> handoff
+    end
+  end
+
+  # On the last send back, which this delivery was for.
+  defp deliveries(timeline, delivery) do
+    case Enum.find_index(Enum.reverse(timeline), &(&1.kind == :sent_back)) do
+      nil ->
+        timeline
+
+      from_end ->
+        List.update_at(
+          timeline,
+          length(timeline) - 1 - from_end,
+          &Map.put(&1, :delivery, delivery)
+        )
+    end
+  end
+
+  @doc "Closes an open handoff without landing it."
+  @spec close(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
+  def close(username, id) do
+    with {:ok, %Handoff{status: status}, _store} <- find(username, id),
+         true <- status in [:open, :sent_back, :withdrawn] or {:error, :not_open} do
+      update(username, id, "##{id} closed", fn handoff ->
+        %{
+          handoff
+          | status: :closed,
+            timeline: handoff.timeline ++ [event(:closed, "You closed it")]
+        }
+      end)
+    end
+  end
+
+  @doc "Opens a closed handoff again."
+  @spec reopen(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
+  def reopen(username, id) do
+    case find(username, id) do
+      {:ok, %Handoff{status: :closed}, _store} ->
+        update(username, id, "##{id} reopened", fn handoff ->
+          %{
+            handoff
+            | status: :open,
+              timeline: handoff.timeline ++ [event(:reopened, "You reopened it")]
+          }
+        end)
+
+      {:ok, _handoff, _store} ->
+        {:error, :not_closed}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp update(username, id, summary, fun),
+    do: Server.call(username, {:update_handoff, id, fun, summary})
+
+  defp find(username, id) do
+    %{handoffs: handoffs, dir: dir} = Server.call(username, :projects)
+
+    case Enum.find(handoffs, &(&1.id == id)) do
+      nil -> {:error, :not_found}
+      handoff -> {:ok, handoff, HandoffStore.path(dir, handoff.repo)}
+    end
+  end
+
+  # What MWT kept of a handoff too old to keep.
+  defp forget(dir, handoff),
+    do: HandoffStore.drop(HandoffStore.path(dir, handoff.repo), handoff.id)
+
+  defp event(kind, text, extra \\ %{}), do: Map.merge(%{at: now(), kind: kind, text: text}, extra)
+
+  defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
+
+  @doc "Who handed it off, in words."
+  @spec who(map()) :: String.t()
+  def who(%{agent: agent}) when agent in [nil, ""], do: "An agent"
+  def who(%{agent: agent}), do: agent
+
+  defp ok({:ok, value}), do: value
+  defp ok(_), do: nil
+
+  @doc "Why something here didn't happen, in words."
+  @spec explain(error()) :: String.t()
+  def explain(:vm_not_running), do: "The VM isn't running."
+
+  def explain({:real_value, grant, where}),
+    do:
+      "MWT refused this handoff: #{where} holds #{grant}'s real value, which nothing in the VM should have. Nothing was handed off. The user has been told; don't send it again."
+
+  def explain(:not_found), do: "That handoff is gone."
+
+  def explain(:not_open), do: "That handoff isn't open any more."
+
+  def explain(:withdrawn),
+    do:
+      "Its agent took it back for more work: it can be landed once handed off again. You can close it, or send it back with a note."
+
+  def explain({:not_a_task, branch}),
+    do:
+      "#{branch} isn't a task's branch: a handoff goes from the branch mwt worktree new started for the task, in its slot. If this work belongs to a task, ask the user how to carry it there."
+
+  def explain({:not_your_task, branch}),
+    do:
+      "Another thread holds #{branch}: only that thread hands it off or takes its handoff back. Tell the user, and go on in this thread only read-only (mwt project says what that allows). Nothing was handed off."
+
+  def explain({:not_withdrawable, nil, branch}),
+    do:
+      "#{branch} has no handoff to take back: do the work on it, and hand off once the user asks."
+
+  def explain({:not_withdrawable, %Handoff{id: id, status: :withdrawn}, _branch}),
+    do:
+      "You took handoff ##{id} back already: do the work, and hand off again once the user asks."
+
+  def explain({:not_withdrawable, %Handoff{id: id, status: :sent_back}, _branch}),
+    do:
+      "Handoff ##{id} was sent back to you already: do the work, and hand off again once the user asks."
+
+  def explain({:not_withdrawable, %Handoff{id: id, status: status}, branch}),
+    do:
+      "Handoff ##{id} #{Slots.status_word(status)}: there is nothing to take back. For more work, take your slot again for it, named for what the user asked now: mwt worktree new TASK --from BRANCH (#{branch} stays as it is)."
+
+  def explain(:not_closed), do: "That handoff isn't closed."
+  def explain(:not_accepted), do: "That handoff hasn't landed, so there is nothing to undo."
+  def explain(:not_in_a_project), do: Handoff.explain(:not_in_a_project)
+
+  def explain({kind, _} = reason) when kind in [:branch_exists, :branch_gone, :changed],
+    do: Accept.explain(reason)
+
+  def explain({:conflicts, _, _} = reason), do: Accept.explain(reason)
+  def explain({:catch_up, problem}), do: CatchUp.explain(problem)
+
+  def explain(:no_branch),
+    do: "It isn't on one of your branches, so there is nothing to catch up with."
+
+  def explain({:pending, _, _, _} = reason), do: Accept.explain(reason)
+
+  def explain(reason)
+      when reason in [:bad_destination, :up_to_date, :no_identity, :nothing_to_undo, :moved],
+      do: Accept.explain(reason)
+
+  def explain(reason), do: Handoff.explain(reason)
+end
