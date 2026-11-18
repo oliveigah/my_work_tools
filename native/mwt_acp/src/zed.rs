@@ -16,10 +16,6 @@ use std::path::Path;
 pub const AGENTS: [(&str, &str); 2] =
     [("Claude (MWT)", "claude-acp"), ("Codex (MWT)", "codex-acp")];
 
-/// The same agents as MWT wrote them when it was MDT: dropped, so Zed
-/// doesn't list them twice.
-pub const FORMER_AGENTS: [&str; 2] = ["Claude (MDT)", "Codex (MDT)"];
-
 /// Puts the agents in `file`, each starting `command` with its registry id.
 /// Whether the file changed.
 pub fn write_agents(file: &Path, command: &str) -> Result<bool, String> {
@@ -44,9 +40,6 @@ pub fn write_agents(file: &Path, command: &str) -> Result<bool, String> {
         Some(servers @ Value::Object(_)) => servers.clone(),
         _ => Value::Object(vec![]),
     };
-    for name in FORMER_AGENTS {
-        servers.remove(name);
-    }
     for (name, agent) in AGENTS {
         servers.set(
             name,
@@ -118,7 +111,7 @@ mod tests {
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(
             &file,
-            "// mine\n{\"theme\": \"One Dark\", \"agent_servers\": {\"Mine\": {\"type\": \"custom\", \"command\": \"x\"}, \"Claude (MWT)\": {\"command\": \"old\"}, \"Codex (MDT)\": {\"command\": \"older\"},},}\n",
+            "// mine\n{\"theme\": \"One Dark\", \"agent_servers\": {\"Mine\": {\"type\": \"custom\", \"command\": \"x\"}, \"Claude (MWT)\": {\"command\": \"old\"},},}\n",
         )
         .unwrap();
         assert_eq!(write_agents(&file, "/new"), Ok(true));
@@ -128,7 +121,6 @@ mod tests {
             Some("One Dark")
         );
         assert!(settings.at(&["agent_servers", "Mine"]).is_some());
-        assert!(settings.at(&["agent_servers", "Codex (MDT)"]).is_none());
         assert_eq!(
             settings
                 .at(&["agent_servers", "Claude (MWT)", "command"])

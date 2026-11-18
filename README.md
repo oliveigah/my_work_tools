@@ -42,11 +42,6 @@ account.
   password-protected local identity in `~/.mwt_client/`. Git repositories
   remain in their own folders. The transfer system packages identity data for
   encrypted export and import.
-- **Formerly MDT:** MWT was called MDT (My Dev Tools). An install made then
-  keeps its data in `~/.mdt_client/` and its VMs under the names microsandbox
-  recorded them by; saved data, exports (`.mdtexport`) and VM clones made then
-  are read as MWT's (`MWTClient.FormerName`). The `mwt` package replaces the
-  `mdt` one.
 
 ## Development
 

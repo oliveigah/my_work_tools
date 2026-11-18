@@ -18,8 +18,7 @@ defmodule MWTClient.Accounts do
 
   alias MWTClient.Vault
 
-  # MDT's name, for good: every vault.json sealed this text (MWTClient.FormerName).
-  @verifier "mdt:vault:verifier:v1"
+  @verifier "mwt:vault:verifier:v1"
   @version 1
   @data_key_bytes 32
   # How SQLite3 Multiple Ciphers opens the identity's databases. The data

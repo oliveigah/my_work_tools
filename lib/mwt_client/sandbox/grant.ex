@@ -587,8 +587,7 @@ defmodule MWTClient.Sandbox.Grant do
         else: {fields[:env] || [], fields[:file_env] || []}
 
     upgraded = %{
-      # MWT's tools had MDT's name in their ids.
-      id: MWTClient.FormerName.grant_id(fields[:id]),
+      id: fields[:id],
       kind: if(fields[:kind] == :http, do: :token, else: fields[:kind]),
       preset: fields[:preset] || if(recipe in [:github, :hex, :google, :database], do: recipe),
       purpose: fields[:purpose] || old_purpose(recipe),

@@ -48,15 +48,7 @@ defmodule MWTClient.Sandbox.Inbox do
   # Run in the VM, as root: makes the folder one in the VM's memory, unless
   # it is already. Over a folder mounted there by a VM made before
   # 2026-11-16, too.
-  #
-  # An image built when MWT was MDT points its CA bundle and its login
-  # shells' profile at /mnt/mdt: that is a link here, until the image is
-  # built again. Only an empty folder or a link is replaced.
   @mount ~S"""
-  if ! grep -qs " /mnt/mdt " /proc/mounts; then
-    { [ -L /mnt/mdt ] || rmdir /mnt/mdt 2>/dev/null || [ ! -e /mnt/mdt ]; } &&
-      ln -sfn "$1" /mnt/mdt
-  fi
   grep -qs " $1 tmpfs " /proc/mounts && exit 0
   mkdir -p -- "$1"
   mount -t tmpfs -o mode=0755,nosuid,nodev,size=256m mwt "$1"

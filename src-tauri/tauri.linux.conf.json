@@ -18,8 +18,6 @@
           "libstdc++6",
           "zlib1g"
         ],
-        "conflicts": ["mdt"],
-        "replaces": ["mdt"],
         "section": "devel",
         "priority": "optional",
         "postInstallScript": "../scripts/deb/postinst.sh",
@@ -27,7 +25,6 @@
       },
       "rpm": {
         "release": "5",
-        "obsoletes": ["mdt"],
         "depends": [
           "xdg-utils",
           "polkit",

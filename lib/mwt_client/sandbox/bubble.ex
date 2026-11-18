@@ -15,8 +15,8 @@ defmodule MWTClient.Sandbox.Bubble do
   answers `control.sock`, and is process 1 in there, so the VM runs exactly
   as long as it does.
 
-  Everything the VM is made of is bound under `/mwt` (`/mdt` in an install
-  MDT made, `inside/1`), a path that exists only in the bubble:
+  Everything the VM is made of is bound under `/mwt` (`inside/1`), a path
+  that exists only in the bubble:
 
       /mwt/runtime    msb, its guest kernel, the relay       read-only
       /mwt/sockets    MWTClient.Sandbox.Sockets
@@ -60,14 +60,10 @@ defmodule MWTClient.Sandbox.Bubble do
           optional(:memory_min_gib) => pos_integer()
         }
 
-  @doc """
-  The path in the bubble of one of the VM's parts: under `/mwt`, or `/mdt`
-  in an install MDT made, whose VMs' records name those paths
-  (`MWTClient.FormerName`).
-  """
+  @doc "The path in the bubble of one of the VM's parts: under `/mwt`."
   @spec inside(:runtime | :sockets | :disks | :inbox | :optmem) :: String.t()
   def inside(part) when part in [:runtime, :sockets, :disks, :inbox, :optmem],
-    do: "/#{MWTClient.FormerName.name()}/#{part}"
+    do: "/mwt/#{part}"
 
   @doc """
   The `bwrap` the bubble is made with, or nil when there is none: MWT's own

@@ -33,13 +33,61 @@ defmodule MWTClient.Transfer.ArchiveTest do
     assert Archive.decode(archive, {:password, "wrong horse"}) == {:error, :bad_password}
   end
 
-  test "an export MDT made opens with MWT's names", %{key: key} do
-    kdf = Map.put(Vault.kdf_params(), "salt", Base.encode64(Vault.salt()))
-    card = %{__struct__: :"Elixir.MDTClient.Flashcards.Card", id: "c1"}
-    archive = Archive.encode(%{sections: %{"cards" => [card]}}, kdf, &Vault.seal(key, &1))
+  describe "an export MDT made" do
+    setup %{key: key} do
+      kdf = Map.put(Vault.kdf_params(), "salt", Base.encode64(Vault.salt()))
 
-    assert {:ok, %{sections: %{"cards" => [%{__struct__: MWTClient.Flashcards.Card}]}}} =
-             Archive.decode(archive, {:open, &Vault.open(key, &1)})
+      header =
+        Jason.encode!(%{
+          "kdf" => kdf,
+          "verifier" => Base.encode64(Vault.seal(key, "mdt:export:verifier:v1"))
+        })
+
+      contents = %{
+        sections: %{
+          "cards" => [
+            %{
+              __struct__: :"Elixir.MDTClient.Flashcards.Card",
+              id: "c1",
+              kind: :mdt,
+              text: "MDTClient"
+            }
+          ]
+        }
+      }
+
+      payload = Vault.seal(key, :erlang.term_to_binary(contents))
+      %{mdt: <<"MDTEXPORT", 1, byte_size(header)::32, header::binary, payload::binary>>}
+    end
+
+    test "opens with MWT's names", %{key: key, mdt: mdt} do
+      assert {:ok, %{sections: %{"cards" => [card]}}} =
+               Archive.decode(mdt, {:open, &Vault.open(key, &1)})
+
+      assert card == %{
+               __struct__: MWTClient.Flashcards.Card,
+               id: "c1",
+               kind: :mwt,
+               text: "MDTClient"
+             }
+    end
+
+    test "still tells a wrong password and a newer format apart", %{mdt: mdt} do
+      assert Archive.decode(mdt, {:open, &Vault.open(Vault.derive(@password, Vault.salt()), &1)}) ==
+               {:error, :bad_password}
+
+      <<"MDTEXPORT", 1, rest::binary>> = mdt
+
+      assert Archive.decode(<<"MDTEXPORT", 2, rest::binary>>, {:password, @password}) ==
+               {:error, :unsupported_version}
+    end
+
+    test "is only MDT's: MWT's header with MDT's verifier is refused", %{key: key, mdt: mdt} do
+      <<"MDTEXPORT", rest::binary>> = mdt
+
+      assert Archive.decode(<<"MWTEXPORT", rest::binary>>, {:open, &Vault.open(key, &1)}) ==
+               {:error, :bad_password}
+    end
   end
 
   test "the file carries no plaintext", %{archive: archive} do
@@ -67,16 +115,16 @@ defmodule MWTClient.Transfer.ArchiveTest do
   end
 
   test "a newer format is refused rather than misread", %{key: key, archive: archive} do
-    <<"MDTEXPORT", 1, rest::binary>> = archive
+    <<"MWTEXPORT", 1, rest::binary>> = archive
 
-    assert Archive.decode(<<"MDTEXPORT", 2, rest::binary>>, {:open, &Vault.open(key, &1)}) ==
+    assert Archive.decode(<<"MWTEXPORT", 2, rest::binary>>, {:open, &Vault.open(key, &1)}) ==
              {:error, :unsupported_version}
   end
 
   test "a header asking for an unbounded key derivation is refused before deriving", %{
     archive: archive
   } do
-    <<"MDTEXPORT", 1, size::32, header::binary-size(size), payload::binary>> = archive
+    <<"MWTEXPORT", 1, size::32, header::binary-size(size), payload::binary>> = archive
 
     header =
       header
@@ -84,7 +132,7 @@ defmodule MWTClient.Transfer.ArchiveTest do
       |> put_in(["kdf", "iterations"], 1_000_000_000)
       |> Jason.encode!()
 
-    tampered = <<"MDTEXPORT", 1, byte_size(header)::32, header::binary, payload::binary>>
+    tampered = <<"MWTEXPORT", 1, byte_size(header)::32, header::binary, payload::binary>>
 
     assert Archive.decode(tampered, {:password, @password}) == {:error, :damaged}
   end

@@ -36,8 +36,7 @@ defmodule MWTClient.Sandbox.Mirror do
     mkdir -p "$m"
     git init -q "$m"
   fi
-  if git -C "$m" config --get mwt.clone-version >/dev/null ||
-    git -C "$m" config --get mdt.clone-version >/dev/null; then echo ready
+  if git -C "$m" config --get mwt.clone-version >/dev/null; then echo ready
   elif git -C "$m" rev-parse --verify --quiet HEAD >/dev/null; then echo migrate
   else echo new; fi
   """
@@ -91,23 +90,6 @@ defmodule MWTClient.Sandbox.Mirror do
       done || true
     git remote remove host
   fi
-  # A clone made when MWT was MDT: its remotes go through MWT's helper
-  # (mwt::), its tasks' keys take MWT's names, and MDT's own keys go. Each
-  # run, so any clone comes over.
-  for r in origin upstream; do
-    u=$(git config --get "remote.$r.url" || true)
-    case $u in mdt::*) git config "remote.$r.url" "mwt::${u#mdt::}" ;; esac
-  done
-  git config --get-regexp '^branch[.].*[.]mdt-(base|thread)$' |
-    while read -r key value; do
-      git config "${key%.mdt-*}.mwt-${key##*.mdt-}" "$value"
-      git config --unset "$key"
-    done || true
-  for k in clone-version project; do
-    v=$(git config --get "mdt.$k" || true)
-    [ -z "$v" ] || git config "mwt.$k" "$v"
-  done
-  git config --remove-section mdt 2>/dev/null || true
   git symbolic-ref -q --short HEAD || true
   """
 

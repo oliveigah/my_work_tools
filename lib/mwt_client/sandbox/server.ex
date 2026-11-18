@@ -154,10 +154,7 @@ defmodule MWTClient.Sandbox.Server do
   defdelegate waiting_topic(username), to: State
 
   @doc "The microsandbox name of this identity's VM."
-  # `mdt-` in an install MDT made: microsandbox knows its VM by that name
-  # (MWTClient.FormerName).
-  def vm_name(username),
-    do: "#{MWTClient.FormerName.name()}-" <> String.slice(Accounts.id(username), 0, 10)
+  def vm_name(username), do: "mwt-" <> String.slice(Accounts.id(username), 0, 10)
 
   @doc false
   def call(username, message, timeout \\ 15_000),
