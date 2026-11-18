@@ -104,9 +104,8 @@ defmodule MWTClient.Vault do
 
   def open(_key, _blob), do: :error
 
-  # What MDT sealed is read as MWT's (`MWTClient.FormerName`).
   defp decode(plain) do
-    {:ok, MWTClient.FormerName.binary_to_term(plain)}
+    {:ok, :erlang.binary_to_term(plain)}
   rescue
     ArgumentError -> :error
   end

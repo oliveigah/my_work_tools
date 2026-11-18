@@ -105,55 +105,6 @@ defmodule MWTClient.Sandbox.InstructionsTest do
       assert codex == Instructions.block() <> "\nPrefer small commits.\n"
     end
 
-    test "what an MDT boot left goes: its block, its Codex server, its VM record", %{
-      inbox: inbox,
-      home: home,
-      etc: etc,
-      boot: boot
-    } do
-      File.mkdir_p!(Path.join(home, ".claude"))
-
-      File.write!(
-        Path.join(home, ".claude/CLAUDE.md"),
-        "<!-- mdt:begin -->\nMDT's words\n<!-- mdt:end -->\n\nMy own notes.\n"
-      )
-
-      fake = Path.join(inbox, "bin/mwt")
-      File.mkdir_p!(Path.dirname(fake))
-      File.write!(fake, "#!/bin/sh\n")
-      File.chmod!(fake, 0o755)
-      config = Path.join(home, ".codex/config.toml")
-      File.mkdir_p!(Path.dirname(config))
-
-      File.write!(config, """
-      model = "gpt-5"
-
-      # MDT's own tools (notes, diagrams, flash cards, HTTP samples), from its boot script.
-      [mcp_servers.mdt]
-      command = "/mnt/mdt/bin/mdt"
-      args = ["mcp"]
-
-      [mcp_servers.mine]
-      command = "mine"
-      """)
-
-      File.mkdir_p!(Path.join(etc, "profile.d"))
-      File.write!(Path.join(etc, "mdt-vm"), "id=old\n")
-      File.write!(Path.join(etc, "profile.d/mdt-vm.sh"), "echo old\n")
-
-      assert {"", 0} = boot.()
-
-      assert File.read!(Path.join(home, ".claude/CLAUDE.md")) ==
-               Instructions.block() <> "\nMy own notes.\n"
-
-      written = File.read!(config)
-      refute written =~ "mdt"
-      assert written =~ "[mcp_servers.mine]\ncommand = \"mine\"\n"
-      assert [_] = Regex.scan(~r/^\[mcp_servers\.mwt\]$/m, written)
-      refute File.exists?(Path.join(etc, "mdt-vm"))
-      refute File.exists?(Path.join(etc, "profile.d/mdt-vm.sh"))
-    end
-
     test "MWT's tools are registered with Codex once, and one there already is left as it is",
          %{inbox: inbox, home: home, boot: boot} do
       fake = Path.join(inbox, "bin/mwt")

@@ -29,11 +29,6 @@
 #     merges after the user's), when MWT has its ACP shell (bin/mwt-acp):
 #     only those two entries, the rest of the file is left alone.
 #
-# MWT was MDT: what an MDT boot left goes, so nothing says or runs it twice.
-# Its instructions block, its tools' entry in ~/.codex/config.toml and with
-# Claude Code, its record of the VM and its line for login shells. Its
-# agents in Zed's settings go with mwt-acp's write.
-#
 # It also starts `mwt ports --watch`, which tells MWT what listens in the VM
 # so its servers open on the user's machine. It needs bash, ss and socat,
 # keeps running after this script, and doesn't start twice.
@@ -75,37 +70,8 @@ put_block() {
   mv "$partial" "$file"
 }
 
-# MDT's block, between its own markers, out of an instructions file.
-drop_former_block() {
-  local file=$1 partial
-  grep -qF -- '<!-- mdt:begin' "$file" 2>/dev/null || return 0
-  partial=$(mktemp "$file.XXXXXX") || return 1
-  awk '
-    !inside && index($0, "<!-- mdt:begin") == 1 { inside = 1; next }
-    inside && index($0, "<!-- mdt:end -->") == 1 { inside = 0; dropped = 1; next }
-    inside { next }
-    dropped && $0 == "" { dropped = 0; next }
-    { dropped = 0; print }
-  ' "$file" > "$partial" && mv "$partial" "$file"
-}
-
-# MDT's tools' table, and the comment MDT put above it, out of Codex's config.
-drop_former_codex_server() {
-  local file=$1 partial
-  grep -qs '^\[mcp_servers\.mdt\]' "$file" || return 0
-  partial=$(mktemp "$file.XXXXXX") || return 1
-  awk '
-    /^# MDT.s own tools/ { next }
-    /^\[mcp_servers\.mdt\]/ { skip = 1; next }
-    skip && /^\[/ { skip = 0 }
-    !skip { print }
-  ' "$file" > "$partial" && mv "$partial" "$file"
-}
-
 status=0
 etc=${MWT_ETC:-/etc}
-
-rm -f "$etc/mdt-vm" "$etc/profile.d/mdt-vm.sh"
 
 if [ -n "${1:-}" ]; then
   {
@@ -142,8 +108,7 @@ fi
 
 if [ -r "$block" ]; then
   for file in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"; do
-    drop_former_block "$file" &&
-      put_block "$file" || { echo "mwt-boot: could not write $file" >&2; status=1; }
+    put_block "$file" || { echo "mwt-boot: could not write $file" >&2; status=1; }
   done
 fi
 
@@ -157,8 +122,6 @@ fi
 
 if [ -x "$inbox/bin/mwt" ]; then
   codex_config=$HOME/.codex/config.toml
-  drop_former_codex_server "$codex_config" ||
-    { echo "mwt-boot: could not write $codex_config" >&2; status=1; }
   if ! grep -qs '^\[mcp_servers\.mwt\]' "$codex_config"; then
     mkdir -p "$(dirname "$codex_config")" && {
       [ -s "$codex_config" ] && echo
@@ -170,9 +133,6 @@ if [ -x "$inbox/bin/mwt" ]; then
   fi
 
   if [ -z "${MWT_INBOX:-}" ] && command -v claude >/dev/null 2>&1; then
-    if grep -qs '"mdt": *{' "$HOME/.claude.json"; then
-      timeout 60 claude mcp remove --scope user mdt >/dev/null 2>&1 || true
-    fi
     said=$(timeout 60 claude mcp add-json --scope user mwt \
       "{\"type\":\"stdio\",\"command\":\"$inbox/bin/mwt\",\"args\":[\"mcp\"]}" 2>&1)
     case $said in

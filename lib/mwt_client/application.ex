@@ -7,9 +7,6 @@ defmodule MWTClient.Application do
 
   @impl true
   def start(_type, _args) do
-    # Before anything reads or writes the data folder: an install MDT made
-    # stays in its own (MWTClient.FormerName).
-    choose_data_dir()
     :ok = MWTClient.LogFile.install()
     pubsub = System.get_env("ELIXIRKIT_PUBSUB")
     discard_legacy_history()
@@ -53,16 +50,6 @@ defmodule MWTClient.Application do
     # for other strategies and supported options
     opts = [strategy: :one_for_one, name: MWTClient.Supervisor]
     Supervisor.start_link(children, opts)
-  end
-
-  # Decided once, unless the config names a folder (tests, a dev run of its
-  # own): MDT's while it is there and MWT's isn't.
-  defp choose_data_dir do
-    if !Application.get_env(:mwt_client, :data_dir) do
-      former = MWTClient.FormerName.data_dir()
-      dir = MWTClient.FormerName.data_dir(former, MWTClient.Accounts.root())
-      Application.put_env(:mwt_client, :data_dir, dir)
-    end
   end
 
   # Request history predates per identity encryption and was written in the

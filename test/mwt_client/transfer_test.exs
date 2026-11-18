@@ -183,6 +183,59 @@ defmodule MWTClient.TransferTest do
     assert id == note.id
   end
 
+  test "an export MDT made imports, with MWT's names", %{
+    username: username,
+    password: password,
+    path: path
+  } do
+    {:ok, note} =
+      Notes.Library.save(username, Notes.Note.new_id(), %{title: "From MDT", body: "kept"})
+
+    {:ok, diagram} = Library.save(username, Diagram.new_id(), %{title: "Old", elements: []})
+    record(username, "https://api.example.test/from-mdt")
+    :ok = Transfer.export(username, path)
+
+    # The same contents, as MDT wrote its exports.
+    {:ok, contents} = Archive.decode(File.read!(path), {:password, password})
+    mdt_path = Path.rootname(path) <> ".mdtexport"
+    File.write!(mdt_path, mdt_export(to_mdt(contents), password))
+
+    other = also_unlock("someone-else")
+    assert {:ok, plan} = Transfer.read(other, mdt_path, password: password)
+    assert :ok = Transfer.import(other, plan, :merge)
+
+    assert {:ok, ^note} = Notes.Library.get(other, note.id)
+    assert paths(other) == ["/from-mdt"]
+    assert {:ok, %{title: "Old"}} = Library.get(other, diagram.id)
+  end
+
+  defp to_mdt(term) when is_atom(term) do
+    case Atom.to_string(term) do
+      "Elixir.MWTClient" <> rest -> String.to_atom("Elixir.MDTClient" <> rest)
+      _ -> term
+    end
+  end
+
+  defp to_mdt([head | tail]), do: [to_mdt(head) | to_mdt(tail)]
+
+  defp to_mdt(map) when is_map(map),
+    do: map |> :maps.to_list() |> Map.new(fn {k, v} -> {to_mdt(k), to_mdt(v)} end)
+
+  defp to_mdt(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.map(&to_mdt/1) |> List.to_tuple()
+
+  defp to_mdt(other), do: other
+
+  defp mdt_export(contents, password) do
+    salt = MWTClient.Vault.salt()
+    key = MWTClient.Vault.derive(password, salt)
+    kdf = Map.put(MWTClient.Vault.kdf_params(), "salt", Base.encode64(salt))
+    verifier = Base.encode64(MWTClient.Vault.seal(key, "mdt:export:verifier:v1"))
+    header = Jason.encode!(%{"kdf" => kdf, "verifier" => verifier})
+    payload = MWTClient.Vault.seal(key, :erlang.term_to_binary(contents, compressed: 6))
+    <<"MDTEXPORT", 1, byte_size(header)::32, header::binary, payload::binary>>
+  end
+
   test "reports a missing file, a file that is not an export and a blank password", %{
     username: username,
     path: path

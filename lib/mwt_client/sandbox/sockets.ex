@@ -17,8 +17,7 @@ defmodule MWTClient.Sandbox.Sockets do
   and the SSH control socket of the port forwarding, through which anyone
   could add listeners on this machine.
 
-  It sits in `$XDG_RUNTIME_DIR/mwt/<id>` (`mdt` in an install MDT made),
-  readable by you only: Unix socket
+  It sits in `$XDG_RUNTIME_DIR/mwt/<id>`, readable by you only: Unix socket
   paths are short (108 bytes), too short for the identity's own folder, and
   the runtime directory is gone after a logout, like the VM. Tests set
   `:channel_dir`.
@@ -62,16 +61,13 @@ defmodule MWTClient.Sandbox.Sockets do
     dir
   end
 
-  # `mdt` in an install MDT made: msb's home is in here, and its VMs'
-  # records name the path it had (MWTClient.FormerName).
   defp base do
     config = Application.get_env(:mwt_client, Server, [])
-    name = MWTClient.FormerName.name()
 
     Keyword.get_lazy(config, :channel_dir, fn ->
       case System.get_env("XDG_RUNTIME_DIR") do
-        runtime when is_binary(runtime) and runtime != "" -> Path.join(runtime, name)
-        _ -> Path.join(System.tmp_dir!(), "#{name}-#{System.get_env("USER", "user")}")
+        runtime when is_binary(runtime) and runtime != "" -> Path.join(runtime, "mwt")
+        _ -> Path.join(System.tmp_dir!(), "mwt-#{System.get_env("USER", "user")}")
       end
     end)
   end

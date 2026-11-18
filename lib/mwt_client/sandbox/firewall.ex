@@ -237,8 +237,6 @@ defmodule MWTClient.Sandbox.Firewall do
     ".ssh/config",
     ".optmem",
     ".mwt_client",
-    # Where an install MDT made keeps its data still (MWTClient.FormerName).
-    ".mdt_client",
     ".local/share/keyrings",
     "Library/Keychains",
     ".mozilla/firefox",

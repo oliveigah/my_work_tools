@@ -43,14 +43,10 @@ defmodule MWTClient.Storage.Values do
     {:blob, IO.iodata_to_binary(compressed)}
   end
 
-  @doc "A term read from a column; one MDT wrote is read as MWT's (`MWTClient.FormerName`)."
+  @doc "A term read from a column."
   @spec from_term(binary()) :: term()
   def from_term(blob) when is_binary(blob),
-    do:
-      blob
-      |> :zstd.decompress()
-      |> IO.iodata_to_binary()
-      |> MWTClient.FormerName.binary_to_term()
+    do: blob |> :zstd.decompress() |> IO.iodata_to_binary() |> :erlang.binary_to_term()
 
   @doc "Strings as a column holds them: a JSON array."
   @spec strings([String.t()]) :: String.t()

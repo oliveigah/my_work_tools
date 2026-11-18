@@ -142,40 +142,6 @@ defmodule MWTClient.Sandbox.ProjectsCloneTest do
     assert git(clone, ["remote", "get-url", "host"]) == Path.join(vm, "elsewhere.git") <> "\n"
   end
 
-  test "a clone made when MWT was MDT keeps its work and takes MWT's names", %{
-    username: username,
-    repo: repo,
-    mirror: clone,
-    vm: vm
-  } do
-    {:ok, project} = Projects.ensure(username, repo)
-    assert {:ok, _} = Mirror.run(project, Guest.local(vm))
-    "mwt::" <> id = String.trim(git(clone, ["remote", "get-url", "origin"]))
-
-    # As MDT left it.
-    git(clone, ["config", "remote.origin.url", "mdt::" <> id])
-    git(clone, ["config", "remote.upstream.url", "mdt::#{id}/upstream"])
-    git(clone, ["config", "--remove-section", "mwt"])
-    git(clone, ["config", "mdt.clone-version", "1"])
-    git(clone, ["config", "mdt.project", Project.id(project)])
-    git(clone, ["branch", "a.task"])
-    git(clone, ["config", "branch.a.task.mdt-base", "refs/remotes/origin/master"])
-    git(clone, ["config", "branch.a.task.mdt-thread", "a-thread"])
-    commit(clone, [{"local.txt", "local\n"}], "local work")
-    head = sha(clone, "HEAD")
-
-    assert {:ok, _} = Mirror.run(project, Guest.local(vm))
-
-    assert git(clone, ["remote", "get-url", "origin"]) == "mwt::#{id}\n"
-    assert git(clone, ["remote", "get-url", "upstream"]) == "mwt::#{id}/upstream\n"
-    assert git(clone, ["config", "branch.a.task.mwt-base"]) == "refs/remotes/origin/master\n"
-    assert git(clone, ["config", "branch.a.task.mwt-thread"]) == "a-thread\n"
-    assert git(clone, ["config", "mwt.clone-version"]) == "1\n"
-    assert git(clone, ["config", "mwt.project"]) == Project.id(project) <> "\n"
-    refute git(clone, ["config", "--list"]) =~ "mdt"
-    assert sha(clone, "HEAD") == head
-  end
-
   test "later refreshes preserve custom origin and commit identity configuration", %{
     username: username,
     repo: repo,
