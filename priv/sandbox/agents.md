@@ -151,10 +151,19 @@ clones here at `/work/NAME`. It is not in the shared folder's copy.
   terms. They never mention the VM, the clone, slots, handoffs, grants,
   MWT or you, unless the project itself is about them.
   - The handoff's title becomes the commit message: write it as one, for
-    the change ("Retry fetches when the partition leader moves"), never
-    for its trip ("Handoff from slot-2", "Work done in the VM").
-  - Follow the project's own style, as `git log` shows it: prefixes
-    (`feat:`, `fix(consumer):`), tense, length.
+    the change (`fix(consumer): retry fetches when the partition leader
+    moves`), never for its trip ("Handoff from slot-2", "Work done in
+    the VM").
+  - Every commit message you write, a handoff's title included, is a
+    Conventional Commit: `type(scope): summary`. The type says what kind
+    of change it is (`feat`, `fix`, `docs`, `refactor`, `perf`, `test`,
+    `build`, `ci`, `chore`); the scope, optional, the part it touches;
+    the summary, lowercase and imperative, what it does, with no period.
+    A change that breaks what others rely on takes a `!` before the
+    colon (`feat(api)!: …`).
+  - Take scopes and length from the project's `git log` where it has
+    them. Where its older commits don't follow the convention, yours
+    still do.
   - The handoff's body is for the user, in MWT, and stays out of git: what
     you tried and tested in the VM goes there.
 - **A handoff that came too soon:** when the user says so (they close it),

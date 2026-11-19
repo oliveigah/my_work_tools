@@ -37,8 +37,8 @@ defmodule MWTClientWeb.LoginLive do
       <div class="flex min-h-0 flex-1 items-center justify-center p-6">
         <div class="w-full max-w-sm">
           <div class="mb-7 flex flex-col items-center gap-3 text-center">
-            <div class="flex size-12 items-center justify-center rounded-xl border border-line bg-panel text-accent shadow-lg shadow-black/10 dark:shadow-black/30">
-              <Layouts.logo class="size-7" />
+            <div class="flex size-12 items-center justify-center rounded-xl border border-line bg-panel shadow-lg shadow-black/10 dark:shadow-black/30">
+              <Layouts.logo id="login-logo" class="size-7" />
             </div>
             <div>
               <h1 class="text-xl font-semibold tracking-tight">MWT</h1>

@@ -4,6 +4,14 @@ This is a web application written using the Phoenix web framework.
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
+- `.tool-versions` pins the Erlang and Elixir the project builds with: run
+  `mise install` and build with those, never another (`mise exec elixir@...`).
+- Format only Elixir, with `mix format` (`mix precommit` runs it), and Rust
+  (`native/mwt_relay`, `src-tauri`), with `cargo fmt`. Never reformat
+  Markdown, JavaScript, CSS, JSON or YAML: edit them in the style they have.
+- To see the app running, use the run-mwt skill: it gives the dev server a
+  port and a data folder of its own. Never run one against `~/.mwt_client`,
+  and don't run `msb` yourself: both belong to the MWT the user runs.
 
 ### Tests in this project
 
@@ -24,87 +32,11 @@ This is a web application written using the Phoenix web framework.
   two git commits with the same content in the same second being one commit;
   database files read right after a lock (`VaultHelpers.lock_settled/2`).
 - `mix test --slowest 10` shows a test you made slow.
-
-### In the agent sandbox, work in a worktree of the project
-
-This whole section, down to its last rule, is for agents running inside
-MWT's agent sandbox: the VM that MWT starts. Check which side you are on
-before anything else:
-
-- **In the sandbox**, `/mnt/mwt` exists. MWT puts it in every VM it starts,
-  before anything there runs, and nothing else creates it. Test the folder, not
-  `MWT_SANDBOX=1`: the image sets that too, but a process started with a
-  clean environment loses it.
-- **On the user's own machine** there is no `/mnt/mwt`. Skip this section,
-  its rule about `msb` and `~/.mwt_client` included.
-
-In the sandbox, this repository is a project (`mwt project` says so): its
-clone, `/work/mwt_client`, whose `origin` is the user's repository through
-MWT (`git fetch origin` brings their branches as `origin/BRANCH`; a push is
-refused). The clone is `slot-0`; its other worktree slots are beside it.
-The user's own checkout, where their MWT runs, is out of your reach: a
-shared folder's copy leaves its repositories out.
-
-1. Before anything else, even for a question or a review, take the
-   worktree slot your thread is in for the task, named for what the user
-   asked (`fix-login-timeout`, not `task`), from the branch they want the
-   work based on: the one they named, or, when they named none, ask them
-   which first (`mwt project` lists the branches). Until your slot holds
-   your branch it shows as free, and another thread may start in it. It
-   stays yours until its handoff lands or is closed. In a slot another
-   thread holds (`mwt project` says so), only read: no edits, git
-   changes, builds or tests there.
-
-       mwt worktree new <name> --from <branch>
-       mise install && mix deps.get
-
-   It fetches origin and starts the branch `<name>` from `origin/<branch>`
-   there, in `/work/mwt_client` (slot-0) or `/work/mwt_client.wt/slot-N`,
-   where `deps` and `_build` stay from the slot's last task. Your thread
-   works only in that folder: never change, build or run things in
-   another slot, not even by absolute path. If its slot isn't free, stop:
-   `mwt worktree new` lists the free slots with the Zed line that opens
-   each; ask the user to start a thread in one and give it the task there.
-2. Work, build and test only there. `.tool-versions` pins the Erlang and
-   Elixir the user builds with; never build with another
-   (`mise exec elixir@...`). To see it running, use the run-mwt skill with a
-   port and folder of your own (`PORT=41xx MWT_RUN_DIR=/tmp/mwt-run-<name>`):
-   41N0 to 41N9 in slot-N, so slots don't collide. It opens on the user's
-   machine by itself (`mwt ports` gives the URL), so they can try it there;
-   show it with screenshots too.
-3. The VM runs VMs only when the user turned on *VMs inside the VM* in MWT's
-   settings: then `/dev/kvm` exists. Without it, creating, starting and
-   stopping a VM, the proxy in front of a real VM and the `mwt` CLI over
-   vsock can't be tried here. Cover them with tests (they run without msb),
-   and say in your handoff what the user should check once it has landed.
-   With it, `mix test --only vm` and a slot's MWT can run real VMs once
-   `scripts/install-runtime.sh` has put the runtime in the slot: it builds
-   msb once into `/work/mwt-runtime`, shared by every slot (a few minutes),
-   and the relay from your checkout (seconds). Inner VMs take memory from
-   this one.
-4. Format only Elixir, with `mix format` (`mix precommit` runs it), and
-   Rust (`native/mwt_relay`, `src-tauri`), with `cargo fmt`. Never
-   reformat Markdown, JavaScript, CSS, JSON or YAML: edit them in the
-   style they have.
-5. When it's ready and `mix precommit` passes, leave it uncommitted and
-   tell the user it is ready for review in your slot: they read the
-   changes in Zed there. Hand off only once they ask (`/handoff` is that
-   ask): write the title and notes, `git add` the new files that belong
-   to the work, and run, with a time limit of 10 minutes or more,
-
-       mwt handoff --title "What this is" --body /tmp/handoff-<name>.md
-
-   It fetches origin, commits the changes to files git has, with your
-   title (as the user; MWT sets the identity, so no `Co-Authored-By`
-   line), rebases onto `origin/<branch>`, runs the project's checks (`mix
-   precommit`, set on MWT's Projects page) and sends that commit. When it
-   stops at new files it wasn't told about, a conflict or a failing
-   check, deal with that and run it again. The user lands it on their
-   branch, as it is when it hasn't moved; `mwt handoffs` says when they
-   did, or what they sent back. If they say it came too soon, undo the
-   commits and keep the work uncommitted:
-   `git reset $(git merge-base HEAD origin/<branch>)`.
-6. Don't run `msb`, and don't touch `~/.mwt_client`: both are the user's.
+- Tests tagged `vm` start real VMs and are left out unless asked for
+  (`mix test --only vm`): they need `/dev/kvm` and MWT's runtime in
+  `priv/microsandbox`, which `scripts/install-runtime.sh` puts there. Where
+  they can't run, cover the change with the tests that run without msb, and
+  say what is left to try on a real VM.
 
 ### Phoenix v1.8 guidelines
 

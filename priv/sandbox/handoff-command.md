@@ -7,8 +7,9 @@ The user is asking you to hand off your work now: don't ask them again
 whether to. `mwt handoff` does every step that needs no judgment; yours
 are the words, and what it stops at.
 
-1. Write a title, which becomes the commit message: the change, in the
-   project's style (`git log`), never the VM or the handoff. And, in a
+1. Write a title, which becomes the commit message: the change, as a
+   Conventional Commit (`type(scope): summary`, with the scopes the
+   project's `git log` uses), never the VM or the handoff. And, in a
    file outside the repository (`/tmp/handoff-BRANCH.md`), notes in
    Markdown: what changed, why, how you tested it, what the user should
    check, and any choice you made that is theirs to decide.

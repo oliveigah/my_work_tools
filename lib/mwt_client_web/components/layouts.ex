@@ -61,10 +61,10 @@ defmodule MWTClientWeb.Layouts do
       >
         <.link
           navigate={~p"/tools"}
-          class="flex items-center gap-2 rounded px-1.5 py-1 text-accent transition-colors hover:bg-hover"
+          class="flex items-center gap-2 rounded px-1.5 py-1 transition-colors hover:bg-hover"
           title="All tools"
         >
-          <.logo class="size-4" />
+          <.logo id="header-logo" class="size-4" />
           <span class="text-[13px] font-semibold tracking-wide text-ink">MWT</span>
         </.link>
 
@@ -643,28 +643,69 @@ defmodule MWTClientWeb.Layouts do
     """
   end
 
+  # The left crow of the mark, on a 24-unit grid; the right one is its mirror image.
+  @logo_wing "M4.8 15.2C2.9 12.4 1.6 8.4 1.2 3L2.2 5.4L2.6 2.4L3.4 5.3L4 2.8L4.5 5.7L5.3 4.2C5.6 7.4 6.4 9.6 7.6 11.8Z"
+  @logo_body "M7.4 11.2C5.4 12.6 4.6 15.4 4.8 17.6L2.8 21.6L4.2 22.2L6.4 19.2C8.8 19.2 10.4 17.4 10.4 14.6C10.4 13.6 10.2 12.8 9.8 12.2Z"
+  @logo_head "M13.16 4.53Q9.96 7.86 7.36 10.99C6.62 11.28 5.69 12.78 6.66 13.94C7.69 14.86 9.19 14.57 9.79 13.44C10.15 12.72 9.98 12.24 9.94 11.84Z"
+
   @doc """
-  The MWT mark: connected modules forming a compact M.
+  The MWT mark: two crows, Memory and Thought, facing each other. Their raised
+  wings are the outer strokes of a W, their crossing beaks the inner ones.
+
+  It is drawn in `currentColor`, the theme's ink unless the class says
+  otherwise. The cuts between each wing and its body, and the eyes, are holes,
+  so the mark sits on any background. Each use needs its own `id`, which also
+  names its masks.
   """
+  attr :id, :string, required: true
   attr :class, :any, default: "size-5"
 
   def logo(assigns) do
+    assigns =
+      assign(assigns,
+        wing: @logo_wing,
+        body: @logo_body,
+        head: @logo_head,
+        sides: [nil, "matrix(-1 0 0 1 24 0)"]
+      )
+
     ~H"""
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" class={@class}>
-      <path
-        d="M4.25 18V7L12 11.6V18"
-        stroke="var(--color-accent)"
-        stroke-width="4"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
-      <path
-        d="M12 11.6L19.75 7V18"
-        stroke="var(--color-ok)"
-        stroke-width="4"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      />
+    <svg
+      id={@id}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      class={["text-ink", @class]}
+    >
+      <defs>
+        <mask id={"#{@id}-wings"} maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+          <rect width="24" height="24" fill="#fff" />
+          <g
+            :for={side <- @sides}
+            transform={side}
+            fill="none"
+            stroke="#000"
+            stroke-width="0.7"
+            stroke-linejoin="round"
+          >
+            <path d={@body} />
+            <path d={@head} />
+          </g>
+        </mask>
+        <mask id={"#{@id}-eyes"} maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+          <rect width="24" height="24" fill="#fff" />
+          <circle :for={side <- @sides} transform={side} cx="7.54" cy="11.99" r="0.65" fill="#000" />
+        </mask>
+      </defs>
+      <g mask={"url(##{@id}-wings)"}>
+        <path :for={side <- @sides} transform={side} d={@wing} />
+      </g>
+      <g mask={"url(##{@id}-eyes)"}>
+        <g :for={side <- @sides} transform={side}>
+          <path d={@body} />
+          <path d={@head} />
+        </g>
+      </g>
     </svg>
     """
   end

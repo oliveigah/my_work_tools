@@ -2642,7 +2642,7 @@ path each time.
 mwt worktree new TASK --from BASE   take the slot you are in for a task
 mwt worktree resume BRANCH          continue a task in a free slot, or take over its hold
 mwt worktree free                   free your slot, when the user says the task is done
-mwt handoff --title "Fix the login" [--body FILE] [--onto BASE] [--no-checks]
+mwt handoff --title "fix(login): …" [--body FILE] [--onto BASE] [--no-checks]
 mwt handoff withdraw --reason "…"   keep the open handoff from landing until the next
 mwt handoffs                        the project's handoffs and what the user did
 mwt project                         where you are, the slots, the rules
@@ -2651,6 +2651,9 @@ mwt project                         where you are, the slots, the rules
 - **Agents never commit unless you say so,** and hand off only once you
   ask (`/handoff`): you review their work uncommitted in Zed, in the VM.
   You may commit pieces yourself there.
+- **A handoff's title is its commit message,** written, like every
+  commit message an agent writes, as a Conventional Commit:
+  `type(scope): summary`, with the scopes your history uses.
 - **`mwt handoff` does every step that needs no judgment,** in the slot:
   it fetches origin; commits the changes to files git has with the
   title, and stops at new files it wasn't told about; catches up by
@@ -3185,6 +3188,7 @@ history is in git.
 | 2026-11-18 | One *VM isolated* switch on the Firewall page: the firewall turns it on, and so can you, to cut the VM off yourself; turning it off releases the VM, asking first, with what the firewall saw and whether to trust its destination, only when the firewall isolated it. The page is shorter: rules grouped a line each, their full text behind a "?", the lists in tabs, past isolations folded under the switch ([Isolating](#isolating), [The Firewall page](#screens-firewall)). |
 | 2026-11-18 | The app is MWT (My Work Tools): the app, its package, the VM's `mwt` CLI, `/mnt/mwt`, its agents in Zed and its tools over MCP all take that name. Nothing under the former name is read or brought over: an install starts fresh. |
 | 2026-11-18 | Shared folders are synced when asked, not every 3 s: when added, at each start, with Sync or Sync all, after a command you approved ran in one, and by an agent's `mwt sync` (the built-in grant `share-sync`), since walking a large folder every few seconds cost this machine all the time and capped a share at 4 GiB. Copies live on the work disk, shown read-only at their paths, so nothing the VM changes in one needs setting aside: `/work/.rescued` is gone, and a share holds up to half the work disk ([Shared folders](#shared-folders)). |
+| 2026-11-19 | Agents write every commit message, a handoff's title included, as a Conventional Commit (`type(scope): summary`), taking scopes and length from the project's history even where its older commits don't follow the convention, so every project's history reads the same way ([Handoffs](#handoffs)). |
 
 <a id="later"></a>
 
