@@ -23,6 +23,11 @@ that low-stakes tools for one person get. The Agent Sandbox came last, and
 it is the first idea here I think could be worth something on its own.
 It still lives in MWT, because this is where the things I use live.
 
+I use MWT and change it every day: using it is how I find its bugs and
+the next thing to improve in how I work. So there are next to no
+guarantees of stability: things change, move or go, sometimes from one day
+to the next.
+
 A few things hold for every tool:
 
 - **Local-first.** Everything lives on my machine, encrypted under a
@@ -36,9 +41,9 @@ A few things hold for every tool:
 
 The newest tool, and the one I think is most worth the focus, so it gets
 the most space here. Like the rest of MWT it grew fast, as an exploration,
-with plenty of vibe coding along the way. It is the first part of MWT I mean
-to review thoroughly and redesign, to sharpen its ideas, its architecture
-and the guarantees it makes.
+with plenty of poorly reviewed code along the way. It is the first part of
+MWT I mean to review thoroughly and redesign, to sharpen its ideas, its
+architecture and the guarantees it makes.
 
 Coding agents work best when they can install packages, run code and use
 real services. Doing that on my own machine, with my logins, my SSH keys and
@@ -46,11 +51,21 @@ my VPN within reach, is a risk I don't want to take. So my agents work in a
 virtual machine instead, and MWT stands between that VM and everything else.
 
 The VM is a [microsandbox](https://github.com/superradcompany/microsandbox)
-microVM (libkrun on KVM), which MWT starts, watches and controls. MWT ships
+microVM, which MWT starts, watches and controls. MWT ships
 its own copy of microsandbox's `msb`, the stock release, and runs it in a
 locked-down bubble with no access to my home folder or the network.
 
-### What it gives me
+### Safe, and easy to live with
+
+A VM keeps agents away from my machine, but working through one can be
+tedious: repositories to get in and changes to get out, credentials to pass
+along, servers to reach, an editor on the wrong side of the wall. Each step
+is small, together they drain the day, and a sandbox that gets in the way
+is one I would end up working around. So the Agent Sandbox is two things in
+one: the **sandbox**, which makes it safe, and the **control panel**, which
+makes it easy to work with.
+
+### The sandbox: safe
 
 - **My machine stays out of reach.** Whatever an agent installs or runs
   stays in the VM. Folders I share are copied into it, read-only; my
@@ -63,8 +78,7 @@ locked-down bubble with no access to my home folder or the network.
   towards the hosts that grant is for.
 - **I approve what matters.** Requests that use a credential, and commands
   an agent wants to run on my machine, wait for my yes on a card that shows
-  exactly what will happen, with a desktop notification, unless I allowed
-  them for a while.
+  exactly what will happen.
 - **Everything leaves through MWT.** All of the VM's traffic and every DNS
   lookup go through MWT and into an activity log. Private networks stay
   closed unless a grant opens them.
@@ -72,22 +86,48 @@ locked-down bubble with no access to my home folder or the network.
   the access it already has: large uploads, credentials going where they
   shouldn't, strange DNS. On the first sign of trouble it isolates the VM
   until I release it, and I can isolate it myself too.
-- **The VM is a clone of my machine.** The same way my machine is a clone
-  of a remote such as GitHub: my repositories are cloned into the VM with
-  my machine as their `origin`, `git fetch` there brings my branches, and a
-  push is refused. Work comes back the way it reaches a shared repository,
-  much like a pull request: agents work on their own branch in a project's
-  _worktree slot_ and leave their changes uncommitted. I review them in
-  Zed, connected to the VM, where I have the whole project and the best
-  tools for it, and ask for more until it's right. Then they hand it off,
-  and MWT is where I make it official: land it on my branch, send it back
-  with a note, or close it.
-- **Agents in my editor.** MWT adds **Claude (MWT)** and **Codex (MWT)** to
-  Zed's agent panel, with their threads running in the VM, and opens
-  projects in Zed over SSH. Servers an agent starts on ports 4100 to 4199
-  open on my machine by themselves, so I can try what it built.
 
-### The control panel
+### The control panel: easy
+
+- **The VM is a clone of my machine,** as my machine is a clone of GitHub:
+  my repositories are cloned in with my machine as `origin`, `git fetch`
+  brings my branches, and a push is refused. Agents work on their own
+  branch in a _worktree slot_, where builds start warm, and leave their
+  changes uncommitted. I review them in Zed and ask for more; when it's
+  right they hand it off, and in MWT I land it, send it back with a note,
+  or close it, much like a pull request.
+- **Zed does the heavy lifting.** With Zed's remote development, the editor
+  runs on my machine while the files, terminals, language servers and
+  agents run in the VM, so it feels local. MWT only sets up SSH and opens
+  projects in Zed; its **Claude (MWT)** and **Codex (MWT)** entries just let
+  it talk back to a thread.
+- **My machine and the VM, a step apart.** What needs to cross does so
+  easily, always through MWT. Servers an agent starts on ports 4100 to 4199
+  open on my machine by themselves. Folders I share show up in the VM at
+  the same paths, read-only, and sync at each start, when I ask, or when an
+  agent asks. Agents read a description of my machine instead of probing
+  it, reach my notes, diagrams and flash cards, and can ask to run a
+  command on host, which waits for me.
+- **Asking is cheap.** An agent asks for access from the VM, with its
+  reason; I get a notification and a card, and one click lets it carry on.
+  What I trust I allow for a while, or let run without asking.
+- **Commands I can read easily.** Not the long shell lines agents usually
+  ask to run: an agent sends the smallest command that gets the raw data
+  (`kubectl get pods -o json`) and does the rest in the VM. I can see the
+  output before the agent does, and keep it from it. Repeated jobs become
+  saved commands, typed and confined, read once and then trusted.
+- **Agents set up their own access, for me to check.** When no grant fits,
+  an agent proposes one: a token and its hosts, a network and its
+  destinations, or a fixed script or HTTP request with typed parameters. It
+  lands in my grants, off, for me to read, adjust, and accept or decline;
+  the values, approval modes and start settings stay mine. Proposals are
+  narrow, one job each, so they're quick to judge, and my grants grow from
+  the tasks that needed them.
+- **Agents know their way around.** Every agent is told how the VM works:
+  where to work, how to ask, how to hand off, which grant a failed
+  connection needs. No explaining the sandbox to each thread.
+
+One place for all of it:
 
 | Page               | What it is for                                                                                                                             |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
