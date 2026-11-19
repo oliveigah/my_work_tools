@@ -2,7 +2,7 @@ defmodule MWTClient.Sandbox.CopyLifecycleTest do
   use ExUnit.Case, async: true
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.{FolderSync, Guest, Server}
+  alias MWTClient.Sandbox.{FolderSync, Guest, Server, ShareMounts}
   alias MWTClient.Sandbox.Server.{Copying, Machine, State}
   alias MWTClient.Vault.Store
 
@@ -39,18 +39,18 @@ defmodule MWTClient.Sandbox.CopyLifecycleTest do
       host: host,
       inbox: inbox,
       vm: vm,
-      copy: vm <> host,
+      copy: vm <> ShareMounts.store(host),
       guest: Guest.local(vm),
       data: Path.join(root, "data")
     })
   end
 
-  test "a successful copy during OptMem sync is remembered without a false rescue", c do
+  test "a successful copy during OptMem sync is remembered, so nothing is sent twice", c do
     before = sync(FolderSync.new(c.host, "old-vm"), c)
     File.write!(Path.join(c.host, "readme.txt"), "after, and longer\n")
     File.touch!(Path.join(c.host, "readme.txt"), @old)
     copied = sync(before, c)
-    assert copied.status.rescued == 0
+    assert copied.status.sent == 1
 
     state = :sys.get_state(c.pid)
 
@@ -69,9 +69,8 @@ defmodule MWTClient.Sandbox.CopyLifecycleTest do
       })
 
     next = sync(state.sync[c.host], c)
-    assert next.status.rescued == 0
+    assert {next.status.sent, next.status.removed} == {0, 0}
     assert File.read!(Path.join(c.copy, "readme.txt")) == "after, and longer\n"
-    refute File.exists?(Path.join(c.vm, ".rescued"))
   end
 
   test "replacement waits for shared-folder and inbox copies, leaving new VM files untouched",
@@ -106,7 +105,6 @@ defmodule MWTClient.Sandbox.CopyLifecycleTest do
     assert File.read!(Path.join(c.copy, "new-vm-work.txt")) == "work after recreation\n"
     refute File.exists?(Path.join(c.copy, "readme.txt"))
     assert File.read!(c.vm <> "/mnt/mwt/grants.md") == "new VM grants\n"
-    refute File.exists?(Path.join(c.vm, ".rescued"))
   end
 
   for purpose <- [:sync, :sync_inbox] do
@@ -194,7 +192,7 @@ defmodule MWTClient.Sandbox.CopyLifecycleTest do
           :sync ->
             records = %{c.host => FolderSync.new(c.host, "old-vm")}
 
-            FolderSync.sync_all(records, guest, c.data)
+            FolderSync.sync_all(records, [c.host], guest, c.data)
             |> Map.merge(%{vm: "old-vm", started_at: started_at})
 
           :sync_inbox ->

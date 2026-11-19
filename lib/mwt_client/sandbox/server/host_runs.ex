@@ -17,10 +17,12 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     Inbound,
     Param,
     Policy,
-    SavedRequest
+    SavedRequest,
+    Share,
+    Shares
   }
 
-  alias MWTClient.Sandbox.Server.{Approvals, Firewall, State, Values}
+  alias MWTClient.Sandbox.Server.{Approvals, Firewall, ShareSync, State, Values}
 
   # A command waits as long for your go-ahead, and once it ran with its
   # output for you, as long again for you to release it.
@@ -357,6 +359,17 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     end
   end
 
+  # A command that ran in a shared folder may have left files there: that
+  # share is synced, so they reach the VM's copy. `mwt sync` waits for it.
+  defp sync_its_share(state, %Approval{dir: dir}) when is_binary(dir) do
+    case Enum.find(state.settings.shares, &Shares.within?(dir, &1.path)) do
+      %Share{path: path} -> ShareSync.request(state, [path])
+      nil -> state
+    end
+  end
+
+  defp sync_its_share(state, _approval), do: state
+
   @doc """
   Takes a run's result: the output goes to the agent, or waits for you
   first when you asked to see it, or when it holds a credential
@@ -370,6 +383,7 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
 
     case Enum.find(state.approvals, &(&1.id == approval_id)) do
       %Approval{run: %{state: :running} = run} = approval ->
+        state = sync_its_share(state, approval)
         {output, findings} = inbound(state, approval, result[:output] || "")
 
         run =

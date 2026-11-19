@@ -55,6 +55,15 @@ mwt - ask MWT, the user's control panel, for access
       firewall refused it. Run it when a lookup or a connection fails. It
       never looks up a name no grant covers.
 
+  mwt sync [PATH]
+      Bring the copies of the user's shared folders up to date from their
+      machine, and wait for it: all of them, or with PATH only the one
+      holding it. The copies are read-only here, at the same paths as on
+      their machine, and change only when synced: by the user, at each
+      start of the VM, after a command run with mwt run in one, and with
+      this. Run it before relying on what a shared file holds now. The git
+      repositories in them aren't copied: they are projects (mwt project).
+
   mwt ports
       The servers running in this VM and where they open on the user's
       machine: a server you start here on a port from 4100 to 4199, on any
@@ -884,6 +893,13 @@ case $command in
       exit 1
     fi
     send "{\"command\":\"why\",\"target\":$(json "$grant")}"
+    ;;
+  sync)
+    # The path as this VM has it: a shared folder's copy is at the same path
+    # as on the user's machine.
+    path=""
+    [ -n "$grant" ] && path=$(realpath -m -- "$grant")
+    send "{\"command\":\"sync\",\"path\":$(json "$path")}"
     ;;
   ports)
     if [ "$watch" = 1 ]; then

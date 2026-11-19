@@ -255,6 +255,7 @@ defmodule MWTClientWeb.SandboxLive do
                   ports={@ports}
                   monitor={@monitor}
                   monitor_by={@monitor_by}
+                  sync={@sync}
                   now={@now}
                 />
               <% :approvals -> %>
@@ -1540,6 +1541,16 @@ defmodule MWTClientWeb.SandboxLive do
     {:noreply, assign(socket, :share_error, reason <> " Type the folder's path instead.")}
   end
 
+  def handle_event("sync_share", %{"path" => path}, socket) do
+    :ok = Sandbox.sync_shares(socket.assigns.username, [path])
+    {:noreply, refresh(socket)}
+  end
+
+  def handle_event("sync_shares", _params, socket) do
+    :ok = Sandbox.sync_shares(socket.assigns.username, :all)
+    {:noreply, refresh(socket)}
+  end
+
   def handle_event("remove_share", %{"path" => path}, socket) do
     :ok = Sandbox.remove_share(socket.assigns.username, path)
     {:noreply, refresh(socket)}
@@ -2634,7 +2645,7 @@ defmodule MWTClientWeb.SandboxLive do
 
   defp copied_words,
     do:
-      "Its git repositories are projects; the rest is copied into the VM within seconds while it runs."
+      "Its git repositories are projects; the rest is copied into the VM, read-only there, and synced again when you ask."
 
   # `JS.push` sends the integer as JSON, a form would send a string.
   defp parse_duration("until_off"), do: "until_off"

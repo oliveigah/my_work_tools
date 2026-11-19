@@ -114,7 +114,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     assert output =~ "# The user's machine"
     assert output =~ "Architecture: #{:erlang.system_info(:system_architecture)}"
     assert output =~ "- #{shared}\n"
-    assert output =~ "In the VM each is a copy"
+    assert output =~ "In the VM each is a read-only copy"
     assert output =~ "VPN: openvpn3 work"
 
     inbox = Sandbox.snapshot(context.username).inbox

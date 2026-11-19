@@ -218,7 +218,15 @@ defmodule MWTClient.Sandbox.Grant do
           url: String.t() | nil,
           headers: [{String.t(), String.t()}],
           body: String.t() | nil,
-          tools: :read | :create | :change | :git_fetch | :git_fetch_remote | :git_handoff | nil,
+          tools:
+            :read
+            | :create
+            | :change
+            | :git_fetch
+            | :git_fetch_remote
+            | :git_handoff
+            | :share_sync
+            | nil,
           proposal: proposal() | nil,
           source: source(),
           env: [String.t()],
@@ -484,6 +492,15 @@ defmodule MWTClient.Sandbox.Grant do
       purpose:
         "Lets agents send their work back with mwt handoff: an exact commit, into MWT's review store, never into your repository. " <>
           "You review it and decide where it lands."
+    },
+    %{
+      tools: :share_sync,
+      id: "share-sync",
+      name: "Shared folders: sync",
+      start: :auto,
+      purpose:
+        "Lets agents bring the VM's read-only copies of your shared folders up to date with mwt sync, as you would with Sync. " <>
+          "Only what you shared, from this machine into the VM: nothing goes back."
     }
   ]
 
@@ -493,7 +510,8 @@ defmodule MWTClient.Sandbox.Grant do
   mcp: reading and creating are auto-approved, changing asks each time.
   For the projects' Git (`git_tools?/1`): fetching from your repositories,
   fetching from their remotes on this machine, and handing off, all
-  auto-approved; landing is never a grant, it is yours.
+  auto-approved; landing is never a grant, it is yours. And syncing your
+  shared folders' copies, auto-approved too.
   """
   @spec mwt_tools() :: [t()]
   def mwt_tools do

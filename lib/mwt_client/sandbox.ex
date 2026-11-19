@@ -539,6 +539,14 @@ defmodule MWTClient.Sandbox do
   def remove_share(username, path), do: Server.call(username, {:remove_share, path})
 
   @doc """
+  Syncs the copies of shared folders in the VM: every one (`:all`) or
+  those paths (`MWTClient.Sandbox.Server.ShareSync`). Returns at once; the
+  snapshot's `sync` shows how it goes.
+  """
+  @spec sync_shares(username(), :all | [String.t()]) :: :ok
+  def sync_shares(username, which), do: Server.call(username, {:sync_shares, which})
+
+  @doc """
   The addresses MWT always refuses for the VM: loopback, link-local,
   unspecified and every address of this machine's own interfaces.
   """

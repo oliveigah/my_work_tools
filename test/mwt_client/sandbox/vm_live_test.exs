@@ -31,6 +31,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     Ports,
     Projects,
     Server,
+    ShareMounts,
     Sockets
   }
 
@@ -419,8 +420,12 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert {:ok, _} =
              exec.("apk add --no-cache findutils coreutils tar >/dev/null 2>&1; echo ok")
 
+    # Its store on the work disk, shown read-only at the same path.
     guest = Guest.vm(username, name)
     later = [now: System.os_time(:second) + 10]
+    assert :ok = ShareMounts.arrange(guest, [share])
+    # Again: what is shown already stays as it is.
+    assert :ok = ShareMounts.arrange(guest, [share])
     record = FolderSync.sync(FolderSync.new(share, "vm-live"), guest, sync_dir, later)
 
     assert record.status.error == nil
@@ -429,20 +434,33 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert {:ok, "hello.txt\n"} = exec.("ls -A #{share}")
     assert {:ok, gone} = exec.("cat #{share}/app/.env 2>&1; true")
     assert gone =~ "No such file or directory"
+    store = ShareMounts.store(share)
+    assert {:ok, "from your machine\n"} = exec.("cat #{store}/hello.txt")
 
-    # Yours reaches the copy; the VM's own edit is set aside, not lost, and
-    # never reaches your folder.
-    assert {:ok, _} = exec.("echo 'the VM wrote this' > #{share}/hello.txt")
+    # Read-only in the VM, even for root: an edit fails instead of being
+    # lost at the next sync, and nothing reaches your folder.
+    assert {:ok, mounts} = exec.("grep ' #{share} ' /proc/mounts")
+    assert mounts =~ ~r/\sro[,\s]/
+    assert {:ok, refused} = exec.("(echo 'the VM wrote this' > #{share}/hello.txt) 2>&1; true")
+    assert refused =~ "Read-only file system"
+    assert {:ok, refused} = exec.("touch #{share}/planted 2>&1; true")
+    assert refused =~ "Read-only file system"
+
+    # Yours reaches the copy when synced, and only then.
     File.write!(Path.join(share, "hello.txt"), "changed on your machine\n")
     File.write!(Path.join(share, "new.txt"), "new\n")
+    assert {:ok, "from your machine\n"} = exec.("cat #{share}/hello.txt")
     record = FolderSync.sync(record, guest, sync_dir, later)
 
     assert record.status.error == nil
+    assert {record.status.sent, record.status.removed} == {2, 0}
     assert {:ok, "changed on your machine\n"} = exec.("cat #{share}/hello.txt")
     assert {:ok, "new\n"} = exec.("cat #{share}/new.txt")
-    assert record.status.rescued == 1
-    assert {:ok, "the VM wrote this\n"} = exec.("cat #{record.status.rescued_to}/hello.txt")
-    assert File.read!(Path.join(share, "hello.txt")) == "changed on your machine\n"
+
+    # No longer shared: unmounted, its store gone.
+    assert :ok = ShareMounts.arrange(guest, [])
+    assert {:ok, "gone\n"} = exec.("test -e #{share}/hello.txt || echo gone")
+    assert {:ok, "gone\n"} = exec.("test -e #{Path.dirname(store)} || echo gone")
 
     # The built-in command grant is still off.
     assert {:ok, grants} = exec.("/mnt/mwt/bin/mwt grants")
@@ -467,7 +485,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     # whole, by a rename.
     assert {:ok, _} = Sandbox.turn_on(username, token.id, 60)
     inbox = copy_inbox.(inbox, [])
-    assert inbox.status.rescued == 0
+    assert inbox.status.error == nil
     assert {:ok, "gone\n"} = exec.("test -e /mnt/mwt/.mwt-incoming || echo gone")
 
     assert {:ok, "anonymous\n"} =
@@ -714,7 +732,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
       dir = state.dir
 
       Server.State.task(state, :sync, fn ->
-        FolderSync.sync_all(%{share => FolderSync.new(share, vm)}, guest, dir)
+        FolderSync.sync_all(%{share => FolderSync.new(share, vm)}, [share], guest, dir)
         |> Map.merge(%{vm: vm, started_at: started_at})
       end)
     end)
@@ -739,7 +757,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
 
   defp wait_share_copy(username, path, deadline \\ System.monotonic_time(:millisecond) + 60_000) do
     case Sandbox.snapshot(username).sync[path] do
-      %{files: 1, error: nil} = status ->
+      %{status: %{files: 1, error: nil} = status} ->
         status
 
       _ ->
@@ -868,10 +886,10 @@ defmodule MWTClient.Sandbox.VMLiveTest do
                "apk add --no-cache git bash socat findutils coreutils tar python3 && git --version"
              )
 
-    # The rest of the shared folder is copied in by the server's look; the
+    # The rest of the shared folder is copied in when synced; the
     # repository is not.
     File.write!(Path.join(projects, "README.txt"), "beside the repositories\n")
-    send(server, :sync)
+    assert :ok = Sandbox.sync_shares(username, [projects])
 
     assert %{files: 1, trees: ["flow"], error: nil} = wait_share_copy(username, projects)
 

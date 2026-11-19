@@ -336,6 +336,97 @@ defmodule MWTClientWeb.SandboxLive.Components do
     """
   end
 
+  @doc """
+  Syncs a shared folder's copy in the VM, or every one when `path` is nil
+  (`MWTClient.Sandbox.Server.ShareSync`). It turns while one is under way
+  or due for it.
+  """
+  attr :id, :string, required: true
+  attr :path, :string, default: nil
+  attr :busy?, :boolean, default: false
+  attr :running?, :boolean, required: true
+  attr :label, :string, default: "Sync"
+
+  def share_sync_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={@id}
+      phx-click={if(@path, do: "sync_share", else: "sync_shares")}
+      phx-value-path={@path}
+      disabled={not @running? or @busy?}
+      title={
+        cond do
+          not @running? -> "Start the VM first: it syncs every shared folder as it starts"
+          @busy? -> "Syncing…"
+          @path -> "Copy what changed in this folder into the VM"
+          true -> "Copy what changed in every shared folder into the VM"
+        end
+      }
+      class="group/sync inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-[11px] font-medium text-ink transition-all hover:border-accent/50 hover:text-accent active:scale-[0.97] disabled:cursor-default disabled:opacity-50 disabled:hover:border-line disabled:hover:text-ink"
+    >
+      <.icon
+        name="hero-arrow-path-micro"
+        class={[
+          "size-3.5 transition-transform",
+          if(@busy?, do: "animate-spin", else: "group-hover/sync:rotate-90")
+        ]}
+      />
+      {@label}
+    </button>
+    """
+  end
+
+  @doc """
+  How a shared folder's copy stands, in a line: what a sync under way is
+  doing with it, or when it was last synced. `entry` is the share's in the
+  snapshot's `sync` (`MWTClient.Sandbox.Server.ShareSync.view/1`).
+  """
+  attr :id, :string, required: true
+  attr :entry, :map, default: nil
+  attr :running?, :boolean, required: true
+  attr :now, DateTime, default: nil
+
+  def share_sync_state(assigns) do
+    assigns = assign(assigns, :now, assigns.now || DateTime.utc_now())
+
+    ~H"""
+    <span id={@id} class="inline-flex min-w-0 items-center gap-1">
+      <%= cond do %>
+        <% @entry && @entry.progress -> %>
+          <span class="relative flex size-1.5 shrink-0">
+            <span class="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60"></span>
+            <span class="relative inline-flex size-1.5 rounded-full bg-accent"></span>
+          </span>
+          <span class="truncate text-accent">{phase_words(@entry.progress)}</span>
+        <% @entry && @entry.due? and @running? -> %>
+          <span class="truncate text-muted">Sync queued…</span>
+        <% @entry && @entry.status && @entry.status.synced_at -> %>
+          <span class="truncate text-muted">
+            Synced {ago(@entry.status.synced_at, @now)}{changes_words(@entry.status)}
+          </span>
+        <% @running? -> %>
+          <span class="truncate text-faint">Not synced yet</span>
+        <% true -> %>
+          <span class="truncate text-faint">Synced when the VM starts</span>
+      <% end %>
+    </span>
+    """
+  end
+
+  defp phase_words(:waiting), do: "Waiting for the others…"
+  defp phase_words(:scanning), do: "Looking at the folder…"
+  defp phase_words(:comparing), do: "Comparing with the VM's copy…"
+
+  defp phase_words({:sending, files, size}),
+    do: "Sending #{files} #{if files == 1, do: "file", else: "files"} (#{bytes(size)})…"
+
+  defp changes_words(%{sent: 0, removed: 0}), do: ", nothing had changed"
+  defp changes_words(%{sent: sent, removed: 0}), do: ", #{sent} sent"
+  defp changes_words(%{sent: 0, removed: removed}), do: ", #{removed} removed"
+  defp changes_words(%{sent: sent, removed: removed}), do: ", #{sent} sent, #{removed} removed"
+  defp changes_words(_status), do: ""
+
   @doc "A quiet line for an empty list."
   attr :icon, :string, required: true
   attr :id, :string, default: nil

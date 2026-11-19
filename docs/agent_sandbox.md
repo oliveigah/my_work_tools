@@ -113,7 +113,7 @@ VM ──vsock:5000──▶ $XDG_RUNTIME_DIR/mwt/<id>/channel.sock ──▶ ag
 /mnt/mwt (copied in, in the VM's memory): CA bundle, placeholders, the `mwt` command, git's credential helper,
                                           host.md, the boot script
 /root, /cache, /work, /root/.optmem: the VM's own disks (ext4 images here, which nothing here opens)
-shared folders: copied one way onto the VM's root disk; the repositories in them are clones on /work
+shared folders: copied one way onto /work/.shares, shown read-only at their paths; the repositories in them are clones on /work
 
 msb and the relay run in a bubble (bwrap): no home folder of yours, no network but loopback
 ```
@@ -328,9 +328,9 @@ times faster than a shared folder (10,000 files made in 0.85 s, not 3.51 s).
 | ------ | --------------- | ----------------------------------------------------------------------------------------------- | ------------ | ----------------------------------------------------- |
 | Home   | `/root`         | Codex and Claude logins, shell history, Zed's server, agent settings, your mise config            | 16 GiB       | Keep (default), go back to a snapshot, or start empty |
 | Cache  | `/cache`        | Runtime tool versions (`MISE_DATA_DIR`); hex/mix, npm/pnpm, cargo, go, uv and pip caches         | 64 GiB       | Keep (default) or clear                               |
-| Work   | `/work`         | Project clones, their worktrees and builds, `/work/.rescued`                                    | 64 GiB       | Always kept; emptied only when you ask                |
+| Work   | `/work`         | Project clones, their worktrees and builds, shared folders' copies (`/work/.shares`)            | 64 GiB       | Always kept; emptied only when you ask                |
 | Memory | `/root/.optmem` | [The VM's OptMem](#the-vms-optmem), mounted after Home                                          | 2 GiB, fixed | Kept, whatever happens to Home                        |
-| Root   | `/`             | The image's copy; apt packages, `/tmp`, `/var`; shared folders' copies                          | 64 GiB       | Starts empty                                          |
+| Root   | `/`             | The image's copy; apt packages, `/tmp`, `/var`                                                  | 64 GiB       | Starts empty                                          |
 
 - **Sizes** are settings, and the limit on what the VM writes: the root
   disk's applies by recreating (microsandbox's default is 4 GiB), the
@@ -426,11 +426,10 @@ disks.
   after each start mounts, so nothing of it is ever on a VM disk. It holds
   no real value. It is filled whole with a plain `tar` before anything reads it (an
   image without bash still gets its CA and boot script); then each change
-  MWT makes is copied (`Server.Copying`), and the shared folders' 3-s look
-  checks it. Files are replaced whole, by rename. A grant turned on reaches
+  MWT makes is copied (`Server.Copying`), and a look every 3 s checks it. Files are replaced whole, by rename. A grant turned on reaches
   an agent waiting on `mwt request` once that copy ended, within 10 s.
 - **The VM's own changes** to it change nothing MWT does; the whole
-  comparison every 5 minutes puts it back, setting nothing aside. Past the
+  comparison at the next start puts it back, setting nothing aside. Past the
   first copy it needs
   bash and GNU `find`, `stat`, `mv`, `chmod`, `tar`; a failed copy shows in
   the VM's status.
@@ -473,7 +472,8 @@ the VM's `~/.config/zed/settings.json`. It starts `mwt ports --watch`.
 
 **What agents are told** (`priv/sandbox/agents.md`), in short:
 
-- work in `/work`, not in shared folders' one-way copies; a worktree slot
+- work in `/work`, not in shared folders' read-only copies, and `mwt sync`
+  before relying on what one holds now; a worktree slot
   per task, work left uncommitted for your review, a handoff only when you
   ask, and the VM kept out of the history
   ([Projects and handoffs](#projects-and-handoffs));
@@ -493,35 +493,46 @@ file, a linked worktree included) reaches the VM only as a
 [project](#projects-and-handoffs), a clone of its commits: never in a copy,
 wherever it sits, one appearing later included, since a copy would carry
 what a repository keeps beside its code (`.env`, ignored secrets, a token
-in a remote's URL). **Everything else** is copied one way onto the VM's
-root disk, at the same path as here. The VM never writes to your folders.
+in a remote's URL). **Everything else** is copied one way into the VM and
+shown there **read-only**, at the same path as here. The VM never writes to
+your folders, and nothing of a copy comes back.
 
-- **Every 3 s** while the VM runs (less often for a slow folder), MWT sends
-  what changed: files, folders and symlinks (as links); other kinds are
-  skipped.
-- **What the VM changes in a copy stays there:** when MWT next writes a
-  path the VM changed, added or removed, the VM's version is first moved to
-  `/work/.rescued/TIME/PATH`. At each start and every 5 minutes MWT
-  compares the whole copy and puts it right the same way.
+- **Synced when asked, never on a timer** (`Server.ShareSync`): when you
+  add the folder, at each start of the VM (every share, each copy compared
+  whole), with **Sync** or **Sync all** (Overview and Settings), after a
+  command you approved ran in it (so what it left reaches the copy), and
+  when an agent runs `mwt sync [PATH]`, which waits for it, through the
+  built-in grant *Shared folders: sync* (`share-sync`), enabled and
+  auto-approved at start. Between those the copy stays as it was, which
+  agents are told. One sync runs at a time; what is asked meanwhile runs
+  next, whole, and whoever waits hears when the sync that started after
+  their ask ends. A folder with files still being written gets one sync
+  more, 3 s later, which asks for no other.
+- **Read-only** (`MWTClient.Sandbox.ShareMounts`): each copy lives on the
+  work disk, `/work/.shares/ID/files`, and a read-only bind mount shows it
+  at the folder's path, so an edit there fails (`Read-only file system`)
+  instead of being lost at the next sync, and the copy outlives a
+  recreate. Root in the VM could mount it writable again; that reaches
+  nothing of yours, and the next whole comparison puts the copy back. Each
+  sync first makes the VM show exactly the folders shared: a folder no
+  longer shared is unmounted and its copy deleted.
 - **How** (`MWTClient.Sandbox.FolderSync`): MWT scans the folder (`lstat`)
   against what it last sent this VM (kind, size, mtime to the second, a
-  link's target), kept in `…/sandbox/sync/` so a restarted MWT still tells
-  your changes from the VM's. A file changed in the last 2 s is sent again
-  until it settles; one whose ctime or inode moved is sent anyway. Through
-  `msb exec --stream`, a short bash script in the VM sets aside what
-  doesn't match what MWT expects where it will write or delete, and deletes
-  what you deleted; `tar` here feeds `tar -x` there. MWT reads back only a
-  file list (`find -printf`, at a start and every 5 minutes) and a count of
-  what was set aside, and runs or parses nothing else. Each boot clears
-  earlier delays and asks for a whole comparison at once; a result from
-  before a restart or recreate is ignored, and an OptMem sync meanwhile
-  doesn't void one.
-- **Limits:** 200,000 entries and 4 GiB per folder; past either, nothing
-  more is copied, and Settings says why.
-- **The copy is the VM's,** sent again after a recreate. A folder you stop
-  sharing, or that becomes a repository, keeps its copy as it was, no
-  longer updated; nothing at a repository's path is removed or set aside.
-  Changing shared folders doesn't recreate the VM.
+  link's target), kept in `…/sandbox/sync/` so a restarted MWT sends only
+  what changed. A file changed in the last 2 s is sent again at the next
+  sync; one whose ctime or inode moved is sent anyway. Through `msb exec
+  --stream`, a short bash script in the VM removes what you deleted and
+  what is in the way; `tar` here feeds `tar -x` there, each file renamed
+  into place. MWT reads back only a file list (`find -printf`, at the first
+  sync after a start or a failure), and runs or parses nothing else. A
+  result from before a restart or recreate is dropped.
+- **Limits:** 400,000 files and folders, and half the work disk in bytes,
+  outside the folder's repositories; past either, nothing of it is copied,
+  and Overview and Settings say why. Overview and Settings show each
+  folder's last sync and what a sync under way is doing.
+- **Not handled yet:** a file changed on both sides. Nothing in the VM
+  changes a copy, so there is no conflict to settle; if copies ever become
+  writable, this needs a rule (see `docs/todo.md`).
 - **Refused picks** (`MWTClient.Sandbox.Shares`, after resolving every
   symlink): two that overlap, your home folder, credential folders and
   folders holding one (`~/.ssh`, `~/.gnupg`, `~/.optmem`, `~/.aws`,
@@ -3034,9 +3045,9 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     another resolver gets no answer (a real VM).
 13. Nothing of this machine is mounted in the VM, and MWT writes no storage
     the VM can write: the VM's own `tar` unpacks what MWT puts there. No
-    repository, nor a folder in one, is in a shared folder's copy, and what
-    the VM changed in a copy is set aside in `/work/.rescued` before your
-    change replaces it (a real VM; `guarantees_test.exs`,
+    repository, nor a folder in one, is in a shared folder's copy, and a
+    copy is read-only in the VM, root included, until root mounts it
+    writable again (a real VM; `guarantees_test.exs`, `vm_live_test.exs`,
     `folder_sync_test.exs`).
 14. Whether a use goes through, asks or is refused depends only on the
     grants, the use and the clock. For every combination of grant state,
@@ -3173,6 +3184,7 @@ history is in git.
 | 2026-11-18 | The firewall's rules were hardened against evasion and against false alarms. A connection claiming a trusted name over TLS is spared only at an address MWT's own DNS resolved for it, so the trust can't be borrowed to tunnel out unread. Uploads are counted by domain, so spreading them across subdomains folds together. DNS-name data is weighed by bytes, not just a count; a single long name is refused rather than isolating the VM, and names under cloud providers' own domains and the reverse names of addresses are no longer mistaken for exfiltration. Credential-endpoint paths are read as the host would (percent-decoded, `.`/`..` resolved), and a protected path is caught through quotes or backslashes slipped between its letters. A horizontal sweep (many addresses on one non-web port) joins Scanning, and DNS straight to a public port 53 joins DNS around MWT. The blocked, resolver, credential-endpoint and protected-path lists grew, more credential shapes are recognised entering the VM, and new default protected paths and credential endpoints reach a saved firewall on upgrade ([Firewall](#firewall)). |
 | 2026-11-18 | One *VM isolated* switch on the Firewall page: the firewall turns it on, and so can you, to cut the VM off yourself; turning it off releases the VM, asking first, with what the firewall saw and whether to trust its destination, only when the firewall isolated it. The page is shorter: rules grouped a line each, their full text behind a "?", the lists in tabs, past isolations folded under the switch ([Isolating](#isolating), [The Firewall page](#screens-firewall)). |
 | 2026-11-18 | The app is MWT (My Work Tools): the app, its package, the VM's `mwt` CLI, `/mnt/mwt`, its agents in Zed and its tools over MCP all take that name. Nothing under the former name is read or brought over: an install starts fresh. |
+| 2026-11-18 | Shared folders are synced when asked, not every 3 s: when added, at each start, with Sync or Sync all, after a command you approved ran in one, and by an agent's `mwt sync` (the built-in grant `share-sync`), since walking a large folder every few seconds cost this machine all the time and capped a share at 4 GiB. Copies live on the work disk, shown read-only at their paths, so nothing the VM changes in one needs setting aside: `/work/.rescued` is gone, and a share holds up to half the work disk ([Shared folders](#shared-folders)). |
 
 <a id="later"></a>
 

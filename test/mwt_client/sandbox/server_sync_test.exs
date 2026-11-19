@@ -27,28 +27,27 @@ defmodule MWTClient.Sandbox.ServerSyncTest do
         }
       end)
 
-      send(context.pid, :sync)
+      assert :ok = Sandbox.sync_shares(context.username, :all)
       folder = context.folder
-      assert %{^folder => status} = Sandbox.snapshot(context.username).sync
+      assert %{^folder => %{status: status}} = Sandbox.snapshot(context.username).sync
       assert status.error =~ "Recreate the VM"
       assert status.synced_at == nil
-      assert status.rescued == 0
       refute :sync in Map.values(:sys.get_state(context.pid).tasks)
     end
   end
 
-  test "a start clears the old delay and compares the copy again", context do
-    state = delayed(context)
+  test "a start forgets the old copy and syncs every share", context do
+    state = running(context)
     result = Machine.finished(state, {:vm, :start}, {:ok, "", nil})
 
     assert result.vm.status == :running
-    assert result.sync_after == nil
+    assert result.sync_due == :all
     assert result.sync == %{}
     assert_receive :sync
   end
 
-  test "a recreate clears the old delay and starts the new VM's copy", context do
-    state = delayed(context)
+  test "a recreate syncs every share into the new VM", context do
+    state = running(context)
 
     done = %{
       result: {:ok, ""},
@@ -64,23 +63,23 @@ defmodule MWTClient.Sandbox.ServerSyncTest do
     result = Machine.finished(state, {:vm, :create}, done)
 
     assert result.vm_record.id == "new-vm"
-    assert result.sync_after == nil
+    assert result.sync_due == :all
     assert result.sync == %{}
     assert_receive :sync
   end
 
-  test "noticing a VM started outside MWT also clears the old delay", context do
-    state = delayed(context)
+  test "noticing a VM started outside MWT also syncs every share", context do
+    state = running(context)
     state = %{state | vm: %{state.vm | status: :stopped, started_at: nil}}
     result = Machine.finished(state, :check, %{status: {:ok, :running}, image?: true})
 
-    assert result.sync_after == nil
+    assert result.sync_due == :all
     assert result.sync == %{}
     assert_receive :sync
   end
 
-  test "a late copy from before a recreate or restart cannot restore the old delay", context do
-    state = delayed(context)
+  test "a late sync from before a recreate or restart is dropped", context do
+    state = running(context)
     previous = DateTime.add(state.vm.started_at, -60, :second)
     records = %{context.folder => FolderSync.new(context.folder, "old-vm")}
 
@@ -94,27 +93,24 @@ defmodule MWTClient.Sandbox.ServerSyncTest do
         })
 
       assert result.sync == state.sync
-      assert result.sync_after == state.sync_after
     end
   end
 
-  test "a copy from before the layout check is ignored after a code reload", context do
-    state = delayed(context)
+  test "a sync from before a code reload is dropped", context do
+    state = running(context)
     result = Machine.finished(state, :sync, %{records: %{}, took: 90_000})
 
     assert result.sync == state.sync
-    assert result.sync_after == state.sync_after
   end
 
-  defp delayed(context) do
+  defp running(context) do
     state = :sys.get_state(context.pid)
 
     %{
       state
       | vm: %{state.vm | status: :running, started_at: DateTime.utc_now()},
         vm_record: %{id: "vm-test", copied: true},
-        sync: %{context.folder => FolderSync.new(context.folder, "vm-test")},
-        sync_after: System.monotonic_time(:millisecond) + 180_000
+        sync: %{context.folder => FolderSync.new(context.folder, "vm-test")}
     }
   end
 end

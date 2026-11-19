@@ -6,8 +6,8 @@ defmodule MWTClient.Sandbox.Server.Copying do
   Each start copies them in before anything in the VM reads them
   (`MWTClient.Sandbox.Server.Machine`). After that, every change MWT makes
   to them (`State.write_inbox/1`) sends `:sync_inbox` to the server, which
-  copies what changed within moments; the shared folders' look every few
-  seconds sends it too, as a backstop. One copy runs at a time: a change
+  copies what changed within moments; a look every 3 s sends it too, as a
+  backstop. One copy runs at a time: a change
   made meanwhile starts another when it ends.
 
   An agent told that a grant is on goes on to use it at once, with what

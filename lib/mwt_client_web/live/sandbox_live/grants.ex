@@ -1094,6 +1094,9 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   def summary(%Grant{kind: :mwt, tools: :git_handoff}),
     do: "mwt handoff, into MWT's review store"
 
+  def summary(%Grant{kind: :mwt, tools: :share_sync}),
+    do: "mwt sync, your shared folders' copies in the VM"
+
   def summary(%Grant{kind: :command, script: nil} = grant), do: "mwt run #{grant.id} -- COMMAND"
 
   def summary(%Grant{kind: :request} = grant),
@@ -2077,10 +2080,10 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   end
 
   defp delivery(%{grant: %Grant{kind: :mwt, tools: tools}} = assigns)
-       when tools in [:git_fetch, :git_fetch_remote, :git_handoff] do
+       when tools in [:git_fetch, :git_fetch_remote, :git_handoff, :share_sync] do
     ~H"""
     <dl class="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
-      <dt class="text-muted">Git</dt>
+      <dt class="text-muted">{if @grant.tools == :share_sync, do: "Shared folders", else: "Git"}</dt>
       <dd id="grant-git-tools" class="text-[11px] text-ink">
         <%= case @grant.tools do %>
           <% :git_fetch -> %>
@@ -2093,6 +2096,8 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             of your repository's own remote, with your credentials and without prompting, into MWT's store, never into your repository, at most once a minute. Off, upstream shows the remote branches as you last fetched them.
           <% :git_handoff -> %>
             <code class="font-mono">mwt handoff</code>: an agent's exact commit, into MWT's review store, never into your repository. Landing is never a grant: you decide it on the Handoffs page.
+          <% :share_sync -> %>
+            <code class="font-mono">mwt sync</code>: the same sync as the Sync button, for every shared folder or the one an agent names. Your files are copied into the VM, where they are read-only; nothing of the VM comes back.
         <% end %>
       </dd>
       <dt class="text-muted">Built in</dt>

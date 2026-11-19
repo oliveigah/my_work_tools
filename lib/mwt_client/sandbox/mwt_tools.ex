@@ -42,7 +42,13 @@ defmodule MWTClient.Sandbox.MwtTools do
   """
   @type use :: %{
           required(:grant) =>
-            :read | :create | :change | :git_fetch | :git_fetch_remote | :git_handoff,
+            :read
+            | :create
+            | :change
+            | :git_fetch
+            | :git_fetch_remote
+            | :git_handoff
+            | :share_sync,
           required(:tool) => String.t(),
           optional(:kind) => :note | :diagram | :card | :http | nil,
           optional(:id) => String.t() | nil,
@@ -186,6 +192,9 @@ defmodule MWTClient.Sandbox.MwtTools do
 
   def about(%{grant: :git_handoff} = use),
     do: %{title: "Hand off #{use[:title] || "work"}", pattern: "git handoff"}
+
+  def about(%{grant: :share_sync} = use),
+    do: %{title: "Sync #{use[:title] || "your shared folders"}", pattern: "sync"}
 
   @doc "What a change does, in a line, or nil."
   @spec words(use()) :: String.t() | nil

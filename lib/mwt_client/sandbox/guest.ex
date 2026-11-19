@@ -23,7 +23,10 @@ defmodule MWTClient.Sandbox.Guest do
     * `stream` - the words that run a command, given as words, in the VM
       with its input and output streamed, for a pipe on this machine;
     * `place` - where a path of this machine is in the VM: the same path,
-      or one under `root` for tests.
+      or one under `root` for tests;
+    * `show` - how a shared folder's copy is shown at its path
+      (`MWTClient.Sandbox.ShareMounts`): a read-only bind `:mount` in a
+      VM, a `:link` in a test's folder, where nothing can be mounted.
   """
 
   alias MWTClient.Sandbox.{Bounded, Msb}
@@ -34,7 +37,8 @@ defmodule MWTClient.Sandbox.Guest do
           git_url: (Path.t() -> String.t()),
           env: [{String.t(), String.t()}],
           stream: ([String.t()] -> [String.t()]),
-          place: (Path.t() -> Path.t())
+          place: (Path.t() -> Path.t()),
+          show: :mount | :link
         }
 
   @doc "The running VM of an identity."
@@ -55,7 +59,8 @@ defmodule MWTClient.Sandbox.Guest do
       end,
       env: Msb.env(username),
       stream: fn words -> [Msb.confined(username), "exec", "--stream", name, "--" | words] end,
-      place: & &1
+      place: & &1,
+      show: :mount
     }
   end
 
@@ -90,7 +95,8 @@ defmodule MWTClient.Sandbox.Guest do
       git_url: fn path -> path end,
       env: [],
       stream: & &1,
-      place: &(root <> &1)
+      place: &(root <> &1),
+      show: :link
     }
   end
 

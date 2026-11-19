@@ -67,7 +67,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
   attr :sync, :map,
     default: %{},
     doc:
-      "what MWT knows of each shared folder's copy in the VM, by path (`MWTClient.Sandbox.FolderSync`)"
+      "each shared folder's copy in the VM, by path: its status, a sync under way, one due (`MWTClient.Sandbox.Server.ShareSync.view/1`)"
 
   attr :host, :map, required: true
   attr :host_form, :any, required: true
@@ -156,10 +156,17 @@ defmodule MWTClientWeb.SandboxLive.Settings do
     <div class="space-y-5">
       <.card id="settings-shares" title="Shared folders" body_class="">
         <:help>
-          What you share here reaches the VM two ways, and nothing of it is mounted. Every git repository in it is a project: the Projects page opens it in the VM, with a writable clone in /work whose origin is your repository through MWT, and work comes back as handoffs; nothing of a repository is copied, so a .env or an ignored secrets file in one stays here. Everything else is copied into the VM, at the same path, one way: what you change here reaches it within seconds while it runs, and what the VM changes in its copy stays there, set aside in /work/.rescued when MWT next writes that path. The VM never writes to your folders. Adding or removing one needs no recreate. Never shared: your home folder itself, ~/.ssh, ~/.gnupg, ~/.optmem, cloud CLI logins, MWT's own data, a folder inside a repository (share the repository), and folders at a path the VM uses itself (/work, /cache, /root, /mnt). Folders can't sit inside one another.
+          What you share here reaches the VM two ways, and nothing of your machine is mounted. Every git repository in it is a project: the Projects page opens it in the VM, with a writable clone in /work whose origin is your repository through MWT, and work comes back as handoffs; nothing of a repository is copied, so a .env or an ignored secrets file in one stays here. Everything else is copied into the VM, one way, and shown there read-only at the same path. A copy changes only when synced: when you add the folder, each time the VM starts, with Sync, after a command you approved ran in it, and when an agent runs mwt sync (the grant Shared folders: sync). The VM never writes to your folders. Adding or removing one needs no recreate. Never shared: your home folder itself, ~/.ssh, ~/.gnupg, ~/.optmem, cloud CLI logins, MWT's own data, a folder inside a repository (share the repository), and folders at a path the VM uses itself (/work, /cache, /root, /mnt). Folders can't sit inside one another.
         </:help>
         <:actions>
           <span class="text-[11px] text-faint">{length(@settings.shares)} shared</span>
+          <.share_sync_button
+            :if={@settings.shares != []}
+            id="shares-sync-all"
+            label="Sync all"
+            running?={@vm.status == :running}
+            busy?={Enum.any?(Map.values(@sync), &(&1.progress != nil))}
+          />
         </:actions>
         <ul id="shares" class="divide-y divide-line-soft">
           <li :if={@settings.shares == []}>
@@ -180,10 +187,16 @@ defmodule MWTClientWeb.SandboxLive.Settings do
               </p>
               <.share_copy
                 id={"share-copy-#{index}"}
-                status={@sync[share.path]}
+                entry={@sync[share.path]}
                 running?={@vm.status == :running}
               />
             </div>
+            <.share_sync_button
+              id={"share-sync-#{index}"}
+              path={share.path}
+              running?={@vm.status == :running}
+              busy?={match?(%{progress: progress} when progress != nil, @sync[share.path])}
+            />
             <button
               type="button"
               id={"share-remove-#{index}"}
@@ -613,34 +626,30 @@ defmodule MWTClientWeb.SandboxLive.Settings do
     """
   end
 
-  # What the VM has of a shared folder: its copy, as the last look found
-  # it, and the repositories left to projects.
+  # What the VM has of a shared folder: its copy, as the last sync left it,
+  # what a sync under way is doing, and the repositories left to projects.
   attr :id, :string, required: true
-  attr :status, :map, default: nil
+  attr :entry, :map, default: nil
   attr :running?, :boolean, default: false
 
   defp share_copy(assigns) do
+    assigns = assign(assigns, :status, assigns.entry && assigns.entry.status)
+
     ~H"""
     <div id={@id} class="mt-0.5 space-y-0.5 text-[10px] leading-4">
-      <%= cond do %>
-        <% is_nil(@status) -> %>
-          <p class="flex items-center gap-1 text-faint">
-            <.icon name="hero-arrow-path-micro" class="size-3 shrink-0" />
-            {if @running?,
-              do: "Being copied into the VM…",
-              else: "Copied into the VM while it runs."}
-          </p>
-        <% @status.project? -> %>
-          <p id={"#{@id}-project"} class="flex items-center gap-1 text-muted">
-            <.icon name="hero-code-bracket-square-micro" class="size-3 shrink-0 text-accent" />
-            A git repository: it reaches the VM as a project, by git. Nothing of it is copied.
-          </p>
-        <% true -> %>
-          <p id={"#{@id}-files"} class="flex items-center gap-1 text-muted">
-            <.icon name="hero-document-duplicate-micro" class="size-3 shrink-0 text-accent" />
-            {count(@status.files, "file")} ({bytes(@status.bytes)}) copied into the VM{if @status.changed_at,
-              do: ", last change sent #{ago(@status.changed_at, DateTime.utc_now())}"}.
-          </p>
+      <%= if @status && @status.project? do %>
+        <p id={"#{@id}-project"} class="flex items-center gap-1 text-muted">
+          <.icon name="hero-code-bracket-square-micro" class="size-3 shrink-0 text-accent" />
+          A git repository: it reaches the VM as a project, by git. Nothing of it is copied.
+        </p>
+      <% else %>
+        <p id={"#{@id}-files"} class="flex min-w-0 items-center gap-1 text-muted">
+          <.icon name="hero-document-duplicate-micro" class="size-3 shrink-0 text-accent" />
+          <span :if={@status} class="shrink-0">
+            {count(@status.files, "file")} ({bytes(@status.bytes)}), read-only in the VM ·
+          </span>
+          <.share_sync_state id={"#{@id}-state"} entry={@entry} running?={@running?} />
+        </p>
       <% end %>
       <p
         :if={@status && not @status.project? && @status.trees != []}
@@ -656,17 +665,6 @@ defmodule MWTClientWeb.SandboxLive.Settings do
             &Path.basename/1
           )}{if length(@status.trees) > 4,
             do: ", …"}.
-        </span>
-      </p>
-      <p
-        :if={@status && @status.rescued > 0}
-        id={"#{@id}-rescued"}
-        class="flex items-start gap-1 text-warn"
-        title={@status.rescued_to}
-      >
-        <.icon name="hero-archive-box-micro" class="mt-0.5 size-3 shrink-0" />
-        <span>
-          {count(@status.rescued, "path")} the VM changed in its copy set aside, the latest in {@status.rescued_to}.
         </span>
       </p>
       <p :if={@status && @status.error} id={"#{@id}-error"} class="flex items-start gap-1 text-bad">

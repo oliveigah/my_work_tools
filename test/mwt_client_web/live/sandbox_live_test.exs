@@ -120,6 +120,12 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     assert has_element?(view, "#connect-ssh-config", "ssh serve #{name} --stdio")
     assert has_element?(view, "#connect-ssh-config", "ForwardAgent no")
+    # msb runs confined, without your home folder: the shell hands it the key.
+    assert has_element?(
+             view,
+             "#connect-authorize",
+             "ssh authorize --stdin < ~/.ssh/id_ed25519.pub"
+           )
 
     # Two steps: the key and the SSH entry. Projects open the VM in Zed.
     refute has_element?(view, "#connect-profile")
@@ -338,12 +344,12 @@ defmodule MWTClientWeb.SandboxLiveTest do
     refute has_element?(view, "#grants-all #grants-enabled")
     assert has_element?(view, "#grants-all #grant-search")
     assert has_element?(view, "#grants-all #grant-filters")
-    assert has_element?(view, "#grants-enabled", "8 grants: 6 auto-approved, 2 asking each time.")
+    assert has_element?(view, "#grants-enabled", "9 grants: 7 auto-approved, 2 asking each time.")
 
     # The built-in grants are enabled on startup and until off: one row,
     # closed, with how many and how they are approved.
-    assert has_element?(view, "#enabled-startup-count", "7 grants")
-    assert has_element?(view, "#enabled-startup-auto", "6 auto")
+    assert has_element?(view, "#enabled-startup-count", "8 grants")
+    assert has_element?(view, "#enabled-startup-auto", "7 auto")
     assert has_element?(view, "#enabled-startup-ask", "1 ask")
     assert has_element?(view, "#enabled-startup-names", "Internet")
     assert has_element?(view, "#enabled-startup-toggle[aria-expanded=false]")
@@ -371,7 +377,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     view |> element("#enabled-duration-mwt-change-60") |> render_click()
     refute has_element?(view, "#enabled-startup-list #enabled-row-mwt-change")
     assert has_element?(view, "#grants-enabled #enabled-row-mwt-change")
-    assert has_element?(view, "#enabled-startup-count", "6 grants")
+    assert has_element?(view, "#enabled-startup-count", "7 grants")
     assert has_element?(view, "#enabled-startup-ask", "0 ask")
 
     view |> element("#enabled-duration-mwt-change-until_off") |> render_click()
@@ -386,7 +392,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     view |> form("#grant-search", term: "nothing like it") |> render_change()
     assert has_element?(view, "#grants-no-match")
     assert has_element?(view, "#enabled-row-#{grant.id}")
-    assert has_element?(view, "#enabled-startup-count", "7 grants")
+    assert has_element?(view, "#enabled-startup-count", "8 grants")
 
     view |> element("#enabled-startup-toggle") |> render_click()
     refute has_element?(view, "#enabled-startup-list")
@@ -1153,16 +1159,16 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
     # Every grant and subgrant is a card, the one that is on too, six a page.
-    assert has_element?(view, "#grants-all-count", "9 grants, 2 subgrants")
-    assert has_element?(view, "#grants-pages-shown", "1–6 of 11")
+    assert has_element?(view, "#grants-all-count", "10 grants, 2 subgrants")
+    assert has_element?(view, "#grants-pages-shown", "1–6 of 12")
     first = cards(view)
     assert length(first) == 6
     assert has_element?(view, "#grants-page-prev[disabled]")
 
     view |> element("#grants-page-2") |> render_click()
-    assert has_element?(view, "#grants-pages-shown", "7–11 of 11")
+    assert has_element?(view, "#grants-pages-shown", "7–12 of 12")
     second = cards(view)
-    assert length(second) == 5
+    assert length(second) == 6
     assert has_element?(view, "#grants-page-next[disabled]")
     assert MapSet.disjoint?(MapSet.new(first), MapSet.new(second))
     assert "grant-card-web-pods" in (first ++ second)
@@ -1188,7 +1194,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     refute has_element?(view, "#grants-all-list #grant-card-vpn-status")
     refute has_element?(view, "#grants-all-list #grant-card-commands")
     refute has_element?(view, "#grants-all-list #grant-card-#{grant.id}")
-    assert has_element?(view, "#grants-all-count", "1 of 11 match")
+    assert has_element?(view, "#grants-all-count", "1 of 12 match")
     # What is enabled stays above, whatever the search.
     assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
 
@@ -1202,14 +1208,14 @@ defmodule MWTClientWeb.SandboxLiveTest do
     # The grant that is on is found like any other.
     view |> form("#grant-search", term: "github") |> render_change()
     assert has_element?(view, "#grants-all-list #grant-card-#{grant.id}")
-    assert has_element?(view, "#grants-all-count", "1 of 11 match")
+    assert has_element?(view, "#grants-all-count", "1 of 12 match")
 
     view |> form("#grant-search", term: "nothing like it") |> render_change()
     assert has_element?(view, "#grants-no-match")
     assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
 
     view |> element("#clear-grant-search") |> render_click()
-    assert has_element?(view, "#grants-all-count", "9 grants, 2 subgrants")
+    assert has_element?(view, "#grants-all-count", "10 grants, 2 subgrants")
 
     # Only what is on, then only one type: the search keeps.
     view |> form("#grant-status", status: "on") |> render_change()
@@ -1228,7 +1234,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert cards(view) == ["grant-card-vpn-status", "grant-card-web-pods"]
 
     view |> element("#grant-filters-clear") |> render_click()
-    assert has_element?(view, "#grants-all-count", "9 grants, 2 subgrants")
+    assert has_element?(view, "#grants-all-count", "10 grants, 2 subgrants")
   end
 
   # The cards All grants shows now, by id, in order.
@@ -1259,25 +1265,82 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert [%Share{path: ^folder}] = Sandbox.snapshot(username).settings.shares
     assert has_element?(view, "#notices", "the rest is copied into the VM")
     refute has_element?(view, "#share-mode-0-rw")
-    assert has_element?(view, "#share-copy-0", "Copied into the VM while it runs.")
+    assert has_element?(view, "#share-copy-0-state", "Synced when the VM starts")
+    # The VM is stopped: there is nothing to sync yet.
+    assert has_element?(view, "#share-sync-0[disabled]")
 
-    # What a look at the folder found, as the server keeps it.
+    # What the last sync found, as the server keeps it.
     record =
       folder
       |> FolderSync.new("vm-1")
       |> put_in([:status, :files], 1)
       |> put_in([:status, :bytes], 5)
       |> put_in([:status, :trees], ["app"])
-      |> put_in([:status, :rescued], 2)
-      |> put_in([:status, :rescued_to], "/work/.rescued/20261116-120000" <> folder)
+      |> put_in([:status, :sent], 2)
+      |> put_in([:status, :synced_at], DateTime.add(DateTime.utc_now(), -120, :second))
 
     server = MWTClient.Vault.Store.whereis(Server, username)
     :sys.replace_state(server, &%{&1 | sync: %{folder => record}})
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
-    assert has_element?(view, "#share-copy-0-files", "1 file (5 B) copied into the VM")
+    assert has_element?(view, "#share-copy-0-files", "1 file (5 B), read-only in the VM")
+    assert has_element?(view, "#share-copy-0-state", "Synced 2 min ago, 2 sent")
     assert has_element?(view, "#share-copy-0-projects", "Left to projects, not copied: app")
-    assert has_element?(view, "#share-copy-0-rescued", "2 paths the VM changed")
+  end
+
+  test "Sync buttons sync a share, or all, and show how it goes", %{
+    conn: conn,
+    username: username
+  } do
+    root = Path.join(System.tmp_dir!(), "share-sync-ui-#{System.unique_integer([:positive])}")
+    folder = Path.join(root, "docs")
+    vm = Path.join(root, "vm")
+    File.mkdir_p!(folder)
+    File.mkdir_p!(vm)
+    File.write!(Path.join(folder, "notes.md"), "plan\n")
+    on_exit(fn -> File.rm_rf!(root) end)
+    MWTClient.StandIns.put_guest(username, MWTClient.Sandbox.Guest.local(vm))
+
+    server = MWTClient.Vault.Store.whereis(Server, username)
+
+    :sys.replace_state(server, fn state ->
+      %{
+        state
+        | vm: %{state.vm | status: :running, exists?: true, started_at: DateTime.utc_now()},
+          vm_record: %{id: "vm-ui", copied: true, created_at: nil}
+      }
+    end)
+
+    {:ok, _} = Sandbox.add_share(username, folder)
+    {:ok, _} = Server.call(username, {:sync_shares_wait, []}, 10_000)
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox")
+    assert has_element?(view, "#overview-share-0", "docs")
+    assert has_element?(view, "#overview-share-state-0", "Synced just now")
+
+    File.write!(Path.join(folder, "notes.md"), "plan, changed\n")
+    view |> element("#overview-share-sync-0") |> render_click()
+    {:ok, _} = Server.call(username, {:sync_shares_wait, []}, 10_000)
+    assert File.read!(vm <> folder <> "/notes.md") == "plan, changed\n"
+
+    # While one runs, the page says what it is doing.
+    :sys.replace_state(server, fn state ->
+      MWTClient.Sandbox.Server.State.change(state, :sync_progress, fn _ ->
+        %{folder => {:sending, 3, 2048}}
+      end)
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox")
+    assert has_element?(view, "#overview-share-state-0", "Sending 3 files (2.0 KB)")
+    assert has_element?(view, "#overview-share-sync-0[disabled]")
+    assert has_element?(view, "#overview-shares-sync-all[disabled]")
+    :sys.replace_state(server, &%{&1 | sync_progress: %{}})
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
+    File.write!(Path.join(folder, "more.md"), "more\n")
+    view |> element("#shares-sync-all") |> render_click()
+    {:ok, _} = Server.call(username, {:sync_shares_wait, []}, 10_000)
+    assert File.read!(vm <> folder <> "/more.md") == "more\n"
   end
 
   test "what this machine lacks for a VM is said on the Setup page", %{

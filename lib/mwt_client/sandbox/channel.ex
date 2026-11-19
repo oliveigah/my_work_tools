@@ -16,7 +16,9 @@ defmodule MWTClient.Sandbox.Channel do
     * the client sends one line of JSON: `{"command": "grants"}`,
       `{"command": "host"}`, `{"command": "why", "target": "HOST[:PORT]"}`
       (`MWTClient.Sandbox.Why`), `{"command": "ports"}` (with `"report"` from
-      the VM's watcher, what listens in it), `{"command": "request", "grant": "...",
+      the VM's watcher, what listens in it), `{"command": "sync", "path": "..."}`
+      (the shared folders' copies, `MWTClient.Sandbox.Server.ShareSync`),
+      `{"command": "request", "grant": "...",
       "need": "...", "minutes": 60, "reason": "...", "agent": "...",
       "thread": "...", "thread_id": "...", "folder": "...", "wait": 60}`, `{"command": "run", "script": "...", "dir": "...",
       "timeout": 120, "reason": "...", "agent": "...", "thread": "...",
@@ -79,6 +81,8 @@ defmodule MWTClient.Sandbox.Channel do
     Projects,
     Routes,
     Server,
+    Share,
+    Shares,
     Shown,
     Slots,
     Sockets,
@@ -846,6 +850,27 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp reply("ports", _ask, username), do: {0, Server.call(username, :ports_text)}
 
+  # The copies of the shared folders, brought up to date: every one, or the
+  # one holding `path`. It waits for the sync, however long it takes; the
+  # grant Shared folders: sync decides.
+  defp reply("sync", ask, username) do
+    %{shares: shares} = Server.call(username, :projects)
+
+    with {:ok, which} <- sync_which(shares, ask["path"]),
+         :ok <-
+           MwtTools.authorize(username, %{
+             grant: :share_sync,
+             tool: "mwt sync",
+             title: if(which == :all, do: "your shared folders", else: hd(which)),
+             args: %{"path" => if(which == :all, do: "all", else: hd(which))}
+           }),
+         {:ok, statuses} <- Server.call(username, {:sync_shares_wait, which}, :infinity) do
+      sync_words(statuses)
+    else
+      {:error, message} -> {1, message}
+    end
+  end
+
   defp reply("project", ask, username) do
     case Projects.place(username, ask["cwd"]) do
       {:ok, project, where, look} ->
@@ -1131,7 +1156,54 @@ defmodule MWTClient.Sandbox.Channel do
   defp reply(_command, _ask, _username),
     do:
       {1,
-       "MWT knows these commands: grants, host, request, run, call, propose, wait, mcp, project, worktree, handoff, handoffs, vm. Run mwt help."}
+       "MWT knows these commands: grants, host, request, run, call, propose, wait, mcp, project, worktree, handoff, handoffs, sync, vm. Run mwt help."}
+
+  defp sync_which([], _path),
+    do: {:error, "The user shares no folder with the VM, so there is nothing to sync."}
+
+  defp sync_which(_shares, path) when path in [nil, ""], do: {:ok, :all}
+
+  defp sync_which(shares, path) do
+    path = Path.expand(path, "/")
+
+    case Enum.find(shares, &Shares.within?(path, &1.path)) do
+      %Share{path: share} ->
+        {:ok, [share]}
+
+      nil ->
+        {:error,
+         "#{path} isn't in a shared folder. The shared folders: " <>
+           Enum.map_join(shares, ", ", & &1.path) <> ". Run mwt sync alone to sync them all."}
+    end
+  end
+
+  # A line per share; a share that failed makes the status 1.
+  defp sync_words(statuses) do
+    lines =
+      statuses
+      |> Enum.sort()
+      |> Enum.map(fn {path, status} -> "#{path}: " <> sync_line(status) end)
+
+    failed? = Enum.any?(statuses, fn {_path, status} -> status.error != nil end)
+    {if(failed?, do: 1, else: 0), Enum.join(lines, "\n")}
+  end
+
+  defp sync_line(%{error: error}) when is_binary(error), do: "not synced. " <> error
+
+  defp sync_line(%{project?: true}),
+    do: "a git repository, so a project (mwt project): nothing of it is copied."
+
+  defp sync_line(status) do
+    changes =
+      case {status.sent, status.removed} do
+        {0, 0} -> "nothing had changed"
+        {sent, 0} -> "#{sent} sent"
+        {0, removed} -> "#{removed} removed"
+        {sent, removed} -> "#{sent} sent, #{removed} removed"
+      end
+
+    "up to date, #{changes}; #{status.files} files, read-only here."
+  end
 
   defp vm_words(name, record) do
     created =

@@ -420,10 +420,18 @@ defmodule MWTClient.Sandbox.Server.State do
       # project name => what its last update did
       mirror: %{},
       # shared folder => what MWT knows of its copy in the VM
-      # (`MWTClient.Sandbox.FolderSync`), and when the next look may start
+      # (`MWTClient.Sandbox.FolderSync`), and the syncs asked for
+      # (`MWTClient.Sandbox.Server.ShareSync`): which shares are due (nil,
+      # :all or a set of paths), who waits for the next sync, the one under
+      # way and how it is getting on, by path.
       sync: %{},
-      # Monotonic milliseconds, which may be negative: nil until a look ran.
-      sync_after: nil,
+      sync_due: nil,
+      sync_waiters: [],
+      sync_running: nil,
+      sync_progress: %{},
+      # Shares whose next sync is the follow-up for files that weren't
+      # settled: it asks for no other.
+      sync_settle: MapSet.new(),
       # The VM's copy of /mnt/mwt (`MWTClient.Sandbox.Server.Copying`): what
       # MWT knows of it, whether a change is still to be copied, and who
       # waits for that.

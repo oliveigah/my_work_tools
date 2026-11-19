@@ -73,18 +73,19 @@ defmodule MWTClient.Sandbox.ServerTest do
 
     # MWT's own tools, built in: reading and adding always on, changing on
     # and asking; the projects' Git (fetching, fetching remotes on this
-    # machine, handing off) always on.
+    # machine, handing off) and syncing the shared folders always on.
     assert [
              %{id: "mwt-read", state: :on, start: :auto},
              %{id: "mwt-create", state: :on, start: :auto},
              %{id: "mwt-change", state: :on, start: :on},
              %{id: "git-fetch", state: :on, start: :auto},
              %{id: "git-fetch-remote", state: :on, start: :auto},
-             %{id: "git-handoff", state: :on, start: :auto}
+             %{id: "git-handoff", state: :on, start: :auto},
+             %{id: "share-sync", state: :on, start: :auto}
            ] = mwt_tools
 
     assert Enum.map(mwt_tools, &MWTClient.Sandbox.Grant.auto_approved?/1) ==
-             [true, true, false, true, true, true]
+             [true, true, false, true, true, true, true]
 
     assert snapshot.settings.containerfile =~ "FROM "
     assert snapshot.settings.image_name == "mwt_agent_sdb_image"
@@ -93,6 +94,37 @@ defmodule MWTClient.Sandbox.ServerTest do
     assert snapshot.snapshots == []
     assert Sandbox.ca_pem(username) =~ "BEGIN CERTIFICATE"
     assert File.read!(Path.join(snapshot.inbox, "ca.pem")) == Sandbox.ca_pem(username)
+  end
+
+  test "a build's output and end reach the server, which keeps running", %{username: username} do
+    pid = GenServer.whereis(Store.via(Server, username))
+    Phoenix.PubSub.subscribe(MWTClient.PubSub, Server.State.topic(username))
+
+    # A Containerfile podman refuses at once, or no podman at all: either
+    # way the build prints its first line and fails fast.
+    :sys.replace_state(pid, fn state ->
+      state = put_in(state.settings.containerfile, "NOT A CONTAINERFILE\n")
+      Server.Machine.start_build(state)
+    end)
+
+    assert is_port(:sys.get_state(pid).build)
+    assert_receive {:sandbox_build_line, "==> podman build " <> _}, 5_000
+
+    image = built(username)
+    assert image.error =~ "The build failed"
+    assert :sys.get_state(pid).build == nil
+  end
+
+  # The image once its build ended, each change heard as it comes.
+  defp built(username) do
+    case Sandbox.snapshot(username).image do
+      %{building?: false} = image ->
+        image
+
+      _building ->
+        assert_receive {:sandbox_changed, :image}, 30_000
+        built(username)
+    end
   end
 
   test "the image name must be one OCI accepts", %{username: username} do
@@ -131,7 +163,7 @@ defmodule MWTClient.Sandbox.ServerTest do
     assert Sandbox.snapshot(username).vm.stale?
   end
 
-  test "while the VM runs, each shared folder is looked at, and what that found is shown",
+  test "a shared folder is synced when asked while the VM runs, and what that found is shown",
        %{username: username} do
     folder = Path.join(System.tmp_dir!(), "server-sync-#{System.unique_integer([:positive])}")
     File.mkdir_p!(folder)
@@ -139,12 +171,12 @@ defmodule MWTClient.Sandbox.ServerTest do
     {:ok, _} = Sandbox.add_share(username, folder)
     pid = GenServer.whereis(Store.via(Server, username))
 
-    # Stopped, nothing is looked at.
+    # Stopped, nothing is synced: the next start will.
     send(pid, :sync)
-    assert Sandbox.snapshot(username).sync == %{}
+    assert %{^folder => %{status: nil, due?: true}} = Sandbox.snapshot(username).sync
 
-    # Running: a look starts. This test has no msb, so it says so, and the
-    # pages hear it.
+    # Running: a sync starts when asked. This test has no msb, so it says
+    # so, and the pages hear it.
     :sys.replace_state(pid, fn state ->
       %{
         state
@@ -154,17 +186,16 @@ defmodule MWTClient.Sandbox.ServerTest do
     end)
 
     Phoenix.PubSub.subscribe(MWTClient.PubSub, Server.State.topic(username))
-    send(pid, :sync)
+    assert :ok = Sandbox.sync_shares(username, :all)
     assert_receive {:sandbox_changed, :sync}, 5_000
-    assert %{^folder => %{error: error}} = Sandbox.snapshot(username).sync
-    assert error =~ "The VM's copy couldn't be read"
+    assert %{^folder => %{status: %{error: error}}} = Sandbox.snapshot(username).sync
+    assert error =~ "couldn't be shown in the VM"
 
-    # A folder no longer shared is dropped at the next look.
+    # A folder no longer shared is dropped.
     :ok = Sandbox.remove_share(username, folder)
-    _ = :sys.replace_state(pid, &%{&1 | sync_after: nil})
-    send(pid, :sync)
     assert_receive {:sandbox_changed, :sync}, 5_000
     assert Sandbox.snapshot(username).sync == %{}
+    refute Map.has_key?(:sys.get_state(pid).sync, folder)
   end
 
   test "a change to MWT's files is copied into the running VM, and agents wait for it",
@@ -1163,7 +1194,7 @@ defmodule MWTClient.Sandbox.ServerTest do
       {mwt_tools, [internet]} = Enum.split_with(others, &Grant.mwt_tools?/1)
 
       assert Enum.map(mwt_tools, & &1.id) ==
-               ~w(mwt-read mwt-create mwt-change git-fetch git-fetch-remote git-handoff)
+               ~w(mwt-read mwt-create mwt-change git-fetch git-fetch-remote git-handoff share-sync)
 
       assert %Grant{id: "internet", internet: true, state: :on} = internet
       assert %Grant{id: "commands", name: "Ask to run commands", state: :off} = built_in

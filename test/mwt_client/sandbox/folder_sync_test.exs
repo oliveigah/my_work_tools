@@ -1,7 +1,7 @@
 defmodule MWTClient.Sandbox.FolderSyncTest do
   use ExUnit.Case, async: true
 
-  alias MWTClient.Sandbox.{FolderSync, Guest}
+  alias MWTClient.Sandbox.{FolderSync, Guest, ShareMounts}
 
   @old {{2020, 1, 1}, {0, 0, 0}}
 
@@ -27,7 +27,7 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     %{
       share: share,
       guest: Guest.local(vm),
-      copy: vm <> share,
+      copy: vm <> ShareMounts.store(share),
       vm: vm,
       data: data,
       record: FolderSync.new(share, "vm-1")
@@ -71,7 +71,7 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     refute File.exists?(Path.join(context.copy, "app"))
   end
 
-  test "a look with nothing changed changes nothing", context do
+  test "a sync with nothing changed changes nothing", context do
     record = sync(context)
     {:ok, before} = File.stat(Path.join(context.copy, "readme.txt"))
 
@@ -79,11 +79,12 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     {:ok, again} = File.stat(Path.join(context.copy, "readme.txt"))
 
     assert again.inode == before.inode
-    assert record.status.rescued == 0
+    assert {record.status.sent, record.status.removed} == {0, 0}
   end
 
-  test "your edits, additions and deletions reach the copy", context do
+  test "your edits, additions and deletions reach the copy, and are counted", context do
     record = sync(context)
+    assert record.status.sent == 5
 
     put(context.share, "readme.txt", "hello again\n")
     put(context.share, "notes/new.md", "new\n")
@@ -94,7 +95,7 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     assert record.status.error == nil
     assert File.read!(Path.join(context.copy, "readme.txt")) == "hello again\n"
     assert tree(context.copy) == ["latest", "notes", "notes/new.md", "readme.txt"]
-    assert record.status.rescued == 0
+    assert {record.status.sent, record.status.removed} == {2, 2}
   end
 
   test "a file changed in the last seconds is sent again, even at the same size and time",
@@ -105,14 +106,41 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     File.write!(path, "HELLO\n")
     File.touch!(path, @old)
 
-    # A look now: the file changed under 2 s ago, so it is sent.
+    # A sync now: the file changed under 2 s ago, so it is sent.
     record = FolderSync.sync(record, context.guest, context.data)
 
     assert File.read!(Path.join(context.copy, "readme.txt")) == "HELLO\n"
-    assert record.status.rescued == 0
+    assert record.status.sent >= 1
   end
 
-  test "what the VM changed is set aside before your change replaces it", context do
+  test "between whole comparisons, what was sent is what the VM has", context do
+    record = sync(context)
+    File.write!(Path.join(context.copy, "notes/planted.md"), "not from MWT\n")
+
+    record = sync(context, record)
+
+    assert File.exists?(Path.join(context.copy, "notes/planted.md"))
+    assert {record.status.sent, record.status.removed} == {0, 0}
+  end
+
+  test "a whole comparison puts the copy right, with nothing set aside", context do
+    record = sync(context)
+
+    File.write!(Path.join(context.copy, "notes/mine.md"), "added in the VM\n")
+    File.write!(Path.join(context.copy, "readme.txt"), "edited in the VM\n")
+    File.rm!(Path.join(context.copy, "notes/todo.md"))
+
+    # As at a start of the VM, or after a failure.
+    record = sync(context, %{record | checked_at: nil})
+
+    assert File.read!(Path.join(context.copy, "readme.txt")) == "hello\n"
+    assert File.read!(Path.join(context.copy, "notes/todo.md")) == "plan\n"
+    refute File.exists?(Path.join(context.copy, "notes/mine.md"))
+    assert {record.status.sent, record.status.removed} == {2, 1}
+    refute File.exists?(Path.join(context.vm, "work/.rescued"))
+  end
+
+  test "your change replaces whatever the copy holds there", context do
     record = sync(context)
 
     File.write!(Path.join(context.copy, "readme.txt"), "the VM's edit\n")
@@ -120,45 +148,22 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     record = sync(context, record)
 
     assert File.read!(Path.join(context.copy, "readme.txt")) == "yours, longer\n"
-    assert record.status.rescued == 1
-    assert record.status.rescued_to =~ Path.join(context.vm, ".rescued")
-    assert File.read!(Path.join(record.status.rescued_to, "readme.txt")) == "the VM's edit\n"
-  end
-
-  test "a whole comparison puts the copy right, setting the VM's changes aside", context do
-    record = sync(context)
-
-    File.write!(Path.join(context.copy, "notes/mine.md"), "added in the VM\n")
-    File.write!(Path.join(context.copy, "readme.txt"), "edited in the VM\n")
-    File.rm!(Path.join(context.copy, "notes/todo.md"))
-
-    # As at a start of the VM, or 5 minutes on.
-    record = sync(context, %{record | checked_at: nil})
-
-    assert File.read!(Path.join(context.copy, "readme.txt")) == "hello\n"
-    assert File.read!(Path.join(context.copy, "notes/todo.md")) == "plan\n"
-    refute File.exists?(Path.join(context.copy, "notes/mine.md"))
-    assert record.status.rescued == 2
-
-    assert tree(record.status.rescued_to) == ["notes", "notes/mine.md", "readme.txt"]
+    assert record.status.sent == 1
   end
 
   test "a folder that becomes a repository is no longer touched", context do
     record = sync(context)
     {_, 0} = System.cmd("git", ["-C", Path.join(context.share, "notes"), "init", "-q"])
-    File.write!(Path.join(context.copy, "notes/todo.md"), "the VM's edit\n")
 
     record = sync(context, %{record | checked_at: nil})
 
     assert record.status.trees == ["app", "notes"]
-    assert File.read!(Path.join(context.copy, "notes/todo.md")) == "the VM's edit\n"
+    assert File.read!(Path.join(context.copy, "notes/todo.md")) == "plan\n"
     refute File.exists?(Path.join(context.copy, "notes/.git"))
-    assert record.status.rescued == 0
   end
 
-  test "an excluded repository already in the VM is never removed or rescued", context do
+  test "an excluded repository's path in the copy is never removed", context do
     put(context.copy, "app/.git/config", "keep this repository\n")
-    put(context.copy, "app/.env", "keep this file\n")
     put(context.copy, "app/subdir/work.txt", "the VM's work\n")
     # A similarly named path still follows the host.
     put(context.copy, "app-old", "no longer on the host\n")
@@ -166,21 +171,14 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     record = sync(context)
 
     assert tree(Path.join(context.copy, "app")) == [
-             ".env",
              ".git",
              ".git/config",
              "subdir",
              "subdir/work.txt"
            ]
 
-    assert File.read!(Path.join(context.copy, "app/.env")) == "keep this file\n"
     refute File.exists?(Path.join(context.copy, "app-old"))
-    assert record.status.rescued == 1
-    refute File.exists?(Path.join(record.status.rescued_to, "app"))
-
-    record = sync(context, %{record | checked_at: nil})
-    assert File.read!(Path.join(context.copy, "app/subdir/work.txt")) == "the VM's work\n"
-    assert record.status.rescued == 1
+    assert record.status.removed == 1
   end
 
   test "excluding a previously copied folder also forgets what was sent inside it", context do
@@ -193,7 +191,6 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     refute Map.has_key?(record.sent, "notes")
     refute Map.has_key?(record.sent, "notes/todo.md")
     assert File.read!(Path.join(context.copy, "notes/todo.md")) == "plan\n"
-    assert record.status.rescued == 0
   end
 
   test "a folder replaced by a file, and a file by a folder", context do
@@ -208,29 +205,68 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     assert record.status.error == nil
     assert File.read!(Path.join(context.copy, "notes")) == "now a file\n"
     assert File.read!(Path.join(context.copy, "readme.txt/inside.txt")) == "now a folder\n"
-    assert record.status.rescued == 0
   end
 
-  test "after a restart of MWT, a change the VM made is still told from yours", context do
+  test "after a restart of MWT, only what changed is sent", context do
     sync(context)
-    File.write!(Path.join(context.copy, "readme.txt"), "the VM's edit\n")
+    {:ok, before} = File.stat(Path.join(context.copy, "notes/todo.md"))
     put(context.share, "readme.txt", "yours, longer\n")
 
-    # A new record: what was sent comes from the file kept for this VM.
+    # A new record: what was sent comes from the file kept for this VM, and
+    # the copy is compared whole, as after a start.
     record = sync(context, FolderSync.new(context.share, "vm-1"))
 
     assert File.read!(Path.join(context.copy, "readme.txt")) == "yours, longer\n"
-    assert record.status.rescued == 1
+    assert File.stat!(Path.join(context.copy, "notes/todo.md")).inode == before.inode
+    assert {record.status.sent, record.status.removed} == {1, 0}
   end
 
-  test "a new VM starts from nothing", context do
+  test "a new VM finds the copy its store kept, and sends only what differs", context do
     sync(context)
-    File.rm_rf!(context.copy)
+    File.rm!(Path.join(context.copy, "readme.txt"))
 
     record = sync(context, FolderSync.new(context.share, "vm-2"))
 
     assert tree(context.copy) == ["empty", "latest", "notes", "notes/todo.md", "readme.txt"]
-    assert record.status.rescued == 0
+    assert {record.status.sent, record.status.removed} == {1, 0}
+  end
+
+  test "a folder over the size it is given is not copied at all", context do
+    put(context.share, "big.bin", String.duplicate("x", 4096))
+
+    record =
+      FolderSync.sync(context.record, context.guest, context.data,
+        now: System.os_time(:second) + 10,
+        max_bytes: 1024
+      )
+
+    assert record.status.error =~ "more than 1 GiB"
+    refute File.exists?(context.copy)
+  end
+
+  test "a sync says how it goes", context do
+    me = self()
+    progress = &send(me, {:phase, &1})
+
+    record =
+      FolderSync.sync(context.record, context.guest, context.data,
+        now: System.os_time(:second) + 10,
+        progress: progress
+      )
+
+    assert_received {:phase, :scanning}
+    assert_received {:phase, :comparing}
+    assert_received {:phase, {:sending, 5, bytes}}
+    assert bytes == byte_size("plan\n") + byte_size("hello\n")
+
+    FolderSync.sync(record, context.guest, context.data,
+      now: System.os_time(:second) + 10,
+      progress: progress
+    )
+
+    assert_received {:phase, :scanning}
+    refute_received {:phase, :comparing}
+    refute_received {:phase, {:sending, _, _}}
   end
 
   test "a repository shared itself is a project: nothing is copied", context do
@@ -238,7 +274,7 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     record = FolderSync.sync(FolderSync.new(app, "vm-1"), context.guest, context.data)
 
     assert record.status.project?
-    refute File.exists?(context.vm <> app)
+    refute File.exists?(context.vm <> ShareMounts.store(app))
   end
 
   test "a folder inside a repository is never copied", context do
@@ -247,7 +283,7 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     record = FolderSync.sync(FolderSync.new(lib, "vm-1"), context.guest, context.data)
 
     assert record.status.error =~ "inside the git working tree"
-    refute File.exists?(context.vm <> lib)
+    refute File.exists?(context.vm <> ShareMounts.store(lib))
   end
 
   test "a file is replaced whole, by a rename, and the staging folder never shows", context do
@@ -268,10 +304,10 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     refute File.exists?(Path.join(context.copy, ".mwt-incoming"))
 
     # A send cut short leaves its staging folder: the next whole comparison
-    # neither lists it nor sets it aside.
+    # neither lists it nor removes it as the VM's own.
     File.mkdir_p!(Path.join(context.copy, ".mwt-incoming/readme.txt"))
     record = sync(context, %{record | checked_at: nil})
-    assert record.status.rescued == 0
+    assert record.status.removed == 0
   end
 
   test "a folder of MWT's own is copied whole where it is told, the VM's changes replaced",
@@ -295,8 +331,7 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
 
     assert File.read!(Path.join(copy, "grants.md")) == "one grant\n"
     refute File.exists?(Path.join(copy, "planted"))
-    assert record.status.rescued == 0
-    refute File.exists?(Path.join(context.vm, ".rescued"))
+    assert record.status.removed == 1
   end
 
   test "into a place just made empty, everything goes with a plain tar, then looks go on",

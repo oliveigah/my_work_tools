@@ -177,7 +177,7 @@ defmodule MWTClient.Sandbox.HostInfo do
     lines =
       Enum.map_join(shares, "\n", fn %Share{path: path} -> "- #{path}" end)
 
-    "The same path on both sides. In the VM each is a copy, brought up to date from here every few seconds, never written back; the git repositories in it aren't copied: they are projects, at /work/NAME. A command whose --dir is inside one runs there, so it can read the files as they are here and leave results, which reach the copy in the VM a few seconds later; any other command runs in the home folder.\n\n" <>
+    "The same path on both sides. In the VM each is a read-only copy, synced from here when the VM starts, when the user asks, and with mwt sync, never written back; the git repositories in it aren't copied: they are projects, at /work/NAME. A command whose --dir is inside one runs there, so it can read the files as they are here and leave results, which reach the copy in the VM with the sync MWT starts when it ends (mwt sync PATH waits for it); any other command runs in the home folder.\n\n" <>
       lines
   end
 

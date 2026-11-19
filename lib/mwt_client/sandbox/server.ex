@@ -77,10 +77,8 @@ defmodule MWTClient.Sandbox.Server do
     Disks,
     Event,
     Exchange,
-    FolderSync,
     Gate,
     Grant,
-    Guest,
     Handoff,
     HostCommand,
     HostInfo,
@@ -109,6 +107,7 @@ defmodule MWTClient.Sandbox.Server do
     Grants,
     HostRuns,
     Machine,
+    ShareSync,
     State,
     Tools,
     Values
@@ -121,10 +120,10 @@ defmodule MWTClient.Sandbox.Server do
   @sweep_every 30_000
   @handoffs_kept 100
   @mirror_every 2_000
-  # How often MWT looks at your shared folders to copy what changed into the
-  # VM (`MWTClient.Sandbox.FolderSync`); a look that takes long spaces the
-  # next ones out.
-  @sync_every 3_000
+  # How often MWT looks again at its own files for the VM (/mnt/mwt), in
+  # case a change of theirs went unsent (`Copying`). Your shared folders
+  # are synced only when asked (`ShareSync`).
+  @inbox_every 3_000
   # A mirror that failed is tried again this often, unless your branch moves.
   @mirror_retry_seconds 60
   @kill_after_ms 5_000
@@ -278,7 +277,7 @@ defmodule MWTClient.Sandbox.Server do
     if State.external?() do
       {:ok, _} = :timer.send_interval(@poll_every, :poll)
       {:ok, _} = :timer.send_interval(@mirror_every, :mirror)
-      {:ok, _} = :timer.send_interval(@sync_every, :sync)
+      {:ok, _} = :timer.send_interval(@inbox_every, :sync_inbox)
       {:ok, state, {:continue, :check}}
     else
       {:ok, state}
@@ -409,7 +408,7 @@ defmodule MWTClient.Sandbox.Server do
          needs: state.needs
        },
        inbox: State.inbox_dir(state),
-       sync: Map.new(state.sync, fn {path, record} -> {path, record.status} end),
+       sync: ShareSync.view(state),
        host: Map.put(state.host, :text, State.host_text(state)),
        ports: Forwarding.view(state),
        firewall: Firewall.of(state)
@@ -1249,7 +1248,8 @@ defmodule MWTClient.Sandbox.Server do
          state
          |> State.change(:settings, fn _ -> settings end)
          |> State.write_host()
-         |> State.changed()}
+         |> State.changed()
+         |> ShareSync.request([share.path])}
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -1259,12 +1259,22 @@ defmodule MWTClient.Sandbox.Server do
   defp answer({:remove_share, path}, _from, state) do
     settings = %{state.settings | shares: Enum.reject(state.settings.shares, &(&1.path == path))}
 
+    # A sync of none: the VM shows the shares there are, so this one's copy goes.
     {:reply, :ok,
      state
      |> State.change(:settings, fn _ -> settings end)
      |> State.write_host()
-     |> State.changed()}
+     |> State.changed()
+     |> ShareSync.request([])}
   end
+
+  # From a page's Sync button: answered at once, the sync goes on.
+  defp answer({:sync_shares, which}, _from, state),
+    do: {:reply, :ok, ShareSync.request(state, which)}
+
+  # From `mwt sync`: answered when the sync ends.
+  defp answer({:sync_shares_wait, which}, from, state),
+    do: {:noreply, ShareSync.request(state, which, from)}
 
   # A connection `MWTClient.Sandbox.Gate` found waiting for you, decided
   # again with the state as it is here, and held: the firewall saw it
@@ -1512,59 +1522,14 @@ defmodule MWTClient.Sandbox.Server do
   # MWT's own files changed: their copy in the VM follows within moments.
   defp info(:sync_inbox, state), do: {:noreply, Copying.start(state)}
 
-  # While the VM runs, each shared folder's copy follows the folder: the
-  # task looks at them all and sends what changed. MWT's own files are
-  # looked at too, in case a change of theirs went unsent.
-  defp info(:sync, state) do
-    send(self(), :sync_inbox)
-    vm_record = State.vm_record(state)
+  # A sync of the shared folders is due, or was waiting for the VM to be
+  # free (`ShareSync`).
+  defp info(:sync, state), do: {:noreply, ShareSync.start(state)}
 
-    cond do
-      state.vm.status != :running or state.vm.busy != nil or is_nil(vm_record) ->
-        {:noreply, state}
+  defp info({:sync_progress, vm, path, phase}, state),
+    do: {:noreply, ShareSync.progress(state, vm, path, phase)}
 
-      not match?(%{copied: true}, vm_record) ->
-        # An older VM still mounts the host's folders here. Preparing a
-        # copy there would remove or rescue the host's own files.
-        records =
-          Map.new(state.settings.shares, fn %Share{path: path} ->
-            record = FolderSync.new(path, vm_record.id)
-
-            {path,
-             put_in(
-               record.status.error,
-               "Recreate the VM to copy shared folders. This VM still mounts folders from your machine."
-             )}
-          end)
-
-        if records == state.sync,
-          do: {:noreply, state},
-          else: {:noreply, State.change(state, :sync, fn _ -> records end)}
-
-      :sync in Map.values(state.tasks) or
-          (state.sync_after != nil and System.monotonic_time(:millisecond) < state.sync_after) ->
-        {:noreply, state}
-
-      true ->
-        guest = Guest.vm(state.username, state.vm.name)
-        dir = state.dir
-        started_at = state.vm.started_at
-
-        records =
-          Map.new(state.settings.shares, fn %Share{path: path} ->
-            case Map.get(state.sync, path) do
-              %{vm: vm} = record when vm == vm_record.id -> {path, record}
-              _none_or_another_vm -> {path, FolderSync.new(path, vm_record.id)}
-            end
-          end)
-
-        {:noreply,
-         State.task(state, :sync, fn ->
-           FolderSync.sync_all(records, guest, dir)
-           |> Map.merge(%{vm: vm_record.id, started_at: started_at})
-         end)}
-    end
-  end
+  defp info({:sync_settle, paths}, state), do: {:noreply, ShareSync.settle(state, paths)}
 
   defp info(:poll, state) do
     if state.vm.busy != nil or Enum.any?(Map.values(state.tasks), &(&1 == :check)),

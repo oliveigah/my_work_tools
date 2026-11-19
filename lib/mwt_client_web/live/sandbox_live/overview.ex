@@ -26,6 +26,7 @@ defmodule MWTClientWeb.SandboxLive.Overview do
   attr :ports, :map, required: true
   attr :monitor, :any, default: nil
   attr :monitor_by, :atom, default: :cpu
+  attr :sync, :map, default: %{}
   attr :now, DateTime, required: true
 
   def page(assigns) do
@@ -312,9 +313,87 @@ defmodule MWTClientWeb.SandboxLive.Overview do
           </ul>
         </.card>
 
+        <.shares_card shares={@settings.shares} sync={@sync} vm={@vm} now={@now} />
+
         <.memory_card memory={@memory} vm={@vm} />
       </div>
     </div>
+    """
+  end
+
+  attr :shares, :list, required: true
+  attr :sync, :map, required: true
+  attr :vm, :any, required: true
+  attr :now, DateTime, required: true
+
+  # Your shared folders' copies in the VM: when each was last synced, and
+  # the buttons that sync them.
+  defp shares_card(assigns) do
+    assigns =
+      assign(assigns,
+        running?: assigns.vm.status == :running,
+        busy?: Enum.any?(Map.values(assigns.sync), &(&1.progress != nil))
+      )
+
+    ~H"""
+    <.card id="overview-shares" title="Shared folders" body_class="">
+      <:help>
+        Each one's files are copied into the VM, read-only at the same path; its git repositories are projects. A copy changes only when synced: as the VM starts, with Sync, after a command you approved ran in it, and when an agent runs mwt sync.
+      </:help>
+      <:actions>
+        <.share_sync_button
+          :if={@shares != []}
+          id="overview-shares-sync-all"
+          label="Sync all"
+          running?={@running?}
+          busy?={@busy?}
+        />
+      </:actions>
+      <div :if={@shares == []}>
+        <.empty icon="hero-folder" id="overview-shares-empty">
+          No folder shared.
+          <.link patch={~p"/tools/sandbox/settings"} class="text-accent hover:underline">
+            Share one in Settings
+          </.link>
+        </.empty>
+      </div>
+      <ul class="divide-y divide-line-soft">
+        <li
+          :for={{share, index} <- Enum.with_index(@shares)}
+          id={"overview-share-#{index}"}
+          class="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-hover/30"
+        >
+          <.icon name="hero-folder" class="size-4 shrink-0 text-faint" />
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-xs font-medium text-ink" title={share.path}>
+              {Path.basename(share.path)}
+            </p>
+            <p class="flex min-w-0 text-[10px] leading-4">
+              <.share_sync_state
+                id={"overview-share-state-#{index}"}
+                entry={@sync[share.path]}
+                running?={@running?}
+                now={@now}
+              />
+            </p>
+            <p
+              :if={match?(%{status: %{error: error}} when is_binary(error), @sync[share.path])}
+              id={"overview-share-error-#{index}"}
+              class="truncate text-[10px] leading-4 text-bad"
+              title={@sync[share.path].status.error}
+            >
+              {@sync[share.path].status.error}
+            </p>
+          </div>
+          <.share_sync_button
+            id={"overview-share-sync-#{index}"}
+            path={share.path}
+            running?={@running?}
+            busy?={match?(%{progress: progress} when progress != nil, @sync[share.path])}
+          />
+        </li>
+      </ul>
+    </.card>
     """
   end
 

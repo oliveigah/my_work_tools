@@ -1,36 +1,39 @@
 defmodule MWTClient.Sandbox.FolderSync do
   @moduledoc """
   Folders of this machine, copied into the VM: one way, from here to the
-  VM's own storage. Nothing of them is mounted, so live sharing needs no
-  coherence from microsandbox. Two kinds of copy use it:
+  VM's own storage, when asked. Nothing of them is mounted from here, and
+  nothing of a copy ever comes back. Two kinds of copy use it:
 
-    * `:share` - a shared folder of yours, at the same path. A git working
-      tree in it (a folder holding `.git`, a folder or a file) is never
-      copied: it reaches the VM as a project, by git
-      (`MWTClient.Sandbox.Mirror`), so what a repository keeps beside its
-      code (`.env`, ignored secrets, `.git` itself) stays on your machine.
-      Its path in the VM is left alone, including anything already there.
-      What the VM changed in the rest of its copy is set aside, never lost.
+    * `:share` - a shared folder of yours, kept in its store on the VM's
+      work disk and shown read-only at the same path
+      (`MWTClient.Sandbox.ShareMounts`). A git working tree in it (a
+      folder holding `.git`, a folder or a file) is never copied: it
+      reaches the VM as a project, by git (`MWTClient.Sandbox.Mirror`), so
+      what a repository keeps beside its code (`.env`, ignored secrets,
+      `.git` itself) stays on your machine. A share is synced when it is
+      added, when the VM starts, from its Sync button, and by an agent's
+      `mwt sync` (`MWTClient.Sandbox.Server.ShareSync`): between those,
+      the VM has it as it was then.
     * `:mwt` - a folder of MWT's own, such as `/mnt/mwt`
-      (`MWTClient.Sandbox.Inbox`): copied whole, and what the VM changed in
-      it is simply replaced.
+      (`MWTClient.Sandbox.Inbox`): copied whole, each time MWT changes it.
+
+  The VM never changes a copy on purpose: a share's is read-only there, and
+  MWT's own is MWT's. So what is in a copy and not as MWT sent it is simply
+  replaced: there is no other side to keep.
 
   Everything else is copied: files, folders, and symlinks as links, never
-  followed. One look at a folder (`sync/4`):
+  followed. One sync of a folder (`sync/4`):
 
     1. **Scan** it here, with `lstat` only, and compare it with what MWT
        last sent to this VM (`sent`): kind, size and modification time to
        the second, a link's target. A file changed in the last 2 s is sent
-       again until it settles; one whose change time or inode moved since
-       the last scan is sent even when its size and time agree.
+       again next time, until it settles; one whose change time or inode
+       moved since the last scan is sent even when its size and time agree.
     2. **Compare the whole copy** with what the VM really has (`find
-       -printf` there) at the first look after a start, after a failure,
-       and every 5 minutes; in between, what MWT sent is what the VM has.
-    3. **Clear the way** (a bash script in the VM): for each path about to
-       be replaced or removed, what MWT expects there (what it sent) is
-       compared with what is there. For a share, anything else (the VM's
-       own change) is moved to `/work/.rescued/TIME/PATH` first. Then what
-       you deleted is removed.
+       -printf` there) at the first sync after a start, and after a
+       failure; in between, what MWT sent is what the VM has.
+    3. **Clear the way** (a bash script in the VM): what you deleted is
+       removed, and what is in the way of what comes in.
     4. **Send** the changed files: `tar` here into `tar -x` there, through
        `msb exec --stream`, into `.mwt-incoming` beside them, then each is
        renamed into place. A program in the VM sees a file whole, the old
@@ -39,11 +42,13 @@ defmodule MWTClient.Sandbox.FolderSync do
   `copy/3` is steps 1 and 4 alone, for a folder sent once into an empty
   place (your memory, `MWTClient.Sandbox.Memory`).
 
-  MWT reads from the VM only that file list, at most 64 MiB and 400,000
-  entries of it, a count of what was set aside, and the first 64 KiB of
-  any errors; nothing it sends is run here. What was sent
-  is kept per VM in `~/.mwt_client/<id>/sandbox/sync/`, so after a restart
-  of MWT a change the VM made is still told from yours.
+  A share holds at most 400,000 files and folders, and at most the size
+  its sync is given (`:max_bytes`, half the VM's work disk); more is an
+  error, and nothing of it is sent. MWT reads from the VM only that file
+  list, at most 192 MiB and 800,000 entries of it, and the first 64 KiB of
+  any errors; nothing it sends is run here. What was sent is kept per VM in
+  `~/.mwt_client/<id>/sandbox/sync/`, so after a restart of MWT only what
+  changed is sent.
 
   The guest map (`MWTClient.Sandbox.Guest`) gives `exec`, `stream` (the
   words that run a command in the VM with its input and output streamed)
@@ -51,14 +56,18 @@ defmodule MWTClient.Sandbox.FolderSync do
   into a folder of this machine.
   """
 
-  alias MWTClient.Sandbox.{Bounded, Scratch, Shown}
+  alias MWTClient.Sandbox.{Bounded, Scratch, ShareMounts, Shown}
 
-  @max_entries 200_000
-  @max_bytes 4 * 1024 * 1024 * 1024
+  @max_entries 400_000
+  # What a sync takes unless told (`:max_bytes`): the server gives half the
+  # VM's work disk, where the copies are kept.
+  @max_bytes 32 * 1024 * 1024 * 1024
   @settle_seconds 2
-  @recheck_ms 5 * 60 * 1_000
+  # A step in the VM; sending the files may take longer, a first copy of a
+  # large share above all.
   @seconds 600
-  @max_list 64 * 1024 * 1024
+  @send_seconds 3_600
+  @max_list 192 * 1024 * 1024
   # The VM's copy may hold more than the folder (what it added itself),
   # but not without end: its list is parsed into memory.
   @max_listed 2 * @max_entries
@@ -90,7 +99,12 @@ defmodule MWTClient.Sandbox.FolderSync do
           status: status()
         }
 
-  @typedoc "What the pages show of a record."
+  @typedoc """
+  What the pages show of a record: the folder as the last sync found it,
+  what that sync `sent` and `removed`, and how many of its files were
+  `unsettled`: changed in the 2 s before, or while they were sent, so
+  maybe caught half written. Those go again at the next sync.
+  """
   @type status :: %{
           files: non_neg_integer(),
           bytes: non_neg_integer(),
@@ -99,9 +113,17 @@ defmodule MWTClient.Sandbox.FolderSync do
           synced_at: DateTime.t() | nil,
           changed_at: DateTime.t() | nil,
           error: String.t() | nil,
-          rescued: non_neg_integer(),
-          rescued_to: String.t() | nil
+          sent: non_neg_integer(),
+          removed: non_neg_integer(),
+          unsettled: non_neg_integer()
         }
+
+  @typedoc """
+  What a sync is doing, as it goes, for the pages: looking at the folder
+  here, comparing with the VM's copy, or sending files (how many, how
+  many bytes).
+  """
+  @type phase :: :scanning | :comparing | {:sending, non_neg_integer(), non_neg_integer()}
 
   # The VM's side, step 2: every path of the copy, with its kind, size,
   # modification time and link target, but a send under way. Its folder is
@@ -116,19 +138,15 @@ defmodule MWTClient.Sandbox.FolderSync do
   # The VM's side, step 3. Each record, NUL-separated: the action (del, or
   # put-f, put-l, put-d for what comes next), the path, and what MWT
   # expects there: kind (f, l, d, - for nothing, ? for anything), size,
-  # modification time and link target. With no rescue folder (a copy of
-  # MWT's own), what isn't as expected is removed instead of set aside. A
-  # file or link about to be replaced by one stays: the send renames over
-  # it. Prints how many paths it set aside.
+  # modification time and link target. What isn't as expected is removed:
+  # the VM doesn't change a copy, so it is a send cut short or a planted
+  # file. A file or link about to be replaced by one stays: the send renames
+  # over it.
   @prepare ~S"""
   set -u
-  root=$1 rescue=$2 moved=0
+  root=$1
   mkdir -p -- "$root"
-  aside() {
-    if [ -z "$rescue" ]; then rm -rf -- "$root/$1"; return; fi
-    mkdir -p -- "$rescue/$(dirname -- "$1")"
-    mv -- "$root/$1" "$rescue/$1" && moved=$((moved + 1))
-  }
+  aside() { rm -rf -- "$root/$1"; }
   while IFS= read -r -d '' action && IFS= read -r -d '' path && IFS= read -r -d '' kind &&
     IFS= read -r -d '' size && IFS= read -r -d '' mtime && IFS= read -r -d '' target; do
     p=$root/$path
@@ -154,7 +172,6 @@ defmodule MWTClient.Sandbox.FolderSync do
       *) rm -f -- "$p" ;;
     esac
   done
-  echo "$moved"
   """
 
   # The VM's side, step 4: the tar stream on its input, unpacked into the
@@ -196,15 +213,15 @@ defmodule MWTClient.Sandbox.FolderSync do
   """
 
   @doc """
-  A record for a folder MWT hasn't looked at for this VM yet: a shared
-  folder, at the same path in the VM, unless `opts` say otherwise (`to:`,
-  `kind:`).
+  A record for a folder MWT hasn't synced for this VM yet: a shared folder,
+  into its store (`MWTClient.Sandbox.ShareMounts.store/1`), unless `opts`
+  say otherwise (`to:`, `kind:`).
   """
   @spec new(Path.t(), String.t(), keyword()) :: record()
   def new(path, vm, opts \\ []) do
     %{
       path: path,
-      to: Keyword.get(opts, :to, path),
+      to: Keyword.get_lazy(opts, :to, fn -> ShareMounts.store(path) end),
       kind: Keyword.get(opts, :kind, :share),
       vm: vm,
       sent: nil,
@@ -218,36 +235,44 @@ defmodule MWTClient.Sandbox.FolderSync do
         synced_at: nil,
         changed_at: nil,
         error: nil,
-        rescued: 0,
-        rescued_to: nil
+        sent: 0,
+        removed: 0,
+        unsettled: 0
       }
     }
   end
 
   @doc """
-  One look at the folder of `record`: brings its copy in the VM behind
+  One sync of the folder of `record`: brings its copy in the VM behind
   `guest` up to date. `dir` holds what was sent, per folder and VM.
-  Returns the record as it is after the look; an error is in its status.
+  Returns the record as it is after the sync; an error is in its status.
 
-  With `fresh: true`, the copy's place in the VM is known to be empty (a
-  folder in memory just made at a start): everything is sent with a plain
-  `tar -x`, which needs neither bash nor GNU tools there.
+  ## Options
+
+    * `:fresh` - the copy's place in the VM is known to be empty (a folder
+      in memory just made at a start): everything is sent with a plain
+      `tar -x`, which needs neither bash nor GNU tools there;
+    * `:max_bytes` - the most a folder may hold;
+    * `:progress` - called with each `t:phase/0` as the sync goes.
   """
   @spec sync(record(), map(), Path.t(), keyword()) :: record()
   def sync(record, guest, dir, opts \\ []) do
     now = Keyword.get_lazy(opts, :now, fn -> System.os_time(:second) end)
     clock = Keyword.get_lazy(opts, :clock, fn -> System.monotonic_time(:millisecond) end)
     fresh? = Keyword.get(opts, :fresh, false)
+    progress = Keyword.get(opts, :progress, fn _phase -> :ok end)
+    max_bytes = Keyword.get(opts, :max_bytes, @max_bytes)
     record = with_sent(record, dir)
+    progress.(:scanning)
 
-    case scan(record.path, now, record.kind) do
+    case scan(record.path, now, record.kind, max_bytes) do
       {:ok, %{project?: true} = scan} ->
         status = %{record.status | project?: true, trees: scan.trees, files: 0, bytes: 0}
         %{record | status: %{status | error: nil, synced_at: DateTime.utc_now()}}
 
       {:ok, scan} ->
         record
-        |> bring(scan, guest, dir, clock, fresh?)
+        |> bring(scan, guest, dir, clock, fresh?, progress)
         |> then(fn record ->
           %{
             record
@@ -257,7 +282,7 @@ defmodule MWTClient.Sandbox.FolderSync do
         end)
 
       {:error, reason} ->
-        put_in(record.status.error, explain(reason))
+        put_in(record.status.error, explain(reason, max_bytes))
     end
   end
 
@@ -288,9 +313,9 @@ defmodule MWTClient.Sandbox.FolderSync do
     Path.join([dir, "sync", hash <> ".bin"])
   end
 
-  defp bring(record, scan, guest, dir, clock, fresh?) do
+  defp bring(record, scan, guest, dir, clock, fresh?, progress) do
     place = guest.place.(record.to)
-    have = if fresh?, do: {:ok, %{}, clock}, else: have(record, guest, place, clock)
+    have = if fresh?, do: {:ok, %{}, clock}, else: have(record, guest, place, clock, progress)
 
     with {:ok, have, checked_at} <- have do
       # Excluded working trees aren't deletions. Their paths in the VM
@@ -306,21 +331,22 @@ defmodule MWTClient.Sandbox.FolderSync do
       if changed == [] and remove == [] do
         # A copy just compared whole is what MWT sent from now on.
         if have != record.sent, do: write_sent(dir, record, have)
-        done(record, scan, have, checked_at, 0, nil, false)
+        done(record, scan, have, checked_at, 0, 0)
       else
-        rescue_dir = rescue_dir(guest, record)
         expect = record.sent
+        bytes = Enum.sum_by(changed, &size(scan.entries[&1]))
+        progress.({:sending, length(changed), bytes})
 
         prepared =
           if fresh?,
-            do: {:ok, 0},
-            else: prepare(guest, place, rescue_dir, changed, remove, scan, expect)
+            do: :ok,
+            else: prepare(guest, place, changed, remove, scan, expect)
 
-        with {:ok, moved} <- prepared,
+        with :ok <- prepared,
              :ok <- transfer(guest, record.path, place, changed, fresh?) do
           sent = after_send(record.path, scan, changed, remove, have)
           write_sent(dir, record, sent)
-          done(record, scan, sent, checked_at, moved, moved > 0 && rescue_dir, true)
+          done(record, scan, sent, checked_at, length(changed), length(remove))
         else
           {:error, message} ->
             # What the VM holds is unsure now: compared whole next time,
@@ -335,11 +361,17 @@ defmodule MWTClient.Sandbox.FolderSync do
     end
   end
 
-  # What the VM's copy holds: what was sent, unless it is time to look.
-  defp have(record, guest, place, clock) do
-    if record.checked_at != nil and clock - record.checked_at < @recheck_ms do
+  defp size({:file, size, _mtime}), do: size
+  defp size(_other), do: 0
+
+  # What the VM's copy holds: what was sent, unless it was never compared
+  # since the VM started, or the last sync failed.
+  defp have(record, guest, place, clock, progress) do
+    if record.checked_at != nil do
       {:ok, record.sent, record.checked_at}
     else
+      progress.(:comparing)
+
       case read(guest, ["bash", "-c", @list, "mwt-sync", place], @max_list) do
         {:ok, output} ->
           case parse_list(output) do
@@ -375,15 +407,7 @@ defmodule MWTClient.Sandbox.FolderSync do
     %{send: Enum.sort(send), remove: remove}
   end
 
-  # Where the VM's own changes to a share go; a copy of MWT's own has none.
-  defp rescue_dir(_guest, %{kind: :mwt}), do: ""
-
-  defp rescue_dir(guest, record) do
-    stamp = Calendar.strftime(DateTime.utc_now(), "%Y%m%d-%H%M%S")
-    Path.join([guest.root, ".rescued", stamp]) <> record.to
-  end
-
-  defp prepare(guest, place, rescue_dir, send, remove, scan, expect) do
+  defp prepare(guest, place, send, remove, scan, expect) do
     # Files and links first, then folders, deepest first, so a folder is
     # empty by the time it is removed; then what comes in.
     {dirs, others} = Enum.split_with(remove, &(Map.get(expect, &1) == :dir))
@@ -394,14 +418,11 @@ defmodule MWTClient.Sandbox.FolderSync do
         Enum.map(send, &record_line(put(scan.entries[&1]), &1, Map.get(expect, &1)))
 
     with_file(records, fn input ->
-      words = guest.stream.(["bash", "-c", @prepare, "mwt-sync", place, rescue_dir])
+      words = guest.stream.(["bash", "-c", @prepare, "mwt-sync", place])
 
       case run(["-c", ~s("$@" < "$MWT_INPUT"), "bash" | words], [{"MWT_INPUT", input}], guest) do
-        {:ok, output} ->
-          case Integer.parse(String.trim(output)) do
-            {moved, ""} -> {:ok, moved}
-            _ -> {:error, "The VM's copy couldn't be prepared: " <> error_text(output)}
-          end
+        {:ok, _output} ->
+          :ok
 
         {:error, text} ->
           {:error, "The VM's copy couldn't be prepared: " <> text}
@@ -446,7 +467,12 @@ defmodule MWTClient.Sandbox.FolderSync do
       errors = file <> ".errors"
       words = guest.stream.(words)
 
-      case run(["-c", @send, "mwt-sync", share, file | words], [{"MWT_ERRORS", errors}], guest) do
+      case run(
+             ["-c", @send, "mwt-sync", share, file | words],
+             [{"MWT_ERRORS", errors}],
+             guest,
+             @send_seconds
+           ) do
         {:ok, _output} ->
           :ok
 
@@ -492,8 +518,8 @@ defmodule MWTClient.Sandbox.FolderSync do
   # A step whose output is a count or nothing: at most `@error_bytes` of it
   # are taken. Its errors are apart, so a warning in the VM doesn't spoil
   # the count.
-  defp run(args, env, guest) do
-    case Bounded.cmd("bash", args, max: @error_bytes, seconds: @seconds, env: env ++ guest.env) do
+  defp run(args, env, guest, seconds \\ @seconds) do
+    case Bounded.cmd("bash", args, max: @error_bytes, seconds: seconds, env: env ++ guest.env) do
       {:ok, output, _errors, 0} ->
         {:ok, output}
 
@@ -504,7 +530,7 @@ defmodule MWTClient.Sandbox.FolderSync do
         {:error, "it printed more than 64 KiB: " <> error_text(head)}
 
       {:error, :timeout} ->
-        {:error, "it took longer than #{@seconds} s"}
+        {:error, "it took longer than #{seconds} s"}
     end
   end
 
@@ -566,8 +592,9 @@ defmodule MWTClient.Sandbox.FolderSync do
     File.rename!(temporary, path)
   end
 
-  defp done(record, scan, sent, checked_at, moved, rescued_to, changed?) do
+  defp done(record, scan, sent, checked_at, sent_count, removed) do
     now = DateTime.utc_now()
+    changed? = sent_count + removed > 0
 
     status = %{
       record.status
@@ -576,8 +603,9 @@ defmodule MWTClient.Sandbox.FolderSync do
         synced_at: now,
         changed_at: if(changed?, do: now, else: record.status.changed_at),
         error: nil,
-        rescued: record.status.rescued + moved,
-        rescued_to: rescued_to || record.status.rescued_to
+        sent: sent_count,
+        removed: removed,
+        unsettled: MapSet.size(scan.unsettled) + Enum.count(sent, &(elem(&1, 1) == :unknown))
     }
 
     %{record | sent: sent, checked_at: checked_at, status: status}
@@ -649,8 +677,8 @@ defmodule MWTClient.Sandbox.FolderSync do
   holds. For a share, `project?` when `root` is one itself, and an error
   when it is inside one; a folder of MWT's own is never either.
   """
-  @spec scan(Path.t(), integer(), kind()) :: {:ok, map()} | {:error, term()}
-  def scan(root, now, kind \\ :share) do
+  @spec scan(Path.t(), integer(), kind(), pos_integer()) :: {:ok, map()} | {:error, term()}
+  def scan(root, now, kind \\ :share, max_bytes \\ @max_bytes) do
     cond do
       not File.dir?(root) ->
         {:error, :missing}
@@ -671,11 +699,12 @@ defmodule MWTClient.Sandbox.FolderSync do
           trees: [],
           files: 0,
           bytes: 0,
-          count: 0
+          count: 0,
+          max_bytes: max_bytes
         }
 
         with {:ok, acc} <- walk([{"", root}], acc, now) do
-          {:ok, acc |> Map.delete(:kind) |> Map.update!(:trees, &Enum.sort/1)}
+          {:ok, acc |> Map.drop([:kind, :max_bytes]) |> Map.update!(:trees, &Enum.sort/1)}
         end
     end
   end
@@ -761,7 +790,7 @@ defmodule MWTClient.Sandbox.FolderSync do
 
     cond do
       acc.count > @max_entries -> {:error, {:too_big, :entries}}
-      acc.bytes > @max_bytes -> {:error, {:too_big, :bytes}}
+      acc.bytes > acc.max_bytes -> {:error, {:too_big, :bytes}}
       true -> {result, acc}
     end
   end
@@ -799,25 +828,38 @@ defmodule MWTClient.Sandbox.FolderSync do
   defp git_entry?(dir), do: match?({:ok, _}, File.lstat(Path.join(dir, ".git")))
 
   @doc """
-  One look at every folder in `records` (by path), one after the other,
-  for the sandbox server's task. Returns the records after it and
-  how long it took, in milliseconds.
+  One sync of each folder in `records` (by path), one after the other, for
+  the sandbox server's task, once the VM shows every share in `shares`
+  and nothing else (`MWTClient.Sandbox.ShareMounts.arrange/2`). Returns the
+  records after it and how long it took, in milliseconds. `opts` go to
+  each `sync/4`, but `:progress`, which is called with the path too.
   """
-  @spec sync_all(%{Path.t() => record()}, map(), Path.t()) :: %{
+  @spec sync_all(%{Path.t() => record()}, [Path.t()], map(), Path.t(), keyword()) :: %{
           records: %{Path.t() => record()},
           took: non_neg_integer()
         }
-  def sync_all(records, guest, dir) do
+  def sync_all(records, shares, guest, dir, opts \\ []) do
     started = System.monotonic_time(:millisecond)
+    progress = Keyword.get(opts, :progress, fn _path, _phase -> :ok end)
 
     records =
-      Map.new(records, fn {path, record} ->
-        try do
-          {path, sync(record, guest, dir)}
-        rescue
-          error -> {path, put_in(record.status.error, Exception.message(error))}
-        end
-      end)
+      case ShareMounts.arrange(guest, shares) do
+        :ok ->
+          Map.new(records, fn {path, record} ->
+            opts = Keyword.put(opts, :progress, &progress.(path, &1))
+
+            try do
+              {path, sync(record, guest, dir, opts)}
+            rescue
+              error -> {path, put_in(record.status.error, Exception.message(error))}
+            end
+          end)
+
+        {:error, message} ->
+          Map.new(records, fn {path, record} ->
+            {path, %{record | checked_at: nil, status: %{record.status | error: message}}}
+          end)
+      end
 
     %{records: records, took: System.monotonic_time(:millisecond) - started}
   end
@@ -826,19 +868,22 @@ defmodule MWTClient.Sandbox.FolderSync do
   @spec shown(record()) :: map()
   def shown(record), do: Map.delete(record.status, :synced_at)
 
-  @doc "Why a folder couldn't be copied, in words."
-  @spec explain(term()) :: String.t()
-  def explain(:missing), do: "The folder isn't there."
+  @doc "Why a folder couldn't be copied, in words; `max_bytes` is the most it could hold."
+  @spec explain(term(), pos_integer()) :: String.t()
+  def explain(reason, max_bytes \\ @max_bytes)
+  def explain(:missing, _max_bytes), do: "The folder isn't there."
 
-  def explain({:inside, root}),
+  def explain({:inside, root}, _max_bytes),
     do:
       "It is inside the git working tree #{root}, so nothing of it is copied: it would carry what that repository ignores. Share the repository instead."
 
-  def explain({:too_big, :entries}),
+  def explain({:too_big, :entries}, _max_bytes),
     do:
-      "It holds more than #{@max_entries} files and folders, so nothing more is copied. Share a smaller folder."
+      "Outside its git repositories, it holds more than #{@max_entries} files and folders, so nothing of it is copied. Share a smaller folder."
 
-  def explain({:too_big, :bytes}),
+  def explain({:too_big, :bytes}, max_bytes),
     do:
-      "It holds more than #{div(@max_bytes, 1024 * 1024 * 1024)} GiB, so nothing more is copied. Share a smaller folder."
+      "Outside its git repositories, it holds more than #{gib(max_bytes)} GiB, half the VM's work disk, so nothing of it is copied. Share a smaller folder, or give the work disk more room in Settings."
+
+  defp gib(bytes), do: bytes |> div(1024 * 1024 * 1024) |> max(1)
 end

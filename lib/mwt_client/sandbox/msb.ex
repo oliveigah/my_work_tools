@@ -250,6 +250,18 @@ defmodule MWTClient.Sandbox.Msb do
       set -- -- "$msb" "$@"
     fi
     net=--unshare-net
+    if [ "${MWT_MSB_NETWORK:-}" != 1 ]; then
+      # msb makes an HTTP client as it starts, even for what needs no
+      # network (a load), and aborts when it finds no CA certificate: only
+      # the system's bundle, public, read-only, where TLS libraries look.
+      for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+        target=$(readlink -f "$bundle" 2>/dev/null) || continue
+        if [ -f "$target" ]; then
+          set -- --ro-bind "$target" /etc/ssl/certs/ca-certificates.crt "$@"
+          break
+        fi
+      done
+    fi
     if [ "${MWT_MSB_NETWORK:-}" = 1 ]; then
       # A pull: the network, /etc, and where its links for names and
       # certificates lead (systemd-resolved's stub is in /run).

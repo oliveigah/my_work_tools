@@ -16,7 +16,6 @@ defmodule MWTClient.Sandbox.Server.Machine do
     Bubble,
     Build,
     Disks,
-    FolderSync,
     Guest,
     Image,
     Inbox,
@@ -27,7 +26,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
     VM
   }
 
-  alias MWTClient.Sandbox.Server.{Copying, HostRuns, State}
+  alias MWTClient.Sandbox.Server.{Copying, HostRuns, ShareSync, State}
 
   @build_log_limit 400
 
@@ -378,14 +377,8 @@ defmodule MWTClient.Sandbox.Server.Machine do
       else: State.change(state, :vm, &%{&1.vm | error: Enum.join(errors, " ")})
   end
 
-  # Every boot gets a whole comparison, without a delay from the previous
-  # one. A timer may already have ticked while the VM was still busy.
-  defp reset_sync(state) do
-    send(self(), :sync)
-
-    %{state | sync_after: nil}
-    |> State.change(:sync, fn _ -> %{} end)
-  end
+  # Every boot syncs every share, comparing each copy whole.
+  defp reset_sync(state), do: ShareSync.reset(state)
 
   defp disk_sizes(settings),
     do: %{
@@ -704,41 +697,13 @@ defmodule MWTClient.Sandbox.Server.Machine do
   # The mirror task tells the server what it did as it goes.
   def finished(state, :mirror, _result), do: state
 
-  # A shared folder no longer shared is dropped; a look that took long
-  # spaces the next one out, twice as long again.
-  def finished(state, :sync, %{
-        vm: vm,
-        started_at: started_at,
-        records: records,
-        took: took
-      }) do
-    # A copy can end after the VM was stopped or recreated. Its result and
-    # delay belong to that boot, not the VM running now.
-    # OptMem sync only makes this boot busy: keep its completed imports.
-    if match?(%{id: ^vm, copied: true}, State.vm_record(state)) and
-         state.vm.status == :running and
-         state.vm.started_at == started_at do
-      paths = MapSet.new(state.settings.shares, & &1.path)
-      records = Map.filter(records, fn {path, _} -> MapSet.member?(paths, path) end)
-      shown = &Map.new(&1, fn {path, record} -> {path, FolderSync.shown(record)} end)
-      state = %{state | sync_after: System.monotonic_time(:millisecond) + 2 * took}
-
-      if shown.(records) == shown.(state.sync),
-        do: %{state | sync: records},
-        else: State.change(state, :sync, fn _ -> records end)
-    else
-      state
-    end
-  end
-
-  # A copy already running when the layout check was added has no boot id.
-  def finished(state, :sync, %{records: _records, took: _took}), do: state
+  def finished(state, :sync, %{records: _records} = result), do: ShareSync.finished(state, result)
 
   def finished(state, :sync_inbox, result), do: Copying.finished(state, result)
 
   def finished(state, :sync, {:error, message}) do
     Logger.warning("copying the shared folders failed: #{message}", system: :sandbox)
-    state
+    ShareSync.finished(state, {:error, message})
   end
 
   def finished(state, :delete_builds, _result), do: state
@@ -829,20 +794,20 @@ defmodule MWTClient.Sandbox.Server.Machine do
     }
 
     # The image is loaded by the confined msb, which must be written.
-    port =
-      _ = Msb.write_launcher(state.username)
+    _ = Msb.write_launcher(state.username)
 
-    Port.open({:spawn_executable, System.find_executable("bash")}, [
-      :binary,
-      :exit_status,
-      :stderr_to_stdout,
-      {:line, 2_000},
-      args: ["-c", Image.build_script(dir, ref)],
-      env:
-        Enum.map(Msb.env(state.username), fn {k, v} ->
-          {String.to_charlist(k), String.to_charlist(v)}
-        end)
-    ])
+    port =
+      Port.open({:spawn_executable, System.find_executable("bash")}, [
+        :binary,
+        :exit_status,
+        :stderr_to_stdout,
+        {:line, 2_000},
+        args: ["-c", Image.build_script(dir, ref)],
+        env:
+          Enum.map(Msb.env(state.username), fn {k, v} ->
+            {String.to_charlist(k), String.to_charlist(v)}
+          end)
+      ])
 
     %{state | build: port}
     |> State.change(

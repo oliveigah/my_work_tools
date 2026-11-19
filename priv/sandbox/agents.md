@@ -12,17 +12,18 @@ recreated, and nothing on the user's machine opens it, so build and install
 there freely. Your home (`/root`) and `/cache` are kept too. The rest of the
 VM starts over when it is recreated.
 
-Folders the user shared are copies, at the same path as on their machine.
-MWT brings them up to date from the user's folders every few seconds,
-never the other way: what you change in a copy stays in this VM, and when
-the user's version of that path changes, MWT moves yours to
-`/work/.rescued/TIME/PATH` and puts theirs in its place. So read them, but
-work in `/work`. The git repositories in them aren't copied: they are
-projects (below), and what a repository keeps beside its code (`.git`,
-ignored files such as a `.env`) stays on the user's machine on purpose.
-Don't try to reach those another way, a command on the user's machine
-included: when a task needs a value from one, ask the user, or for a
-grant.
+Folders the user shared are copies, read-only, at the same path as on
+their machine: read them, and work in `/work`. A copy changes only when it
+is synced: when the VM starts, when the user syncs it, after a command you
+ran with `mwt run` in it, and when you run `mwt sync [PATH]`, which waits
+for it. So it may be older than the user's folder: run `mwt sync` before
+relying on what a shared file holds now, and when the user says they
+changed one. Nothing of a copy goes back. The git repositories in them
+aren't copied: they are projects (below), and what a repository keeps
+beside its code (`.git`, ignored files such as a `.env`) stays on the
+user's machine on purpose. Don't try to reach those another way, a command
+on the user's machine included: when a task needs a value from one, ask
+the user, or for a grant.
 
 ## Projects: the clone, its slots, and handoffs
 
@@ -444,9 +445,9 @@ So keep the command the smallest that gets what you need:
    and it runs as them with `bash -lc`.
 3. Where it runs: `--dir`, by default your current directory. Shared folders
    are at the same path there: the command sees the user's own files, and
-   what it writes there reaches your copy a few seconds later. What you
-   changed in your copy isn't there. Anything else runs in the user's home
-   folder.
+   once it ends, MWT syncs that folder's copy, so what it wrote there
+   reaches yours; `mwt sync PATH` waits for that. Anything else runs in the
+   user's home folder.
 4. Prefer text the user can read to a script file: `mwt run commands -- ./x.sh` runs
    whatever the file holds when they click, and the card says so.
 5. When you expect to run the same again, don't run it ad hoc: propose it

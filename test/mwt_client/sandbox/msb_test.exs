@@ -84,9 +84,10 @@ printf 'home=%s path=%s args=%s\n' "$MSB_HOME" "$MSB_PATH" "$*"
     assert String.ends_with?(error, " …")
   end
 
-  test "msb runs on this machine confined: the store, and no KVM, network or file of yours", %{
-    dir: dir
-  } do
+  test "msb runs on this machine confined: the store, the CA bundle, and no KVM, network or file of yours",
+       %{
+         dir: dir
+       } do
     msb = fake_runtime(dir)
     yours = Path.join(dir, "yours.txt")
     File.write!(yours, "secret")
@@ -98,6 +99,8 @@ printf 'home=%s path=%s args=%s\n' "$MSB_HOME" "$MSB_PATH" "$*"
     [ -e #{yours} ] && echo yours=seen || echo yours=unseen
     grep '^Seccomp:' /proc/self/status | tr -d ' \t'
     touch "$MSB_HOME/written" && echo store=writable
+    grep -q 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt && echo ca=yes || echo ca=no
+    echo etc=$(ls -A /etc | tr '\n' ' ')
     """)
 
     assert {:ok, output} = Msb.run(@user, ["exec", "vm", "--", "true"])
@@ -108,6 +111,10 @@ printf 'home=%s path=%s args=%s\n' "$MSB_HOME" "$MSB_PATH" "$*"
     assert output =~ "Seccomp:2"
     assert output =~ "store=writable"
     assert File.exists?(Path.join(Msb.store(@user), "written"))
+    # msb aborts as it starts without a CA certificate, even to load an
+    # image: the system's bundle, and nothing else of /etc.
+    assert output =~ "ca=yes"
+    assert output =~ "etc=ssl\n"
 
     # A pull has the network, and still no KVM.
     assert {:ok, output} = Msb.run(@user, ["pull", "alpine"])

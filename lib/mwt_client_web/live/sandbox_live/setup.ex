@@ -197,7 +197,9 @@ defmodule MWTClientWeb.SandboxLive.Setup do
 
     assigns =
       assign(assigns,
-        authorize: "#{msb} ssh authorize --file ~/.ssh/id_ed25519.pub",
+        # On stdin: the launcher runs msb confined, with no home folder of
+        # yours, so it can't open the key itself.
+        authorize: "#{msb} ssh authorize --stdin < ~/.ssh/id_ed25519.pub",
         ssh_config:
           """
           Host #{@ssh_host}
@@ -227,7 +229,7 @@ defmodule MWTClientWeb.SandboxLive.Setup do
           text={@authorize}
         >
           <:help>
-            Microsandbox keeps its own list of keys; this adds your public key to MWT's. The command is MWT's own msb, which MWT keeps at this path across updates.
+            Microsandbox keeps its own list of keys; this adds your public key to MWT's. The command is MWT's own msb, which MWT keeps at this path across updates. It runs confined, without your home folder, so your shell hands it the key. Another key works too: change the path.
           </:help>
         </.connect_step>
         <li :if={match?({:other, _}, @ssh_entry)} id="connect-ssh-stale">

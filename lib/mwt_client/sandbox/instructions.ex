@@ -203,6 +203,10 @@ defmodule MWTClient.Sandbox.Instructions do
   def usage(%Grant{kind: :mwt, tools: :git_handoff}),
     do: "use: mwt handoff, once the user asks for it. Off, nothing is handed off."
 
+  def usage(%Grant{kind: :mwt, tools: :share_sync}),
+    do:
+      "use: mwt sync [PATH] brings the read-only copies of the user's shared folders up to date (PATH: only the one holding it), and waits for it. Off, they stay as the user last synced them."
+
   def usage(%Grant{kind: :mwt, tools: tools}) do
     "use: MWT's MCP server, mwt mcp, already set up for Claude Code and Codex in this VM: the " <>
       case tools do
