@@ -1600,10 +1600,18 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
-  # Fills the field only: nothing reaches agents until it is saved.
+  # Fills the field only: nothing reaches agents until it is saved. The form
+  # alone would not reach a field you typed in, since the server never sees
+  # that typing: when it already holds the example there is no change to send,
+  # and a focused field is left as it is. So the field also gets it as an event.
   def handle_event("way_of_working_example", _params, socket) do
     example = Instructions.way_of_working_example()
-    {:noreply, assign(socket, :way_form, to_form(%{"text" => example}, as: :way))}
+
+    {:noreply,
+     socket
+     |> assign(:way_form, to_form(%{"text" => example}, as: :way))
+     |> assign(:way_error, nil)
+     |> push_event("way_of_working_fill", %{text: example})}
   end
 
   ## Projects

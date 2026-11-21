@@ -1009,6 +1009,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
           field={@way_form[:text]}
           id="way-of-working-text"
           type="textarea"
+          phx-hook=".WayOfWorkingText"
           rows="12"
           placeholder="Empty, agents read only MWT's instructions. Write how you like to work with them, or start from MWT's example."
           class={[input_classes(), "font-mono text-xs leading-5", @way_error && "border-bad/70"]}
@@ -1029,6 +1030,19 @@ defmodule MWTClientWeb.SandboxLive.Settings do
           <.button type="submit" id="way-of-working-save">Save</.button>
         </div>
       </.form>
+      <script :type={Phoenix.LiveView.ColocatedHook} name=".WayOfWorkingText">
+        // The server never sees what you type here, so a text it puts in the
+        // field comes as an event, set even over unsaved typing or while the
+        // field has focus, when a page update leaves the field as it is.
+        export default {
+          mounted() {
+            this.handleEvent("way_of_working_fill", ({text}) => {
+              this.el.value = text
+              this.el.scrollTop = 0
+            })
+          }
+        }
+      </script>
     </.card>
     """
   end

@@ -30,6 +30,10 @@ sync needs a rule for it. What is known:
 - Bringing a change back to your machine is the larger question: today
   nothing of the VM is ever written there but by a handoff you land.
 
+Decided on 2026-11-21: shared folders stay one way, from your machine into
+the VM. What the VM makes comes back by handoff, or through the workspace
+(below), which goes the other way only.
+
 
 ## The bubble's AppArmor profile on Ubuntu
 
@@ -120,6 +124,37 @@ Ideas, not settled:
 - Show how the two levels stand: your `main` ahead of or behind its remote
   (not pushed after a landing, not pulled before a task starts), so a task
   isn't based on a `main` you haven't caught up yet.
+
+Decided on 2026-11-21: the names stay until the sandbox's redesign; until
+then, MWT's messages say which level they mean.
+
+## Cleaning up the VM's branches
+
+Noted on 2026-11-21. Every task is a branch in the project's clone
+(`mwt worktree new`), and nothing removes one: freeing a slot keeps its
+branch, and MWT promises never to move, reset or delete a branch there
+(`priv/sandbox/agents.md`, "The VM's clone" in `docs/agent_sandbox.md`).
+So they pile up, task after task.
+
+Wanted: **every couple of days, MWT removes the branches whose work has
+landed, or that hold nothing, and never one that isn't safe to delete.**
+
+What is known:
+
+- **Merged isn't always visible to git.** A handoff landed as one commit
+  leaves the branch's commits off your branch, so `git branch --merged`
+  misses it. MWT's handoff records know: a branch whose tip is a revision
+  that landed has nothing more. A branch whose tip your branches reach
+  (`origin/*`) is merged as git sees it; so is a task that never committed
+  (a question, a review), whose tip is its base.
+- **Never deleted**: a branch a slot holds; one whose handoff is open or
+  was sent back; one with commits that no landed revision and none of your
+  branches hold, however old, since that work would be lost.
+- **It changes a promise**: the agents' instructions and the document
+  would say which branches MWT deletes, and when.
+- **The same on your machine**: MWT's review store keeps a ref per
+  handoff revision and only grows (the threat model review of 2026-11-21);
+  the refs of landed and closed handoffs could go in the same sweep.
 
 ## The metadata server on grants not added from the Google preset
 
@@ -271,6 +306,14 @@ its files inside your checkout, which isn't copied (projects aren't), so a
 folder was made and shared by hand for the VM (`~/mwt-vm`, read-only there
 as every share is today), and the CLI pointed at it.
 
+Decided on 2026-11-21: one way each. Shared folders go from your machine
+into the VM, the workspace from the VM onto your machine. It is the first
+way the VM writes onto your disk without a handoff you land, so its threat
+model comes before its code. Programs here read new files without a click
+(thumbnailers, desktop indexers; a shell prompt runs `git status` where a
+`.git` is, direnv and mise read their files when you `cd` in). Whether
+writing there is a grant of its own is open.
+
 ## Mints that take another grant's value
 
 Set aside on 2026-11-19. A mint command gets only `MWT_GRANT`, and
@@ -309,12 +352,53 @@ What it would take:
 - **Shown on the card and the grant's page**: "Mints with: X", and on X's
   page, "Used by the mint of: Y", so you see where a password goes.
 
-## Every request through a network grant, read and reviewed
+Decided on 2026-11-21: an agent may propose a mint command. It is shown as
+a script, and accepted only as you read it: today a proposal's Accept
+isn't bound to what its page showed (the threat model review's smaller
+gaps), so a change between your reading and your click would go through.
 
-Set aside on 2026-11-19. A network grant is asked about a connection, not
-a request: `Connection.run/3` approves it in `destination/5`, before the
-TLS handshake, so its card says "Connect to 10.x.y.z:443", the entry it
-matched ("Listed as") and the grant, and nothing of what goes through.
+## Every HTTPS request read by MWT, network grants' included
+
+Noted on 2026-11-21, with the network grant section of 2026-11-19 (below)
+as its first case.
+
+The idea: **MWT terminates every TLS connection the VM opens**, not only
+those to a token grant's hosts, so it reads, logs and can stop what goes
+out to any host. Hosts whose clients pin certificates or use mutual TLS go
+on a list of hosts MWT connects to without reading. This revisits a choice
+in `docs/agent_sandbox.md`, whose list of threats says that "reading every
+TLS connection would break clients that pin certificates".
+
+What is known:
+
+- The VM already trusts MWT's certificate authority, which signs the
+  certificates of the hosts MWT reads today; `Gate.route` chooses, per
+  connection, to read it or tunnel it.
+- It puts every connection on the path MWT reads, which the threat model
+  review of 2026-11-21 (`docs/dated/`) found weaker than the tunnel's. So
+  these come first:
+  - a host MWT reads is connected to by name, with no address check
+    (finding 4): a token grant listing an internal name opens it without a
+    network grant, the Internet off included;
+  - a card can be made before the request's body arrived, and say "No
+    body" (finding 3);
+  - the firewall's upload rule counts only tunnels (`Gate.upload/5`).
+- What breaks unless it is listed or supported: pinned certificates,
+  mutual TLS, HTTP/2 and gRPC (MWT reads HTTP/1.1 only). Every byte is
+  decrypted and encrypted again on this machine, and the exchange log
+  holds far more.
+- Reading isn't asking: a card for every request on the Internet would
+  bury you. The grant's approval mode can keep deciding what gets a card,
+  and the rest is read by the firewall and logged.
+- One list could serve both cases: the hosts left unread on the Internet
+  (a pinned client) and a network grant's destinations MWT can't read (a
+  database, SSH), rather than a mode per destination and a list beside it.
+
+**On a network grant**, set aside on 2026-11-19. A network grant is asked
+about a connection, not a request: `Connection.run/3` approves it in
+`destination/5`, before the TLS handshake, so its card says "Connect to
+10.x.y.z:443", the entry it matched ("Listed as") and the grant, and
+nothing of what goes through.
 What happens next depends on the host:
 
 - **A token grant lists the name**: `Gate.route` intercepts, and a request
@@ -396,12 +480,11 @@ are many.
 The idea: **MWT masks what comes back, and unmasks what goes out**.
 
 - **Answers masked**: every answer on a host MWT reads (a token grant's,
-  and a network grant's once it reads them, see "Every request through a
-  network grant, read and reviewed"), and every command or subgrant
-  output, is scanned for patterns (an id, with and without punctuation,
-  validated by its check digits so that any 11 digits don't match; an
-  email; a phone), and each match is replaced by a token,
-  `mwt:cpf:Xb3k…`.
+  and a network grant's once it reads them, see "Every HTTPS request read
+  by MWT"), and every command or subgrant output, is scanned for patterns
+  (an id, with and without punctuation, validated by its check digits so
+  that any 11 digits don't match; an email; a phone), and each match is
+  replaced by a token, `mwt:cpf:Xb3k…`.
 - **The same value, the same token**: deterministic (AES-SIV, or a keyed
   table in the vault), so the agent can follow one person across answers
   and services, and never learns who it is.
@@ -423,7 +506,7 @@ the id ever entering the VM. What comes back isn't masked yet, so it
 needs one of:
 
 - the answer to you first, with the agent getting only what you release
-  ("Every request through a network grant, read and reviewed");
+  ("Every HTTPS request read by MWT", on a network grant);
 - the agent getting the status, the timings and the headers MWT allows,
   never the body;
 - the body cut whenever it holds the id itself, as an answer holding a
@@ -434,8 +517,8 @@ The decryption on the way out is the half that is the same whatever
 masking answers becomes, so it can come first; and the agent learns from
 it how the calls are made, which a person's id doesn't change.
 
-**The order, both ways**, with the reviews of "Every request through a
-network grant, read and reviewed":
+**The order, both ways**, with the reviews of "Every HTTPS request read
+by MWT":
 
 1. Out: the agent's request → **unmask** (tokens become the real ids) →
    **your review** → **placeholders swapped** for the grants' real values
@@ -470,12 +553,14 @@ What is known:
   real values readable only by you.
 - **Pseudonymous isn't anonymous**: data-protection law may still count it
   as personal data, since you can reverse it. Whether masked access is
-  enough is the organization's call, not MWT's.
+  enough is the organization's call, not MWT's. Decided on 2026-11-21:
+  masked access is enough for now.
 
-## Proposing a command subgrant with a folder in a share crashes the server
+## A crash of the sandbox server, and the grants after it
 
-Set aside on 2026-11-19. `mwt propose commands --dir DIR`, with `DIR`
-inside a shared folder, crashes the sandbox's server: `Approvals.place/3`
+Set aside on 2026-11-19, widened on 2026-11-21.
+`mwt propose commands --dir DIR`, with `DIR` inside a shared folder,
+crashes the sandbox's server: `Approvals.place/3`
 matches two elements, `{_where, dir} = HostCommand.place(...)`
 (`server/approvals.ex:660`), and `HostCommand.place/3` returns three for a
 folder in a share, `{:share, dir, share}` (`host_command.ex:229`, its
@@ -491,6 +576,30 @@ the script, or set the folder on the subgrant's page as you review it.
 The fix: match both shapes (`{:share, dir, _share}`, `{:home, dir}`); and
 in `serve_ask`, say "locked" only when the store is, otherwise that MWT
 failed answering and nothing changed, with the reason in MWT's log.
+
+What the restart does matters more than the crash (the threat model
+review of 2026-11-21, finding 1, in `docs/dated/`): `Server.init/1` puts
+every grant in its start setting (`Grants.start/1`), after a crash as
+after an unlock. The review's probe turned the Internet and `mwt-read`
+off, sent the proposal, and both were on again. So a crash the VM can
+cause undoes what you turned off.
+
+Wanted:
+
+- **A restart after a crash keeps the grants as they were**: on or off,
+  their approval modes, and the time left on those turned on for a while;
+  an isolation stays. Only a start (opening MWT, unlocking) puts them in
+  their start settings. You are told the sandbox restarted, and an agent
+  whose ask was lost hears that MWT restarted and to ask again, not that
+  it is locked.
+- **A button on the Grants page: "Reset to start settings"**, which puts
+  every grant in its start setting, as a start does, without restarting
+  anything.
+- **No channel command crashes the server**: a test that sends every
+  command the channel answers with hostile fields (missing, of the wrong
+  type, huge, nested, control characters), built from the channel's own
+  list so a new command is covered, and checks the server is the same
+  process afterwards.
 
 ## Docker in the VM
 
@@ -675,3 +784,27 @@ What it would take:
   (`lib/mwt_client/mcp/catalogue.ex`, whose elements allow no other
   fields). `mwt://guides/diagrams` explains it, so an agent drawing a
   diagram can group what belongs together.
+
+## From the threat model review of 2026-11-21
+
+Its findings that no section above covers. The review
+(`docs/dated/20261121-threat_model_fable5.2_review.md`) has the details,
+the code each touches, and probes for findings 1 and 2.
+
+- **A fetch serves objects no branch or tag reaches** (finding 2). Under
+  Git protocol v2 the `uploadpack.allow*InWant` options aren't enforced, so
+  any object of your repository is served by id (a stash, a commit you
+  reset away); and a handoff's fetch tells the VM the ids of your stash and
+  remote-tracking branches.
+- **Git here runs your global configuration on the VM's objects**: a
+  `textconv`, external diff or filter of yours runs on the VM's files at
+  the review store's fetch, the Handoffs page's diff and the landing.
+- **Markdown the VM wrote makes your webview fetch addresses it chose**
+  (finding 5): a remote image in a note, diagram or flash card loads, and
+  MWT's pages have no Content-Security-Policy.
+- **Disk tools run here on images the VM wrote** (finding 6): `e2fsck` and
+  `resize2fs` parse the Home and Cache disks' file systems, as you, with no
+  bubble.
+- **Smaller gaps** are listed under its *Smaller gaps* and *Reported by the
+  area audits only*, and what the document itself misses under *Gaps in
+  the threat model*.

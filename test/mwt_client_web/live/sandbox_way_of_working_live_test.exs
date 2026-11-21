@@ -21,13 +21,20 @@ defmodule MWTClientWeb.SandboxWayOfWorkingLiveTest do
     refute render(element(view, "#way-of-working-text")) =~ "Building blocks"
     assert File.read!(block) == Instructions.block()
 
-    # The example fills the field only.
+    # The example fills the field only, also as an event for the field itself,
+    # which reaches it over typing the server never saw.
+    example = Instructions.way_of_working_example()
     view |> element("#way-of-working-example") |> render_click()
 
     assert render(element(view, "#way-of-working-text")) =~
              "Roles, as people would share the work."
 
+    assert_push_event(view, "way_of_working_fill", %{text: ^example})
     assert Sandbox.snapshot(username).settings.way_of_working == ""
+
+    # Again, with the field already holding it on the server's side.
+    view |> element("#way-of-working-example") |> render_click()
+    assert_push_event(view, "way_of_working_fill", %{text: ^example})
 
     view
     |> form("#way-of-working-form", way: %{text: "Keep answers short.\r\n"})
@@ -55,5 +62,9 @@ defmodule MWTClientWeb.SandboxWayOfWorkingLiveTest do
     assert has_element?(view, "#way-of-working-error", "under 20,000 characters")
     assert render(element(view, "#way-of-working-text")) =~ long
     assert Sandbox.snapshot(username).settings.way_of_working == ""
+
+    # The refusal was of that text: the example in its place clears it.
+    view |> element("#way-of-working-example") |> render_click()
+    refute has_element?(view, "#way-of-working-error")
   end
 end
