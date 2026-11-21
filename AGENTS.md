@@ -12,6 +12,9 @@ This is a web application written using the Phoenix web framework.
 - To see the app running, use the run-mwt skill: it gives the dev server a
   port and a data folder of its own. Never run one against `~/.mwt_client`,
   and don't run `msb` yourself: both belong to the MWT the user runs.
+- A document that matters only at one point in time, and afterwards only as
+  history (a review, an audit), goes in `docs/dated/`, named
+  `YYYYMMDD-name.md`.
 
 ### Tests in this project
 
