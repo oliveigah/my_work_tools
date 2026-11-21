@@ -529,6 +529,12 @@ machine into the VM, change it, and hand it back. Not a bypass: what you
 do by hand is asked and decided like an agent's ask, and approving your
 own asks is fine.
 
+Why: the VM has what developing needs, the project's tools and
+dependencies as well as its agents, so sending the work back to your
+machine to carry on there loses all that; work shouldn't stop when the
+agent's credits run out; and the git you know is MWT's Git tool, which
+opens repositories on your machine only, so in the VM it is the git CLI.
+
 The pieces are there, but not put together for a person:
 
 - **Who asks.** `mwt` finds the asker in the processes above it
@@ -545,6 +551,20 @@ The pieces are there, but not put together for a person:
   But it only goes from a task branch that `mwt worktree new` made
   (`:not_a_task` otherwise), and it takes its body from a file. A branch
   you made with `git switch -c` can't be handed off.
+- **Git, by hand.** MWT's Git tool runs git on your machine only
+  (`MWTClient.Git.Command.capture_path/3`, `git -C PATH`). In the VM there
+  is the git CLI, Zed's git panel, which runs git in the VM over Zed's
+  connection, or a terminal UI such as `lazygit` (in mise's registry). The
+  loop needs little of git: status, diff, `add -p`, fetch, a rebase onto
+  `origin/BRANCH` and its conflicts, with `mwt` to start a task and hand
+  it off. Landing and pushing stay on your machine, in the Git tool.
+- **A slot falling behind, unseen.** A task branch stays where it started
+  until something rebases it (`mwt handoff` does), and the clone's
+  `origin/*` move only on a fetch (`git fetch`, `mwt worktree new` or
+  `resume`, `mwt handoff`). Neither the Projects page nor `mwt project`
+  says how far behind a slot is; the Handoffs page says "Behind base" only
+  once there is a handoff. On 2026-11-21 a slot was a commit behind `main`,
+  with the clone already fetched, and it was found only by looking.
 
 What it would take:
 
@@ -557,6 +577,12 @@ What it would take:
   fast-forwards that branch to yours on your machine, and refuses, saying
   so, when the VM's branch has commits of its own (then
   `git rebase origin/BRANCH`). Plain `git pull` works there too.
+- **How far behind each slot is.** `Slots.look/4` already runs one script
+  in the VM per look: it can also count `origin/BASE...HEAD` for each
+  task, and compare the clone's `origin/BASE` with your branch here. The
+  Projects page and `mwt project` then say "2 behind main", or that the
+  clone hasn't fetched your latest, and MWT can tell the thread holding
+  the slot that its base moved.
 - **`mwt handoff` for a person.** Run from your own tree or any branch:
   - with no `--title`, it asks for one;
   - with no `--body`, it opens `$EDITOR`;
@@ -565,6 +591,35 @@ What it would take:
 - **A guide for doing it by hand.** `mwt help` gets a section for a person
   (start, catch up, hand off, see what happened, as four commands), and
   MWT's docs get a page on working in the VM yourself.
+
+MWT's Git tool on the VM's repositories was weighed on 2026-11-21 and set
+aside: for now, the git CLI. Two ways to it, should the Git tool still be
+missed:
+
+- **Your Git tool, running git in the VM.** Every git call goes through
+  `Git.Command.capture_path/3`: a VM repository would send the same
+  arguments through `msb exec`, as `Slots.look/4` does, and the few files
+  `Git.Core` reads itself (the `MERGE_HEAD` kind of markers, the stash
+  log's stat) would be read there. The page stays MWT's, on your machine,
+  and git, with the hooks and config agents can change, stays in the VM.
+  Unknown: speed. A refresh is many git calls, each a round trip into the
+  VM: one script per refresh, or a helper that stays up there. What git
+  prints is the VM's to choose: bounded, as `HostGit` bounds it.
+- **A Git-only MWT served from the VM,** on a forwarded port
+  (`http://127.77.X.Y:41xx`). Git runs beside the repository, as fast as
+  on your machine. But the page is the VM's word (agents are root there
+  and can replace it), as Zed's view over SSH already is: fine to work
+  with, never for the review before landing, which stays on the Handoffs
+  page. It needs your installed MWT mounted read-only, not the clone agents
+  change; a mode with the Git tool alone (no vault, accounts or SSH keys,
+  repositories under `/work`, Push gone or made a handoff); and a token in
+  the URL, since every program on your machine reaches loopback. It can be
+  tried with no new code: this repository's dev server in a slot (`41N0`)
+  already has the Git tool.
+
+Either way, a slot an agent works in is shared: the tool shows who holds it
+(`branch.NAME.mwt-thread`) and asks before changing it. Your own working
+tree, above, has no such conflict.
 
 ## Diagrams: groups, and bringing to front or sending to back
 
