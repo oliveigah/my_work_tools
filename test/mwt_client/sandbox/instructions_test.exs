@@ -1,7 +1,7 @@
 defmodule MWTClient.Sandbox.InstructionsTest do
   use ExUnit.Case, async: true
 
-  alias MWTClient.Sandbox.{Allowance, Grant, Instructions, Param}
+  alias MWTClient.Sandbox.{Allowance, Grant, Instructions, Param, Settings}
 
   doctest Instructions
 
@@ -219,6 +219,40 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     assert text =~ "A message from MWT"
     assert text =~ "Is this an MWT thread?"
     assert text =~ "**Claude (MWT)**"
+  end
+
+  test "the user's way of working follows the instructions, under MWT's heading, when written" do
+    agents = File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", "agents.md"]))
+
+    # agents.md says how to work in the VM; the way of working is the user's.
+    refute agents =~ "way of working"
+
+    assert Instructions.text() == agents
+    assert Instructions.text(way_of_working: "") == agents
+    assert Instructions.text(way_of_working: "  \n") == agents
+
+    assert Instructions.text(way_of_working: "Keep answers short.\n") ==
+             agents <>
+               "\n## The user's way of working\n\n" <>
+               "The user wrote this for the agents in this VM: how they like to work with\n" <>
+               "you, their own taste rather than a rule of the VM.\n\n" <>
+               "Keep answers short.\n"
+
+    block = Instructions.block(way_of_working: "Keep answers short.")
+    assert block =~ ~r/Memory.*## The user's way of working.*short\.\n<!-- mwt:end -->\n\z/s
+  end
+
+  test "MWT's example of a way of working fits under that heading" do
+    example = Instructions.way_of_working_example()
+
+    assert example =~ ~r/\A### The main operation, first\n/
+    assert example =~ "\n### Decisions: which to bring to the user\n"
+    assert example =~ "\n### Building blocks\n"
+    assert example =~ "**Roles, as people would share the work.**"
+    refute example =~ ~r/^## /m
+
+    assert {:ok, %{way_of_working: _}} =
+             Settings.cast(%Settings{}, %{"way_of_working" => example})
   end
 
   test "the grants list says what each is for and how to use it, never values" do

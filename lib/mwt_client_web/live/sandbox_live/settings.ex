@@ -72,6 +72,8 @@ defmodule MWTClientWeb.SandboxLive.Settings do
   attr :host, :map, required: true
   attr :host_form, :any, required: true
   attr :host_error, :string, default: nil
+  attr :way_form, :any, required: true
+  attr :way_error, :string, default: nil
 
   def page(assigns) do
     assigns = assign(assigns, :tabs, @tabs)
@@ -267,6 +269,8 @@ defmodule MWTClientWeb.SandboxLive.Settings do
       </div>
 
       <.host_card host={@host} host_form={@host_form} host_error={@host_error} />
+
+      <.way_of_working_card way_form={@way_form} way_error={@way_error} />
     </div>
     <script :type={Phoenix.LiveView.ColocatedHook} name=".PickFolders">
       export default {
@@ -979,6 +983,51 @@ defmodule MWTClientWeb.SandboxLive.Settings do
             class="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-lg border border-line-soft bg-deep/50 p-2.5 font-mono text-[10px] leading-4 text-ink"
           >{@host.text}</pre>
         </details>
+      </.form>
+    </.card>
+    """
+  end
+
+  attr :way_form, :any, required: true
+  attr :way_error, :string, default: nil
+
+  # How you like to work with agents, in your own words: your taste rather
+  # than a fact of the VM, so empty until you write it.
+  defp way_of_working_card(assigns) do
+    ~H"""
+    <.card id="settings-way-of-working" title="Your way of working">
+      <:help>
+        Your own text for the agents in the VM: which decisions to bring you, how you like a system built, anything about working with you. MWT adds it after its own instructions, in ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, under a heading that says it is yours. It reaches them at the VM's next start.
+      </:help>
+      <.form
+        for={@way_form}
+        id="way-of-working-form"
+        phx-submit="save_way_of_working"
+        class="space-y-2"
+      >
+        <.input
+          field={@way_form[:text]}
+          id="way-of-working-text"
+          type="textarea"
+          rows="12"
+          placeholder="Empty, agents read only MWT's instructions. Write how you like to work with them, or start from MWT's example."
+          class={[input_classes(), "font-mono text-xs leading-5", @way_error && "border-bad/70"]}
+        />
+        <p :if={@way_error} id="way-of-working-error" class="text-[11px] text-bad">
+          {@way_error}
+        </p>
+        <div class="flex flex-wrap items-center justify-end gap-3">
+          <button
+            type="button"
+            id="way-of-working-example"
+            phx-click="way_of_working_example"
+            data-confirm="Put MWT's example in the field, in place of what is there? Nothing changes for agents until you save."
+            class="cursor-pointer text-[11px] text-accent hover:underline"
+          >
+            Start from MWT's example
+          </button>
+          <.button type="submit" id="way-of-working-save">Save</.button>
+        </div>
       </.form>
     </.card>
     """

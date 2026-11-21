@@ -3,7 +3,9 @@ defmodule MWTClient.Sandbox.Instructions do
   What agents in the VM are told: access comes only from MWT's grants, what
   MWT's answers mean, how to ask for a command on the host as a last resort,
   how to use mise and their own memory (`priv/sandbox/agents.md`), and which
-  grants exist right now (`grants/2`).
+  grants exist right now (`grants/2`). How the user likes to work with
+  agents is their own text, not a fact of the VM (`Settings`,
+  `way_of_working`), joining the instructions only when they wrote one.
 
   The instructions reach Claude Code and Codex through their global files in
   the VM's Home, `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, as a block
@@ -19,9 +21,38 @@ defmodule MWTClient.Sandbox.Instructions do
   @finish "<!-- mwt:end -->"
   @home_files [".claude/CLAUDE.md", ".codex/AGENTS.md"]
 
-  @doc "The standing instructions, as Markdown."
-  @spec text() :: String.t()
-  def text, do: File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", "agents.md"]))
+  @doc """
+  The standing instructions, as Markdown: how to work in the VM, and after
+  it, with `way_of_working: text`, the user's own text on how they like to
+  work with agents, under a heading of MWT's that says whose it is. An
+  empty text adds nothing.
+  """
+  @spec text(keyword()) :: String.t()
+  def text(opts \\ []) do
+    agents = priv("agents.md")
+
+    case String.trim(opts[:way_of_working] || "") do
+      "" -> agents
+      way -> agents <> "\n" <> way_of_working_section(way)
+    end
+  end
+
+  defp way_of_working_section(way) do
+    """
+    ## The user's way of working
+
+    The user wrote this for the agents in this VM: how they like to work with
+    you, their own taste rather than a rule of the VM.
+
+    #{way}
+    """
+  end
+
+  @doc "MWT's example of a way of working, for the user to start from."
+  @spec way_of_working_example() :: String.t()
+  def way_of_working_example, do: priv("way-of-working-example.md")
+
+  defp priv(file), do: File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", file]))
 
   @doc "The files in Home that carry the block, relative to Home."
   @spec home_files() :: [String.t()]
@@ -31,9 +62,10 @@ defmodule MWTClient.Sandbox.Instructions do
   The standing instructions as the block the VM puts in `home_files/0`
   itself, after every boot (`priv/sandbox/mwt-boot`, at `/mnt/mwt/bin`). MWT
   writes it to `/mnt/mwt/agents-block.md` and never into the VM's Home.
+  Takes the options of `text/1`.
   """
-  @spec block() :: String.t()
-  def block, do: put_block("", text())
+  @spec block(keyword()) :: String.t()
+  def block(opts \\ []), do: put_block("", text(opts))
 
   @doc """
   `content` with MWT's block holding `text`: replaced where it was, or put at

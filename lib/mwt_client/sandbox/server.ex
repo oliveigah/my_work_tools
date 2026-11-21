@@ -1073,10 +1073,12 @@ defmodule MWTClient.Sandbox.Server do
   defp answer({:update_settings, attrs}, _from, state) do
     case Settings.cast(state.settings, attrs, Resources.most(Resources.host())) do
       {:ok, settings} ->
+        # The inbox, the host's description in it, follows: your notes,
+        # and the guides the agents' instructions carry.
         state =
           state
           |> State.change(:settings, fn _ -> settings end)
-          |> State.write_host()
+          |> State.write_inbox()
           |> State.changed()
 
         {:reply, {:ok, settings}, state}

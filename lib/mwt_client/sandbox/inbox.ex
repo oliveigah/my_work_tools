@@ -91,9 +91,11 @@ defmodule MWTClient.Sandbox.Inbox do
 
   @doc """
   Rewrites the inbox from the grants and the identity's CA certificate.
+  `opts` choose the guides that join the agents' instructions
+  (`Instructions.text/1`).
   """
-  @spec write(Path.t(), [Grant.t()], String.t()) :: :ok
-  def write(dir, grants, ca_pem) do
+  @spec write(Path.t(), [Grant.t()], String.t(), keyword()) :: :ok
+  def write(dir, grants, ca_pem, opts \\ []) do
     File.mkdir_p!(dir)
 
     put_changed(dir, "ca.pem", ca_pem)
@@ -105,10 +107,10 @@ defmodule MWTClient.Sandbox.Inbox do
     # git's helper for the `host` remote of each project's mirror
     # (`MWTClient.Sandbox.Mirror.remote_url/0`).
     put_changed(dir, "bin/git-remote-mwt", priv("mwt-git-remote"), 0o755)
-    put_changed(dir, "AGENTS.md", Instructions.text())
+    put_changed(dir, "AGENTS.md", Instructions.text(opts))
     # What the VM copies for itself after each boot (`bin/mwt-boot`): MWT
     # writes nothing into storage the VM can write.
-    put_changed(dir, "agents-block.md", Instructions.block())
+    put_changed(dir, "agents-block.md", Instructions.block(opts))
     put_changed(dir, "handoff-command.md", priv("handoff-command.md"))
     put_changed(dir, "bin/mwt-boot", priv("mwt-boot"), 0o755)
 

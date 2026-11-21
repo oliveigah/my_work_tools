@@ -283,7 +283,10 @@ defmodule MWTClient.Sandbox.Server.State do
   Writes the VM's inbox again from the grants as they are: placeholders, files, instructions, the host's description.
   """
   def write_inbox(state) do
-    Inbox.write(inbox_dir(state), live_grants(state), ca_pem(state))
+    Inbox.write(inbox_dir(state), live_grants(state), ca_pem(state),
+      way_of_working: state.settings.way_of_working
+    )
+
     write_host(state)
   rescue
     error ->

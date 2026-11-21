@@ -24,6 +24,7 @@ defmodule MWTClientWeb.SandboxLive do
     Event,
     Grant,
     Handoffs,
+    Instructions,
     Leftovers,
     Monitor,
     Param,
@@ -126,6 +127,7 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign_containerfile_form()
      |> assign_name_form()
      |> assign_host_form()
+     |> assign_way_form()
      |> restore_place()}
   end
 
@@ -349,6 +351,8 @@ defmodule MWTClientWeb.SandboxLive do
                   host={@host}
                   host_form={@host_form}
                   host_error={@host_error}
+                  way_form={@way_form}
+                  way_error={@way_error}
                 />
               <% :handoffs -> %>
                 <HandoffsPage.page
@@ -1574,6 +1578,34 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
+  def handle_event("save_way_of_working", %{"way" => %{"text" => text}}, socket) do
+    case Sandbox.update_settings(socket.assigns.username, %{"way_of_working" => text}) do
+      {:ok, settings} ->
+        title =
+          if settings.way_of_working == "",
+            do: "Your way of working is cleared",
+            else: "Your way of working is saved"
+
+        {:noreply,
+         socket
+         |> refresh()
+         |> assign_way_form()
+         |> put_notice(:success, title, body: "It reaches agents at the VM's next start.")}
+
+      {:error, errors} ->
+        {:noreply,
+         socket
+         |> assign(:way_form, to_form(%{"text" => text}, as: :way))
+         |> assign(:way_error, errors[:way_of_working])}
+    end
+  end
+
+  # Fills the field only: nothing reaches agents until it is saved.
+  def handle_event("way_of_working_example", _params, socket) do
+    example = Instructions.way_of_working_example()
+    {:noreply, assign(socket, :way_form, to_form(%{"text" => example}, as: :way))}
+  end
+
   ## Projects
 
   def handle_event("open_project", %{"path" => project} = params, socket) do
@@ -2555,6 +2587,11 @@ defmodule MWTClientWeb.SandboxLive do
   defp resources do
     host = Resources.host()
     %{host: host, suggested: Resources.suggested(host), most: Resources.most(host)}
+  end
+
+  defp assign_way_form(socket) do
+    form = to_form(%{"text" => socket.assigns.settings.way_of_working}, as: :way)
+    socket |> assign(:way_form, form) |> assign(:way_error, nil)
   end
 
   defp assign_host_form(socket) do

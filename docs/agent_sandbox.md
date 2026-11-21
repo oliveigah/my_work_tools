@@ -484,6 +484,34 @@ the VM's `~/.config/zed/settings.json`. It starts `mwt ports --watch`.
 - `mise install` first, ports 4100 to 4199 for what you'll open, notes and
   flash cards only when asked, and their memory (the OptMem block).
 
+`agents.md` holds only how to work in the VM. How you like to work with
+agents is your taste, not a fact of the VM: **Your way of working**
+(Settings), your own text, empty until you write it, which MWT adds after
+`agents.md` in the same block under a heading saying it is yours, and
+which reaches agents at the VM's next start, when the boot script writes
+the block again. Up to 20,000 characters, since agents read it in every
+session. MWT offers an example to start from
+(`priv/sandbox/way-of-working-example.md`), in three parts:
+
+- **The main operation, first:** what the system exists for in your world
+  (in a supermarket, a customer gets the products and takes them home)
+  and what it actually needs, which agents state back and get your yes on
+  before they design, tracing every role to it, and bringing back at once
+  when the work shows it is other than you both thought.
+- **Decisions:** agents ask you only what is yours to decide and costly if
+  wrong (what others rely on, data that is kept, how it behaves in
+  production, who carries the work or the risk), early, and decide the
+  rest, presenting in the handoff's body the costly choices they made.
+  Each comes on three levels: what it is for, how it works here step by
+  step, and what each option would do in your world, in plausible
+  scenarios (the usual case, more load, a failing dependency, a broken
+  assumption).
+- **Building blocks:** a system designed as roles serving the main
+  operation, the way people doing the job by hand would share it; few simple blocks, one meaning each,
+  premises stated and held, composed and reused; a block shared when its
+  callers need the same concept, split when one needs another meaning,
+  and asked about when in doubt.
+
 <a id="shared-folders"></a>
 
 ### Shared folders
@@ -3189,6 +3217,7 @@ history is in git.
 | 2026-11-18 | The app is MWT (My Work Tools): the app, its package, the VM's `mwt` CLI, `/mnt/mwt`, its agents in Zed and its tools over MCP all take that name. Nothing under the former name is read or brought over: an install starts fresh. |
 | 2026-11-18 | Shared folders are synced when asked, not every 3 s: when added, at each start, with Sync or Sync all, after a command you approved ran in one, and by an agent's `mwt sync` (the built-in grant `share-sync`), since walking a large folder every few seconds cost this machine all the time and capped a share at 4 GiB. Copies live on the work disk, shown read-only at their paths, so nothing the VM changes in one needs setting aside: `/work/.rescued` is gone, and a share holds up to half the work disk ([Shared folders](#shared-folders)). |
 | 2026-11-19 | Agents write every commit message, a handoff's title included, as a Conventional Commit (`type(scope): summary`), taking scopes and length from the project's history even where its older commits don't follow the convention, so every project's history reads the same way ([Handoffs](#handoffs)). |
+| 2026-11-21 | `agents.md` tells agents only how to work in the VM; how you like to work with agents (which decisions to bring you, how to build from building blocks) is your way of working, a text you write in Settings, empty by default, since it is your taste rather than a fact of the VM ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)). |
 
 <a id="later"></a>
 

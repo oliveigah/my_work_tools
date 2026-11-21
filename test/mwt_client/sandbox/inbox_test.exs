@@ -1,7 +1,7 @@
 defmodule MWTClient.Sandbox.InboxTest do
   use ExUnit.Case, async: true
 
-  alias MWTClient.Sandbox.{CertificateAuthority, Grant, Inbox}
+  alias MWTClient.Sandbox.{CertificateAuthority, Grant, Inbox, Instructions}
 
   test "the inbox carries everything the image points at" do
     dir = Path.join(System.tmp_dir!(), "inbox-test-#{System.unique_integer([:positive])}")
@@ -48,5 +48,21 @@ defmodule MWTClient.Sandbox.InboxTest do
     for file <- Path.wildcard(Path.join(dir, "**/*"), match_dot: true), File.regular?(file) do
       refute File.read!(file) =~ "ghp_real", "#{file} holds the real value"
     end
+
+    refute File.read!(Path.join(dir, "agents-block.md")) =~ "way of working"
+  end
+
+  test "the user's way of working joins the agents' instructions" do
+    dir = Path.join(System.tmp_dir!(), "inbox-test-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(dir) end)
+    ca = CertificateAuthority.new() |> Map.fetch!(:cert) |> CertificateAuthority.pem()
+    way = "Keep answers short."
+
+    :ok = Inbox.write(dir, [], ca, way_of_working: way)
+
+    assert File.read!(Path.join(dir, "AGENTS.md")) == Instructions.text(way_of_working: way)
+
+    assert File.read!(Path.join(dir, "agents-block.md")) ==
+             Instructions.block(way_of_working: way)
   end
 end

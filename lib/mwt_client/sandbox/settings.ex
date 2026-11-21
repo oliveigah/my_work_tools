@@ -29,6 +29,13 @@ defmodule MWTClient.Sandbox.Settings do
   `nested_virt` lets the VM run VMs of its own (`MWTClient.Sandbox.NestedVirt`),
   at the cost of exposing more of this machine's KVM to it; off unless you
   turn it on, and it applies when the VM is recreated.
+
+  `way_of_working` is your own text on how you like to work with agents:
+  which decisions to bring you, how you like a system built. Your taste,
+  not a fact of the VM, so empty until you write it; MWT offers an example
+  to start from (`priv/sandbox/way-of-working-example.md`). Agents read it
+  after MWT's instructions, from the VM's next start, when its boot script
+  writes them again.
   """
 
   alias MWTClient.Sandbox.{Image, Share}
@@ -43,6 +50,7 @@ defmodule MWTClient.Sandbox.Settings do
             work_gib: 64,
             hold_seconds: 180,
             nested_virt: false,
+            way_of_working: "",
             shares: [],
             host_notes: "",
             confine_reads: nil
@@ -58,6 +66,7 @@ defmodule MWTClient.Sandbox.Settings do
           work_gib: pos_integer(),
           hold_seconds: pos_integer(),
           nested_virt: boolean(),
+          way_of_working: String.t(),
           shares: [Share.t()],
           host_notes: String.t(),
           confine_reads: [String.t()] | nil
@@ -84,6 +93,7 @@ defmodule MWTClient.Sandbox.Settings do
       {:cache_gib, attrs["cache_gib"], &cast_int(&1, 1, 4_096)},
       {:work_gib, attrs["work_gib"], &cast_int(&1, 1, 4_096)},
       {:nested_virt, attrs["nested_virt"], &cast_boolean/1},
+      {:way_of_working, attrs["way_of_working"], &cast_way_of_working/1},
       {:containerfile, attrs["containerfile"], &cast_containerfile/1},
       {:image_name, attrs["image_name"], &cast_image_name/1},
       {:host_notes, attrs["host_notes"], &cast_notes/1},
@@ -141,6 +151,16 @@ defmodule MWTClient.Sandbox.Settings do
     if String.length(notes) <= 4_000,
       do: {:ok, notes},
       else: {:error, "Keep notes under 4,000 characters."}
+  end
+
+  # Read by agents in every session: long enough for a guide, short enough
+  # not to crowd out their work.
+  defp cast_way_of_working(value) do
+    text = value |> String.replace("\r\n", "\n") |> String.trim()
+
+    if String.length(text) <= 20_000,
+      do: {:ok, text},
+      else: {:error, "Keep it under 20,000 characters."}
   end
 
   defp cast_image_name(value) do
