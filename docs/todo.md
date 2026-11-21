@@ -518,3 +518,105 @@ What it would take in MWT: Docker (or Podman) in the image the recipe
 builds, with `iptables`, its data on the Cache disk, started with the VM
 (or on the first use of its socket); a setting to leave it out for whoever
 doesn't need it.
+
+## Working in the VM yourself, without an agent
+
+Set aside on 2026-11-21. Everything in the VM is written for an agent:
+`mwt help` speaks to one ("ask the user"), and a person at the VM's
+terminal is a guest in a workflow built around threads. You should be able
+to do the whole loop by hand, with no agent: bring the work on your
+machine into the VM, change it, and hand it back. Not a bypass: what you
+do by hand is asked and decided like an agent's ask, and approving your
+own asks is fine.
+
+The pieces are there, but not put together for a person:
+
+- **Who asks.** `mwt` finds the asker in the processes above it
+  (`identify` in `priv/sandbox/mwt-cli`): with no agent there, the card
+  says "an agent", with no thread. Only `MWT_AGENT` changes that.
+- **Your main branch in the VM.** `git fetch origin` already works from
+  any shell, through the remote helper (`mwt-git-remote`, fetch only) and
+  the grant Git: fetch. The clone even has a `main` that tracks
+  `origin/main`. But it has nowhere to live: every working tree is a slot,
+  and a slot holds a thread's task. So `git pull` on your own `main` means
+  switching a slot out from under its task.
+- **A handoff by hand.** `mwt handoff` from a terminal gets past
+  `Handoffs.holding/3`, since an ask with no thread id is let through.
+  But it only goes from a task branch that `mwt worktree new` made
+  (`:not_a_task` otherwise), and it takes its body from a file. A branch
+  you made with `git switch -c` can't be handed off.
+
+What it would take:
+
+- **A person at the terminal is named as such.** When no agent is found
+  above `mwt`, the card says it is you, from the VM's terminal, not "an
+  agent". It is decided the same way, under the same grants.
+- **A working tree of your own in each project.** For example
+  `/work/NAME.me`, outside the slots and never a thread's, on your `main`
+  or any branch you choose. Plus `mwt pull [BRANCH]`: it fetches, then
+  fast-forwards that branch to yours on your machine, and refuses, saying
+  so, when the VM's branch has commits of its own (then
+  `git rebase origin/BRANCH`). Plain `git pull` works there too.
+- **`mwt handoff` for a person.** Run from your own tree or any branch:
+  - with no `--title`, it asks for one;
+  - with no `--body`, it opens `$EDITOR`;
+  - on a branch that isn't a task, it offers to make it one, based on the
+    branch it came from.
+- **A guide for doing it by hand.** `mwt help` gets a section for a person
+  (start, catch up, hand off, see what happened, as four commands), and
+  MWT's docs get a page on working in the VM yourself.
+
+## Diagrams: groups, and bringing to front or sending to back
+
+Set aside on 2026-11-21. In the diagram editor, what is on top is decided
+by the order of the diagram's elements: `renderScene` in
+`assets/js/diagram_editor.js` draws them in that order, so a later element
+covers an earlier one. A new element always lands on top. Nothing in the
+editor changes the order. Today the only way is `update_diagram` through
+the MCP server, which rewrites the whole list. And elements can't be
+grouped: several shapes meant to move together (a box and its label, a
+legend) have to be selected again each time, with shift-click or a
+marquee.
+
+What it would take:
+
+- **A menu on the right click.** Where these actions, and the others
+  that act on what is selected, live.
+  - Today the editor turns the browser's menu off (`contextmenu`, in
+    `mounted`), and a press of the right button starts moving around the
+    canvas (`pointerDown`).
+  - Both stay, but a right click that doesn't move (released within a
+    few pixels of where it was pressed) opens MWT's menu at the pointer.
+  - On an element that isn't selected, the right click selects it first.
+    On empty canvas, the menu offers what applies there (paste, select
+    all).
+  - It lists:
+    - the order and group actions below;
+    - duplicate, copy, paste and delete;
+    - each action's shortcut beside it.
+  - Actions that don't apply are greyed out, not hidden: ungroup on
+    elements in no group, bring to front on what is already on top.
+  - `Escape` or a click elsewhere closes it, and the arrow keys move
+    through it.
+- **Order.**
+  - Bring forward, send backward, bring to front, send to back, on the
+    selection, from the right-click menu.
+  - Shortcuts: `Ctrl+]` and `Ctrl+[`, with `Shift` for all the way.
+  - Several selected elements keep their order among themselves.
+  - It is saved as the elements' order, so versions, the diff and the MCP
+    tools see it with no new field.
+- **Groups.**
+  - Group the selection from the right-click menu or with `Ctrl+G`;
+    ungroup the same way, or with `Ctrl+Shift+G`.
+  - Clicking a member selects the whole group, and a double-click goes
+    inside it to pick one.
+  - Moving, resizing, deleting, duplicating and restyling act on all its
+    members.
+  - It moves in the stacking order as one block (its members kept next to
+    each other).
+  - Groups can be nested. Arrows bound to a member stay bound.
+- **Stored where agents see it.** A `group` id on each member (a list, for
+  nested groups), in the element schema the MCP tools check
+  (`lib/mwt_client/mcp/catalogue.ex`, whose elements allow no other
+  fields). `mwt://guides/diagrams` explains it, so an agent drawing a
+  diagram can group what belongs together.
