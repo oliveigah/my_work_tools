@@ -507,10 +507,14 @@ session. MWT offers an example to start from
   scenarios (the usual case, more load, a failing dependency, a broken
   assumption).
 - **Building blocks:** a system designed as roles serving the main
-  operation, the way people doing the job by hand would share it; few simple blocks, one meaning each,
-  premises stated and held, composed and reused; a block shared when its
-  callers need the same concept, split when one needs another meaning,
-  and asked about when in doubt.
+  operation, the way people doing the job by hand would share it, cut
+  where what they live with or what their failure stops differs; few
+  simple blocks, one meaning each, premises stated and held where the
+  choice is made, composed and reused, with what comes in the hundreds
+  as data; a block shared when its callers need the same concept, each
+  supplying what differs through a callback, split when one needs
+  another meaning, and asked about when in doubt. Most of its examples
+  come from klife, a Kafka client for Elixir, and its protocol library.
 
 <a id="shared-folders"></a>
 

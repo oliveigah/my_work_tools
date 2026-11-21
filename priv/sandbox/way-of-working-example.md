@@ -154,7 +154,10 @@ The user is a systems thinker: a system, to them, is building blocks, the
 premises each rests on, and how they cooperate toward the goal. The best
 systems are like the Game of Life: a few simple rules, composed, do
 extraordinary things. Build that way, and bring them the choices that
-shape it.
+shape it. klife, a Kafka client for Elixir, and klife_protocol, its wire
+protocol (github.com/oliveigah/klife and
+github.com/oliveigah/klife_protocol), are built this way: most examples
+below come from them.
 
 - **Roles, as people would share the work.** Start from the main
   operation, and picture a group of people doing it by hand. A
@@ -164,7 +167,25 @@ shape it.
   customer, directly or not. Design the system the same way: which roles
   the main operation takes, what each one owns and decides, and how they
   hand work to one another. Each role is a block; their cooperation is the
-  system. A role that needs two hats is two roles.
+  system. A role that needs two hats is two roles. klife produces a record
+  this way: the producer knows which batcher takes each partition; a
+  batcher per broker packs what goes to that broker into one request; its
+  dispatcher sends it, retries, and tells the callers waiting; the
+  broker's process holds the connection and matches each answer to its
+  request.
+- **Where one role ends and the next begins.** A role is a job, not
+  always a process: what each one lives and dies with, and what its
+  failure would stop, say where to cut. klife's batcher and dispatcher
+  are two processes tied to the same broker, so they start and stop
+  together. Its committer batches offset commits the same way but sends
+  them itself: its broker is the group's coordinator, which moves, and a
+  dispatcher of its own would have to follow every move, for little
+  gain. Isolation is a reason to cut too: a producer of its own keeps a
+  critical topic from waiting while another topic's records retry, and
+  the group's heartbeats and commits go on a connection apart from
+  fetches and produces, since a broker answers a connection's requests
+  in order and a long-polling fetch would hold them up. A cut adds a
+  handoff: make it where it buys something.
 - **One block, one meaning.** Each function, value, field or message says
   one thing. When a block has two answers to give, give each its own
   shape: two functions, or a tagged result, never one encoded inside the
@@ -176,31 +197,51 @@ shape it.
   stop?"), would have said it plainly. Watch for a special value that means
   something else (0, -1, `nil`, an empty string), a flag that changes what
   a function does, and a field or message kept for a second purpose.
+  klife's consumer keeps the offsets it fetched, processed, sent to commit
+  and saw committed as four fields, and asking for its next batch answers
+  each way to wait with a name of its own (`:wait_assignment`,
+  `:wait_fetch`, `:wait_unacked`) or with `{:batch, records}`.
 - **Premises, stated and held.** Each block rests on premises: what it
   assumes of its inputs and of the world. Know them, and make the code
   hold them: accept every value the type allows, or reject the ones that
   break a premise where they come in. The overloaded answer above rested
-  on an idle time above 0, which nothing said and nothing checked.
+  on an idle time above 0, which nothing said and nothing checked. Write a
+  choice down in the code where it is made, with the premise it rests on
+  and what it costs: klife's committer says that its callers get no
+  backpressure from it, and why that is fine: the consumer already limits
+  how many of its commits wait for an answer, and one commit request in
+  flight paces the rest.
 - **Blocks worth reusing.** Reach for the blocks that make the next
   feature a composition of what exists rather than a new mechanism: few,
   small, each with a clear purpose and premises, that combine. Before
   adding a block that nearly does what one already does, see whether
-  that one, made more general, would serve both.
+  that one, made more general, would serve both. Make what comes in the
+  hundreds data read by one block, not code: klife_protocol generates
+  a schema for every Kafka message and version from Kafka's own
+  definitions, and one serializer and one deserializer read them all, so
+  a new message is new data.
 - **Share a concept, not just code.** These two pull against each other.
   Sharing keeps behavior consistent and code small, but couples every
   caller to the block; when callers need slightly different meanings, the
   shared block starts carrying both, which is how the clever overload is
   born. Share a block when its callers need the same concept; split it
   when one needs it to mean something the others don't. The sign is a
-  parameter, a branch or a special value added for one caller.
+  parameter, a branch or a special value added for one caller. Then share
+  what every caller means the same way, and let each supply the rest
+  through a callback it owns. klife's GenBatcher knows when to close a
+  batch, when to send it and how many may be in flight; the producer's
+  batcher, the fetcher's and the committer each say what an item weighs,
+  whether it fits (a fetch batch takes each partition once, a produce
+  batch takes anything) and what sending does.
 
 **When in doubt, it is theirs.** Unsure which roles a system needs and
-what each owns, whether to share a block or split it, or which blocks a
-part should rest on? That is the user's call, and costly when other code
-will build on it: ask. When you are sure, decide, and present in the
-handoff's body the roles and blocks others will build on. Either way, on
-the three levels: the concept (what each block is for, and what it
-promises), the mechanism (how the blocks cooperate, step by step), and the
-world: for each option, what it makes easy or hard to build next, and how
-it could fail, in a plausible scenario ("someone sets the idle time to 0",
-"a second kind of pool needs another idle rule").
+what each owns, where one ends and the next begins, whether to share a
+block or split it, or which blocks a part should rest on? That is the
+user's call, and costly when other code will build on it: ask. When you
+are sure, decide, and present in the handoff's body the roles and blocks
+others will build on. Either way, on the three levels: the concept (what
+each block is for, and what it promises), the mechanism (how the blocks
+cooperate, step by step), and the world: for each option, what it makes
+easy or hard to build next, and how it could fail, in a plausible scenario
+("someone sets the idle time to 0", "a second kind of pool needs another
+idle rule").
