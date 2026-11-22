@@ -1,8 +1,11 @@
 defmodule MWTClient.Sandbox.Server.Values do
   @moduledoc """
   The real values, at the one place they leave the vault: fetching a grant's
-  value, stored or minted by your command, and answering the proxy with the
-  request's headers carrying it, or with a refusal.
+  value, stored or minted by your command, and answering the proxy with
+  what to replace in the request (each placeholder with its value, in the
+  carriers it travels in) and in its answer (the value with its
+  placeholder), or with a refusal. The proxy's driver for the request's
+  protocol does the replacing (`MWTClient.Sandbox.Egress.Driver`).
 
   A value is put into a request only here, after
   `MWTClient.Sandbox.Policy` or your decision let that request through. Runs
@@ -25,9 +28,6 @@ defmodule MWTClient.Sandbox.Server.Values do
   alias MWTClient.Sandbox.Server.{Firewall, State}
 
   @mint_fresh_ms 10 * 60_000
-  # The shortest value looked for in the answer to the request it went in:
-  # that one value only, so a shorter one than anywhere else.
-  @echo_shortest 8
   # How long MWT waits for a credential endpoint it sends a request to for
   # the VM, in seconds.
   @endpoint_timeout 30
@@ -43,9 +43,9 @@ defmodule MWTClient.Sandbox.Server.Values do
   def let_through(state, grant, request, from), do: forward(state, grant, request, from)
 
   @doc """
-  Puts the real values in the request's headers, then answers the proxy
-  with them and what to look for (`scan/5`): the grant's own value, fetched
-  (minted when it has to be) when its placeholder is there, in its
+  Answers the proxy with the real values to put in the request
+  (`replace/1`) and what to look for (`scan/3`): the grant's own value,
+  fetched (minted when it has to be) when its placeholder is there, in its
   carriers; each value made from it (`MWTClient.Sandbox.Made`) whose
   placeholder is there, in that value's carriers. A request carrying only
   made values doesn't fetch the grant's.
@@ -115,14 +115,9 @@ defmodule MWTClient.Sandbox.Server.Values do
 
       values = own ++ made_values
 
-      headers =
-        Enum.reduce(values, request.headers, fn {_name, placeholder, value, carriers}, headers ->
-          Placeholder.swap(headers, placeholder, value, carriers)
-        end)
-
       GenServer.reply(
         from,
-        {:forward, headers, scan(state, request.host, grant, values, headers)}
+        {:forward, replace(values), scan(state, request.host, grant)}
       )
 
       State.used(state, grant.id)
@@ -298,39 +293,31 @@ defmodule MWTClient.Sandbox.Server.Values do
   end
 
   @doc """
-  What the proxy looks for around a request: `out`, every real value, in
-  what the VM sends after the head; `echo`, the forms `value` left in (as
-  it is, quoted, and as the carrier MWT wrote, such as a Basic
-  credential's base64), in the answer, where `placeholders` says what
-  replaces each; and `grant`, the id of the grant whose values it
-  carries, which the connection is held under. `values` are what went in,
-  each `{name, placeholder, value, carriers}`. With no value in the
-  request, only `out`.
+  What the proxy looks for around a request: `out`, every real value and
+  the placeholder of every grant that doesn't list `host`, in what the VM
+  sends after the head; and `grant`, the id of the grant whose values the
+  request carries, which the connection is held under (nil for none).
   """
-  def scan(state, host), do: %{out: out(state, host), echo: nil, placeholders: %{}, grant: nil}
+  def scan(state, host, grant \\ nil),
+    do: %{out: out(state, host), grant: grant && grant.id}
 
-  def scan(state, host, grant, values, headers) do
-    entries =
-      for {name, placeholder, value, carriers} <- values do
-        # The value as MWT wrote it into a carrier, when that isn't the
-        # value as it is: a Basic credential's base64.
-        written =
-          for {header_name, header} <- headers,
-              header_name in carriers,
-              not String.contains?(header, value),
-              String.contains?(Placeholder.decoded(header) || "", value),
-              [_scheme, encoded] <- [String.split(header, " ", parts: 2)],
-              do: String.trim(encoded)
+  @doc """
+  What to replace for the values that went in, each `{name, placeholder,
+  value, carriers}` (`MWTClient.Sandbox.Egress.Driver`): in the request,
+  each placeholder with its value, in its carriers only; in the answer,
+  each form the value goes by (as it is, quoted, escaped) with its
+  placeholder. `replace([])` replaces nothing.
+  """
+  def replace(values) do
+    request =
+      for {name, placeholder, value, carriers} <- values,
+          do: %{label: {:value, name}, from: placeholder, to: value, within: carriers}
 
-        {{{:value, name}, Secrets.forms(value) ++ written}, {{:value, name}, placeholder}}
-      end
+    answer =
+      for {name, placeholder, value, _carriers} <- values,
+          do: %{label: {:value, name}, from: Secrets.forms(value), to: placeholder}
 
-    %{
-      out: out(state, host),
-      echo: entries |> Enum.map(&elem(&1, 0)) |> Secrets.new(@echo_shortest),
-      placeholders: Map.new(entries, &elem(&1, 1)),
-      grant: grant.id
-    }
+    %{request: request, answer: answer}
   end
 
   # What the rest of a request to `host` must not carry: any real value, and
@@ -628,6 +615,25 @@ defmodule MWTClient.Sandbox.Server.Values do
      )}
   end
 
+  def refusal(:internet_off, request) do
+    {%{
+       outcome: :blocked,
+       summary: "The Internet is off, and no grant on lists #{request.host} · refused",
+       host: request.host,
+       port: Map.get(request, :port, 443),
+       method: request.method,
+       path: request.path,
+       exchange_id: Map.get(request, :exchange)
+     }, nil,
+     deny(
+       403,
+       "mwt_grant_off",
+       "The Internet is off, and no grant that is on lists #{request.host}. " <>
+         "Ask for it with: mwt request internet --reason \"...\"",
+       nil
+     )}
+  end
+
   def refusal(:multiple_grants, _request) do
     {nil, nil,
      deny(403, "mwt_multiple_grants", "One request may carry one grant's placeholder.", nil)}
@@ -748,7 +754,7 @@ defmodule MWTClient.Sandbox.Server.Values do
       outcome: outcome,
       summary: summary,
       host: request.host,
-      port: 443,
+      port: Map.get(request, :port, 443),
       grant_id: grant.id,
       method: request.method,
       path: request.path,

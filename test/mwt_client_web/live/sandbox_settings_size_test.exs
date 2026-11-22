@@ -36,6 +36,22 @@ defmodule MWTClientWeb.SandboxSettingsSizeTest do
     assert has_element?(view, "#vm_cpus-help", "A change applies when the VM is recreated.")
     assert has_element?(view, "#vm_home_gib-help", "A change applies when the VM next starts.")
     assert has_element?(view, "#vm_hold_seconds-help", "A change applies to the next request.")
+    assert has_element?(view, "#vm_log_body_kib-help", "A change applies to the next request.")
+  end
+
+  test "how much of each body the log keeps: 64 KiB at first, 0 to 1024", %{
+    conn: conn,
+    username: username
+  } do
+    assert Sandbox.snapshot(username).settings.log_body_kib == 64
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
+    assert has_element?(view, "#vm_log_body_kib[value='64']")
+
+    assert {:error, %{log_body_kib: _}} =
+             Sandbox.update_settings(username, %{"log_body_kib" => "2048"})
+
+    assert {:ok, %{log_body_kib: 0}} = Sandbox.update_settings(username, %{"log_body_kib" => "0"})
+    assert MWTClient.Sandbox.Gate.body_limit(username) == 0
   end
 
   test "Use suggested fills the form, and only Save keeps it", %{

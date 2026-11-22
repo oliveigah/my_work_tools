@@ -3629,7 +3629,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     mint_per:
       "With it on, each host gets a value of its own: the command is told MWT_HOST, and each host's result is kept apart, for tokens bound to where they go (an audience). Off, one value serves every host.",
     destinations:
-      "What the VM may connect to while the grant is on, one a line: an address (10.0.0.5), a range (10.20.0.0/16), a host name (git.corp.internal), or every name under one (*.corp.example), each optionally followed by :ports (:443,5432 or :8000-8100); without ports, every port. A name opens only the addresses MWT's own DNS answered for it. Anything after # is a note. Each new connection waits for you, unless you let them through.",
+      "What the VM may connect to while the grant is on, one a line: an address (10.0.0.5), a range (10.20.0.0/16), a host name (git.corp.internal), or every name under one (*.corp.example), each optionally followed by :ports (:443,5432 or :8000-8100); without ports, every port. A name opens only the addresses MWT's own DNS answered for it. Anything after # is a note. Each request MWT can read waits for you, and each connection it can't, unless you let them through.",
     anchor:
       "Your VPN's network interface on this machine, as ip link shows it: wg0, tun0, utun4. With it, connections under this grant leave only through that interface: while the VPN is down, the grant opens nothing, so these addresses never reach whatever network you are on instead. Empty, they go wherever this machine routes them.",
     resolver:

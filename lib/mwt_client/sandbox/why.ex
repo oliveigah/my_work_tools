@@ -14,7 +14,8 @@ defmodule MWTClient.Sandbox.Why do
 
     * the firewall isolated the VM, or blocks the destination;
     * a token grant lists the name: MWT reads connections to it, and a
-      request carrying its placeholder needs it on;
+      request carrying its placeholder needs it on; with the Internet off,
+      every request to it does;
     * a network grant covers it, and is off (how to ask for it), or lists
       another port; a name it lists, which MWT answers only while the
       grant is on; its way out isn't connected (a VPN that is down);
@@ -183,8 +184,9 @@ defmodule MWTClient.Sandbox.Why do
          ]}
 
       networks == [] ->
-        # A token grant's host is reached, read by MWT, Internet or not.
-        {true, token_lines}
+        # A token grant's host is read by MWT. With the Internet off it is
+        # reached for its grants only: while one listing it is on.
+        {internet_on?(world) or Enum.any?(tokens, &live(&1, world)), token_lines}
 
       true ->
         {reached?, network_lines} =
@@ -235,10 +237,16 @@ defmodule MWTClient.Sandbox.Why do
   end
 
   defp token_line(grant, world) do
-    "- #{label(grant)} lists it: MWT reads connections to it, and a request carrying its placeholder " <>
-      case live(grant, world) do
-        true -> "goes through it (it is on; run the tool with mwt exec #{grant.id} -- COMMAND)."
-        false -> "needs it on: #{ask(grant)}"
+    "- #{label(grant)} lists it: MWT reads connections to it, and " <>
+      cond do
+        live(grant, world) ->
+          "a request carrying its placeholder goes through it (it is on; run the tool with mwt exec #{grant.id} -- COMMAND)."
+
+        internet_on?(world) ->
+          "a request carrying its placeholder needs it on: #{ask(grant)}"
+
+        true ->
+          "with the Internet off, every request to it needs it on: #{ask(grant)}"
       end
   end
 

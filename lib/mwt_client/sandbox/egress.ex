@@ -12,21 +12,21 @@ defmodule MWTClient.Sandbox.Egress do
 
   One listener per unlocked identity. Each connection runs in its own
   process under `MWTClient.Sandbox.TaskSupervisor`; see
-  `MWTClient.Sandbox.Egress.Connection`. A socket it cannot bind is reported
+  `MWTClient.Sandbox.Egress.Tcp`. A socket it cannot bind is reported
   to the sandbox and retried, rather than failing the unlock.
 
   It holds at most 512 connections at once (`:max_connections` in this
   module's config). One more is closed as soon as it is accepted: the VM
   sees a refusal, and the activity log says so once a minute. Each one
   costs a few processes and buffers, and its head must arrive in time
-  (`Connection`), so the VM can't make MWT hold more than that.
+  (`Tcp`), so the VM can't make MWT hold more than that.
   """
 
   use GenServer
 
   require Logger
 
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
   alias MWTClient.Sandbox.Server
   alias MWTClient.Sandbox.Sockets
   alias MWTClient.Vault.Store
@@ -128,7 +128,7 @@ defmodule MWTClient.Sandbox.Egress do
   defp serve(client, username, options) do
     case Task.Supervisor.start_child(MWTClient.Sandbox.TaskSupervisor, fn ->
            receive do
-             {:go, client} -> Connection.run(client, username, options)
+             {:go, client} -> Tcp.run(client, username, options)
            after
              5_000 -> :ok
            end

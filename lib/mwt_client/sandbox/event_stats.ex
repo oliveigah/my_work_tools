@@ -65,12 +65,14 @@ defmodule MWTClient.Sandbox.EventStats do
 
   @doc "Which series an event's outcome falls in."
   @spec series_of(Event.outcome()) :: series()
-  def series_of(:tunnel), do: :passed
+  def series_of(outcome) when outcome in [:tunnel, :read], do: :passed
 
   def series_of(outcome) when outcome in [:swapped, :allowed, :denied, :timed_out, :refused],
     do: :credentials
 
-  def series_of(outcome) when outcome in [:blocked, :violation, :firewall], do: :blocked
+  def series_of(outcome) when outcome in [:blocked, :violation, :firewall, :read_failed],
+    do: :blocked
+
   def series_of(_outcome), do: :other
 
   @doc """

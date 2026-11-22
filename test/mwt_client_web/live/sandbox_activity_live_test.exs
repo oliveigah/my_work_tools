@@ -112,6 +112,98 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     assert has_element?(view, "#event-event-a4 details", "10.0.0.5:22")
   end
 
+  test "a connection that failed for being read offers not to read its host again", %{
+    conn: conn,
+    username: username
+  } do
+    put_events(username, [
+      event(1, :read_failed, "pinned.example", %{
+        port: 443,
+        summary: "pinned.example: the client refused MWT's certificate · nothing went out"
+      })
+    ])
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+    assert has_element?(view, "#event-event-a1 summary", "Not read")
+
+    view |> element("#event-dont-read-event-a1") |> render_click()
+    assert MWTClient.Sandbox.reading(username).rules == [%{host: "pinned.example", read?: false}]
+
+    # Its line now offers the other way, and the card lists it.
+    assert has_element?(view, "#event-read-event-a1")
+    assert has_element?(view, "#activity-reading-rule-pinned-example")
+  end
+
+  test "what MWT reads is set on the page: the default, and hosts opted in or out", %{
+    conn: conn,
+    username: username
+  } do
+    traffic(username)
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+    assert has_element?(view, "#activity-reading-empty")
+    assert has_element?(view, "#activity-reading-default-every_host[aria-checked=true]")
+
+    # Added from the card: an address is refused, a host taken.
+    view
+    |> form("#activity-reading-form", reading: %{host: "10.0.0.5", read: "false"})
+    |> render_submit()
+
+    assert MWTClient.Sandbox.reading(username).rules == []
+
+    view
+    |> form("#activity-reading-form", reading: %{host: "*.pinned.example", read: "false"})
+    |> render_submit()
+
+    assert has_element?(
+             view,
+             "#activity-reading-rule-any-pinned-example-read-false[aria-checked=true]"
+           )
+
+    view |> element("#activity-reading-rule-any-pinned-example-read-true") |> render_click()
+    assert MWTClient.Sandbox.reading(username).rules == [%{host: "*.pinned.example", read?: true}]
+
+    view |> element("#activity-reading-rule-any-pinned-example-remove") |> render_click()
+    assert MWTClient.Sandbox.reading(username).rules == []
+
+    # From a busiest destination: hex.pm is read, one click passes it; an
+    # address names nothing to read, and has no switch.
+    toggle = "#activity-hosts button[phx-click=reading_put][phx-value-host='hex.pm']"
+    assert has_element?(view, toggle, "read")
+
+    refute has_element?(
+             view,
+             "#activity-hosts button[phx-click=reading_put][phx-value-host='10.0.0.5']"
+           )
+
+    view |> element(toggle) |> render_click()
+    refute MWTClient.Sandbox.Reading.read?(MWTClient.Sandbox.reading(username), "hex.pm")
+    assert has_element?(view, toggle, "not read")
+
+    view |> element("#activity-reading-default-token_hosts") |> render_click()
+    assert MWTClient.Sandbox.reading(username).default == :token_hosts
+  end
+
+  test "a token grant's host offers nothing of the kind: it is read for its value", %{
+    conn: conn,
+    username: username
+  } do
+    {:ok, _grant} =
+      MWTClient.Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "GitHub",
+        "purpose" => "The GitHub API",
+        "hosts" => "api.github.com",
+        "env" => "GH_TOKEN",
+        "value" => "ghp_real_value_0123456789"
+      })
+
+    put_events(username, [event(1, :read_failed, "api.github.com", %{port: 443})])
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+
+    refute has_element?(view, "#event-dont-read-event-a1")
+    assert has_element?(view, "#event-token-host-event-a1")
+  end
+
   test "a request MWT read opens to what it carried and what came back, to copy as JSON", %{
     conn: conn,
     username: username

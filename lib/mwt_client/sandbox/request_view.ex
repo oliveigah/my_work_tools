@@ -3,7 +3,7 @@ defmodule MWTClient.Sandbox.RequestView do
   A held request, as you read it on an approval and as you copy it out.
 
   MWT keeps the request exactly as the VM sent it: the head, and at most the
-  first 64 KiB of the body (`MWTClient.Sandbox.Egress.Connection`). The VM
+  first 64 KiB of the body (`MWTClient.Sandbox.Egress.Tcp`). The VM
   only ever holds placeholders, so nothing here is a real value. Still, a
   placeholder is noise to a reader, so `marks/1` names each one:
 
@@ -55,7 +55,8 @@ defmodule MWTClient.Sandbox.RequestView do
 
   @doc "The address the request went to."
   @spec url(request()) :: String.t()
-  def url(request), do: Shown.text("https://" <> request.host <> request.path)
+  def url(request),
+    do: Shown.text("https://" <> MWTClient.Sandbox.Describe.authority(request) <> request.path)
 
   @doc """
   The headers as the page shows them: each value split where a placeholder

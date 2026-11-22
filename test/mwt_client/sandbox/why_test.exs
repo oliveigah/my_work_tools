@@ -110,14 +110,25 @@ defmodule MWTClient.Sandbox.WhyTest do
     assert off =~ "mwt request internet"
   end
 
-  test "a token grant's host is reached, read by MWT; a request needs the grant on" do
-    text = why("https://api.github.com/user", world([internet(:off), github(:off)]))
+  test "a token grant's host is read by MWT; a request with its placeholder needs the grant on" do
+    text = why("https://api.github.com/user", world([internet(), github(:off)]))
     assert text =~ "api.github.com:443: reached now"
     assert text =~ "GitHub (token grant `github`) lists it"
-    assert text =~ "needs it on: ask for it with mwt request github"
+
+    assert text =~
+             "a request carrying its placeholder needs it on: ask for it with mwt request github"
+
     refute_received {:resolved, _}
 
+    # With the Internet off, the host is reached for its grant only.
+    off = why("https://api.github.com/user", world([internet(:off), github(:off)]))
+    assert off =~ "api.github.com:443: not reached now"
+
+    assert off =~
+             "with the Internet off, every request to it needs it on: ask for it with mwt request github"
+
     on = why("api.github.com", world([internet(:off), github(:on)]))
+    assert on =~ "reached now"
     assert on =~ "mwt exec github -- COMMAND"
   end
 

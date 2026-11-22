@@ -105,11 +105,10 @@ defmodule MWTClient.Sandbox.EgressCorpusTest do
           expect == :forwarded and String.contains?(behind, placeholder) ->
             "a placeholder went out behind the head"
 
-          # The request hidden behind the first one arrives, as the bytes
-          # the VM sent: with its placeholder, which opens nothing.
-          expect == :forwarded_once and
-              not String.contains?(behind, "Authorization: token #{placeholder}\r\nX-Second: yes") ->
-            "what was sent behind the request didn't arrive as it was sent"
+          # The request hidden behind the first one's body isn't one MWT
+          # judged: it doesn't go.
+          expect == :forwarded_alone and String.contains?(behind, "X-Second: yes") ->
+            "what was sent behind the request reached the host"
 
           true ->
             nil

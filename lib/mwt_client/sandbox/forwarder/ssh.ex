@@ -10,8 +10,8 @@ defmodule MWTClient.Sandbox.Forwarder.SSH do
   the VM's loopback can be reached. Forwards are added and removed on the
   master (`ssh -O forward|cancel`). Nothing else runs over it: msb's SSH
   server keeps an agent connection for every command until the session ends
-  (docs/agent_sandbox.md, "The msb SSH bug"), and forwarded connections don't count toward
-  that.
+  (docs/agent_sandbox.md, "Servers in the VM, on your machine"), and
+  forwarded connections don't count toward that.
 
     * The key is MWT's own, made on first use (`ssh-keygen`, no passphrase)
       in the identity's sandbox folder, and added with `msb ssh authorize`

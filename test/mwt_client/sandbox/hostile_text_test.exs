@@ -27,7 +27,7 @@ defmodule MWTClient.Sandbox.HostileTextTest do
     Shown
   }
 
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
   alias MWTClient.Vault.Store
 
   doctest MWTClient.Sandbox.Shown
@@ -199,9 +199,9 @@ defmodule MWTClient.Sandbox.HostileTextTest do
     end
 
     test "is taken when it is a host name" do
-      assert Connection.sni(client_hello("API.GitHub.com")) == "api.github.com"
-      assert Connection.sni(client_hello("xn--bcher-kva.example")) == "xn--bcher-kva.example"
-      assert Connection.sni(client_hello("_dmarc.example.com")) == "_dmarc.example.com"
+      assert Tcp.sni(client_hello("API.GitHub.com")) == "api.github.com"
+      assert Tcp.sni(client_hello("xn--bcher-kva.example")) == "xn--bcher-kva.example"
+      assert Tcp.sni(client_hello("_dmarc.example.com")) == "_dmarc.example.com"
     end
 
     test "is no name when it is anything else, so nothing is read or logged under it" do
@@ -216,7 +216,7 @@ defmodule MWTClient.Sandbox.HostileTextTest do
             "github.com.",
             String.duplicate("a", 300)
           ] do
-        assert Connection.sni(client_hello(name)) == nil, inspect(name)
+        assert Tcp.sni(client_hello(name)) == nil, inspect(name)
       end
     end
   end

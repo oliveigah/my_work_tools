@@ -6,7 +6,7 @@ alias MWTClient.Accounts
 alias MWTClient.Sandbox
 alias MWTClient.Sandbox.{Destinations, Inbox, Server}
 alias MWTClient.Sandbox.CertificateAuthority, as: CA
-alias MWTClient.Sandbox.Egress.Connection
+alias MWTClient.Sandbox.Egress.Tcp
 alias MWTClient.Vault
 alias MWTClient.Vault.Store
 
@@ -182,7 +182,7 @@ accept = fn accept ->
   handler =
     spawn(fn ->
       receive do
-        :go -> Connection.run(client, username, options)
+        :go -> Tcp.run(client, username, options)
       end
     end)
 

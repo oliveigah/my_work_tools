@@ -8,9 +8,9 @@ defmodule MWTClient.SandboxCorpus do
 
     * `{:refused, status}` - MWT answers itself and nothing reaches the host;
     * `:forwarded` - one request reaches the host, with the head MWT wrote;
-    * `:forwarded_once` - the same, and what the VM sent behind that request
-      reaches the host as it was sent: bytes MWT never wrote a real value
-      into, so a second request hidden there has only its placeholder.
+    * `:forwarded_alone` - the same, and nothing the VM sent behind that
+      request's body reaches the host: a second request hidden there is
+      one MWT never judged.
 
   Every entry carries the placeholder of a grant in its `authorization`
   header, as `<<TOKEN>>` in `bytes`, so each is a request that would go out
@@ -24,7 +24,7 @@ defmodule MWTClient.SandboxCorpus do
   @type entry :: %{
           name: String.t(),
           bytes: binary(),
-          expect: :forwarded | :forwarded_once | {:refused, pos_integer()}
+          expect: :forwarded | :forwarded_alone | {:refused, pos_integer()}
         }
 
   @doc "The host every entry is sent to."
@@ -166,11 +166,11 @@ defmodule MWTClient.SandboxCorpus do
 
       # A second request hidden behind the first.
       {"a second request behind a body with a length",
-       post(["Content-Length: 5"], "hello") <> get(["X-Second: yes"]), :forwarded_once},
+       post(["Content-Length: 5"], "hello") <> get(["X-Second: yes"]), :forwarded_alone},
       {"a second request behind the last chunk",
        post(["Transfer-Encoding: chunked"], "5\r\nhello\r\n0\r\n\r\n") <>
-         get(["X-Second: yes"]), :forwarded_once},
-      {"a second request behind a GET", get([]) <> get(["X-Second: yes"]), :forwarded_once},
+         get(["X-Second: yes"]), :forwarded_alone},
+      {"a second request behind a GET", get([]) <> get(["X-Second: yes"]), :forwarded_alone},
 
       # Too much of it.
       {"a head past 64 KiB", get(["X-Pad: " <> String.duplicate("a", 70_000)]), {:refused, 431}},

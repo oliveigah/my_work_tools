@@ -25,6 +25,9 @@ ENV SSL_CERT_FILE=/mnt/mwt/ca-bundle.pem \
     CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE=/mnt/mwt/ca-bundle.pem \
     NODE_EXTRA_CA_CERTS=/mnt/mwt/ca.pem \
     GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/mnt/mwt/ca-bundle.pem \
+    AWS_CA_BUNDLE=/mnt/mwt/ca-bundle.pem \
+    DENO_CERT=/mnt/mwt/ca.pem \
+    JAVA_TOOL_OPTIONS="-Djavax.net.ssl.trustStore=/mnt/mwt/java-truststore.jks -Djavax.net.ssl.trustStoreType=JKS -Djavax.net.ssl.trustStorePassword=changeit" \
     HEX_HTTP_TIMEOUT=900 \
     BASH_ENV=/mnt/mwt/profile.sh \
     SHELL=/bin/bash \

@@ -117,6 +117,7 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(:vm_errors, %{})
      |> assign(:focus, nil)
      |> assign(:firewall_view, nil)
+     |> assign(:reading, nil)
      |> assign(:firewall_drafts, %{})
      |> assign(:firewall_errors, %{})
      |> assign(:firewall_releasing, false)
@@ -315,6 +316,7 @@ defmodule MWTClientWeb.SandboxLive do
                   stats={@activity_stats}
                   page_size={@page_size}
                   grants={@grants}
+                  reading={@reading}
                   threads={@activity_threads}
                   grant_names={Map.new(@grants, &{&1.id, &1.name})}
                   now={@now}
@@ -1438,6 +1440,33 @@ defmodule MWTClientWeb.SandboxLive do
      socket |> assign(:filters, filters) |> reset_events() |> load_stats() |> load_threads()}
   end
 
+  # Which hosts the proxy reads (`MWTClient.Sandbox.Reading`), from the
+  # Proxy activity page: a host opted in or out, from its reading card, a
+  # busiest destination or a line that failed for being read; one taken
+  # off; what the rest do. Only you, from here: nothing the VM does
+  # changes it.
+  def handle_event("reading_put", %{"host" => host, "read" => read}, socket),
+    do: reading_set(socket, {:put, host, read == "true"}, reading_words(host, read == "true"))
+
+  def handle_event("reading_add", %{"reading" => %{"host" => host, "read" => read}}, socket),
+    do: reading_set(socket, {:put, host, read == "true"}, reading_words(host, read == "true"))
+
+  def handle_event("reading_remove", %{"host" => host}, socket),
+    do: reading_set(socket, {:remove, host}, "#{host} follows the default again")
+
+  def handle_event("reading_default", %{"value" => value}, socket) do
+    case value do
+      "every_host" ->
+        reading_set(socket, {:default, :every_host}, "MWT reads every host it can")
+
+      "token_hosts" ->
+        reading_set(socket, {:default, :token_hosts}, "MWT reads only token grants' hosts")
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
   # A destination picked on the page searches for it; none clears the search.
   def handle_event("filter_host", %{"host" => host}, socket) do
     {:noreply,
@@ -2500,6 +2529,9 @@ defmodule MWTClientWeb.SandboxLive do
       :firewall ->
         assign(socket, :firewall_view, Sandbox.firewall(username))
 
+      :activity ->
+        assign(socket, :reading, Sandbox.reading(username))
+
       :overview ->
         hour = Sandbox.events(username, %{limit: 500})
         since = DateTime.add(socket.assigns.now, -3600, :second)
@@ -2509,7 +2541,8 @@ defmodule MWTClientWeb.SandboxLive do
         |> assign(:recent, Enum.take(hour, 7))
         |> assign(:stats, %{
           waiting: length(socket.assigns.waiting),
-          connections: Enum.count(last_hour, &(&1.outcome in [:tunnel, :swapped, :allowed])),
+          connections:
+            Enum.count(last_hour, &(&1.outcome in [:tunnel, :read, :swapped, :allowed])),
           credentials: Enum.count(last_hour, &(&1.outcome in [:swapped, :allowed])),
           blocked: Enum.count(last_hour, &(&1.outcome in [:blocked, :violation, :firewall]))
         })
@@ -2569,6 +2602,25 @@ defmodule MWTClientWeb.SandboxLive do
       {:error, _reason} -> {:noreply, put_notice(socket, :warning, "That isn't a choice here")}
     end
   end
+
+  # The lines are streamed, so they are read again for theirs to show the
+  # change.
+  defp reading_set(socket, change, words) do
+    case Sandbox.reading_set(socket.assigns.username, change) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(:reading, Sandbox.reading(socket.assigns.username))
+         |> reset_events()
+         |> put_notice(:success, words)}
+
+      {:error, message} ->
+        {:noreply, put_notice(socket, :error, message)}
+    end
+  end
+
+  defp reading_words(host, true), do: "MWT reads #{host}"
+  defp reading_words(host, false), do: "MWT passes #{host} through unread"
 
   defp firewall_list(list) do
     Enum.find(MWTClient.Sandbox.Firewall.lists(), &(to_string(&1) == list))

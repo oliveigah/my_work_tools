@@ -208,117 +208,46 @@ a script, and accepted only as you read it: today a proposal's Accept
 isn't bound to what its page showed (the threat model review's smaller
 gaps), so a change between your reading and your click would go through.
 
-## Every HTTPS request read by MWT, network grants' included
+## What MWT doesn't read yet
 
-Noted on 2026-11-21, with the network grant section of 2026-11-19 (below)
-as its first case.
+Built on 2026-11-22: MWT reads every connection it can, the Internet's and
+a network grant's (*Each connection*, *Not read*, *Private networks* and
+the decisions of that day in `docs/agent_sandbox.md`). Left:
 
-The idea: **MWT terminates every TLS connection the VM opens**, not only
-those to a token grant's hosts, so it reads, logs and can stop what goes
-out to any host. Hosts whose clients pin certificates or use mutual TLS go
-on a list of hosts MWT connects to without reading. This revisits a choice
-in `docs/agent_sandbox.md`, whose list of threats says that "reading every
-TLS connection would break clients that pin certificates".
-
-What is known:
-
-- The VM already trusts MWT's certificate authority, which signs the
-  certificates of the hosts MWT reads today; `Gate.route` chooses, per
-  connection, to read it or tunnel it.
-- It puts every connection on the path MWT reads, which the threat model
-  review of 2026-11-21 (`docs/dated/`) found weaker than the tunnel's. So
-  these come first:
-  - a host MWT reads is connected to by name, with no address check
-    (finding 4): a token grant listing an internal name opens it without a
-    network grant, the Internet off included;
-  - a card can be made before the request's body arrived, and say "No
-    body" (finding 3);
-  - the firewall's upload rule counts only tunnels (`Gate.upload/5`).
-- What breaks unless it is listed or supported: pinned certificates,
-  mutual TLS, HTTP/2 and gRPC (MWT reads HTTP/1.1 only). Every byte is
-  decrypted and encrypted again on this machine, and the exchange log
-  holds far more.
-- Reading isn't asking: a card for every request on the Internet would
-  bury you. The grant's approval mode can keep deciding what gets a card,
-  and the rest is read by the firewall and logged.
-- One list could serve both cases: the hosts left unread on the Internet
-  (a pinned client) and a network grant's destinations MWT can't read (a
-  database, SSH), rather than a mode per destination and a list beside it.
-
-**On a network grant**, set aside on 2026-11-19. A network grant is asked
-about a connection, not a request: `Connection.run/3` approves it in
-`destination/5`, before the TLS handshake, so its card says "Connect to
-10.x.y.z:443", the entry it matched ("Listed as") and the grant, and
-nothing of what goes through.
-What happens next depends on the host:
-
-- **A token grant lists the name**: `Gate.route` intercepts, and a request
-  carrying the placeholder gets a card with the whole request (method,
-  URL, headers, where the credential is). A request carrying none is read
-  but goes out with no card (`Policy.decide/3` answers `:pass`), logged
-  afterwards as "Read by MWT, no credential in it".
-- **None does**: a tunnel of bytes MWT never reads.
-
-So for a service on a private network, often production, the one gate is
-a card that doesn't say what is done there.
-
-Wanted: **every request to a host a network grant opens is read in plain
-text and reviewed in plain text, and its answer is checked too**, as a
-command's output can come to you first (`output_to: :review`,
-`server/host_runs.ex:408`).
-
-What it would take:
-
-- **Read every HTTPS request on such a grant**: intercepted with MWT's
-  certificate, as a token grant's hosts are, credential or not. Each one
-  a card like a token grant's request card; "Allow similar" (method and
-  endpoint) still there for repeats.
-- **The answer to you first**: held until you release it, shown decoded
-  (status, headers, body up to a cap), as a command's output can be;
-  release, or keep it from the agent. `Egress.Response` already reads
-  answers to requests MWT put a value in; this reads them all.
-- **On hosts MWT reads already, the data is there**: the Proxy activity
-  record of a request with no credential in it holds the whole exchange
-  (`Exchange`: method, URL, headers and body with its size and whether it
-  was cut, and the answer's status, headers and body), written after it
-  went out. The cards above are that record shown before: the request
-  from `Exchange.request/1` while `Gate.authorize/2` waits for you instead
-  of answering `:pass`, the answer from the same capture held before it
-  is sent on. What is missing is only for tunnels: reading them at all.
-- **The log's outcome says "tunnel" for a request MWT read**:
-  `Gate.authorize/2` logs `outcome: :tunnel` with the summary "Read by
-  MWT, no credential in it" (`gate.ex:770`), so the record says both. An
-  outcome of its own (`:read`) would tell it from a tunnel MWT never
-  read.
-- **Not HTTP, not readable**: a database, SSH or any protocol MWT can't
-  read stays a connection card, and the grant says so per destination
-  (a mode per port: read requests, or connect only), so nothing reachable
-  is silently unread. A client that pins certificates or uses mutual TLS
-  fails when intercepted; HTTP/2 and gRPC are out as on token grants
-  (HTTP/1.1 only).
-- **The connection card itself**: decided after the TLS ClientHello, so it
-  shows the name asked for (SNI) and the one MWT answered in DNS, not
-  only the entry the address matched. Its "Listed as" line is that entry
-  (`spec.source`, `Policy.decide/3` for `{:connection, …}`): with a
-  wildcard destination (`*.internal.example:443`) every card reads the
-  same, an address and the wildcard, and you approve a connection without
-  knowing which host under it is asked for.
-- **The most specific grant should win**: when two network grants cover a
-  name (an exact `dev.internal.example:443`, and `*.internal.example:443`
-  on another grant), MWT takes the first in its list whose way out routes
-  the address (`Enum.find(candidates, &way_out?/2)`), not the most
-  specific. With two VPNs on two interfaces the route sorts it; on one
-  interface the list's order decides, so the exact grant's approval mode
-  (auto-approve, say) may be passed over for the wildcard's (ask). Pick
-  the most specific entry first (an exact name, then the longest
-  wildcard), and on a tie the grant that asks.
-- **Kept in the exchange log** (`Exchange`), request and answer, as for
-  token grants, so what went to the service can be read back later.
-
-Found on a VPN-only production service: the request carrying a token
-grant's placeholder got its full card, and the same request without one
-went out after a connection card that showed only the address, the entry
-and the grant.
+- **Plain HTTP** passes as "it isn't TLS". Reading it needs the request
+  reader to take a plain socket as well as TLS, and a request carrying a
+  placeholder over it refused: nothing proves which host is there.
+- **HTTP/2**: a client offering only it (gRPC) passes unread, on a network
+  grant as a connection card. Spiked before, not built (frames, a decision
+  per stream, an answer scan of its own).
+- **A driver per protocol** beside HTTP/1.1 (`Egress.Driver`, built on
+  2026-11-22, *Drivers* in `docs/agent_sandbox.md`): one claims a
+  connection by its first bytes (Postgres's `SSLRequest` or startup
+  message, say), plain or inside TLS, and turns it into requests a card
+  can show. None but HTTP/1.1 and `Raw` yet. Left for the first that
+  carries a value: the judge finds placeholders in an HTTP request's
+  headers, path and body itself (`Policy`'s `{:request, _}`); for another
+  protocol it would ask the driver where each text of a request sits, and
+  check those places against the grant's carriers. Also left: a driver
+  that switches the connection to another mid-way (a WebSocket after
+  `101`, STARTTLS), and a scanner per request for a protocol carrying
+  several at once (HTTP/2), where the core keeps one a connection; and
+  a core for UDP beside `Egress.Tcp`, should msb ever carry UDP but DNS,
+  running the same drivers (`ctx.transport`). The interface is a first
+  draft: the driver that doesn't fit it changes it (`Egress.Driver`'s
+  docs list where it is known not to).
+- **The answer held for you** before the agent gets it, on a network
+  grant, as a command's output can be (`output_to: :review`): the answer
+  is read already (`Egress.Driver.Http1.Answer`); holding it means a card for it.
+- **Two requests whose bodies differ only past their first 64 KiB** join
+  one card (`Approvals.hold/3`, by what MWT read), which says it holds
+  only the start.
+- **MWT's own port as a destination**: no check keeps a network grant that
+  names `127.0.0.1` and MWT's web port from opening MWT's pages to the VM.
+  Not tried.
+- **Chromium outside the default image**: its trust store gets MWT's CA
+  only when the image has `certutil` (`libnss3-tools`); Firefox has stores
+  of its own, per profile, and gets nothing.
 
 ## Masking personal data in what comes back to the VM
 
@@ -330,9 +259,8 @@ are many.
 
 The idea: **MWT masks what comes back, and unmasks what goes out**.
 
-- **Answers masked**: every answer on a host MWT reads (a token grant's,
-  and a network grant's once it reads them, see "Every HTTPS request read
-  by MWT"), and every command or subgrant output, is scanned for patterns
+- **Answers masked**: every answer MWT reads (every host it can, since
+  2026-11-22), and every command or subgrant output, is scanned for patterns
   (an id, with and without punctuation, validated by its check digits so
   that any 11 digits don't match; an email; a phone), and each match is
   replaced by a token, `mwt:cpf:Xb3k…`.
@@ -357,19 +285,18 @@ the id ever entering the VM. What comes back isn't masked yet, so it
 needs one of:
 
 - the answer to you first, with the agent getting only what you release
-  ("Every HTTPS request read by MWT", on a network grant);
+  ("What MWT doesn't read yet", on a network grant);
 - the agent getting the status, the timings and the headers MWT allows,
   never the body;
 - the body cut whenever it holds the id itself, as an answer holding a
-  real value is today (`Egress.Response`), which most answers about a
+  real value is today (`Egress.Driver.Http1.Response`), which most answers about a
   person do.
 
 The decryption on the way out is the half that is the same whatever
 masking answers becomes, so it can come first; and the agent learns from
 it how the calls are made, which a person's id doesn't change.
 
-**The order, both ways**, with the reviews of "Every HTTPS request read
-by MWT":
+**The order, both ways**, with what MWT reads since 2026-11-22:
 
 1. Out: the agent's request → **unmask** (tokens become the real ids) →
    **your review** → **placeholders swapped** for the grants' real values
@@ -377,7 +304,7 @@ by MWT":
 2. Back: the service's answer → **your review** → **mask** (ids become
    tokens, fields by their rules) → **the check for real values** (one
    in a head becomes its placeholder, one in the body cuts the answer, as
-   `Egress.Response` does today) → the agent.
+   `Egress.Driver.Http1.Response` does today) → the agent.
 
 You review in clear what is personal (you may read it), but never a
 credential: a card shows a grant's value as the grant's name, as a token

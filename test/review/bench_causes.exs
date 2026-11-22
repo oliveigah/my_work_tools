@@ -6,7 +6,7 @@
 alias MWTClient.Accounts
 alias MWTClient.Sandbox
 alias MWTClient.Sandbox.CertificateAuthority, as: CA
-alias MWTClient.Sandbox.Egress.Connection
+alias MWTClient.Sandbox.Egress.Tcp
 alias MWTClient.Vault.Store
 
 defmodule Review.Upstream2 do
@@ -142,7 +142,7 @@ proxy_with = fn extra, cacerts ->
     handler =
       spawn(fn ->
         receive do
-          :go -> Connection.run(client, username, options)
+          :go -> Tcp.run(client, username, options)
         end
       end)
 
@@ -200,7 +200,7 @@ file_proxy = fn ->
     handler =
       spawn(fn ->
         receive do
-          :go -> Connection.run(client, username, options)
+          :go -> Tcp.run(client, username, options)
         end
       end)
 

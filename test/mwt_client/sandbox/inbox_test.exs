@@ -29,6 +29,11 @@ defmodule MWTClient.Sandbox.InboxTest do
 
     assert File.read!(Path.join(dir, "ca.pem")) == ca
     assert String.ends_with?(File.read!(Path.join(dir, "ca-bundle.pem")), ca)
+
+    # The same roots, for a JVM.
+    assert File.read!(Path.join(dir, "java-truststore.jks")) ==
+             MWTClient.Sandbox.JavaTrust.store(File.read!(Path.join(dir, "ca-bundle.pem")))
+
     refute File.read!(Path.join(dir, "env.sh")) =~ "export "
     assert File.read!(Path.join(dir, "grant-env/github.sh")) =~ "return 125"
     assert File.read!(Path.join(dir, "tokens/github")) == "ghp_placeholder"

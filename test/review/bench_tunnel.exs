@@ -1,15 +1,15 @@
-# Tunnel throughput and CPU: today's relay (Egress.Connection) against
+# Tunnel throughput and CPU: today's relay (Egress.Tcp) against
 # prototype relays, with the endpoints in Python so the BEAM's CPU time is
 # the relay's alone.
 #
 #   MIX_ENV=test mix run test/review/bench_tunnel.exs
 alias MWTClient.Accounts
 alias MWTClient.Sandbox
-alias MWTClient.Sandbox.Egress.Connection
+alias MWTClient.Sandbox.Egress.Tcp
 alias MWTClient.Vault.Store
 
 defmodule Review.Relay do
-  @moduledoc "Prototype byte relays, to compare with Egress.Connection's splice."
+  @moduledoc "Prototype byte relays, to compare with Egress.Tcp's splice."
 
   # Accepts on a port; each connection answers CONNECT, dials `target` and
   # relays with `variant`.
@@ -207,7 +207,7 @@ accept = fn accept ->
   pid =
     spawn(fn ->
       receive do
-        :go -> Connection.run(client, username, [])
+        :go -> Tcp.run(client, username, [])
       end
     end)
 
@@ -240,7 +240,7 @@ target = "127.0.0.1:#{source}"
 
 runs = [
   {"direct, no proxy", fn -> fetch.(source, nil) end},
-  {"MWT today (Egress.Connection)", fn -> fetch.(mwt_port, target) end},
+  {"MWT today (Egress.Tcp)", fn -> fetch.(mwt_port, target) end},
   {"proto: active once, default buffer",
    fn -> fetch.(Review.Relay.listen(:once_default, source), target) end},
   {"proto: active once, 256 KiB buffer",

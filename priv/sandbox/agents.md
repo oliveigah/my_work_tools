@@ -142,6 +142,12 @@ you ask for one.
 - `mwt_isolated`: MWT's firewall isolated this VM. Nothing leaves through
   MWT until the user releases it, and they have been told. Stop, tell them
   what you were doing, and don't look for a way around it.
+- MWT reads the HTTPS the VM sends, for the user to see, and the VM
+  trusts MWT's certificate authority, so tools work as they are. A client
+  that refuses MWT's certificate anyway (a CA of its own, a pinned
+  certificate) fails: tell the user the host, and that they can have MWT
+  pass it unread (Don't read, on its line in the activity log). Don't turn
+  certificate checks off to get around it.
 - When a lookup fails or a connection is refused, run `mwt why HOST[:PORT]`
   before anything else: it says which grant covers that destination, why
   it isn't reached now, and how to ask for it. When the network and `mwt`

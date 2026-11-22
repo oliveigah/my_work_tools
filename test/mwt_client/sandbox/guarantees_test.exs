@@ -24,7 +24,7 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
   }
 
   alias MWTClient.Sandbox.CertificateAuthority, as: CA
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
   alias MWTClient.Storage.Documents
   alias MWTClient.Vault.Store
 
@@ -56,7 +56,7 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
     pid =
       spawn(fn ->
         receive do
-          :go -> Connection.run(client, username, options)
+          :go -> Tcp.run(client, username, options)
         end
       end)
 
@@ -114,6 +114,10 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
       end
     end
   end
+
+  # An answer on a TLS connection is read as a client reads it, up to its
+  # end: MWT may keep the connection for the next request.
+  defp read_all(socket, :ssl), do: MWTClient.SandboxProxy.read_answer(socket, :ssl)
 
   defp read_all(socket, mod, acc \\ "") do
     case mod.recv(socket, 0, 5_000) do

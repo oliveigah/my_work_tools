@@ -14,8 +14,8 @@ ask was wrong, 2 while it waits for the user, 3 when declined or given up,
 4 when MWT is locked or closed.
 
 Even with a grant on, each use (each request carrying the placeholder, each
-connection to a private address) waits for the user's approval unless they
-allowed it for a while. A request can hang for minutes: wait, and don't
+request to a private address, or each connection there MWT can't read)
+waits for the user's approval unless they allowed it for a while. A request can hang for minutes: wait, and don't
 retry in a loop.
 
 ## Subgrants
@@ -122,6 +122,9 @@ MWT, not from the service. Its `code`:
 - `mwt_credential_endpoint`: the request would have sent a grant's value
   to an endpoint whose answer is a new credential (a token exchange, key
   creation). It wasn't sent. Tell the user if you need it.
+- `mwt_upstream_tls`: MWT couldn't make TLS with the host (a certificate
+  the user's machine doesn't trust, one that expired, a client certificate
+  it wants). Nothing went out. Tell the user the host.
 - `mwt_isolated`: MWT's firewall isolated this VM. Nothing it sends leaves
   through MWT until the user releases it, and they have been told. Stop,
   and tell them what you were doing; don't look for a way around it.

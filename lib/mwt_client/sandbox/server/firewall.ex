@@ -119,14 +119,18 @@ defmodule MWTClient.Sandbox.Server.Firewall do
              "Firewall: #{Firewall.rule_name(rule)} set to #{Firewall.action(changed, rule)}"}
           end
 
-        {:list, list, text} when list in [:trusted, :blocked, :protected, :mints] ->
-          with {:ok, changed} <- Firewall.set_list(firewall, list, text) do
+        {:list, list, text} when is_atom(list) ->
+          with true <- list in Firewall.lists() || {:error, :bad_change},
+               {:ok, changed} <- Firewall.set_list(firewall, list, text) do
             {:ok, changed, "Firewall: #{list} list changed (#{length(Map.get(changed, list))})"}
           end
 
-        {:reset_list, list} when list in [:trusted, :blocked, :protected, :mints] ->
-          {:ok, Map.put(firewall, list, Firewall.default_list(list)),
-           "Firewall: #{list} list back to MWT's"}
+        {:reset_list, list} when is_atom(list) ->
+          if list in Firewall.lists(),
+            do:
+              {:ok, Map.put(firewall, list, Firewall.default_list(list)),
+               "Firewall: #{list} list back to MWT's"},
+            else: {:error, :bad_change}
 
         _other ->
           {:error, :bad_change}

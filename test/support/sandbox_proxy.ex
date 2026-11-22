@@ -1,7 +1,7 @@
 defmodule MWTClient.SandboxProxy do
   @moduledoc """
   The sandbox's proxy as microsandbox reaches it, for tests: a listener that
-  hands each connection to `MWTClient.Sandbox.Egress.Connection`, and an
+  hands each connection to `MWTClient.Sandbox.Egress.Tcp`, and an
   upstream in place of the real host that keeps everything it received,
   byte for byte, which `https/3` adds to the answer after `RECEIVED:`.
 
@@ -14,7 +14,7 @@ defmodule MWTClient.SandboxProxy do
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.CertificateAuthority, as: CA
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
 
   @doc """
   Starts both for `username`'s sandbox, linked to the caller. Returns the
@@ -79,7 +79,7 @@ defmodule MWTClient.SandboxProxy do
     pid =
       spawn(fn ->
         receive do
-          :go -> Connection.run(client, username, options)
+          :go -> Tcp.run(client, username, options)
         end
       end)
 
@@ -129,10 +129,34 @@ defmodule MWTClient.SandboxProxy do
     end
   end
 
-  defp read_all(socket, acc \\ "") do
-    case :ssl.recv(socket, 0, 5_000) do
-      {:ok, data} -> read_all(socket, acc <> data)
-      {:error, _closed} -> acc
+  defp read_all(socket), do: read_answer(socket, :ssl)
+
+  @doc """
+  One answer read from `socket` (`mod` is `:ssl` or `:gen_tcp`), as a
+  client reads it: up to where its framing says it ends, or until the
+  connection closes, waiting 5 seconds at most for each piece. A
+  connection MWT keeps for the next request stays open after it.
+  """
+  @spec read_answer(term(), module(), String.t()) :: binary()
+  def read_answer(socket, mod, method \\ "GET"),
+    do: read_answer(socket, mod, MWTClient.Sandbox.Egress.Driver.Http1.Answer.new(method), "")
+
+  defp read_answer(socket, mod, answer, acc) do
+    alias MWTClient.Sandbox.Egress.Driver.Http1.Answer
+
+    case mod.recv(socket, 0, 5_000) do
+      {:ok, data} ->
+        case Answer.feed(answer, data) do
+          {:more, bytes, answer} ->
+            read_answer(socket, mod, answer, acc <> IO.iodata_to_binary(bytes))
+
+          {:done, bytes, _beyond, _keep?} ->
+            acc <> IO.iodata_to_binary(bytes)
+        end
+
+      {:error, _closed} ->
+        {_how, held} = Answer.finish(answer)
+        acc <> IO.iodata_to_binary(held)
     end
   end
 end

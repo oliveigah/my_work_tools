@@ -212,6 +212,8 @@ defmodule MWTClient.Sandbox.Server do
           |> then(&if(firewall.isolated, do: Firewall.all_off(&1), else: &1)),
         # The firewall's settings and incidents (`MWTClient.Sandbox.Firewall`).
         firewall: firewall,
+        # Which hosts the proxy reads (`MWTClient.Sandbox.Reading`).
+        reading: MWTClient.Sandbox.Reading.upgrade(saved[:reading]),
         # How each grant's checks went last (`MWTClient.Sandbox.Server.Checks`).
         checks: saved[:checks] || %{},
         values: saved[:values] || %{},
@@ -429,6 +431,39 @@ defmodule MWTClient.Sandbox.Server do
   defp answer({:firewall_set, change}, _from, state) do
     {reply, state} = Firewall.set(state, change)
     {:reply, reply, state}
+  end
+
+  defp answer(:reading, _from, state),
+    do: {:reply, Map.get(state, :reading) || MWTClient.Sandbox.Reading.new(), state}
+
+  # Which hosts the proxy reads, as you set it on the Proxy activity page.
+  defp answer({:reading_set, change}, _from, state) do
+    alias MWTClient.Sandbox.Reading
+
+    reading = Map.get(state, :reading) || Reading.new()
+
+    result =
+      case change do
+        {:default, default} when default in [:every_host, :token_hosts] ->
+          {:ok, Reading.set_default(reading, default)}
+
+        {:put, host, read?} when is_binary(host) and is_boolean(read?) ->
+          Reading.put(reading, host, read?)
+
+        {:remove, host} when is_binary(host) ->
+          {:ok, Reading.remove(reading, host)}
+
+        _other ->
+          {:error, "That isn't a change to what MWT reads."}
+      end
+
+    case result do
+      {:ok, changed} ->
+        {:reply, :ok, state |> State.change(:reading, fn _ -> changed end) |> State.changed()}
+
+      error ->
+        {:reply, error, state}
+    end
   end
 
   defp answer(:firewall_isolate, _from, state) do
@@ -1308,15 +1343,65 @@ defmodule MWTClient.Sandbox.Server do
   # A connection `MWTClient.Sandbox.Gate` found waiting for you, decided
   # again with the state as it is here, and held: the firewall saw it
   # there already.
-  defp answer({:destination, ip, port}, from, state) do
+  defp answer({:destination, ip, port}, from, state),
+    do: answer({:destination, ip, port, %{}}, from, state)
+
+  # `seen` is what the connection showed before it was asked about: the
+  # name it asked for (`name`), and why MWT can't read it (`why`).
+  defp answer({:destination, ip, port, seen}, from, state) do
+    answered = Gate.answered_for(state.username, ip)
+
     decision =
       Policy.decide(
-        state |> State.policy() |> Map.put(:answered, Gate.answered_for(state.username, ip)),
+        state |> State.policy() |> Map.put(:answered, answered),
         {:connection, ip, port},
         State.now()
       )
 
-    destination(decision, "#{:inet.ntoa(ip)}", port, from, state)
+    names = Map.get(answered, MWTClient.Sandbox.Destinations.unmap(ip), [])
+    destination(decision, "#{:inet.ntoa(ip)}", port, from, state, Map.put(seen, :answered, names))
+  end
+
+  defp answer({:authorize_network, _request}, _from, state)
+       when is_map_key(state, :firewall) and state.firewall.isolated != nil,
+       do: {:reply, Values.isolated(), Firewall.refused(state)}
+
+  # A request on a connection a network grant opened, which the grant would
+  # ask you about (`Gate.authorize/2`): a card of its own, the request in
+  # full, as a token grant's request has. `{:ok, grant_id}` once allowed.
+  defp answer({:authorize_network, request}, from, state) do
+    case Policy.decide(State.policy(state), {:network_request, request}, State.now()) do
+      :pass ->
+        {:reply, {:ok, nil}, state}
+
+      {:allow, grant, _allowance, _about} ->
+        {:reply, {:ok, grant.id}, State.used(state, grant.id)}
+
+      {:refuse, reason} ->
+        {event, _observation, answer} = Values.refusal(reason, request)
+        state = if event, do: State.log(state, event), else: state
+        {:reply, answer, state}
+
+      {:ask, grant, about} ->
+        approval = %Approval{
+          id: "approval-" <> State.unique(),
+          grant_id: grant.id,
+          kind: :request,
+          title: about.title,
+          method: request.method,
+          host: request.host,
+          path: request.path,
+          pattern: about.pattern,
+          join: Approvals.request_digest(request),
+          request: request,
+          requested_at: State.now(),
+          deadline: DateTime.add(State.now(), state.settings.hold_seconds, :second),
+          facts: about.facts ++ [{"Through", grant.name}],
+          claims: about.claims
+        }
+
+        {:noreply, Approvals.hold(state, approval, {from, {:network_request, request}})}
+    end
   end
 
   # Every real value at hand, for work done outside the server that must
@@ -1352,7 +1437,7 @@ defmodule MWTClient.Sandbox.Server do
             outcome: :blocked,
             summary: "#{grant}'s real value in a request from the VM · blocked",
             host: request.host,
-            port: 443
+            port: Map.get(request, :port, 443)
           })
 
         {_verdict, state} = Firewall.observe(state, {:value, grant, request.host, :request})
@@ -1437,16 +1522,16 @@ defmodule MWTClient.Sandbox.Server do
       :pass ->
         state =
           State.log(state, %{
-            outcome: :tunnel,
+            outcome: :read,
             summary: "Read by MWT, no credential in it",
             host: request.host,
-            port: 443,
+            port: Map.get(request, :port, 443),
             method: request.method,
             path: request.path,
             exchange_id: Map.get(request, :exchange)
           })
 
-        {:reply, {:forward, request.headers, Values.scan(state, request.host)}, state}
+        {:reply, {:forward, Values.replace([]), Values.scan(state, request.host)}, state}
 
       {:refuse, reason} ->
         {event, observation, answer} = Values.refusal(reason, request)
@@ -1799,7 +1884,7 @@ defmodule MWTClient.Sandbox.Server do
   defp deliberate?(_crash), do: false
 
   # A connection the firewall let through, as the grants decide it.
-  defp destination(decision, address, port, from, state) do
+  defp destination(decision, address, port, from, state, seen) do
     case decision do
       {:allow, %Grant{internet: true} = grant, _allowance, _about} ->
         {:reply, {:ok, grant.id}, state}
@@ -1822,21 +1907,31 @@ defmodule MWTClient.Sandbox.Server do
         {:reply, {:ok, grant.id}, State.used(state, grant.id)}
 
       {:ask, grant, about} ->
+        name = Map.get(seen, :name)
+
+        # What the connection showed: the name it asked for, the names
+        # MWT's DNS answered for its address, and why MWT can't show more.
+        facts =
+          [{"Destination", about.pattern}] ++
+            if(name, do: [{"Name asked for", name}], else: []) ++
+            case Map.get(seen, :answered, []) do
+              [] -> []
+              names -> [{"Answered by MWT for it", Enum.join(names, ", ")}]
+            end ++
+            if(seen[:why], do: [{"Not read", seen.why}], else: []) ++
+            [{"Listed as", about.listed_as}, {"Grant", grant.name}]
+
         approval = %Approval{
           id: "approval-" <> State.unique(),
           grant_id: grant.id,
           kind: :connection,
-          title: "Connect to #{about.pattern}",
-          host: address,
+          title: "Connect to #{if name, do: "#{name} (#{about.pattern})", else: about.pattern}",
+          host: name || address,
           pattern: about.pattern,
           join: about.pattern,
           requested_at: State.now(),
           deadline: DateTime.add(State.now(), state.settings.hold_seconds, :second),
-          facts: [
-            {"Destination", about.pattern},
-            {"Listed as", about.listed_as},
-            {"Grant", grant.name}
-          ]
+          facts: facts
         }
 
         {:noreply, Approvals.hold(state, approval, {from, :connection})}

@@ -9,15 +9,19 @@ defmodule MWTClient.Sandbox.Exchange do
   Only requests MWT reads have one: a connection passed through as bytes
   (a tunnel) is TLS MWT never opened, so there is nothing to show of it.
 
-    * **The request** is what the VM sent, as MWT read it before deciding:
-      placeholders as the VM wrote them, never the real value MWT puts in
-      on the way out. Its body is what MWT read before deciding, at most
-      `body_limit/0` bytes.
+    * **The request** is what the VM sent: placeholders as the VM wrote
+      them, never the real value MWT puts in on the way out. Its body is
+      what MWT read before deciding and what followed it, at most the
+      limit.
     * **The response** is what reached the VM, read from the bytes MWT
       sent it (`capture/2`, `response/2`): the status line, the headers
       and the body, chunked framing and gzip or deflate undone, at most
-      `body_limit/0` bytes of it. When MWT answered itself (a refusal, a
-      denial, an answer it could not read), the response is that answer.
+      the limit of it. When MWT answered itself (a refusal, a denial, an
+      answer it could not read), the response is that answer.
+
+  The limit is how much of each body the log keeps, your setting
+  (`MWTClient.Sandbox.Settings`, `log_body_kib`): `body_limit/0` (64 KiB)
+  unless you change it, 0 for heads only.
 
   A body that isn't text (UTF-8 without control characters) is kept as
   bytes, and shown as such. What
@@ -54,10 +58,15 @@ defmodule MWTClient.Sandbox.Exchange do
 
   @type t :: %{request: request(), response: response() | nil}
 
-  @typedoc "The bytes sent to the VM so far, the first of them kept."
-  @opaque capture :: %{kept: iodata(), size: non_neg_integer(), seen: non_neg_integer()}
+  @typedoc "The bytes sent to the VM so far, the first of them kept, at most `limit` of a body."
+  @opaque capture :: %{
+            kept: iodata(),
+            size: non_neg_integer(),
+            seen: non_neg_integer(),
+            limit: non_neg_integer()
+          }
 
-  @doc "The most of a body kept, in bytes."
+  @doc "The most of a body kept, in bytes, unless you set another limit."
   @spec body_limit() :: pos_integer()
   def body_limit, do: @body_limit
 
@@ -67,30 +76,33 @@ defmodule MWTClient.Sandbox.Exchange do
 
   @doc """
   The request as the VM sent it: `method`, `host`, `path`, `headers` and
-  the `body` MWT read before deciding.
+  its `body`, at most `limit` bytes of it kept.
   """
-  @spec request(map()) :: request()
-  def request(%{method: method, host: host, path: path, headers: headers} = request) do
+  @spec request(map(), non_neg_integer()) :: request()
+  def request(
+        %{method: method, host: host, path: path, headers: headers} = request,
+        limit \\ @body_limit
+      ) do
     %{
       method: method,
       host: host,
       path: path,
       headers: headers,
-      body: body(Map.get(request, :body, ""), headers)
+      body: body(Map.get(request, :body, ""), headers, limit)
     }
   end
 
   ## The response, as the bytes went to the VM
 
-  @doc "Nothing sent to the VM yet."
-  @spec capture() :: capture()
-  def capture, do: %{kept: [], size: 0, seen: 0}
+  @doc "Nothing sent to the VM yet; at most `limit` bytes of its body to keep."
+  @spec capture(non_neg_integer()) :: capture()
+  def capture(limit \\ @body_limit), do: %{kept: [], size: 0, seen: 0, limit: limit}
 
   @doc "`bytes` sent to the VM: the first of them kept, all of them counted."
   @spec capture(capture(), iodata()) :: capture()
   def capture(%{size: size, seen: seen} = capture, bytes) do
     length = IO.iodata_length(bytes)
-    room = @head_limit + @body_limit - size
+    room = @head_limit + Map.get(capture, :limit, @body_limit) - size
 
     cond do
       length == 0 ->
@@ -116,12 +128,12 @@ defmodule MWTClient.Sandbox.Exchange do
   @spec response(capture(), String.t() | nil) :: response() | nil
   def response(%{seen: 0}, _note), do: nil
 
-  def response(%{kept: kept, seen: seen}, note) do
+  def response(%{kept: kept, seen: seen} = capture, note) do
     data = IO.iodata_to_binary(kept)
 
     case final_head(data) do
       {:ok, status, reason, headers, rest} ->
-        body = body(rest, headers)
+        body = body(rest, headers, Map.get(capture, :limit, @body_limit))
         cut? = seen > byte_size(data) or body.cut?
         bytes = if cut? and is_nil(declared_length(headers)), do: nil, else: body.bytes
 
@@ -279,17 +291,17 @@ defmodule MWTClient.Sandbox.Exchange do
   ## Bodies
 
   # A body as its headers frame it: chunks joined, gzip or deflate undone,
-  # at most the limit kept.
-  defp body(raw, headers) do
+  # at most `limit` kept.
+  defp body(raw, headers, limit) do
     declared = declared_length(headers)
     {raw, framing_cut?} = unchunk(raw, headers)
 
-    case decode(raw, header(headers, "content-encoding")) do
+    case decode(raw, header(headers, "content-encoding"), limit) do
       {:ok, data, decode_cut?} ->
-        kept = binary_part(data, 0, min(byte_size(data), @body_limit))
+        kept = binary_part(data, 0, min(byte_size(data), limit))
 
         cut? =
-          framing_cut? or decode_cut? or byte_size(data) > @body_limit or
+          framing_cut? or decode_cut? or byte_size(data) > limit or
             (declared != nil and byte_size(raw) < declared)
 
         %{
@@ -352,14 +364,14 @@ defmodule MWTClient.Sandbox.Exchange do
     end
   end
 
-  defp decode(raw, nil), do: {:ok, raw, false}
+  defp decode(raw, nil, _limit), do: {:ok, raw, false}
 
-  defp decode(raw, encoding) do
+  defp decode(raw, encoding, limit) do
     case String.downcase(String.trim(encoding)) do
       "identity" -> {:ok, raw, false}
-      "gzip" -> inflate(raw, 31)
-      "x-gzip" -> inflate(raw, 31)
-      "deflate" -> with :error <- inflate(raw, 15), do: inflate(raw, -15)
+      "gzip" -> inflate(raw, 31, limit)
+      "x-gzip" -> inflate(raw, 31, limit)
+      "deflate" -> with :error <- inflate(raw, 15, limit), do: inflate(raw, -15, limit)
       other -> {:unknown, other}
     end
     |> case do
@@ -370,14 +382,14 @@ defmodule MWTClient.Sandbox.Exchange do
 
   # At most the limit inflated, however far the bytes would go: a small
   # body can stand for a huge one.
-  defp inflate("", _window), do: {:ok, "", false}
+  defp inflate("", _window, _limit), do: {:ok, "", false}
 
-  defp inflate(raw, window) do
+  defp inflate(raw, window, limit) do
     z = :zlib.open()
 
     try do
       :ok = :zlib.inflateInit(z, window)
-      inflating(z, :zlib.safeInflate(z, raw), [], 0)
+      inflating(z, :zlib.safeInflate(z, raw), [], 0, limit)
     rescue
       _error -> :error
     catch
@@ -387,15 +399,15 @@ defmodule MWTClient.Sandbox.Exchange do
     end
   end
 
-  defp inflating(z, {:continue, out}, acc, size) do
+  defp inflating(z, {:continue, out}, acc, size, limit) do
     size = size + IO.iodata_length(out)
 
-    if size > @body_limit,
+    if size > limit,
       do: {:ok, IO.iodata_to_binary(Enum.reverse([out | acc])), true},
-      else: inflating(z, :zlib.safeInflate(z, []), [out | acc], size)
+      else: inflating(z, :zlib.safeInflate(z, []), [out | acc], size, limit)
   end
 
-  defp inflating(_z, {:finished, out}, acc, _size),
+  defp inflating(_z, {:finished, out}, acc, _size, _limit),
     do: {:ok, IO.iodata_to_binary(Enum.reverse([out | acc])), false}
 
   ## Heads

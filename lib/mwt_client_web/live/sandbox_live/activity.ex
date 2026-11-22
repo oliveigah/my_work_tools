@@ -34,7 +34,7 @@ defmodule MWTClientWeb.SandboxLive.Activity do
 
   @groups [
     {"all", "All"},
-    {"traffic", "Passed"},
+    {"traffic", "Traffic"},
     {"credentials", "Credentials"},
     {"blocked", "Blocked"},
     {"lookups", "Lookups"},
@@ -67,6 +67,11 @@ defmodule MWTClientWeb.SandboxLive.Activity do
   attr :stats, :map, required: true, doc: "`MWTClient.Sandbox.EventStats.t()`, nil until read"
   attr :page_size, :integer, required: true
   attr :grants, :list, required: true
+
+  attr :reading, :any,
+    default: nil,
+    doc: "which hosts the proxy reads (`MWTClient.Sandbox.Reading`), nil until read"
+
   attr :threads, :list, default: [], doc: "the threads that asked in the window: id, title, agent"
   attr :grant_names, :map, required: true
   attr :now, DateTime, required: true
@@ -87,7 +92,7 @@ defmodule MWTClientWeb.SandboxLive.Activity do
     ~H"""
     <.page_header id="activity-header" title="Proxy activity">
       <:help>
-        Every connection, request, lookup and decision the VM's traffic met in MWT, and the changes around it: grants, the VM, host commands, projects, handoffs, tool calls. A request MWT read (to a host a grant covers) opens to what the VM sent and what reached it: placeholders as the VM wrote them, never a real value, and at most 64 KB of each body. Connections passed through as bytes have no content to show. Events are kept in your encrypted journal for as long as Settings › Storage says, and what an agent asked for carries the thread it named.
+        Every connection, request, lookup and decision the VM's traffic met in MWT, and the changes around it: grants, the VM, host commands, projects, handoffs, tool calls. A request MWT read (every host it can, as What MWT reads says) opens to what the VM sent and what reached it: placeholders as the VM wrote them, never a real value, and as much of each body as Settings › What the log keeps says. Connections passed through as bytes have no content to show, and say why. Events are kept in your encrypted journal for as long as Settings › Storage says, and what an agent asked for carries the thread it named.
       </:help>
       <:actions>
         <span
@@ -234,8 +239,10 @@ defmodule MWTClientWeb.SandboxLive.Activity do
       class="mb-4 grid items-stretch gap-4 lg:grid-cols-[minmax(0,1.9fr)_minmax(0,1fr)]"
     >
       <.timeline stats={@stats} />
-      <.hosts stats={@stats} filters={@filters} />
+      <.hosts stats={@stats} filters={@filters} reading={@reading} grants={@grants} />
     </div>
+
+    <.reading_card :if={@reading} reading={@reading} />
 
     <button
       :if={@activity.fresh > 0}
@@ -315,7 +322,7 @@ defmodule MWTClientWeb.SandboxLive.Activity do
                     >{event.path}</span>
                   </span>
                   <span
-                    :if={event.outcome != :tunnel}
+                    :if={event.outcome not in [:tunnel, :read]}
                     class="min-w-0 flex-1 truncate text-[11px] text-faint"
                   >
                     {event.summary}
@@ -336,7 +343,13 @@ defmodule MWTClientWeb.SandboxLive.Activity do
                 {took(event.ms)}
               </span>
             </summary>
-            <.details event={event} grant_names={@grant_names} now={@now} />
+            <.details
+              event={event}
+              grant_names={@grant_names}
+              grants={@grants}
+              reading={@reading}
+              now={@now}
+            />
           </details>
         </li>
       </ul>
@@ -557,10 +570,166 @@ defmodule MWTClientWeb.SandboxLive.Activity do
   defp step_text(seconds) when seconds < 86_400, do: "#{div(seconds, 3600)} hours"
   defp step_text(_seconds), do: "day"
 
+  ## What MWT reads
+
+  attr :reading, :any, required: true
+
+  defp reading_card(assigns) do
+    assigns =
+      assign(assigns,
+        form: to_form(%{"host" => "", "read" => "false"}, as: :reading),
+        rules: Enum.sort_by(assigns.reading.rules, &String.trim_leading(&1.host, "*."))
+      )
+
+    ~H"""
+    <section
+      id="activity-reading"
+      class="mb-4 overflow-hidden rounded-xl border border-line bg-panel"
+    >
+      <header class="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line-soft px-4 py-2.5">
+        <h2 class="text-[13px] font-semibold text-ink">What MWT reads</h2>
+        <.help id="activity-reading-help" label="About what MWT reads">
+          MWT reads a connection by ending its TLS with its own certificate, so each request shows here with what it carried and what came back. A client that pins its certificate or brings a CA of its own refuses that: pass its host through unread. The most exact entry decides: api.example.com before example.com, which covers every name under it. A token grant's hosts are always read, for their value to go in; a connection MWT can't read (no host name, HTTP/2 only, not TLS) is passed through whatever this says. Reading costs about 0.3 ms a request on a kept connection, a few ms on a new one.
+        </.help>
+        <span class="ml-auto flex items-center gap-2">
+          <span class="text-[11px] text-muted">Any other host</span>
+          <.segmented
+            id="activity-reading-default"
+            options={[{"every_host", "Read when it can"}, {"token_hosts", "Pass through"}]}
+            value={to_string(@reading.default)}
+            event="reading_default"
+          />
+        </span>
+      </header>
+      <ul :if={@rules != []} id="activity-reading-rules" class="divide-y divide-line-soft/70">
+        <li
+          :for={rule <- @rules}
+          id={"activity-reading-rule-#{rule_id(rule.host)}"}
+          class="flex items-center gap-3 px-4 py-1.5"
+        >
+          <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-ink">{rule.host}</span>
+          <.segmented
+            id={"activity-reading-rule-#{rule_id(rule.host)}-read"}
+            options={[{"true", "Read"}, {"false", "Not read"}]}
+            value={to_string(rule.read?)}
+            event="reading_put"
+            name="read"
+            values={%{"host" => rule.host}}
+          />
+          <button
+            type="button"
+            id={"activity-reading-rule-#{rule_id(rule.host)}-remove"}
+            phx-click="reading_remove"
+            phx-value-host={rule.host}
+            title={"Take #{rule.host} off: it follows what any other host does"}
+            class="cursor-pointer rounded p-1 text-faint transition-colors hover:bg-hover hover:text-ink"
+          >
+            <.icon name="hero-x-mark-micro" class="size-3.5" />
+          </button>
+        </li>
+      </ul>
+      <p :if={@rules == []} id="activity-reading-empty" class="px-4 py-2 text-[11px] text-faint">
+        No host of its own yet: each follows what any other host does. Add one here, or from a destination or a line below.
+      </p>
+      <.form
+        for={@form}
+        id="activity-reading-form"
+        phx-submit="reading_add"
+        class="flex flex-wrap items-center gap-2 border-t border-line-soft bg-deep/30 px-4 py-2"
+      >
+        <div class="w-full max-w-sm min-w-0">
+          <input
+            type="text"
+            name={@form[:host].name}
+            id="activity-reading-host"
+            value=""
+            placeholder="api.example.com or *.example.com"
+            spellcheck="false"
+            autocomplete="off"
+            class={[input_classes(), "font-mono text-[11px]"]}
+          />
+        </div>
+        <div class="w-32 shrink-0">
+          <select
+            name={@form[:read].name}
+            id="activity-reading-read"
+            class={[input_classes(), "text-[11px]"]}
+          >
+            <option value="false">Not read</option>
+            <option value="true">Read</option>
+          </select>
+        </div>
+        <.button type="submit" id="activity-reading-add">Add</.button>
+      </.form>
+    </section>
+    """
+  end
+
+  # A DOM id for a host entry: its letters, digits and dashes, a star as `any`.
+  defp rule_id(host),
+    do: host |> String.replace("*", "any") |> String.replace(~r/[^a-z0-9-]/, "-")
+
+  # Whether MWT reads `host` as things are: a token grant's always, an
+  # address never (it names no host), else as you set it.
+  defp read_state(_reading, _grants, nil), do: :none
+
+  defp read_state(reading, grants, host) do
+    cond do
+      is_nil(reading) -> :none
+      match?({:ok, _}, :inet.parse_strict_address(String.to_charlist(host))) -> :none
+      MWTClient.Sandbox.Policy.reads?(grants, host) -> :token
+      MWTClient.Sandbox.Reading.read?(reading, host) -> :read
+      true -> :unread
+    end
+  end
+
+  attr :host, :string, required: true
+  attr :state, :atom, required: true
+  attr :id, :string, required: true
+
+  # One host's reading, at a glance, and the switch to the other.
+  defp read_toggle(assigns) do
+    ~H"""
+    <span
+      :if={@state == :token}
+      id={@id}
+      title="A token grant lists it: MWT reads it to put the value in"
+      class="shrink-0 rounded bg-deep px-1 text-[9px] font-semibold uppercase tracking-wide text-faint"
+    >
+      read
+    </span>
+    <button
+      :if={@state in [:read, :unread]}
+      type="button"
+      id={@id}
+      phx-click="reading_put"
+      phx-value-host={@host}
+      phx-value-read={to_string(@state == :unread)}
+      title={
+        if(@state == :read,
+          do: "MWT reads #{@host}: pass it through unread from now on",
+          else: "MWT passes #{@host} through unread: read it from now on"
+        )
+      }
+      class={[
+        "shrink-0 cursor-pointer rounded px-1 text-[9px] font-semibold uppercase tracking-wide transition-colors",
+        if(@state == :read,
+          do: "bg-deep text-muted hover:bg-warn-soft/60 hover:text-warn-strong",
+          else: "bg-warn-soft/60 text-warn-strong hover:bg-deep hover:text-muted"
+        )
+      ]}
+    >
+      {if @state == :read, do: "read", else: "not read"}
+    </button>
+    """
+  end
+
   ## Busiest destinations
 
   attr :stats, :map, required: true
   attr :filters, :map, required: true
+  attr :reading, :any, default: nil
+  attr :grants, :list, default: []
 
   defp hosts(assigns) do
     assigns =
@@ -585,7 +754,10 @@ defmodule MWTClientWeb.SandboxLive.Activity do
         No destinations in these events.
       </p>
       <ul :if={@stats.hosts != []} class="flex-1 space-y-0.5 p-1.5">
-        <li :for={{host, index} <- Enum.with_index(@stats.hosts)}>
+        <li
+          :for={{host, index} <- Enum.with_index(@stats.hosts)}
+          class="flex items-center gap-1.5"
+        >
           <button
             type="button"
             id={"activity-host-#{index}"}
@@ -598,7 +770,7 @@ defmodule MWTClientWeb.SandboxLive.Activity do
               )
             }
             class={[
-              "group/host relative w-full cursor-pointer overflow-hidden rounded-md px-2.5 py-1.5 text-left transition-colors",
+              "group/host relative min-w-0 flex-1 cursor-pointer overflow-hidden rounded-md px-2.5 py-1.5 text-left transition-colors",
               if(@filters.q == host.host,
                 do: "bg-accent-soft/40 ring-1 ring-accent/40",
                 else: "hover:bg-hover/50"
@@ -630,6 +802,11 @@ defmodule MWTClientWeb.SandboxLive.Activity do
               </span>
             </span>
           </button>
+          <.read_toggle
+            id={"activity-host-#{index}-read"}
+            host={host.host}
+            state={read_state(@reading, @grants, host.host)}
+          />
         </li>
       </ul>
     </section>
@@ -640,9 +817,25 @@ defmodule MWTClientWeb.SandboxLive.Activity do
 
   attr :event, :any, required: true
   attr :grant_names, :map, required: true
+  attr :grants, :list, default: []
+  attr :reading, :any, default: nil
   attr :now, DateTime, required: true
 
   defp details(assigns) do
+    # A host a token grant lists is read whatever you set: its value goes
+    # in only so.
+    assigns =
+      assign(assigns,
+        token_host?:
+          assigns.event.host != nil and
+            MWTClient.Sandbox.Policy.reads?(assigns.grants, assigns.event.host),
+        read_state:
+          if(assigns.event.outcome in [:read, :read_failed, :tunnel],
+            do: read_state(assigns.reading, assigns.grants, assigns.event.host),
+            else: :none
+          )
+      )
+
     ~H"""
     <div class="border-t border-line-soft/70 bg-deep/40 px-4 py-3">
       <div class="flex items-start gap-4">
@@ -688,6 +881,43 @@ defmodule MWTClientWeb.SandboxLive.Activity do
           <% end %>
         </dl>
         <div class="flex shrink-0 items-center gap-1.5">
+          <button
+            :if={@read_state == :read}
+            type="button"
+            id={"event-dont-read-#{@event.id}"}
+            phx-click="reading_put"
+            phx-value-host={@event.host}
+            phx-value-read="false"
+            title="Pass it through as bytes from now on: its requests stop showing here. On What MWT reads above."
+            class={[
+              "inline-flex cursor-pointer items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors",
+              if(@event.outcome == :read_failed,
+                do: "border-warn/50 text-warn-strong hover:border-warn hover:bg-warn-soft/40",
+                else: "border-line text-muted hover:border-warn/50 hover:text-warn-strong"
+              )
+            ]}
+          >
+            <.icon name="hero-lock-closed-micro" class="size-3" /> Don't read {@event.host}
+          </button>
+          <button
+            :if={@read_state == :unread}
+            type="button"
+            id={"event-read-#{@event.id}"}
+            phx-click="reading_put"
+            phx-value-host={@event.host}
+            phx-value-read="true"
+            title="Read it from now on: each request shows here with what it carried. On What MWT reads above."
+            class="inline-flex cursor-pointer items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:border-accent/50 hover:text-accent"
+          >
+            <.icon name="hero-eye-micro" class="size-3" /> Read {@event.host}
+          </button>
+          <span
+            :if={@event.outcome == :read_failed and @token_host?}
+            id={"event-token-host-#{@event.id}"}
+            class="text-[11px] text-faint"
+          >
+            A token grant lists it: MWT reads it to put the value in.
+          </span>
           <button
             :if={@event.host}
             type="button"
@@ -741,7 +971,7 @@ defmodule MWTClientWeb.SandboxLive.Activity do
             class="mt-3 flex items-center gap-1.5 text-[11px] text-faint"
           >
             <.icon name="hero-lock-closed-micro" class="size-3.5" />
-            Passed through as bytes: MWT reads only requests to hosts a grant covers, so there is no content to show.
+            Passed through as bytes, unread, so there is no content to show: what happened says why.
           </p>
         <% true -> %>
       <% end %>

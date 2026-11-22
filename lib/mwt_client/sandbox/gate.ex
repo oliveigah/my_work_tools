@@ -1,7 +1,7 @@
 defmodule MWTClient.Sandbox.Gate do
   @moduledoc """
   The network path's side of the sandbox: what the proxy
-  (`MWTClient.Sandbox.Egress.Connection`) and DNS (`MWTClient.Sandbox.Dns`)
+  (`MWTClient.Sandbox.Egress.Tcp`) and DNS (`MWTClient.Sandbox.Dns`)
   decide, in their own processes, without waiting on
   `MWTClient.Sandbox.Server` (QA L12).
 
@@ -51,16 +51,21 @@ defmodule MWTClient.Sandbox.Gate do
     Made,
     Placeholder,
     Policy,
+    Reading,
     Routes,
     Secrets,
     Server,
     Watch
   }
 
+  alias MWTClient.Sandbox.Egress.{Request, Tcp}
+  alias MWTClient.Sandbox.Egress.Driver.Http1
   alias MWTClient.Sandbox.Server.{State, Values}
 
   @table __MODULE__
-  @max_leaves 64
+  # Every host MWT reads has its own certificate: enough for an agent's
+  # day of hosts, each of 1 KiB or so.
+  @max_leaves 1024
   @leaf_kept_seconds 7 * 24 * 3_600
   # A tunnel reports its bytes to the firewall every this many sent.
   @report_every 256 * 1024
@@ -99,7 +104,9 @@ defmodule MWTClient.Sandbox.Gate do
       state.ca,
       State.held(state),
       Map.get(state, :made, %{}),
-      Map.get(state, :id_tokens, %{})
+      Map.get(state, :id_tokens, %{}),
+      settings_body_kib(state),
+      Map.get(state, :reading)
     }
 
     if Map.get(state, :gate) == inputs do
@@ -123,11 +130,34 @@ defmodule MWTClient.Sandbox.Gate do
         placeholders: placeholders,
         tunnel_secrets:
           Secrets.new(for({name, p} <- placeholders, do: {{:placeholder, name}, [p]}) ++ forms),
-        ca: state.ca
+        ca: state.ca,
+        # How much of each body the log keeps (`MWTClient.Sandbox.Exchange`).
+        body_limit: settings_body_kib(state) * 1024,
+        # Which hosts the proxy reads (`MWTClient.Sandbox.Reading`).
+        reading: Map.get(state, :reading) || MWTClient.Sandbox.Reading.new()
       }
 
       :ets.insert(@table, {{state.username, :view}, view})
       state |> Map.put(:gate, inputs) |> Map.put(:gate_version, version)
+    end
+  end
+
+  defp settings_body_kib(state) do
+    case Map.get(state, :settings) do
+      %{log_body_kib: kib} when is_integer(kib) -> kib
+      _none -> div(MWTClient.Sandbox.Exchange.body_limit(), 1024)
+    end
+  end
+
+  @doc """
+  How much of each body the log keeps for `username`, in bytes: your
+  setting, or `Exchange.body_limit/0` with no view.
+  """
+  @spec body_limit(String.t()) :: non_neg_integer()
+  def body_limit(username) do
+    case view(username) do
+      %{body_limit: limit} -> limit
+      _none -> MWTClient.Sandbox.Exchange.body_limit()
     end
   end
 
@@ -454,10 +484,13 @@ defmodule MWTClient.Sandbox.Gate do
 
   @doc """
   Whether the VM may connect to `ip` and `port`: `{:ok, grant_id}`, the
-  grant it goes under; `:read_only` while the Internet is off and no
-  grant opens this public address, when only a host a token grant lists
-  may be reached, read by MWT (`route/5`); or `{:deny, why}`. One that
-  waits for you is held by the server, as long as you take.
+  grant it goes under; `{:ask, grant_id}`, a network grant's that would
+  ask you, asked only once the connection's first bytes say whether MWT
+  can read it (`ask_connection/4`): read, each request is asked instead;
+  `:read_only` while the Internet is off and no grant opens this public
+  address, when only a host a token grant lists may be reached, read by
+  MWT (`route/5`); or `{:deny, why}`. The Internet set to always ask is
+  held by the server at once, as long as you take.
   """
   def destination(username, ip, port) do
     view = view(username)
@@ -517,21 +550,38 @@ defmodule MWTClient.Sandbox.Gate do
 
         {:deny, summary}
 
-      {:ask, _grant, _about} ->
+      {:ask, %Grant{internet: false} = grant, _about} ->
+        {:ask, grant.id}
+
+      {:ask, _internet, _about} ->
         Server.call(username, {:destination, ip, port}, :infinity)
     end
   end
 
   @doc """
+  Asks you about a network grant's connection MWT can't read
+  (`destination/3` said `{:ask, grant_id}`): what it saw goes on the card
+  (`seen`: the name it asked for, why MWT can't read it). `{:ok,
+  grant_id}` or `{:deny, why}`, as long as you take.
+  """
+  def ask_connection(username, ip, port, seen),
+    do: Server.call(username, {:destination, ip, port, seen}, :infinity)
+
+  @doc """
   What becomes of a connection once its first bytes named a host (`sni`)
-  or didn't: `:intercept` (read by MWT), `{:tunnel, watch}` (passed
-  through, watched by the firewall as `watch` says), or `:refuse`.
+  or didn't: `{:intercept, watch}` (read by MWT), `{:tunnel, watch}`
+  (passed through), or `:refuse`. `watch` is what the firewall hears of
+  what goes up (`upload/5`), nil while it is off: for a tunnel, every
+  byte, looked through for placeholders and real values too; for a read
+  connection, its requests, which MWT looks through itself, and what to
+  look for should what is inside its TLS not be HTTP. A tunnel may still
+  be read, as MWT reads every host it can (`reading/3`).
   `under` is the grant the connection went under (`destination/3`), or
   `:read_only` for one only a token grant's host may use. One a network
   grant opened by a name it lists goes on, when it is TLS, only with a
-  name MWT answered for that address and the grant covers: an address
-  shared by many names (a load balancer, an ingress) opens for the
-  grant's names only.
+  name MWT answered for that address and the grant covers, read or not:
+  an address shared by many names (a load balancer, an ingress) opens for
+  the grant's names only.
   """
   def route(username, ip, port, sni, under \\ nil) do
     read_only? = under == :read_only
@@ -559,24 +609,24 @@ defmodule MWTClient.Sandbox.Gate do
       observe(username, {:upload, destination, port, 0, 0}) != :pass ->
         :refuse
 
-      sni && Policy.reads?(view.grants, sni) ->
-        :intercept
-
-      read_only? ->
+      grant = name_mismatch(username, view, under, ip, port, sni) ->
         log(username, %{
           outcome: :blocked,
-          summary: "The Internet is off · not passed through",
+          summary:
+            "#{sni} isn't a name MWT answered for this address under #{grant.name} · refused",
           host: destination,
           port: port
         })
 
         :refuse
 
-      grant = name_mismatch(username, view, under, ip, port, sni) ->
+      sni && Policy.reads?(view.grants, sni) ->
+        {:intercept, tunnel_watch(view, ip, destination)}
+
+      read_only? ->
         log(username, %{
           outcome: :blocked,
-          summary:
-            "#{sni} isn't a name MWT answered for this address under #{grant.name} · refused",
+          summary: "The Internet is off · not passed through",
           host: destination,
           port: port
         })
@@ -635,7 +685,38 @@ defmodule MWTClient.Sandbox.Gate do
     end
   end
 
-  @doc "A tunnel's bytes since its last report: `:ok` to go on, `:cut` to close it. It waits for the answer, never cut for a slow one."
+  @doc """
+  Whether MWT reads a connection `route/5` let pass (`{:tunnel, watch}`),
+  from how it began (`MWTClient.Sandbox.Egress.Tcp.first/1`): `:read`,
+  or `{:pass, why}`, `why` for the log.
+
+  MWT reads every connection it can (`Tcp.readable/2`), the
+  Internet's and a network grant's, as you set it on the Proxy activity
+  page (`MWTClient.Sandbox.Reading`): a host you opted out is passed
+  through (`:listed`), and with only token grants' hosts read, every host
+  you didn't opt in (`:off`). A network grant's
+  connection it doesn't read is asked about as a connection
+  (`ask_connection/4`); one it reads, request by request (`authorize/2`).
+  """
+  @spec reading(String.t(), String.t() | :read_only | nil, Tcp.first()) ::
+          :read | {:pass, :off | :listed | Tcp.unreadable()}
+  def reading(username, _under, first) do
+    reading = Map.get(view(username), :reading) || Reading.new()
+    name = with {:tls, %{name: name}} <- first, do: name, else: (_ -> nil)
+
+    cond do
+      Reading.read?(reading, name) ->
+        with {:no, why} <- Tcp.readable(first), do: {:pass, why}, else: (:ok -> :read)
+
+      Reading.rule(reading, name) ->
+        {:pass, :listed}
+
+      true ->
+        {:pass, :off}
+    end
+  end
+
+  @doc "A tunnel's or a read connection's bytes since its last report: `:ok` to go on, `:cut` to close it. It waits for the answer, never cut for a slow one."
   def upload(username, destination, port, up, down) do
     case Watch.observe(username, {:upload, destination, port, up, down}, :infinity) do
       :pass -> :ok
@@ -737,14 +818,64 @@ defmodule MWTClient.Sandbox.Gate do
   ## Requests MWT reads
 
   @doc """
-  Whether a request MWT read may go out, and with what: `{:forward,
-  headers, scan}`, `{:deny, status, body}`, or `{:answer, status, body}`
-  for a credential endpoint MWT answered itself
-  (`MWTClient.Sandbox.CredentialEndpoint`), as
+  Whether a request a driver read (`MWTClient.Sandbox.Egress.Request`)
+  may go out, and with what: `{:forward, replace, scan}`, what to replace
+  in it and in its answer (`MWTClient.Sandbox.Server.Values.replace/1`)
+  and what to look for in what the VM sends after it (`scan.out`), with
+  the grant whose value went in, if any (`scan.grant`); `{:deny, status,
+  body}`; or `{:answer, status, body}` for a credential endpoint MWT
+  answered itself (`MWTClient.Sandbox.CredentialEndpoint`), as
   `MWTClient.Sandbox.Server` answers `{:authorize, request}`. Decided
   here unless it needs a real value or you: then the server answers, as
   long as you take.
+
+  An HTTP/1.1 request is judged as the server reads one
+  (`Egress.Driver.Http1.message/1`), a token grant's placeholder in it
+  included: a value goes only into HTTP, in the headers a grant names.
+  A request of another protocol carries no value MWT can put in: the
+  network grant it went under decides it (its card from its driver,
+  `describe/1`), and whatever the VM sends after it must carry no
+  placeholder and no real value.
   """
+  def authorize(username, %Request{driver: Http1} = request),
+    do: authorize(username, Http1.message(request))
+
+  def authorize(username, %Request{} = request) do
+    view = view(username)
+
+    message = %{
+      host: request.name,
+      port: request.port,
+      under: request.under,
+      method: request.operation,
+      path: request.resource || "",
+      headers: [],
+      body: "",
+      exchange: request.id,
+      about: request.driver.describe(request)
+    }
+
+    if isolated?(username, view) do
+      refused(username)
+      Values.isolated()
+    else
+      with {:ok, through} <- through(username, view, message) do
+        log(username, %{
+          outcome: :read,
+          summary: "Read by MWT, nothing put in it",
+          host: request.name,
+          port: request.port,
+          grant_id: through,
+          method: request.operation,
+          path: request.resource,
+          exchange_id: request.id
+        })
+
+        {:forward, Values.replace([]), %{out: view.tunnel_secrets, grant: nil}}
+      end
+    end
+  end
+
   def authorize(username, request) do
     view = view(username)
 
@@ -758,45 +889,84 @@ defmodule MWTClient.Sandbox.Gate do
           outcome: :blocked,
           summary: "#{grant}'s real value in a request from the VM · blocked",
           host: request.host,
-          port: 443
+          port: Map.get(request, :port, 443)
         })
 
         _verdict = Watch.observe(username, {:value, grant, request.host, :request})
         Values.value_blocked()
 
       true ->
-        decision =
-          Policy.decide(
-            Policy.snapshot(view.grants, Map.get(view, :failing, %{}), Map.get(view, :made, [])),
-            {:request, request},
-            State.now()
-          )
-
-        case decision do
-          :pass ->
-            log(username, %{
-              outcome: :tunnel,
-              summary: "Read by MWT, no credential in it",
-              host: request.host,
-              port: 443,
-              method: request.method,
-              path: request.path,
-              exchange_id: Map.get(request, :exchange)
-            })
-
-            {:forward, request.headers, scan(view, request.host)}
-
-          {:refuse, reason} ->
-            {event, observation, answer} = Values.refusal(reason, request)
-            if event, do: log(username, event)
-            if observation, do: Watch.observe(username, observation)
-            answer
-
-          _allow_or_ask ->
-            # The server checks credential endpoints before it fetches a
-            # value (`MWTClient.Sandbox.Firewall.minting/3`).
-            Server.call(username, {:authorize, request}, :infinity)
+        with {:ok, through} <- through(username, view, request) do
+          decided(username, view, request, through)
         end
+    end
+  end
+
+  # A request on a connection a network grant opened is that grant's to
+  # allow first (`Policy`'s `{:network_request, _}`), as its connections
+  # are: allowed, asked or refused. Only then is a placeholder in it the
+  # token grant's, by its own rules: each grant decides by its own
+  # approval mode. `{:ok, grant_id}` is the grant it went through, if any.
+  defp through(username, view, request) do
+    decision =
+      Policy.decide(
+        Policy.snapshot(view.grants, Map.get(view, :failing, %{}), Map.get(view, :made, [])),
+        {:network_request, request},
+        State.now()
+      )
+
+    case decision do
+      :pass ->
+        {:ok, nil}
+
+      {:allow, grant, _allowance, _about} ->
+        Server.cast(username, {:used, grant.id})
+        {:ok, grant.id}
+
+      {:refuse, reason} ->
+        {event, observation, answer} = Values.refusal(reason, request)
+        if event, do: log(username, event)
+        if observation, do: Watch.observe(username, observation)
+        answer
+
+      {:ask, _grant, _about} ->
+        Server.call(username, {:authorize_network, request}, :infinity)
+    end
+  end
+
+  defp decided(username, view, request, through) do
+    decision =
+      Policy.decide(
+        Policy.snapshot(view.grants, Map.get(view, :failing, %{}), Map.get(view, :made, [])),
+        {:request, request},
+        State.now()
+      )
+
+    case decision do
+      :pass ->
+        log(username, %{
+          outcome: :read,
+          summary: "Read by MWT, no credential in it",
+          host: request.host,
+          port: Map.get(request, :port, 443),
+          grant_id: through,
+          method: request.method,
+          path: request.path,
+          exchange_id: Map.get(request, :exchange)
+        })
+
+        {:forward, Values.replace([]), scan(view, request.host)}
+
+      {:refuse, reason} ->
+        {event, observation, answer} = Values.refusal(reason, request)
+        if event, do: log(username, event)
+        if observation, do: Watch.observe(username, observation)
+        answer
+
+      _allow_or_ask ->
+        # The server checks credential endpoints before it fetches a
+        # value (`MWTClient.Sandbox.Firewall.minting/3`).
+        Server.call(username, {:authorize, request}, :infinity)
     end
   end
 
@@ -815,12 +985,7 @@ defmodule MWTClient.Sandbox.Gate do
           not Policy.host_listed?(host, made.hosts),
           do: {{:placeholder, made.name}, [made.placeholder]}
 
-    %{
-      out: Secrets.new(view.forms ++ elsewhere ++ made_elsewhere),
-      echo: nil,
-      placeholders: %{},
-      grant: nil
-    }
+    %{out: Secrets.new(view.forms ++ elsewhere ++ made_elsewhere), grant: nil}
   end
 
   defp carried(view, request) do

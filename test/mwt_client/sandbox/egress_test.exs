@@ -8,7 +8,7 @@ defmodule MWTClient.Sandbox.EgressTest do
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.CertificateAuthority, as: CA
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
 
   setup do
     %{username: username} = MWTClient.VaultHelpers.unlocked_identity("egress")
@@ -35,7 +35,7 @@ defmodule MWTClient.Sandbox.EgressTest do
     pid =
       spawn(fn ->
         receive do
-          :go -> Connection.run(client, username, options)
+          :go -> Tcp.run(client, username, options)
         end
       end)
 
@@ -101,6 +101,10 @@ defmodule MWTClient.Sandbox.EgressTest do
       read_until(socket, marker, acc <> data)
     end
   end
+
+  # An answer on a TLS connection is read as a client reads it, up to its
+  # end: MWT may keep the connection for the next request.
+  defp read_all(socket, :ssl), do: MWTClient.SandboxProxy.read_answer(socket, :ssl)
 
   defp read_all(socket, mod, acc \\ "") do
     case mod.recv(socket, 0, 5_000) do
@@ -536,6 +540,18 @@ defmodule MWTClient.Sandbox.EgressTest do
     :gen_tcp.close(socket)
   end
 
+  # The approval waiting, once the server has made it: the CONNECT is
+  # answered after `answer_within` whether or not it has, and under load it
+  # may not have yet.
+  defp waiting_approval(username) do
+    Enum.find_value(1..300, fn _ ->
+      case Sandbox.snapshot(username).waiting do
+        [approval] -> approval
+        [] -> Process.sleep(10) && nil
+      end
+    end)
+  end
+
   test "a connection waiting for you is answered before microsandbox gives up; a no closes it",
        %{username: username} do
     {server, port} = local_server(username, :ask)
@@ -543,7 +559,7 @@ defmodule MWTClient.Sandbox.EgressTest do
 
     {socket, reply} = connect(proxy, "127.0.0.1:#{port}")
     assert reply =~ "HTTP/1.1 200"
-    assert [approval] = Sandbox.snapshot(username).waiting
+    assert %{} = approval = waiting_approval(username)
     # Nothing has reached the destination.
     assert {:error, :timeout} = :gen_tcp.accept(server, 50)
 
@@ -565,7 +581,7 @@ defmodule MWTClient.Sandbox.EgressTest do
 
     {socket, "HTTP/1.1 200" <> _} = connect(proxy, "127.0.0.1:#{port}")
     :ok = :gen_tcp.send(socket, "ping")
-    assert [approval] = Sandbox.snapshot(username).waiting
+    assert %{} = approval = waiting_approval(username)
     :ok = Sandbox.decide(username, approval.id, :allow_once)
     assert read_all(socket, :gen_tcp) == "pong:ping"
   end
@@ -635,15 +651,6 @@ defmodule MWTClient.Sandbox.EgressTest do
     assert got =~ "authorization: token ghp_real_value\r\n"
     # It used to wait 2 s for more of the body.
     assert System.monotonic_time(:millisecond) - started < 1_500
-  end
-
-  test "a chunked body is whole at its last chunk" do
-    assert Connection.chunked_whole?("5\r\nhello\r\n0\r\n\r\n")
-    assert Connection.chunked_whole?("5;ext=1\r\nhello\r\n0\r\nTrailer: x\r\n\r\n")
-    refute Connection.chunked_whole?("5\r\nhello\r\n")
-    refute Connection.chunked_whole?("5\r\nhel")
-    refute Connection.chunked_whole?("5\r\nhello\r\n0\r\nTrailer: x\r\n")
-    refute Connection.chunked_whole?("")
   end
 
   test "each unlocked identity's proxy listens on its own socket, and reports it", %{

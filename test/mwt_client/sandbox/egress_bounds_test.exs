@@ -11,7 +11,7 @@ defmodule MWTClient.Sandbox.EgressBoundsTest do
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.Egress
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
 
   setup do
     %{username: username} = MWTClient.VaultHelpers.unlocked_identity("bounds")
@@ -92,7 +92,7 @@ defmodule MWTClient.Sandbox.EgressBoundsTest do
 
       spawn_link(fn ->
         {:ok, client} = :gen_tcp.accept(listen)
-        Connection.run(client, username, head_within: 400)
+        Tcp.run(client, username, head_within: 400)
       end)
 
       %{port: port}

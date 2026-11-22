@@ -10,6 +10,8 @@ defmodule MWTClient.Sandbox.Inbox do
     * `ca.pem`, `ca-bundle.pem` - the identity's CA, alone and appended to
       this machine's trusted roots; the image links its system bundle to the
       second;
+    * `java-truststore.jks` - the same roots, as a JVM reads them
+      (`MWTClient.Sandbox.JavaTrust`), which the image points every JVM at;
     * `profile.sh`, `bashrc.sh`, `env.sh` - the shell's tool paths,
       interactive defaults (no credential exports);
     * `grant-env/<id>.sh` - a token grant's environment, loaded only by
@@ -45,7 +47,7 @@ defmodule MWTClient.Sandbox.Inbox do
   (`MWTClient.Sandbox.FolderSync`, `:mwt`, so nothing is set aside).
   """
 
-  alias MWTClient.Sandbox.{FolderSync, Grant, Guest, Instructions, Memory, Msb}
+  alias MWTClient.Sandbox.{FolderSync, Grant, Guest, Instructions, JavaTrust, Memory, Msb}
 
   @vm "/mnt/mwt"
   # gcloud's OAuth client, public in its source: what a login it made names.
@@ -107,13 +109,15 @@ defmodule MWTClient.Sandbox.Inbox do
     File.mkdir_p!(dir)
 
     put_changed(dir, "ca.pem", ca_pem)
-    put_changed(dir, "ca-bundle.pem", bundle(ca_pem))
+    bundle = bundle(ca_pem)
+    put_changed(dir, "ca-bundle.pem", bundle)
+    put_changed(dir, "java-truststore.jks", JavaTrust.store(bundle))
     put_changed(dir, "profile.sh", priv("mwt-profile.sh") <> workspace(opts[:workspace]))
     put_changed(dir, "bashrc.sh", priv("mwt-bashrc.sh"))
     put_changed(dir, "bin/git-credential", priv("mwt-git-credential"), 0o755)
     put_changed(dir, "bin/mwt", priv("mwt-cli"), 0o755)
-    # git's helper for the `host` remote of each project's mirror
-    # (`MWTClient.Sandbox.Mirror.remote_url/0`).
+    # git's helper for `mwt::` remotes, each project's clone's `origin`
+    # (`MWTClient.Sandbox.Project.remote_url/1`), fetched over the agent channel.
     put_changed(dir, "bin/git-remote-mwt", priv("mwt-git-remote"), 0o755)
     put_changed(dir, "AGENTS.md", Instructions.text(opts))
     # What only some tasks need, which `mwt help TOPIC` prints.

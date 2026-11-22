@@ -25,8 +25,10 @@ between it and the network.
 **Who it defends against:** whatever runs in the VM, as root: an agent
 following instructions planted in a web page or a repository, or a package
 it installed. It can do anything inside the VM, and send any bytes to the
-three things MWT offers it: the proxy, DNS and the agent channel (git
-fetches included).
+three channels it can open to MWT: the proxy, DNS and the agent channel
+(git fetches included). Over the channels MWT opens into it (`msb exec`,
+`msb ssh serve`) it answers what MWT asks, and what it answers is read as
+the VM's word ([Channels](#channels)).
 
 - It is not assumed to hold a working exploit against KVM or microsandbox.
   If it does, [the bubble](#the-bubble) decides what it reaches.
@@ -65,17 +67,21 @@ fetches included).
   labels, many names under one domain), not their content; a little at a
   time still goes. With the Internet off, only names grants list go out.
 - **A real value the VM got anyway, sent where MWT can't read.** The
-  firewall looks for real values wherever MWT reads what the VM sends, but
-  TLS to hosts no token grant lists is tunnelled unread, and a value changed
-  before it is sent (base64, in pieces) isn't recognised. Reading every TLS
-  connection would break clients that pin certificates, and would turn
-  "passed through unread" into "read by MWT" for all of them.
-- **What the VM sends behind a request MWT read** goes to the host unread
-  and unlogged. It carries a placeholder at most
+  firewall looks for real values wherever MWT reads what the VM sends, and
+  MWT reads every Internet connection it can. What it can't (TLS naming no
+  host or offering only HTTP/2, a host you set as *Not read*, a server
+  that speaks first, anything not TLS) and a network grant's connections
+  are tunnelled unread, and a value changed before it is sent (base64, in
+  pieces) isn't recognised anywhere.
+- **A body past its first 64 KiB** goes to the host as it streams, looked
+  through for real values but never shown: a card holds the start of the
+  body, and says so when that is all it holds
   ([Each intercepted request](#each-intercepted-request)).
 - **A passed-through connection is logged under the name the VM gave** (the
   TLS name), which MWT doesn't check against the address: the VM can make a
-  connection to any public address read as `github.com` in the log.
+  connection to any public address read as `github.com` in the log. A
+  connection MWT read is logged under a name the host proved, with its
+  certificate, to the TLS MWT started.
 - **An address MWT answered for a network grant's name stays open under
   it** for as long as the answer is kept (1 to 10 minutes, by its TTL), even
   if the name moves meanwhile ([Private networks](#private-networks)).
@@ -103,9 +109,11 @@ VM ──all TCP──▶ msb ──HTTP CONNECT ip:port──▶ relay ──pr
                                                ├─ loopback, link-local, this machine's own addresses → deny
                                                ├─ private ranges (VPN, LAN) → deny unless a network grant is on
                                                ├─ public addresses → the Internet grant; off, only a grant listing them
-                                               ├─ TLS to a host a token grant lists → intercept (with the Internet off too)
+                                               ├─ TLS to a host a token grant lists → read (with the Internet off too)
                                                │     read request → placeholder? → allowance or approve → swap → forward
-                                               └─ anything else → blind byte tunnel (log host, bytes, duration)
+                                               ├─ TLS to any other public host, naming it, offering HTTP/1.1 or nothing,
+                                               │  not set as Not read → read, logged with what it carried
+                                               └─ anything else → blind byte tunnel (log host, bytes, duration, why unread)
 
 VM ──DNS──▶ msb ──▶ relay ──dns.sock──▶ MWT DNS forwarder ──▶ this machine's resolver (every name logged;
                                                               with the Internet off, only names grants list)
@@ -114,6 +122,10 @@ VM ──vsock:5000──▶ $XDG_RUNTIME_DIR/mwt/<id>/channel.sock ──▶ ag
                                                                 │  run, host, why, ports, project, worktree,
                                                                 │  handoff, mcp) and git fetches (`mwt::<id>`)
                                                                 └─ `mwt run`, once you approve it ──▶ bash -lc here, as you
+
+MWT ──msb exec──▶ msb's agent in the VM: the boot script, /mnt/mwt and shared folders copied in, the monitor's
+                                        samples, slots, handoffs (git over ext::), the VM's OptMem, Kill
+MWT, Zed ──msb ssh serve──▶ msb's agent in the VM: ports 4100-4199 forwarded here, Zed's remote project
 
 /mnt/mwt (copied in, in the VM's memory): CA bundle, placeholders, the `mwt` command, git's credential helper,
                                           host.md, the boot script
@@ -132,6 +144,47 @@ the VM's TCP goes through MWT, and it cannot opt out the way it could ignore
 When MWT is not running, the VM has no internet and resolves no name. With
 an HTTP CONNECT proxy, microsandbox blocks UDP other than DNS, so HTTP/3
 cannot go around the proxy.
+
+<a id="channels"></a>
+
+## Channels
+
+Six channels join the VM and MWT. The VM opens three, over two of its
+devices: its network card carries the proxy and DNS, vsock the agent
+channel. MWT opens the other three: two through msb's own agent in the VM,
+one to the relay alone. Each is there because msb offers nothing else for
+its job:
+
+| Channel | Opened by | Path | Carries | Why it is a channel of its own |
+| ------- | --------- | ---- | ------- | ------------------------------ |
+| **Proxy** | the VM | network card → msb (`--proxy`) → relay, `127.0.0.1:3128` in the bubble → `proxy.sock` | every TCP connection ([Network](#network)) | msb's only hook for TCP, which the VM can't go around |
+| **DNS** | the VM | network card → msb (`--dns-nameserver`) → relay, `127.0.0.1:5353` → `dns.sock` | every lookup ([DNS](#dns)) | msb sends lookups to a nameserver of its own, never through the proxy |
+| **Agent channel** | the VM | vsock port 5000 → msb (`--vsock`) → `channel.sock` | `mwt` and its MCP, git fetches from `origin` (`mwt::`), Zed's threads (`mwt-acp`), the ports report ([Agent channel](#agent-channel)) | the proxy refuses this machine's own addresses, so nothing on the network reaches MWT |
+| **`msb exec`** | MWT | msb's agent in the VM | the boot script; `/mnt/mwt`, shared folders and OptMem copied in; the monitor's samples; slots and handoffs (git over `ext::`); Kill | msb's vsock carries the VM's connections to this machine, never this machine's into the VM |
+| **`msb ssh serve`** | MWT, and Zed | the launcher → msb's SSH server → msb's agent in the VM | ports 4100 to 4199 forwarded here ([Servers in the VM](#servers-in-the-vm-on-your-machine)), Zed's remote project | msb's only way to carry TCP into the VM, and Zed needs an SSH server |
+| **Relay control** | MWT | `control.sock`, to the relay | `status`, `stop`, the VM's memory resized | msb records the VM's pid as the bubble sees it, so only something inside can stop it |
+
+- **The relay** joins the ports msb is given to MWT's Unix sockets. msb
+  wants TCP and UDP addresses, and MWT listens only on sockets in a folder
+  only you can open, so no other program on this machine reaches the
+  proxy ([The bubble](#the-bubble)).
+- **What the VM sends on its three** is decided by MWT and logged: a
+  connection, a lookup, an ask. **What it answers on MWT's three** is the
+  VM's word, read as such: output is capped (`Msb.max_output/0`), the
+  ports report holds numbers in the range, a handoff is commits you review.
+- **msb's agent** carries `msb exec` and `msb ssh serve` both, over
+  virtio-console. A VM that broke out of msb's agent protocol reaches msb's
+  process in the bubble, as any escape does.
+- **msb's runtime share,** `/.msb` in the VM, is a virtiofs folder of
+  16 MiB served by msb in the bubble, which the VM can write: msb's agent
+  keeps `heartbeat.json` there, and the root filesystem's layers are
+  mounted beneath it. It holds nothing of MWT's, and nothing of this
+  machine's outside the bubble.
+- **One channel** would mean a VM with no network card, reaching MWT over
+  vsock alone, both ways, as the spike of a second backend did
+  (`test/review/vm_spike`). msb always gives the VM a network card, and
+  only its agent reaches into the VM, so under msb the six stay; a second
+  backend is where to revisit it ([Later](#later)).
 
 <a id="the-vm"></a>
 
@@ -443,6 +496,7 @@ disks.
 | In `/mnt/mwt`                                        | What                                                                            |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `ca.pem`, `ca-bundle.pem`                            | The identity's CA, alone and appended to this machine's trusted roots           |
+| `java-truststore.jks`                                | The same roots as `ca-bundle.pem`, as a JVM reads them (`MWTClient.Sandbox.JavaTrust`) |
 | `profile.sh`, `bashrc.sh`, `env.sh`                  | Tool paths and interactive defaults; no credential exports                      |
 | `grant-env/<id>.sh`, `tokens/<grant>`                | A token grant's environment, for `mwt exec <id> -- COMMAND` while it is on; its placeholder |
 | `bin/git-credential`, `git/<id>`                     | git's credential helper; the hosts a selected token grant answers git for       |
@@ -456,7 +510,13 @@ identity, the CA changes without a rebuild, and old tags keep working:
 `/etc/ssl/certs/ca-certificates.crt` links to `ca-bundle.pem` (a hook in
 `/etc/ca-certificates/update.d` restores it when a package regenerates it),
 and the per-tool CA variables (`HEX_CACERTS_PATH`,
-`CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE` and others) point there too;
+`CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE` and others) point there too.
+`JAVA_TOOL_OPTIONS` points every JVM at `java-truststore.jks`: a JVM reads
+neither the system's bundle nor those variables, only the `cacerts` of its
+own install, so Gradle, Maven and the rest would refuse MWT's certificate
+on a host MWT reads. Each JVM says so on stderr as it starts ("Picked up
+JAVA_TOOL_OPTIONS"); a build made before 2026-11-22 lacks it until it is
+rebuilt;
 `/etc/profile.d/mwt.sh` and `BASH_ENV` point at `profile.sh`, so every
 `bash -c` reads it, and `/etc/bash.bashrc` loads `bashrc.sh`; git's
 credential helper is `bin/git-credential`, which answers with a placeholder
@@ -475,7 +535,10 @@ as the MCP server `mwt` for Codex and Claude Code, unless one is there
 ([MWT's tools in the VM](#mwt-tools-in-the-vm)); `memo` onto the memory
 disk, with an empty memory when there is none; `/etc/mwt-vm`, which
 `mwt vm` checks against the VM MWT runs; Claude (MWT) and Codex (MWT) in
-the VM's `~/.config/zed/settings.json`. It starts `mwt ports --watch`.
+the VM's `~/.config/zed/settings.json`; MWT's CA in Chromium's certificate
+store (`~/.pki/nssdb`), when the image has `certutil` (`libnss3-tools`, in
+the default Containerfile), since Chromium, Playwright's included, trusts
+that store and not the system's bundle. It starts `mwt ports --watch`.
 
 **What agents are told** comes in two parts. `priv/sandbox/agents.md`
 holds what every task needs, and is kept short: Claude Code and Codex load
@@ -958,10 +1021,12 @@ MWT receives `CONNECT <ip>:<port>` and decides, in this order:
    it. Off, a network grant that is on and lists the address opens it,
    waiting for your approval unless an allowance covers it
    ([Approvals](#approvals)). Otherwise the CONNECT is answered 200 and the
-   connection may still reach a host a token grant lists: its ClientHello
-   must name one, and MWT connects to that host by name. Anything else
-   closes, logged as *The Internet is off*; MWT connects nowhere for it
-   first, even for a server that speaks first.
+   connection may still reach a host a token grant lists, read: its
+   ClientHello must name one, and a request carrying no placeholder goes
+   only while a grant listing that host is on (`403` `mwt_grant_off`
+   otherwise), since with the Internet off the host is reached for that
+   grant. Anything else closes, logged as *The Internet is off*; MWT
+   connects nowhere for it first, even for a server that speaks first.
 4. **Private ranges** (RFC 1918, ULA, site-local `fec0::/10`,
    `100.64.0.0/10`, `198.18.0.0/15`, which local proxies such as Clash hand
    out as fake addresses mapped anywhere, NAT64 prefixes a network chose,
@@ -982,9 +1047,133 @@ MWT receives `CONNECT <ip>:<port>` and decides, in this order:
    server that greets first (SSH, SMTP, MySQL) is heard in 0.1 s, not 1.5.
 7. A host **any token grant lists, on or off,** is read
    ([Each intercepted request](#each-intercepted-request)), so an off grant
-   gives a clear answer instead of the provider's auth failure.
-8. Anything else is **tunnelled**, unread both ways; the log keeps its
-   host, bytes and duration, and the firewall hears the bytes as they flow.
+   gives a clear answer instead of the provider's auth failure. A network
+   grant's check of the TLS name ([Private networks](#private-networks))
+   comes first, read or not.
+8. **Every other connection to the Internet MWT can read, it reads**
+   (`Gate.reading/3`, `MWTClient.Sandbox.Egress.Driver`), for you to read
+   in the log what went out: TLS whose ClientHello names a host and offers
+   HTTP/1.1, or no protocol at all, as *What MWT reads* says
+   ([Not read](#not-read)). A client offering no protocol speaks what
+   it speaks: MWT looks at its first bytes once TLS is ended, and what
+   isn't HTTP (or a server that greets first, IMAP over TLS) goes on as it
+   came, to the host over TLS MWT starts again, looked through as a
+   tunnel is: decrypted, a placeholder or a real value in it is found.
+9. Anything else is **tunnelled**, unread both ways; the log keeps its
+   host, bytes and duration, and why it wasn't read ("Not read: the client
+   offered only HTTP/2"), and the firewall hears the bytes as they flow. A
+   network grant's connections are tunnelled as before.
+
+<a id="drivers"></a>
+
+**Drivers.** What MWT reads it reads through a driver, one per protocol
+(`MWTClient.Sandbox.Egress.Driver`): `Driver.Http1`, and `Driver.Raw`
+for what no driver reads, which steps 8 and 9 call tunnelled. A driver
+runs on a call, whatever carries it; the core carrying the call is the
+same whatever the protocol. For TCP, the only transport msb carries but
+DNS, that is `MWTClient.Sandbox.Egress.Tcp`: it holds the sockets, ends
+TLS, connects only where steps 2 to 4 approved, judges, logs, and looks
+through and counts every byte. A driver holds no socket: bytes come in, and it answers with
+what to do (judge this request, send these bytes up, read the host, this
+request ended). So a driver can't send anything anywhere else, nor skip
+the look for real values and placeholders, nor the firewall's count.
+
+- **Picking one**: the protocol settled in TLS picks the driver speaking
+  it; otherwise each driver is shown the first bytes, decrypted when MWT
+  ended TLS, and the first to claim them takes the connection (`Raw`
+  claims anything, last). MWT offers inside TLS the protocols its drivers
+  speak, so HTTP/2 is offered once a driver reads it, not before.
+- **Each request**, whatever the protocol, is one shape
+  (`MWTClient.Sandbox.Egress.Request`: where it goes, the grant it went
+  under, what it does and to what), and its driver describes it for its
+  card; so the judge, the cards, *Allow similar* and the log serve every
+  protocol without a line for each.
+- **A real value** goes in only as the judge says: it names each
+  placeholder to replace and with what, in which places (an HTTP request's
+  carriers), and, for the answer, each form of the value to send back to
+  the VM as its placeholder; the driver does the replacing, in its
+  protocol. Only HTTP/1.1 carries a value for now: a placeholder in
+  another driver's request is a string out of place, and the connection's
+  look stops it.
+- **Plain bytes**: a driver may read a connection that isn't TLS. None
+  does yet: plain HTTP isn't read, since nothing proves which host is
+  there ([What MWT doesn't read yet](todo.md)).
+- **UDP**: a core for it would sit beside `Tcp` and run the same drivers,
+  each told which transport it is on (`ctx.transport`). None is built,
+  since msb carries no UDP but DNS.
+- **A first draft**: the interface was written for HTTP/1.1 and bytes
+  passed on, over TCP. A protocol that doesn't fit it changes it,
+  proposed with its driver, keeping the core's guarantees whole. The
+  module's docs say what each callback is for, and where the interface is
+  known not to fit yet: several requests in flight on one call, a switch
+  mid-call, refusals in HTTP's terms, values put only into HTTP,
+  datagrams.
+
+<a id="not-read"></a>
+
+**Not read.** Reading a connection means the client sees a certificate
+from MWT's CA, which the VM trusts: the system's bundle, the usual CA
+variables (`AWS_CA_BUNDLE` and `DENO_CERT` among them), a Java truststore
+([The image](#the-image)), Chromium's own store (the boot script). A client that
+trusts something else (a CA of its own, as a kubeconfig's
+`certificate-authority-data`; a pinned certificate) refuses it, and nothing
+goes out: its line in the activity log is *Not read* (`read_failed`), with
+why, as far as TLS said.
+
+**What MWT reads** is yours to set, on the Proxy activity page
+(`MWTClient.Sandbox.Reading`, saved with the sandbox):
+
+- **Any other host**: *Read when it can* (every host, at first) or *Pass
+  through*, as before 2026-11-22, should reading get in the way.
+- **Hosts of their own**, each *Read* or *Not read*, whatever any other
+  host does: `example.com` covers it and every name under it, and the
+  entry naming a host most exactly decides, so `api.example.com: Read`
+  with `example.com: Not read` reads that one host of the domain. Added
+  on the card, or in a click: each busiest destination shows *read* or
+  *not read* and switches it, and an opened line offers **Don't read
+  HOST** or **Read HOST** (a failed one first among them).
+- **Only you set it**, from MWT's pages: a failed handshake never adds a
+  host, or the VM could choose what goes unread by failing one. A token
+  grant's hosts are read whatever it says, for their value to go in, and
+  what MWT can't read (no host name, HTTP/2 only, not TLS) passes whatever
+  it says.
+
+<a id="what-reading-costs"></a>
+
+**What reading costs**, measured on 2026-11-22
+(`test/bench/proxy_reading_bench_test.exs`, run with `mix test
+test/bench/proxy_reading_bench_test.exs --only bench`): the same client
+and HTTPS server through the proxy's own code, its decisions and its log,
+a host read against one passed through, on this VM's 21 schedulers with
+client, server and MWT in one BEAM. Not in it: microsandbox and the relay,
+the same both ways, and a real host's round trips, which a new connection
+pays once more when read (MWT starts its own TLS with the host).
+
+| | Read | Passed through |
+| - | -: | -: |
+| A request on a kept connection, median (p99) | 0.41 ms (0.9) | 0.12 ms (0.25) |
+| A request on a connection of its own, median (p99) | 4.6 ms (8) | 2.8 ms (5) |
+| 32 clients at once, kept connections | 12,000 requests/s, p99 13 ms | 65,000 requests/s, p99 1 ms |
+| CPU a request, every scheduler, kept connection | 0.5 ms | 0.1 ms |
+| Download, upload | 540, 390 MB/s | 700, 530 MB/s |
+| A streamed answer's chunk, added delay | 0.6 ms | 0.5 ms |
+| A host's first certificate | 0.1 ms | |
+| Log on disk a request (1 KiB answers) | 1.4 KB | |
+
+So reading adds about 0.3 ms to a request on a kept connection and 1.9 ms
+to a new one, and the most it serves is a hundred times what an agent
+makes at its busiest (a package install: hundreds a second). The bound is
+the log: the sandbox server writes each read request's line and exchange,
+two messages, one process, at about 14,000 a second, so past some 7,000
+read requests a second it falls behind (half a second behind after the
+32 clients' burst), and an approval waits behind what it hasn't written.
+The test fails when reading gets several times slower than this.
+
+**MWT connects only where it approved** (`MWTClient.Sandbox.Egress.Tcp`),
+for a tunnel and a read request alike: to the address and port in the
+CONNECT, which steps 2 to 4 judged, through the grant's way out. Never to a
+name resolved again here, which could lead elsewhere, a private address
+included.
 
 A connection a grant let through (a tunnel a network grant opened, a
 request carrying a token grant's value, the session it upgrades to) is held
@@ -1025,9 +1214,41 @@ another resolver gets no answer: msb has no network to send it.
 A network grant opens destinations: addresses, ranges and names, each with
 its ports ([Grant kinds](#grant-kinds)). Its names lead only where MWT's own
 DNS said (`Dns`, `Gate`, `MWTClient.Sandbox.Routes`): a connection there
-carries what MWT doesn't read (a database's password, SSH), and a dropped
+may carry what MWT doesn't read (a database's password, SSH), and a dropped
 VPN would leave the grant's ranges to whatever LAN this machine is on,
 often one using the same ranges.
+
+**What goes through it is asked as MWT can show it.** For a service on a
+private network, often production, a card saying "Connect to 10.x.y.z:443"
+says nothing of what is done there. So a network grant's connection is
+read when MWT can, as an Internet one is ([Each connection](#each-connection)):
+
+- **Read, each request is a card of its own** under the grant, in full, as
+  a token grant's request is (method, URL, headers, body, the client),
+  with the grant's approval mode and *Allow similar* (the same method and
+  endpoint) for the repeats; no card for the connection. A placeholder in
+  the request is then its token grant's to allow, by that grant's own
+  mode: each grant decides by its own rules. Each one is in the log, read,
+  with what it carried and what came back.
+- **Not read, the connection is the card**, asked only once its first
+  bytes have come, so it says what MWT saw: the name the client asked for
+  (its TLS name), the names MWT's DNS answered for the address, and why
+  MWT can't show more ("it isn't TLS": a database, SSH; "on your list of
+  hosts MWT doesn't read"; "the server speaks first"). Nothing is
+  connected to before you decide: a client that stays quiet (a server
+  that greets first, MySQL) is asked about by its silence.
+- **The entry that says it most exactly decides**, of two grants that
+  open the same address: an exact address or name, then the longest name
+  under a wildcard, then the narrowest range, one naming ports before one
+  that doesn't; on a tie, the grant that would ask. So an exact
+  `dev.corp.example:443` on one grant goes by its approval mode, not by a
+  `*.corp.example:443` elsewhere.
+- **A host whose certificate this machine's roots don't vouch for** (an
+  internal CA your machine doesn't trust) can't be read: MWT starts TLS
+  with the host itself and checks it. Its line is *Not read*, the agent
+  gets `502` `mwt_upstream_tls` saying so, and **Don't read HOST** (Proxy
+  activity) passes
+  it through as bytes, judged by the VM's client.
 
 - **A destination may be a name, or every name under one**:
   `db.corp.example:5432`, `*.corp.example:443` (the name and every name
@@ -1069,14 +1290,20 @@ often one using the same ranges.
 
 1. **Finish the TLS handshake** with a certificate MWT's CA makes for that
    host name, offering HTTP/1.1 only. A gRPC client fails on a host MWT
-   reads and works tunnelled, so keep gRPC hosts off token grants.
+   reads and works tunnelled, so keep gRPC hosts off token grants. A
+   client that gives up (a CA of its own, a pinned certificate, HTTP/2
+   only) is logged under the host with why, as far as TLS said:
+   nothing went out, and the next try fails the same way.
 2. **Read the request head, strictly.** MWT judges a request by what it
    read, and the host must act on the same thing, so a request two parsers
    could read two ways is refused (`400`, `mwt_bad_request`):
     - the target a path, not a full URL, in visible ASCII as HTTP says
       (anything else arrives percent-encoded or not at all);
-    - exactly one `Host`, the TLS host name (`421` otherwise): a mismatch
-      would let a request say "github" to MWT while going somewhere else;
+    - exactly one `Host`, the TLS host name, with the connection's port or
+      none (`421` otherwise): a mismatch would let a request say "github"
+      to MWT while going somewhere else. A port other than 443 is part of
+      the host on its card and its pattern
+      ([Describing requests](#describing-requests));
     - one numeric `Content-Length` or `Transfer-Encoding: chunked`, never
       both;
     - every header line `name: value`, a name of token characters only, no
@@ -1127,10 +1354,12 @@ often one using the same ranges.
 7. **Grant on**: the request is described
    ([Describing requests](#describing-requests)); an allowance covering it
    lets it through, otherwise it asks.
-    - **Ask** holds the request: MWT reads the head and the start of the
-      body (at most 64 KiB, enough to describe it), then stops reading
+    - **Ask** holds the request: MWT reads the head and the body, all of
+      it or its first 64 KiB, before making the card, then stops reading
       until you decide. TCP flow control makes the client wait, so a large
-      upload is not buffered.
+      upload is not buffered. A body that hasn't come within 10 seconds
+      is refused (`408`): a card never says *No body* for one that was
+      only late. One holding the start of a body says so among its facts.
     - Not decided within the hold timeout (3 minutes by default): `403`,
       `mwt_approval_timeout`. Hex gives up after 15 seconds on its own, so
       the image sets `HEX_HTTP_TIMEOUT` above the hold ([The image](#the-image)).
@@ -1146,18 +1375,48 @@ often one using the same ranges.
       `mwt_too_many_waiting` at once.
 8. **On allow**: get the value (minting it if needed), put it in the
    carrier, ask for an answer without content encoding
-   (`Accept-Encoding: identity`), and connect to the real host, resolved
-   with MWT's own DNS, verifying TLS normally. The address the VM asked for
-   is ignored, so a forged `/etc/hosts` entry can't redirect a credential.
+   (`Accept-Encoding: identity`), and connect to the address and port the
+   VM asked for, through the grant's way out, starting TLS again with the
+   host name and verifying its certificate against this machine's roots.
+   The address is the VM's choice, judged as any connection's, and the
+   certificate is what makes it the host: a forged `/etc/hosts` entry can
+   send the value only to a server that proves it is that name.
 9. **Read the response back** as HTTP, letting none of the real value
    through ([What comes back](#what-comes-back)).
 
-One request per connection: MWT sends the head it wrote itself, with
-`Connection: close`, so each request is judged on its own and turning a
-grant off affects the very next one. The real value is written once, into
-that head; what the VM sends after it (the body, and anything behind it)
-goes on as bytes MWT never wrote a value into, so a second request hidden
-there reaches the host with its placeholder, which opens nothing.
+Each request is judged on its own, as it comes. MWT sends the head it
+wrote itself, and nothing past the body's end goes with it: its
+`Content-Length`, or its last chunk and trailers
+(`MWTClient.Sandbox.Egress.Driver.Http1.Framing`). Bytes after it are the next
+request, which MWT reads and judges in turn, or, after a request alone on
+its connection, none at all.
+
+- **A request carrying a real value goes alone**, on a connection of its
+  own with `Connection: close`, and the VM's connection ends after its
+  answer. The real value is written once, into that head; the rest of the
+  body goes on as bytes MWT never wrote a value into.
+- **A request with nothing to judge alone** (no real value, no `Upgrade`,
+  from a client that keeps its own connection: HTTP/1.1 without
+  `Connection: close`) **shares a kept connection**: the one to the same
+  address the request before used, when the host kept it. Its answer is
+  read only to know where it ends (`MWTClient.Sandbox.Egress.Driver.Http1.Answer`): an
+  answer whose end only its close tells, or that says `Connection: close`,
+  ends the kept connection, and the next request goes on a new one. So
+  reading a host costs a TLS handshake a connection, not a request: 200
+  requests in a row through the proxy took 4.6 ms each with a connection
+  apiece, 0.27 ms on one kept connection (a local host, so no round
+  trips; a real one adds its own to the first figure).
+- **A grant's time running out** while a kept connection waits is looked
+  at before its next request, which goes only if the grant still is;
+  turning a grant off closes the connections it let through, as always.
+- **A kept connection the host closed as a request went on it**, before
+  any of the answer came, is what any client meets with its own: the
+  request goes again on a new connection, once, when doing it twice
+  changes nothing (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`, with its
+  whole body held). Any other gets `502`, saying the host closed the
+  connection without answering, for the client to decide.
+- **Idle**, the VM's connection waits 30 seconds for its next request,
+  then closes.
 `Upgrade` (WebSockets): the handshake goes through these steps, then the
 bytes are tunnelled, still looked through as below.
 
@@ -1201,22 +1460,34 @@ found, the connection is cut before the chunk carrying it goes.
 
 ### What the log keeps of a request
 
-Each request MWT reads keeps what it carried and what came back
+Each request MWT reads (a token grant's host's, and since 2026-11-22 every
+Internet host's it can, [Each connection](#each-connection)) keeps what it
+carried and what came back
 (`MWTClient.Sandbox.Exchange`), so an agent's failing call can be read in
-MWT: Proxy activity shows both side by side when its line opens. A tunnel
-keeps nothing (TLS MWT never opened), and its line says so.
+MWT: Proxy activity shows both side by side when its line opens. A
+request that went out as the VM sent it, with no credential in it, is
+*Read*; a tunnel, *Passed*, keeps nothing (TLS MWT never opened), and its
+line says so.
 
-- **The request as the VM sent it**: method, path, headers and the start
-  of the body read before deciding, placeholders as the VM wrote them,
-  copied before the swap, so the real value is never kept.
+- **The request as the VM sent it**: method, path, headers and its body,
+  what MWT read before deciding and what the VM sent after it,
+  placeholders as the VM wrote them, copied before the swap, so the real
+  value is never kept.
 - **The response as it reached the VM**, scrubbed as above: status, reason,
   headers, and the body with chunked framing and gzip or deflate undone. A
   refusal, a denial or an unreadable answer is MWT's own JSON, marked as
   from MWT; a cut says why.
-- **At most 64 KiB of each body**, inflating no more however small the
-  compressed body; a cut one says how long its headers said it was. A body
-  that isn't text is kept as bytes; one in an encoding MWT doesn't decode
-  (`br`) isn't kept.
+- **At most your setting of each body** (Settings, *What the log keeps*:
+  64 KiB at first, 0 for heads only, 1 MiB at most, since a connection
+  holds it in memory until its exchange ends), inflating no more however
+  small the compressed body; a cut one says how long its headers said it
+  was. A body that isn't text is kept as bytes; one in an encoding MWT
+  doesn't decode (`br`) isn't kept. Every request MWT reads is kept, and
+  a package install makes hundreds, most of them packages already
+  compressed: about 40 MB of log for a fresh `npm install` of a mid-size
+  project at 64 KiB, by estimate. How long the log is kept is its
+  retention rule's (*Agent activity*, Storage page). A card still shows
+  what MWT read before deciding, at most 64 KiB, whatever the setting.
 - **Real values hidden once more**: the server replaces any token grant's
   real value in it (`Secrets`) with `[real credential withheld by MWT]`
   before keeping it, though none should be there.
@@ -1246,8 +1517,11 @@ Every card also names the client (its `User-Agent`) and the header the
 credential is in. Text the agent wrote (commit messages, a JSON body's
 title, body, message, description or name, a stated reason) is shown in a
 separate, labeled area: a claim, never a fact. *Allow similar* covers the
-same method, host and path (not the query) through the same header; for
-GraphQL, the same document.
+same method, host (with its port, when it isn't 443) and path (not the
+query) through the same header; for GraphQL, the same document. A request
+MWT couldn't describe (a GraphQL document it can't read, or holds only the
+start of) is similar to nothing, and its card has no *Allow similar*:
+once, or every use, still.
 
 A push's ref updates are read from its body as the host reads it:
 de-chunked when sent chunked (git does past 1 MiB; a chunk's extension is
@@ -1320,7 +1594,7 @@ way MWT moves something into the VM. It looks for:
 
 | Way in                          | What happens                                                                                     |
 | ------------------------------- | ------------------------------------------------------------------------------------------------ |
-| A proxy answer                  | [What comes back](#what-comes-back) (`Egress.Response`): a real value in it cuts the connection  |
+| A proxy answer                  | [What comes back](#what-comes-back) (`Egress.Driver.Http1.Response`): a real value in it cuts the connection  |
 | A command's output              | Looked through. A real value holds it for you; a shape holds it when the firewall rule blocks    |
 | A request subgrant's answer     | Every grant's value written out as `[NAME's token]`, in every form; a shape holds it as above    |
 | A result of MWT's tools         | Every grant's value written out. Shapes aren't looked for: your notes are yours                  |
@@ -1901,8 +2175,8 @@ starts or unlocks (`Grant.start`):
 ### Approvals
 
 Every use of a grant waits for you: a request carrying a placeholder, a
-connection through a network grant, a call of a subgrant, a change through
-`mwt-change`. No rules decide by method or path: what a request does
+request or connection through a network grant ([Private networks](#private-networks)),
+a call of a subgrant, a change through `mwt-change`. No rules decide by method or path: what a request does
 depends on the API, and guessing per provider doesn't generalize. The
 shortcuts are allowances (`MWTClient.Sandbox.Allowance`), added on
 purpose:
@@ -2394,7 +2668,8 @@ The sections named tell the rest ([Who uses its value](#who-uses-its-value),
 - **`why`** (`MWTClient.Sandbox.Why`) says, a line each, which grant
   covers a host or an address and why the VM doesn't reach it now: the
   firewall isolated the VM or blocks it; a token grant lists the name (a
-  request carrying its placeholder needs it on); a network grant covers it
+  request carrying its placeholder needs it on, and with the Internet off
+  every request to it does); a network grant covers it
   and is off (with the `mwt request` to send) or lists other ports; the
   Internet grant is off; the address is private or reserved, which the
   Internet never opens; no grant covers it (with the `mwt request --need`
@@ -3089,7 +3364,7 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
 | Real credential in traffic        | a token grant's real value in what the VM sends that MWT reads, or coming back to it in an answer         | Isolate |
 | Blocked services                  | a name on the blocked list, looked up or connected to                                                     | Isolate |
 | Data in DNS names                 | a label of 50 characters or more, or 100 or more before the domain (one refused, three under a domain in 10 min isolate); over 40 names, or 1.5 KiB of names, under one domain in 10 min. Cloud providers' own domains aren't judged | Isolate |
-| Large upload                      | 4 MiB or more sent in 10 min to one public destination through tunnels (counted by domain, so subdomains fold together), with less than a quarter of it coming back | Isolate |
+| Large upload                      | 4 MiB or more sent in 10 min to one public destination, through tunnels or in read requests (counted by domain, so subdomains fold together), with less than a quarter of it coming back | Isolate |
 | Scanning                          | 5 private or reserved address:ports refused in a minute, 20 ports of one public address in a minute, or 20 public addresses on one non-web port in a minute | Isolate |
 | Mail, IRC and Tor ports           | a public address on 25, 465, 587, 2525, 6667, 6697, 9001, 9030, 9050 or 9150                              | Isolate |
 | Command touching secrets          | an ad-hoc command (text the agent wrote) naming a path on the protected list                              | Isolate |
@@ -3167,10 +3442,11 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
     grant lists passes unread. It catches the careless leak, an agent
     pasting a token it saw into a commit, an issue or a note. The wall is
     that the VM never gets the value ([Grant kinds](#grant-kinds)).
-- **Large uploads** count tunnels to public addresses only: read requests
-  are judged one by one already, and a private address is one you opened
-  with a network grant. The check runs as the bytes flow: the chunk that
-  crosses 4 MiB waits for the verdict and doesn't go.
+- **Large uploads** count what goes to public addresses, through tunnels
+  and in read requests (head and body, with what comes back), not a
+  private address, one you opened with a network grant. The check runs as
+  the bytes flow: the chunk that crosses 4 MiB waits for the verdict and
+  doesn't go.
 - **A finding is an event** in the activity log (`firewall`, its own group
   on Proxy activity); an alert is said once per rule and destination in 10
   minutes.
@@ -3529,6 +3805,11 @@ history is in git.
 | 2026-11-22 | A token grant may give a Google login file whose refresh MWT answers from the grant's mint, the access token its own placeholder and the ID token, when the mint prints one, a placeholder standing for the grant's current ID token, minted fresh on the way out, holding only its `iss`, `aud`, `iat`, `exp`, `email` and `hd`; values made for one tool's request belong to one grant ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
 | 2026-11-22 | A minted grant may keep each value at most N minutes, whatever its expiry says, since a service may take a token only while it is young ([Where real values come from](#where-real-values-come-from)). |
 | 2026-11-22 | What agents are told every session shrank from 34 KB to 10 KB: the rules every task needs stay in `agents.md`, and what only some tasks need (slots in detail, handing off, token grants and MWT's refusals, proposing, host commands, the workspace) moved to guides that `mwt help TOPIC` prints, which the rules name as what to read first. With your way of working and a project's own `AGENTS.md`, Codex warned of the total, and every session, subagent and approval review read all of it ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)). MWT's example way of working asks for a component per job, named for it, rather than roles people would play, and keeps only the concepts: 7.9 KB instead of 14.8 KB. |
+| 2026-11-22 | MWT reads every connection it can, the Internet's and a network grant's, so you can read what went out on your behalf: TLS ended with its CA's certificate, the request read and judged one by one, the host reached at the address the destination check approved with TLS MWT starts again. What it can't read is passed through with why; which hosts it reads is yours to set on the Proxy activity page, per host and for any other, never by a failure, since the VM would then choose what goes unread; reading adds about 0.3 ms a request on a kept connection, 1.9 ms on a new one ([Each connection](#each-connection), [Not read](#not-read), [What reading costs](#what-reading-costs)). |
+| 2026-11-22 | On a network grant, each request MWT reads is a card of its own under the grant, and a connection it can't read is asked about after its first bytes, with the name it asked for and why, before anything is reached; of two grants opening an address, the one naming it most exactly decides ([Private networks](#private-networks)). |
+| 2026-11-22 | The log keeps every exchange MWT reads, the Internet's included, as much of each body as your setting says (64 KiB at first), for as long as the activity's retention rule; a request with nothing to judge alone shares a kept connection, so reading every host costs a TLS handshake a connection, not a request ([What the log keeps of a request](#exchanges), [Each intercepted request](#each-intercepted-request)). |
+| 2026-11-22 | The VM and MWT keep six channels, each there because msb offers nothing else for its job; one channel waits for a second backend with no network card ([Channels](#channels)). |
+| 2026-11-22 | The proxy reads each protocol through a driver of its own, pure, and does everything else itself, the same for every protocol: one way out, every byte looked through and counted, each request judged as one shape its driver describes, a real value put in only where the judge says, the driver doing the replacing. A new protocol is one driver; reading through the core costs a kept request about 0.05 ms more than before. The core is TCP's, and a driver is told its transport, so a core for UDP would run the same drivers; the interface is a first draft, changed by the first protocol that doesn't fit it ([Drivers](#drivers)). |
 
 <a id="later"></a>
 
@@ -3554,7 +3835,8 @@ Open: not built, or not tried yet.
 - **Secrets in shared folders** (`.env`, `*.pem`, tokens in remote URLs)
   looked for, with a warning when you pick one.
 - **The VM:** a second backend from stock parts (QEMU or Cloud Hypervisor,
-  vsock; spiked in `test/review/vm_spike`); a published default image, so
+  vsock; spiked in `test/review/vm_spike`), with no network card and one
+  channel to MWT instead of six ([Channels](#channels)); a published default image, so
   podman is needed only to change it; containers inside it (klife's Kafka
   test clusters), not checked.
 - **msb's SSH channel leak** reported upstream (a fix with tests is stashed

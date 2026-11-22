@@ -52,6 +52,30 @@ defmodule MWTClient.Sandbox.InstructionsTest do
       %{inbox: inbox, home: home, etc: etc, boot: fn -> boot.([]) end, boot_as: boot}
     end
 
+    test "puts MWT's CA in Chromium's certificate store, when the image has certutil", %{
+      inbox: inbox,
+      home: home,
+      boot: boot
+    } do
+      if System.find_executable("certutil") do
+        ca = MWTClient.Sandbox.CertificateAuthority.new()
+
+        File.write!(
+          Path.join(inbox, "ca.pem"),
+          MWTClient.Sandbox.CertificateAuthority.pem(ca.cert)
+        )
+
+        # Twice: the second boot puts it back, once.
+        assert {_, 0} = boot.()
+        assert {_, 0} = boot.()
+
+        {listed, 0} =
+          System.cmd("certutil", ["-d", "sql:" <> Path.join(home, ".pki/nssdb"), "-L"])
+
+        assert [_one] = Regex.scan(~r/MWT agent sandbox CA\s+C,,/, listed)
+      end
+    end
+
     test "writes which VM this is, and a line for every interactive login shell", %{
       inbox: inbox,
       etc: etc,

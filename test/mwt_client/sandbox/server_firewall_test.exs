@@ -463,7 +463,12 @@ defmodule MWTClient.Sandbox.ServerFirewallTest do
     assert {:tunnel, %{report_every: nil}} =
              Gate.route(username, public(), 443, "api.anthropic.com")
 
-    assert :intercept = Gate.route(username, public(), 443, "api.github.com")
+    # A connection MWT reads counts what it sends too. MWT looks through
+    # its requests itself, where a placeholder may go to its grant's host;
+    # what to look for is there for what inside isn't HTTP.
+    assert {:intercept, read} = Gate.route(username, public(), 443, "api.github.com")
+    assert read.report_every > 0
+    assert %MWTClient.Sandbox.Secrets{} = read.secrets
 
     assert :cut =
              Gate.found(username, {:placeholder, "GitHub"}, "93.184.216.34:80", :plaintext)

@@ -170,10 +170,11 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       :allow_once ->
         true
 
-      # A grant that always asks takes no allowance: once is all.
+      # A grant that always asks takes no allowance: once is all. Nothing
+      # is similar to a use MWT couldn't describe (no pattern).
       {:allow, scope, duration} ->
-        scope in [:similar, :all] and duration?(duration, :grant) and
-          not always_asks?(state, approval)
+        (scope == :all or (scope == :similar and approval.pattern != nil)) and
+          duration?(duration, :grant) and not always_asks?(state, approval)
 
       :deny ->
         true
@@ -437,41 +438,43 @@ defmodule MWTClient.Sandbox.Server.Approvals do
 
         if outcome == :allow, do: State.used(acc, approval.grant_id), else: acc
 
+      # A network grant's request: once allowed, the token grant's turn,
+      # if a placeholder is in it (`Gate.authorize/2`).
+      {from, {:network_request, _request}}, acc ->
+        case outcome do
+          :allow ->
+            GenServer.reply(from, {:ok, approval.grant_id})
+            State.used(acc, approval.grant_id)
+
+          denied ->
+            GenServer.reply(from, refusal(denied, grant))
+            acc
+        end
+
       {from, {:request, request}}, acc ->
         case {outcome, grant} do
           {:allow, %Grant{}} ->
             Values.let_through(acc, grant, request, from)
 
-          {{:deny, :timed_out}, _} ->
-            GenServer.reply(
-              from,
-              Values.deny(403, "mwt_approval_timeout", "Nobody decided in time.", grant)
-            )
-
-            acc
-
-          {{:deny, :grant_off}, _} ->
-            GenServer.reply(
-              from,
-              Values.deny(403, "mwt_grant_off", "The grant turned off while this waited.", grant)
-            )
-
-            acc
-
-          {{:deny, :isolated}, _} ->
-            GenServer.reply(from, Values.isolated())
-            acc
-
-          _denied ->
-            GenServer.reply(
-              from,
-              Values.deny(403, "mwt_denied_by_user", "The user denied this request.", grant)
-            )
-
+          {denied, _grant} ->
+            GenServer.reply(from, refusal(denied, grant))
             acc
         end
     end)
   end
+
+  # The answer to a request whose card was declined, timed out, or whose
+  # grant turned off or VM was isolated meanwhile.
+  defp refusal({:deny, :timed_out}, grant),
+    do: Values.deny(403, "mwt_approval_timeout", "Nobody decided in time.", grant)
+
+  defp refusal({:deny, :grant_off}, grant),
+    do: Values.deny(403, "mwt_grant_off", "The grant turned off while this waited.", grant)
+
+  defp refusal({:deny, :isolated}, _grant), do: Values.isolated()
+
+  defp refusal(_denied, grant),
+    do: Values.deny(403, "mwt_denied_by_user", "The user denied this request.", grant)
 
   @doc """
   What an agent asked for, checked: a grant that exists (by id, or by name
@@ -791,11 +794,15 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       outcome: outcome,
       summary: "#{approval.title} · #{how}",
       host: approval.host,
-      port: if(approval.kind in [:connection, :tool], do: nil, else: 443),
+      port: event_port(approval),
       grant_id: approval.grant_id,
       method: approval.method,
       path: approval.path,
       exchange_id: is_map(approval.request) && Map.get(approval.request, :exchange)
     })
   end
+
+  defp event_port(%Approval{kind: kind}) when kind in [:connection, :tool], do: nil
+  defp event_port(%Approval{request: %{port: port}}) when is_integer(port), do: port
+  defp event_port(_approval), do: 443
 end

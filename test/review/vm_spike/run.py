@@ -91,7 +91,7 @@ def source_sink(conn):
 
 
 def egress(conn):
-    """What MWT's Egress.Connection does first: read `CONNECT ip:port`."""
+    """What MWT's Egress.Tcp does first: read `CONNECT ip:port`."""
     try:
         head = b""
         while b"\r\n\r\n" not in head:

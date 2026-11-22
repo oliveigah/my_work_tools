@@ -13,7 +13,8 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
   doctest MWTClient.Sandbox.Made
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.{CredentialEndpoint, Gate, Grant, Made, SavedRequest, Secrets, Server}
+  alias MWTClient.Sandbox.Egress.Driver.Http1
+  alias MWTClient.Sandbox.{CredentialEndpoint, Gate, Grant, Made, SavedRequest, Server}
   alias MWTClient.Vault.Store
 
   @account "sa@p.iam.gserviceaccount.com"
@@ -310,10 +311,12 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
 
       # At once, the proxy's own view knows it: the real JWT goes in its
       # place, and the answer is looked through for it.
-      assert {:forward, headers, scan} = Gate.authorize(username, to_service(placeholder))
+      request = to_service(placeholder)
+      assert {:forward, replace, _scan} = Gate.authorize(username, request)
+      headers = Http1.replace(request.headers, replace.request)
       assert {"authorization", "Bearer " <> jwt} in headers
-      assert [{_label, ^placeholder}] = Map.to_list(scan.placeholders)
-      assert {:value, _name} = Secrets.find(scan.echo, "seen " <> jwt)
+      assert [%{to: ^placeholder, from: forms}] = replace.answer
+      assert jwt in forms
     end
 
     test "anywhere but its aud host, a host the grant lists included, it is a placeholder moved",
@@ -506,10 +509,11 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
       }
 
       # The token and the ID token the same mint gave.
-      assert {:forward, headers, scan} = Gate.authorize(username, to_service)
+      assert {:forward, replace, _scan} = Gate.authorize(username, to_service)
+      headers = Http1.replace(to_service.headers, replace.request)
       assert {"authorization", "Bearer ya29.minted-1"} in headers
       assert {"x-id-token", File.read!(Path.join(dir, "id-1"))} in headers
-      assert map_size(scan.placeholders) == 2
+      assert length(replace.answer) == 2
 
       # Once the kept one is too old, the same placeholder brings a fresh
       # one, whenever the tool refreshed.
@@ -520,7 +524,8 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
         %{state | minted: Map.new(state.minted, fn {k, {v, _}} -> {k, {v, old}} end)}
       end)
 
-      assert {:forward, headers, _scan} = Gate.authorize(username, to_service)
+      assert {:forward, replace, _scan} = Gate.authorize(username, to_service)
+      headers = Http1.replace(to_service.headers, replace.request)
       assert {"x-id-token", File.read!(Path.join(dir, "id-2"))} in headers
 
       # Only in its own header.

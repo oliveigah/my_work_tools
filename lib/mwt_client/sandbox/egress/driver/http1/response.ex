@@ -1,4 +1,4 @@
-defmodule MWTClient.Sandbox.Egress.Response do
+defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
   @moduledoc """
   The answer to a request MWT put a real value in, read as HTTP on its way
   back to the VM, so that none of the value reaches it. Pure: bytes from
@@ -404,9 +404,13 @@ defmodule MWTClient.Sandbox.Egress.Response do
 
   ## Heads
 
-  # A status line and `name: value` lines; a line folded onto the one
-  # before, or without a colon, is not read.
-  defp read_head(head) do
+  @doc """
+  An answer's head, without its last CR LF: `{:ok, status, headers}`, names
+  in lower case, or `:error`. A status line and `name: value` lines; a
+  line folded onto the one before, or without a colon, is not read.
+  """
+  @spec read_head(binary()) :: {:ok, 100..999, [{String.t(), String.t()}]} | :error
+  def read_head(head) do
     [line | lines] = String.split(head, "\r\n")
 
     with [_, status] <- Regex.run(~r/\AHTTP\/1\.[01] ([0-9]{3})(?: [^\r\n]*)?\z/, line),

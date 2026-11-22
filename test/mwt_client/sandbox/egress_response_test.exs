@@ -7,7 +7,7 @@ defmodule MWTClient.Sandbox.EgressResponseTest do
   """
   use ExUnit.Case, async: true
 
-  alias MWTClient.Sandbox.Egress.Response
+  alias MWTClient.Sandbox.Egress.Driver.Http1.Response
   alias MWTClient.Sandbox.Secrets
 
   @value "ghp_REAL_SECRET_VALUE_0123"

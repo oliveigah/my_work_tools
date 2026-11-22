@@ -8,7 +8,7 @@ defmodule MWTClient.Sandbox.EgressRevocationTest do
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.CertificateAuthority, as: CA
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
   alias MWTClient.Sandbox.Server
 
   setup do
@@ -27,7 +27,7 @@ defmodule MWTClient.Sandbox.EgressRevocationTest do
 
   defp accept(listen, username, options) do
     {:ok, client} = :gen_tcp.accept(listen)
-    pid = spawn(fn -> receive(do: (:go -> Connection.run(client, username, options))) end)
+    pid = spawn(fn -> receive(do: (:go -> Tcp.run(client, username, options))) end)
     :gen_tcp.controlling_process(client, pid)
     send(pid, :go)
     accept(listen, username, options)

@@ -595,6 +595,81 @@ defmodule MWTClient.Sandbox.PolicyTest do
                |> Map.merge(%{answered: answered, via: "eth0"})
                |> Policy.decide({:connection, ip, 443}, @now)
     end
+
+    test "of grants that open it, the one naming it most exactly goes first, in any order" do
+      ip = {10, 9, 8, 7}
+      answered = %{answered: %{ip => ["dev.corp.example"]}}
+
+      grant = fn id, destinations, allowances ->
+        %Grant{
+          id: id,
+          name: id,
+          kind: :network,
+          state: :on,
+          destinations: destinations,
+          allowances: allowances
+        }
+      end
+
+      exact = grant.("exact", ["dev.corp.example:443"], [allowance(:all, nil)])
+      wild = grant.("wild", ["*.corp.example:443"], [])
+      wilder = grant.("wilder", ["*.example:443"], [])
+      range = grant.("range", ["10.0.0.0/8"], [])
+      address = grant.("address", ["10.9.8.7"], [])
+
+      decide = fn grants ->
+        grants |> snapshot() |> Map.merge(answered) |> Policy.decide({:connection, ip, 443}, @now)
+      end
+
+      for grants <- [[wild, exact, range], [range, exact, wild], [exact, wild, range]] do
+        assert {:allow, %{id: "exact"}, _, %{listed_as: "dev.corp.example:443"}} = decide.(grants)
+      end
+
+      for grants <- [[wilder, wild, range], [range, wild, wilder]] do
+        assert {:ask, %{id: "wild"}, _} = decide.(grants)
+      end
+
+      assert {:ask, %{id: "range"}, _} = decide.([range])
+      assert {:ask, %{id: "address"}, _} = decide.([range, address])
+
+      # On a tie, the one that would ask: an allowance never decides which.
+      allowed = %{wild | id: "allowed", allowances: [allowance(:all, nil)]}
+
+      for grants <- [[allowed, wild], [wild, allowed]] do
+        assert {:ask, %{id: "wild"}, _} = decide.(grants)
+      end
+    end
+
+    test "a request through a network grant is that grant's to allow, like any use of it" do
+      request = %{
+        host: "git.corp.example",
+        method: "GET",
+        path: "/api/v4/projects",
+        headers: [],
+        body: "",
+        under: "corp"
+      }
+
+      decide = fn grant -> Policy.decide(snapshot([grant]), {:network_request, request}, @now) end
+
+      assert {:allow, %{id: "corp"}, _, %{pattern: "GET git.corp.example/api/v4/projects"}} =
+               decide.(corp())
+
+      assert {:ask, %{id: "corp"}, %{title: "GET git.corp.example/api/v4/projects"}} =
+               decide.(corp(allowances: []))
+
+      similar = allowance("GET git.corp.example/api/v4/projects", nil)
+      assert {:allow, _, ^similar, _} = decide.(corp(allowances: [similar]))
+      assert {:refuse, {:grant_off, _}} = decide.(corp(state: :off))
+
+      # The Internet's, or none: nothing for a network grant to say.
+      assert :pass =
+               Policy.decide(
+                 snapshot([corp()]),
+                 {:network_request, %{request | under: "internet"}},
+                 @now
+               )
+    end
   end
 
   ## Commands
@@ -797,6 +872,49 @@ defmodule MWTClient.Sandbox.PolicyTest do
       assert Grant.proposed?(reviewed)
       refute Grant.to_review?(reviewed)
       assert Grant.starts(reviewed) == [:off, :on, :auto]
+    end
+  end
+
+  describe "a request with the Internet off" do
+    test "with no placeholder, it reaches a token grant's host only while a grant listing it is on" do
+      for {state, expires_at, on?} <- @states, hosts <- @listed, host <- @hosts do
+        grant = token_grant(state, expires_at, hosts, [])
+        request = request(host, {"GET", "/repos/a/b"}, :none)
+        listed? = host_listed?(host, hosts)
+
+        read_only =
+          Policy.decide(snapshot([grant]), {:request, Map.put(request, :under, :read_only)}, @now)
+
+        under_internet =
+          Policy.decide(snapshot([grant]), {:request, Map.put(request, :under, "internet")}, @now)
+
+        cond do
+          listed? and on? -> assert read_only == :pass
+          listed? -> assert read_only == {:refuse, {:grant_off, grant}}
+          true -> assert read_only == {:refuse, :internet_off}
+        end
+
+        # The Internet on, the host is the Internet's: no grant needed.
+        assert under_internet == :pass
+      end
+    end
+
+    test "a check holding the grant off says so, and another grant listing the host opens it" do
+      grant = token_grant(:on, nil, ["api.example.com"], [])
+      request = Map.put(request("api.example.com", {"GET", "/x"}, :none), :under, :read_only)
+
+      failing = Map.put(snapshot([grant]), :failing, %{"github" => "the VPN is down"})
+
+      assert {:refuse, {:check_failing, ^grant, "the VPN is down"}} =
+               Policy.decide(failing, {:request, request}, @now)
+
+      # Hex lists *.example.com and is on.
+      assert :pass =
+               Policy.decide(
+                 %{failing | grants: [grant, other_token_grant()]},
+                 {:request, request},
+                 @now
+               )
     end
   end
 

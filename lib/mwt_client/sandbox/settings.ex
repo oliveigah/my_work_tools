@@ -30,6 +30,13 @@ defmodule MWTClient.Sandbox.Settings do
   at the cost of exposing more of this machine's KVM to it; off unless you
   turn it on, and it applies when the VM is recreated.
 
+  `log_body_kib` is how much of each request's and answer's body the
+  activity log keeps (`MWTClient.Sandbox.Exchange`), 0 for heads only:
+  every request MWT reads is kept, and this sizes each. At most 1 MiB, as
+  a connection holds what it keeps in memory until its exchange ends, and
+  up to 512 are open at once. How long the log is kept is its retention
+  rule's, on the Storage page.
+
   `way_of_working` is your own text on how you like to work with agents:
   which decisions to bring you, how you like a system built. Your taste,
   not a fact of the VM, so empty until you write it; MWT offers an example
@@ -49,6 +56,7 @@ defmodule MWTClient.Sandbox.Settings do
             cache_gib: 64,
             work_gib: 64,
             hold_seconds: 180,
+            log_body_kib: 64,
             nested_virt: false,
             way_of_working: "",
             shares: [],
@@ -65,6 +73,7 @@ defmodule MWTClient.Sandbox.Settings do
           cache_gib: pos_integer(),
           work_gib: pos_integer(),
           hold_seconds: pos_integer(),
+          log_body_kib: non_neg_integer(),
           nested_virt: boolean(),
           way_of_working: String.t(),
           shares: [Share.t()],
@@ -89,6 +98,7 @@ defmodule MWTClient.Sandbox.Settings do
       {:memory_gib, attrs["memory_gib"], &cast_int(&1, 1, most.memory_gib)},
       {:disk_gib, attrs["disk_gib"], &cast_int(&1, 4, 4096)},
       {:hold_seconds, attrs["hold_seconds"], &cast_int(&1, 30, 600)},
+      {:log_body_kib, attrs["log_body_kib"], &cast_int(&1, 0, 1_024)},
       {:home_gib, attrs["home_gib"], &cast_int(&1, 1, 4_096)},
       {:cache_gib, attrs["cache_gib"], &cast_int(&1, 1, 4_096)},
       {:work_gib, attrs["work_gib"], &cast_int(&1, 1, 4_096)},

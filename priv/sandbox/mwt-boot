@@ -27,7 +27,11 @@
 #   - MWT's agents for Zed, Claude (MWT) and Codex (MWT), into the VM's own
 #     Zed settings (~/.config/zed/settings.json, which Zed's remote server
 #     merges after the user's), when MWT has its ACP shell (bin/mwt-acp):
-#     only those two entries, the rest of the file is left alone.
+#     only those two entries, the rest of the file is left alone;
+#   - MWT's CA into Chromium's certificate store (~/.pki/nssdb), when the
+#     image has certutil (libnss3-tools): Chromium, Playwright's included,
+#     trusts that store, not the system's bundle, so without it every page
+#     MWT reads would refuse to open. Only MWT's entry is put back.
 #
 # It also starts `mwt ports --watch`, which tells MWT what listens in the VM
 # so its servers open on the user's machine. It needs bash, ss and socat,
@@ -159,6 +163,19 @@ if [ -x "$inbox/bin/mwt-acp" ]; then
   "$inbox/bin/mwt-acp" --zed-settings "${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json" \
     --command "$inbox/bin/mwt-acp" ||
     { echo "mwt-boot: could not put MWT's agents in Zed's settings" >&2; status=1; }
+fi
+
+if command -v certutil >/dev/null 2>&1 && [ -r "$inbox/ca.pem" ]; then
+  nssdb=$HOME/.pki/nssdb
+  if mkdir -p "$nssdb" &&
+    { [ -f "$nssdb/cert9.db" ] || certutil -d "sql:$nssdb" -N --empty-password; }; then
+    certutil -d "sql:$nssdb" -D -n "MWT agent sandbox CA" >/dev/null 2>&1
+    certutil -d "sql:$nssdb" -A -t "C,," -n "MWT agent sandbox CA" -i "$inbox/ca.pem" ||
+      { echo "mwt-boot: could not add MWT's CA to Chromium's certificate store" >&2; status=1; }
+  else
+    echo "mwt-boot: could not make Chromium's certificate store" >&2
+    status=1
+  fi
 fi
 
 if [ -z "${MWT_INBOX:-}" ] && [ -x "$inbox/bin/mwt" ] &&

@@ -5,6 +5,7 @@ defmodule MWTClient.Sandbox.ServerTest do
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.Server
+  alias MWTClient.Sandbox.Egress.Driver.Http1
   alias MWTClient.Vault.Store
 
   setup do
@@ -46,10 +47,24 @@ defmodule MWTClient.Sandbox.ServerTest do
     )
   end
 
-  defp authorize(username, request), do: Server.call(username, {:authorize, request})
+  defp authorize(username, request),
+    do: username |> Server.call({:authorize, request}) |> sent(request)
 
   defp authorize_async(username, request),
-    do: Task.async(fn -> Server.call(username, {:authorize, request}, :infinity) end)
+    do:
+      Task.async(fn ->
+        username |> Server.call({:authorize, request}, :infinity) |> sent(request)
+      end)
+
+  # What the request goes out with once its driver put in what the
+  # verdict says (`Http1.replace/2`), and the verdict's replacements kept
+  # with what to look for.
+  defp sent({:forward, replace, scan}, request),
+    do:
+      {:forward, Http1.replace(request.headers, replace.request),
+       Map.put(scan, :replace, replace)}
+
+  defp sent(other, _request), do: other
 
   defp wait_for_approval(username) do
     Enum.find_value(1..100, fn _ ->
@@ -436,7 +451,8 @@ defmodule MWTClient.Sandbox.ServerTest do
     plain = %{request(grant) | headers: [{"accept", "*/*"}]}
     # Nothing swapped in, so nothing to look for in the answer; what the
     # VM sends next is still looked through for real values.
-    assert {:forward, [{"accept", "*/*"}], %{echo: nil, out: out}} = authorize(username, plain)
+    assert {:forward, [{"accept", "*/*"}], %{replace: %{answer: []}, out: out}} =
+             authorize(username, plain)
 
     assert MWTClient.Sandbox.Secrets.find(out, "x ghp_real_value_0123456789") ==
              {:value, "GitHub"}
@@ -447,13 +463,13 @@ defmodule MWTClient.Sandbox.ServerTest do
     assert approval.request.headers == request(grant).headers
     :ok = Sandbox.decide(username, approval.id, :allow_once)
 
-    assert {:forward, headers, %{echo: echo, placeholders: placeholders}} = Task.await(read)
+    assert {:forward, headers, %{replace: %{answer: [back]}}} = Task.await(read)
     assert {"authorization", "token ghp_real_value_0123456789"} in headers
     assert {"user-agent", "gh"} in headers
-    assert placeholders == %{{:value, "GitHub"} => grant.placeholder}
-
-    assert MWTClient.Sandbox.Secrets.find(echo, "seen ghp_real_value_0123456789") ==
-             {:value, "GitHub"}
+    # In the answer, the value comes back to the VM as its placeholder.
+    assert %{label: {:value, "GitHub"}, to: placeholder, from: forms} = back
+    assert placeholder == grant.placeholder
+    assert "ghp_real_value_0123456789" in forms
   end
 
   test "Basic credentials are swapped inside, as git sends them", %{username: username} do

@@ -19,14 +19,16 @@ ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
 # bubblewrap confines microsandbox when the VM runs VMs of its own (VMs
 # inside the VM, in MWT's settings), as MWT does on your machine. The
 # libraries and fonts after it are what a headless Chromium (Playwright's)
-# needs to load pages and take screenshots; apt installs at runtime are lost
-# on every recreate, so they belong here.
+# needs to load pages and take screenshots, and certutil (libnss3-tools),
+# with which MWT's boot script puts its CA in Chromium's own certificate
+# store; apt installs at runtime are lost on every recreate, so they belong
+# here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash bash-completion ca-certificates curl git openssh-client less procps iproute2 \
       build-essential pkg-config libssl-dev unzip xz-utils zstd tmux socat lsof \
       postgresql-client sqlite3 inotify-tools \
       bubblewrap \
-      libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libdrm2 libgbm1 \
+      libnss3 libnss3-tools libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libdrm2 libgbm1 \
       libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libasound2t64 \
       fonts-liberation \
     && rm -rf /var/lib/apt/lists/*

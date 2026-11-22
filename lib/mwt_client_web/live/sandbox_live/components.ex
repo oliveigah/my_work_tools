@@ -220,6 +220,8 @@ defmodule MWTClientWeb.SandboxLive.Components do
   @doc "The words and colours of each `t:MWTClient.Sandbox.Event.outcome/0`."
   @spec outcome_style(Event.outcome()) :: {String.t(), String.t()}
   def outcome_style(:tunnel), do: {"Passed", "bg-deep text-faint"}
+  def outcome_style(:read), do: {"Read", "bg-deep text-muted"}
+  def outcome_style(:read_failed), do: {"Not read", "bg-warn-soft/60 text-warn-strong"}
   def outcome_style(:lookup), do: {"Lookup", "bg-deep text-faint"}
   def outcome_style(:swapped), do: {"Credential", "bg-accent-soft/60 text-accent-strong"}
   def outcome_style(:allowed), do: {"Approved", "bg-ok-soft/60 text-ok-strong"}

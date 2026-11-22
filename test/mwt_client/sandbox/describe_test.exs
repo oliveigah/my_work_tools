@@ -153,4 +153,63 @@ defmodule MWTClient.Sandbox.DescribeTest do
                request(%{host: "api.github.com", method: "DELETE", path: "/repos/o/r"})
              )
   end
+
+  test "a body MWT holds only the start of is said, and a GraphQL one is like no other" do
+    document = ~s({"query":"query { viewer { login } }"})
+
+    whole =
+      Describe.request(
+        request(%{
+          method: "POST",
+          path: "/graphql",
+          headers: [{"content-length", "#{byte_size(document)}"}],
+          body: document
+        })
+      )
+
+    assert whole.pattern =~ "POST github.com/graphql · query viewer"
+    refute List.keymember?(whole.facts, "Body", 0)
+
+    cut = %{
+      method: "POST",
+      path: "/graphql",
+      headers: [{"content-length", "#{200 * 1024}"}],
+      body: document
+    }
+
+    described = Describe.request(request(cut))
+    assert described.pattern == nil
+
+    assert {"Body",
+            "only its first #{byte_size(document)} B of 200 KiB read: the rest isn't shown"} in described.facts
+
+    # A REST endpoint is the same endpoint whatever its body: still a pattern.
+    rest = Describe.request(request(%{cut | path: "/repos/o/r/issues"}))
+    assert rest.pattern == "POST github.com/repos/o/r/issues"
+    assert List.keymember?(rest.facts, "Body", 0)
+
+    # Chunked, cut before its last chunk.
+    chunked = %{cut | headers: [{"transfer-encoding", "chunked"}], body: "5\r\nhello\r\n"}
+
+    assert {"Body", "only its first 5 B read: the rest isn't shown"} in Describe.request(
+             request(chunked)
+           ).facts
+
+    # A document MWT can't read is like no other either.
+    assert %{pattern: nil, title: "GraphQL unknown on github.com"} =
+             Describe.request(
+               request(%{method: "POST", path: "/graphql", body: "not a document"})
+             )
+  end
+
+  test "a port other than 443 is part of the host, so similar means on the same port" do
+    on = fn port ->
+      Describe.request(request(%{host: "api.example.com", port: port, path: "/x"}))
+    end
+
+    assert %{title: "GET api.example.com/x", pattern: "GET api.example.com/x"} = on.(443)
+
+    assert %{title: "GET api.example.com:8443/x", pattern: "GET api.example.com:8443/x"} =
+             on.(8443)
+  end
 end

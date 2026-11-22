@@ -8,7 +8,7 @@ defmodule MWTClient.Sandbox.GateTest do
   use ExUnit.Case, async: true
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
   alias MWTClient.Sandbox.{Gate, Grant, Server}
   alias MWTClient.SandboxProxy
   alias MWTClient.Vault.Store
@@ -76,7 +76,7 @@ defmodule MWTClient.Sandbox.GateTest do
         assert [
                  {:ok, "internet"},
                  {:tunnel, %{}},
-                 :intercept,
+                 {:intercept, %{}},
                  :ok,
                  :ok,
                  {:forward, _headers, %{grant: nil}}
@@ -97,9 +97,8 @@ defmodule MWTClient.Sandbox.GateTest do
       refute Task.yield(task, 200)
       :sys.resume(pid)
 
-      assert {:forward, [{"host", _}, {"authorization", "Bearer ghp_REAL" <> _}],
-              %{grant: "github"}} =
-               Task.await(task)
+      assert {:forward, %{request: [%{to: "ghp_REAL" <> _, within: ["authorization"]}]},
+              %{grant: "github"}} = Task.await(task)
     end
   end
 
@@ -244,7 +243,7 @@ defmodule MWTClient.Sandbox.GateTest do
 
       spawn_link(fn ->
         {:ok, client} = :gen_tcp.accept(listen)
-        pid = spawn(fn -> receive(do: (:go -> Connection.run(client, username, []))) end)
+        pid = spawn(fn -> receive(do: (:go -> Tcp.run(client, username, []))) end)
         :ok = :gen_tcp.controlling_process(client, pid)
         send(pid, :go)
         Process.sleep(:infinity)
@@ -284,6 +283,42 @@ defmodule MWTClient.Sandbox.GateTest do
     question = <<q::binary, 0, 1::16, 1::16>>
     rr = <<q::binary, 0, 1::16, 1::16, 60::32, 4::16, a, b, c, d>>
     <<0x1234::16, 0x8180::16, 1::16, 1::16, 0::32, question::binary, rr::binary>>
+  end
+
+  describe "what MWT reads" do
+    test "every Internet connection it can; on your list, unreadable or switched off, why not", %{
+      username: username
+    } do
+      named = {:tls, %{name: "example.com", alpn: ["h2", "http/1.1"]}}
+
+      assert :read = Gate.reading(username, "internet", named)
+      assert :read = Gate.reading(username, "internet", {:tls, %{name: "example.com", alpn: nil}})
+
+      assert {:pass, :h2_only} =
+               Gate.reading(username, "internet", {:tls, %{name: "x.example", alpn: ["h2"]}})
+
+      assert {:pass, :no_name} =
+               Gate.reading(username, "internet", {:tls, %{name: nil, alpn: nil}})
+
+      assert {:pass, :silent} = Gate.reading(username, "internet", Tcp.first(""))
+      assert {:pass, :not_tls} = Gate.reading(username, "internet", Tcp.first("SSH-2.0-x\r\n"))
+
+      :ok = Sandbox.reading_set(username, {:put, "example.com", false})
+      assert {:pass, :listed} = Gate.reading(username, "internet", named)
+
+      :ok = Sandbox.reading_set(username, {:default, :token_hosts})
+
+      assert {:pass, :off} =
+               Gate.reading(username, "internet", {:tls, %{name: "other.example", alpn: nil}})
+    end
+
+    test "a network grant's connections are read the same way", %{username: username} do
+      assert :read =
+               Gate.reading(username, "corp", {:tls, %{name: "git.corp.example", alpn: nil}})
+
+      assert {:pass, :not_tls} =
+               Gate.reading(username, "corp", Tcp.first("SSH-2.0-OpenSSH_9.6\r\n"))
+    end
   end
 
   describe "a trusted name is spared only at an address MWT resolved for it" do

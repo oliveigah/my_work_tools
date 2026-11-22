@@ -364,6 +364,7 @@ defmodule MWTClient.Sandbox.Server.State do
       handoff_seq: state.handoff_seq,
       memory: state.memory,
       firewall: Map.get(state, :firewall),
+      reading: Map.get(state, :reading),
       checks: Map.get(state, :checks, %{})
     }
 
@@ -538,6 +539,7 @@ defmodule MWTClient.Sandbox.Server.State do
       memory()
       |> Map.merge(state)
       |> Map.put(:firewall, MWTClient.Sandbox.Firewall.upgrade(Map.get(state, :firewall)))
+      |> Map.put(:reading, MWTClient.Sandbox.Reading.upgrade(Map.get(state, :reading)))
 
     restruct = fn module -> &struct(module, Map.delete(&1, :__struct__)) end
 

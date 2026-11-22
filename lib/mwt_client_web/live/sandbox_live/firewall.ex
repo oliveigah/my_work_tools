@@ -579,6 +579,7 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
   end
 
   attr :list, :atom, required: true
+
   attr :hidden, :boolean, required: true
   attr :entries, :list, required: true
   attr :draft, :string, default: nil

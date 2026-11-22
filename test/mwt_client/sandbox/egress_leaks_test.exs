@@ -13,7 +13,7 @@ defmodule MWTClient.Sandbox.EgressLeaksTest do
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.CertificateAuthority, as: CA
-  alias MWTClient.Sandbox.Egress.Connection
+  alias MWTClient.Sandbox.Egress.Tcp
 
   @real "ghp_REAL_SECRET_VALUE_0123"
 
@@ -38,7 +38,7 @@ defmodule MWTClient.Sandbox.EgressLeaksTest do
 
   defp accept(listen, username, options) do
     {:ok, client} = :gen_tcp.accept(listen)
-    pid = spawn(fn -> receive do: (:go -> Connection.run(client, username, options)) end)
+    pid = spawn(fn -> receive do: (:go -> Tcp.run(client, username, options)) end)
     :gen_tcp.controlling_process(client, pid)
     send(pid, :go)
     accept(listen, username, options)
@@ -121,6 +121,10 @@ defmodule MWTClient.Sandbox.EgressLeaksTest do
         end
     end
   end
+
+  # An answer on a TLS connection is read as a client reads it, up to its
+  # end: MWT may keep the connection for the next request.
+  defp read_all(socket, :ssl), do: MWTClient.SandboxProxy.read_answer(socket, :ssl)
 
   defp read_all(socket, mod, acc \\ "") do
     case mod.recv(socket, 0, 5_000) do

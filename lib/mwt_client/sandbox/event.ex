@@ -5,6 +5,12 @@ defmodule MWTClient.Sandbox.Event do
   `outcome` says what happened:
 
     * `:tunnel` - passed through as bytes, unread
+    * `:read` - a request MWT read, which went out as the VM sent it: no
+      credential in it, nothing to ask
+    * `:read_failed` - a connection that failed for MWT reading it: the
+      VM's client refused MWT's certificate, so nothing went out. You can
+      list the host among those MWT doesn't read
+      (`MWTClient.Sandbox.Firewall.add_unread/2`)
     * `:lookup` - a name the VM looked up (`MWTClient.Sandbox.Dns`)
     * `:swapped` - a placeholder was swapped for the real value
     * `:allowed`, `:denied`, `:timed_out` - an approval was decided or gave up
@@ -63,6 +69,8 @@ defmodule MWTClient.Sandbox.Event do
 
   @type outcome ::
           :tunnel
+          | :read
+          | :read_failed
           | :lookup
           | :swapped
           | :allowed
@@ -99,13 +107,13 @@ defmodule MWTClient.Sandbox.Event do
           exchange: MWTClient.Sandbox.Exchange.t() | :none | nil
         }
 
-  @outcomes ~w(tunnel lookup swapped allowed denied timed_out refused blocked violation grant vm
+  @outcomes ~w(tunnel read read_failed lookup swapped allowed denied timed_out refused blocked violation grant vm
                command project handoff tool firewall)a
 
   @groups %{
-    "traffic" => [:tunnel],
+    "traffic" => [:tunnel, :read],
     "credentials" => [:swapped, :allowed, :denied, :timed_out, :refused],
-    "blocked" => [:blocked, :violation],
+    "blocked" => [:blocked, :violation, :read_failed],
     "lookups" => [:lookup],
     "changes" => [:grant, :vm, :project, :handoff, :tool],
     "commands" => [:command],

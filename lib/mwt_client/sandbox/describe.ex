@@ -9,7 +9,14 @@ defmodule MWTClient.Sandbox.Describe do
       so it can never read as a fact.
     * `pattern` - what "allow similar" lets through: the same method and
       endpoint, and for GraphQL the same document; through the same
-      carrier (`carried_in/2`).
+      carrier (`carried_in/2`). Nil when MWT couldn't tell what the request
+      does (a GraphQL document it can't read, or holds only the start of,
+      a request it couldn't describe at all): then nothing is similar to
+      it, and its card offers no *Allow similar*.
+
+  A body MWT holds only the start of (it reads at most 64 KiB before
+  deciding) is said among the facts: what the card shows of it isn't all
+  the host gets.
 
   Only the start of the body is looked at, at most what `Egress` reads before
   asking (64 KiB): enough for git's ref updates, which come before the pack,
@@ -17,6 +24,11 @@ defmodule MWTClient.Sandbox.Describe do
   host reads it: de-chunked when it is sent chunked (git does for a push
   over 1 MiB), and no further than its `Content-Length`. Where MWT can't read
   them as the host would, the card says so instead of showing none.
+
+  A request on another port than HTTPS's own names it with its host
+  (`host:8443`), in the title and in the pattern: a service on another
+  port of the same name is another service, and "allow similar" for one
+  doesn't cover the other.
 
   The request is the VM's, bytes of its choosing. So every text that comes
   out shows all it holds (`MWTClient.Sandbox.Shown`), and a request this
@@ -29,18 +41,19 @@ defmodule MWTClient.Sandbox.Describe do
   alias MWTClient.Sandbox.{Chunked, GraphQL, Shown}
 
   @type request :: %{
-          host: String.t(),
-          method: String.t(),
-          path: String.t(),
-          headers: [{String.t(), String.t()}],
-          body: binary()
+          required(:host) => String.t(),
+          optional(:port) => :inet.port_number(),
+          required(:method) => String.t(),
+          required(:path) => String.t(),
+          required(:headers) => [{String.t(), String.t()}],
+          required(:body) => binary()
         }
 
   @type t :: %{
           title: String.t(),
           facts: [{String.t(), String.t()}],
           claims: [{String.t(), String.t()}],
-          pattern: String.t()
+          pattern: String.t() | nil
         }
 
   @claim_keys ~w(title body message description name)
@@ -49,6 +62,7 @@ defmodule MWTClient.Sandbox.Describe do
   @spec request(request()) :: t()
   def request(%{method: method, path: path} = request) do
     {route, query} = split_query(path)
+    request = %{request | host: authority(request)}
 
     described =
       try do
@@ -78,17 +92,38 @@ defmodule MWTClient.Sandbox.Describe do
             title: "#{method} #{request.host}#{route}",
             facts: [{"Endpoint", "#{method} #{route}"}],
             claims: [],
-            pattern: "#{method} #{request.host}#{route}"
+            pattern: nil
           }
       end
 
     %{
       title: Shown.text(described.title),
-      facts: Enum.map(described.facts, &shown/1),
+      facts: Enum.map(described.facts ++ cut(request), &shown/1),
       claims: Enum.map(described.claims, &shown/1),
-      pattern: exact(described.pattern)
+      pattern: described.pattern && exact(described.pattern)
     }
   end
+
+  # What the card says of a body MWT holds only the start of.
+  defp cut(request) do
+    case payload(request) do
+      {:ok, data, false} ->
+        total =
+          case Integer.parse(header(request, "content-length") || "") do
+            {n, ""} -> " of #{size(n)}"
+            _chunked -> ""
+          end
+
+        [{"Body", "only its first #{size(byte_size(data))}#{total} read: the rest isn't shown"}]
+
+      _whole_or_unread ->
+        []
+    end
+  end
+
+  defp size(bytes) when bytes >= 1024 * 1024, do: "#{Float.round(bytes / (1024 * 1024), 1)} MiB"
+  defp size(bytes) when bytes >= 1024, do: "#{div(bytes, 1024)} KiB"
+  defp size(bytes), do: "#{bytes} B"
 
   @doc """
   A request's description with the header that carries its credential: a
@@ -106,7 +141,7 @@ defmodule MWTClient.Sandbox.Describe do
     %{
       about
       | facts: about.facts ++ [{"Credential in", carrier}],
-        pattern: about.pattern <> " · in " <> carrier
+        pattern: about.pattern && about.pattern <> " · in " <> carrier
     }
   end
 
@@ -265,11 +300,17 @@ defmodule MWTClient.Sandbox.Describe do
 
     fields = if fields == [], do: [], else: [{"Fields", Enum.join(fields, ", ")}]
 
+    # A document MWT couldn't read, or holds only the start of, is no
+    # pattern: the next one sent the same way could do anything.
+    pattern =
+      if label != "unknown" and match?({:ok, _data, true}, payload(request)),
+        do: "POST #{request.host}/graphql · #{label} · #{digest}"
+
     %{
       title: "GraphQL #{label} on #{request.host}",
       facts: [{"Operation", label}] ++ fields ++ repository_facts(variables) ++ client(request),
       claims: claims(variables),
-      pattern: "POST #{request.host}/graphql · #{label} · #{digest}"
+      pattern: pattern
     }
   end
 
@@ -287,6 +328,16 @@ defmodule MWTClient.Sandbox.Describe do
       pattern: "#{request.method} #{request.host}#{route}"
     }
   end
+
+  @doc """
+  The host a request went to, with its port when it isn't 443:
+  `api.example.com`, `api.example.com:8443`.
+  """
+  @spec authority(%{required(:host) => String.t(), optional(atom()) => term()}) :: String.t()
+  def authority(%{host: host, port: port}) when is_integer(port) and port != 443,
+    do: "#{host}:#{port}"
+
+  def authority(%{host: host}), do: host
 
   @doc """
   The ref updates at the start of a git-receive-pack body (the body as the

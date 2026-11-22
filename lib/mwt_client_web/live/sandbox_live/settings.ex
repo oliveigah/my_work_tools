@@ -34,7 +34,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
   }
 
   # The fields of the size and timing form.
-  @vm_fields ~w(cpus memory_gib disk_gib home_gib cache_gib work_gib hold_seconds)a
+  @vm_fields ~w(cpus memory_gib disk_gib home_gib cache_gib work_gib hold_seconds log_body_kib)a
 
   @doc "The tab a `tab` query parameter names, Runtime if none or unknown."
   @spec tab(String.t() | nil) :: String.t()
@@ -526,6 +526,22 @@ defmodule MWTClientWeb.SandboxLive.Settings do
           >
             <:help>
               How long a request that needs your decision waits on Approvals before it gives up and the agent gets a refusal. The image sets HEX_HTTP_TIMEOUT above it, since Hex otherwise gives up after 15 seconds.
+            </:help>
+          </.setting>
+        </.section>
+
+        <.section title="What the log keeps">
+          <.setting
+            field={@vm_form[:log_body_kib]}
+            label="Of each body"
+            unit="KiB"
+            applies={:now}
+            min="0"
+            max="1024"
+            error={@vm_errors[:log_body_kib]}
+          >
+            <:help>
+              Every request MWT reads is kept in Proxy activity with what came back; this is how much of each body, the request's and the answer's, from 0 (heads only) to 1024. A package install makes hundreds of requests, so a larger one fills the log sooner: how long it is kept is the Agent activity rule on the Storage page. The card for a request always shows what MWT read before deciding, at most 64 KiB.
             </:help>
           </.setting>
         </.section>

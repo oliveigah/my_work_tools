@@ -361,6 +361,18 @@ defmodule MWTClient.Sandbox do
         }
   def firewall(username), do: Server.call(username, :firewall)
 
+  @doc "Which hosts the proxy reads (`MWTClient.Sandbox.Reading`)."
+  @spec reading(username()) :: MWTClient.Sandbox.Reading.t()
+  def reading(username), do: Server.call(username, :reading)
+
+  @doc """
+  Changes which hosts the proxy reads: `{:default, :every_host |
+  :token_hosts}`, `{:put, host, read?}` (opt a host in or out), or
+  `{:remove, host}`. `{:error, message}` for a host that can't be an entry.
+  """
+  @spec reading_set(username(), tuple()) :: :ok | {:error, String.t()}
+  def reading_set(username, change), do: Server.call(username, {:reading_set, change})
+
   @doc """
   The credential endpoints a grant's value is refused at
   (`MWTClient.Sandbox.Firewall.minting/3`), as the network path sees the
