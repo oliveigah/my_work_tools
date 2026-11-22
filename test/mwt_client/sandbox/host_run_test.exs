@@ -61,15 +61,15 @@ defmodule MWTClient.Sandbox.HostRunTest do
   test "the workspace is in MWT_WORKSPACE, as in the VM", %{dir: dir} do
     me = self()
 
-    job = %{
-      script: ~S(printf %s "$MWT_WORKSPACE"),
-      dir: dir,
-      timeout: 10,
-      workspace: "/home/me/mwt-vm"
-    }
+    # What the shell was started with, read before the login profile runs:
+    # the machine's own, under /etc, may set the variable too, as an MWT
+    # VM's does for its shells.
+    started_with = ~S(sed -zn 's/^MWT_WORKSPACE=//p' /proc/$$/environ | tr -d '\0')
+
+    job = %{script: started_with, dir: dir, timeout: 10, workspace: "/home/me/mwt-vm"}
 
     assert %{output: "/home/me/mwt-vm", exit: 0} = HostRun.run(job, &send(me, {:group, &1}))
-    assert %{output: ""} = run(~S(printf %s "$MWT_WORKSPACE"), dir)
+    assert %{output: "", exit: 0} = run(started_with, dir)
   end
 
   test "a long output keeps its first and last 32 KiB", %{dir: dir} do

@@ -19,7 +19,8 @@ defmodule MWTClient.Sandbox.HostRun do
       process the command started;
     * in MWT's environment without MWT's and the BEAM's own variables
       (`scrubbed?/1`), which a command such as `env` would otherwise print,
-      and with the job's `env` added: the values of a subgrant's parameters;
+      nor `BASH_ENV`, and with the job's `env` added: the values of a
+      subgrant's parameters, and the workspace;
     * stdout and stderr together; the first and last 32 KiB are kept, and
       what's between is cut and counted. Output is made valid UTF-8, so it
       can be shown and sent as text.
@@ -246,6 +247,10 @@ defmodule MWTClient.Sandbox.HostRun do
     end
   end
 
+  # Bash runs the file `BASH_ENV` names before anything else, in the
+  # wrapper as in your command: one in MWT's own environment would run
+  # before the values given here took hold, and could replace them, as an
+  # MWT VM's sets MWT_WORKSPACE. Your login profile still runs.
   defp env do
     scrubbed =
       for {name, _value} <- System.get_env(), scrubbed?(name) do
@@ -253,7 +258,7 @@ defmodule MWTClient.Sandbox.HostRun do
       end
 
     for({name, value} <- home_env(), do: {String.to_charlist(name), String.to_charlist(value)}) ++
-      scrubbed
+      [{~c"BASH_ENV", false} | scrubbed]
   end
 
   defp collect(port, acc) do
