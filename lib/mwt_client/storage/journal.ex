@@ -9,7 +9,9 @@ defmodule MWTClient.Storage.Journal do
   waiting, whichever comes first. What a request carried and got back
   (`record_exchange/3`) is written after them, with each event that names
   it, so it is kept only when an event does; 16 MiB of them waiting are
-  written at once too. `flush/1` writes what waits now, so a
+  written at once too. What an event says when opened
+  (`record_details/3`, `MWTClient.Sandbox.EventDetails`) is written after
+  its event, in the same transaction. `flush/1` writes what waits now, so a
   read that follows sees everything recorded before it. Locking writes
   what waits before the databases close.
 
@@ -37,7 +39,7 @@ defmodule MWTClient.Storage.Journal do
   @trim_batch 10_000
 
   @columns ~w(id at outcome summary grant_id host port method path up down ms agent thread_id
-              thread exchange_id search_text)a
+              thread exchange_id detailed search_text)a
 
   @typedoc """
   One event, as its columns hold it: `:id`, `:at` (microseconds since
@@ -78,6 +80,32 @@ defmodule MWTClient.Storage.Journal do
       nil -> :ok
       pid -> GenServer.cast(pid, {:exchange, exchange_id, Values.term(exchange)})
     end
+  end
+
+  @doc """
+  Keeps an event's details (`MWTClient.Sandbox.EventDetails`) to be
+  written with the next batch, after the event itself, which is recorded
+  first.
+  """
+  @spec record_details(String.t(), String.t(), list()) :: :ok
+  def record_details(username, event_id, details) do
+    case Store.whereis(__MODULE__, username) do
+      nil -> :ok
+      pid -> GenServer.cast(pid, {:details, event_id, Values.term(details)})
+    end
+  end
+
+  @doc "The details kept for an event, or nil: none were, or they are gone with it."
+  @spec details(String.t(), String.t()) :: list() | nil
+  def details(username, event_id) do
+    :ok = flush(username)
+
+    Storage.run(username, :journal, fn repo ->
+      case repo.query!("SELECT details FROM events_details WHERE event_id = ?", [event_id]).rows do
+        [[blob]] -> Values.from_term(blob)
+        [] -> nil
+      end
+    end)
   end
 
   @doc """
@@ -174,7 +202,17 @@ defmodule MWTClient.Storage.Journal do
   def init(username) do
     # So that `terminate/2` writes what waits when the identity locks.
     Process.flag(:trap_exit, true)
-    {:ok, %{username: username, rows: [], exchanges: [], count: 0, bytes: 0, timer: nil}}
+
+    {:ok,
+     %{
+       username: username,
+       rows: [],
+       exchanges: [],
+       details: [],
+       count: 0,
+       bytes: 0,
+       timer: nil
+     }}
   end
 
   @impl true
@@ -185,6 +223,15 @@ defmodule MWTClient.Storage.Journal do
     waiting(%{
       state
       | exchanges: [{exchange_id, blob} | state.exchanges],
+        count: state.count + 1,
+        bytes: state.bytes + byte_size(blob)
+    })
+  end
+
+  def handle_cast({:details, event_id, {:blob, blob}}, state) do
+    waiting(%{
+      state
+      | details: [{event_id, blob} | state.details],
         count: state.count + 1,
         bytes: state.bytes + byte_size(blob)
     })
@@ -215,16 +262,18 @@ defmodule MWTClient.Storage.Journal do
     :ok
   end
 
-  defp write(%{rows: [], exchanges: []} = state), do: cancel(state)
+  defp write(%{rows: [], exchanges: [], details: []} = state), do: cancel(state)
 
   defp write(state) do
     rows = Enum.reverse(state.rows)
     exchanges = Enum.reverse(state.exchanges)
+    details = Enum.reverse(state.details)
 
     try do
       Storage.transaction(state.username, :journal, fn repo ->
         for chunk <- Enum.chunk_every(rows, 50), do: insert(repo, chunk)
         for {exchange_id, blob} <- exchanges, do: insert_exchange(repo, exchange_id, blob)
+        for {event_id, blob} <- details, do: insert_details(repo, event_id, blob)
       end)
     rescue
       error ->
@@ -235,7 +284,19 @@ defmodule MWTClient.Storage.Journal do
         )
     end
 
-    cancel(%{state | rows: [], exchanges: [], count: 0, bytes: 0})
+    cancel(%{state | rows: [], exchanges: [], details: [], count: 0, bytes: 0})
+  end
+
+  # Only for an event that was written: one dropped leaves none behind.
+  defp insert_details(repo, event_id, blob) do
+    repo.query!(
+      """
+      INSERT INTO events_details (event_id, details)
+      SELECT id, ? FROM events WHERE id = ?
+      ON CONFLICT (event_id) DO NOTHING
+      """,
+      [{:blob, blob}, event_id]
+    )
   end
 
   # Once for each event that names it; for none, nothing.
@@ -261,9 +322,13 @@ defmodule MWTClient.Storage.Journal do
       VALUES #{Enum.map_join(rows, ", ", fn _row -> one end)}
       ON CONFLICT (id) DO NOTHING
       """,
-      for(row <- rows, column <- @columns, do: Map.get(row, column))
+      for(row <- rows, column <- @columns, do: column_value(row, column))
     )
   end
+
+  # A row that doesn't say has no details.
+  defp column_value(row, :detailed), do: Map.get(row, :detailed, 0)
+  defp column_value(row, column), do: Map.get(row, column)
 
   defp cancel(%{timer: nil} = state), do: state
 

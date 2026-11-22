@@ -1165,21 +1165,24 @@ variables (`AWS_CA_BUNDLE` and `DENO_CERT` among them), a Java truststore
 ([The image](#the-image)), Chromium's own store (the boot script). A client that
 trusts something else (a CA of its own, as a kubeconfig's
 `certificate-authority-data`; a pinned certificate) refuses it, and nothing
-goes out: its line in the activity log is *Not read* (`read_failed`), with
-why, as far as TLS said.
+goes out: its line in the activity log is *Cert refused* (`read_failed`),
+with why, as far as TLS said.
 
-**What MWT reads** is yours to set, on the Proxy activity page
-(`MWTClient.Sandbox.Reading`, saved with the sandbox):
+**What MWT reads** is yours to set, in a dialog the activity log's header
+opens (`MWTClient.Sandbox.Reading`, saved with the sandbox): set now and
+then, it takes no room on the page the rest of the time.
 
-- **Any other host**: *Read when it can* (every host, at first) or *Pass
-  through*, as before 2026-11-22, should reading get in the way.
-- **Hosts of their own**, each *Read* or *Not read*, whatever any other
-  host does: `example.com` covers it and every name under it, and the
-  entry naming a host most exactly decides, so `api.example.com: Read`
-  with `example.com: Not read` reads that one host of the domain. Added
-  on the card, or in a click: each busiest destination shows *read* or
-  *not read* and switches it, and an opened line offers **Don't read
-  HOST** or **Read HOST** (a failed one first among them).
+- **Hosts on neither list**: *Read* (every host it can, at first) or *Not
+  read*, as before 2026-11-22, should reading get in the way. The header's
+  button says *others not read* while they aren't.
+- **Two lists, *Read* and *Not read***, each host on one at most, whatever
+  any other host does: `example.com` covers it and every name under it,
+  and the entry naming a host most exactly decides, so `api.example.com`
+  under Read with `example.com` under Not read reads that one host of the
+  domain. Added to a list in the dialog (adding it to one takes it off the
+  other, as its arrow does), or in a click: each busiest destination shows
+  *read* or *not read* and switches it, and an opened line offers **Don't
+  read HOST** or **Read HOST** (a failed one first among them).
 - **Only you set it**, from MWT's pages: a failed handshake never adds a
   host, or the VM could choose what goes unread by failing one. A token
   grant's hosts are read whatever it says, for their value to go in, and
@@ -1572,9 +1575,9 @@ Each request MWT reads (a token grant's host's, and since 2026-11-22 every
 Internet host's it can, [Each connection](#each-connection)) keeps what it
 carried and what came back
 (`MWTClient.Sandbox.Exchange`), so an agent's failing call can be read in
-MWT: Proxy activity shows both side by side when its line opens. A
+MWT: the activity log shows both side by side when its line opens. A
 request that went out as the VM sent it, with no credential in it, is
-*Read*; a tunnel, *Passed*, keeps nothing (TLS MWT never opened), and its
+*Read*; a tunnel, *Not read*, keeps nothing (TLS MWT never opened), and its
 line says so.
 
 - **The request as the VM sent it**: method, path, headers and its body,
@@ -3562,7 +3565,7 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
   the bytes flow: the chunk that crosses 4 MiB waits for the verdict and
   doesn't go.
 - **A finding is an event** in the activity log (`firewall`, its own group
-  on Proxy activity); an alert is said once per rule and destination in 10
+  on the activity log); an alert is said once per rule and destination in 10
   minutes.
 - The firewall is on by default, with a switch on its page. Off, nothing is
   watched and nothing is isolated.
@@ -3679,14 +3682,41 @@ notification ([Desktop notifications](#desktop-notifications)).
   setting ([When MWT starts](#when-mwt-starts)), *Always ask me*
   ([Always ask me](#ceiling)), *Only while…* ([Checks](#checks)), what is
   allowed for now, its subgrants, its recent use, Edit and Remove.
-- **Proxy activity:** filters (groups with their counts, words, a grant); a
-  timeline of the matching events by series (passed, credentials, blocked,
+- **Activity log:** everything the VM did through MWT and the changes
+  around it, so not *Proxy activity*, which it was called until
+  2026-11-22. Filters (groups with their counts, words, a grant); a
+  timeline of the matching events by series (traffic, credentials, blocked,
   other) from the oldest kept to now; the busiest destinations, each a
   filter; the log, a line per event that opens to all it recorded, a request
   MWT read to it as the VM sent it beside the response as it reached the VM,
   with Copy as JSON ([What the log keeps of a request](#exchanges)). The
   figures come from the server (`MWTClient.Sandbox.EventStats`), at most
-  once a second while activity comes in.
+  once a second while activity comes in. Each line's badge says what
+  happened in a word or two, its meaning shown when hovered, on the line
+  opened, and for every badge at once by the "?" in the log's head, by the
+  filters' groups (`outcome_style/1`, `outcome_meaning/1`). Traffic says
+  whether MWT read it, as the lists of What MWT reads do: *Read*, *Not
+  read*, and *Cert refused* for a client that refused MWT's certificate;
+  the rest name what changed (*VM change*, *Grant change*, *Host
+  command*). What MWT reads opens from the header ([Not read](#not-read)).
+  A line opens to what MWT knew when it happened, for every kind of event
+  (`MWTClient.Sandbox.EventDetails`), as a request MWT read opens to what
+  it carried: an ask, what was asked, how it was decided, how long it
+  waited, what MWT worked out; a host command, its script, folder and time
+  limit, then its exit, duration and output size (never the output); a
+  grant's change, what changed before and after; any event naming a grant,
+  the grant as it was then (never its value); a handoff, its branch, base,
+  size and how it landed; a call of MWT's tools, the item and its
+  arguments; a firewall finding, the rule and what it saw, an isolation
+  the events just before; a VM change, the image, the options it was made
+  with and a failure in full; a check, its script and output; a copy back,
+  the files it wrote; a lookup, the addresses it got; a connection not
+  read, its address, name, protocol and why. What the agent wrote (a
+  reason, a thread, a handoff's description, a request's own words) is a
+  section of its own, shown apart as its claims. Details are words written
+  when the event is logged, kept with it in the journal and read when its
+  line opens, at most 16 KiB each; a builder that fails says so in them
+  and in MWT's log, rather than stop the event or the sandbox.
 - **Firewall:** the *VM isolated* switch with the isolation and the past
   ones, the rules by group, the last findings, the lists in tabs; a red
   badge in the menu while isolated ([The Firewall page](#screens-firewall)).
@@ -3919,7 +3949,7 @@ history is in git.
 | 2026-11-22 | A token grant may give a Google login file whose refresh MWT answers from the grant's mint, the access token its own placeholder and the ID token, when the mint prints one, a placeholder standing for the grant's current ID token, minted fresh on the way out, holding only its `iss`, `aud`, `iat`, `exp`, `email` and `hd`; values made for one tool's request belong to one grant ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
 | 2026-11-22 | A minted grant may keep each value at most N minutes, whatever its expiry says, since a service may take a token only while it is young ([Where real values come from](#where-real-values-come-from)). |
 | 2026-11-22 | What agents are told every session shrank from 34 KB to 10 KB: the rules every task needs stay in `agents.md`, and what only some tasks need (slots in detail, handing off, token grants and MWT's refusals, proposing, host commands, the workspace) moved to guides that `mwt help TOPIC` prints, which the rules name as what to read first. With your way of working and a project's own `AGENTS.md`, Codex warned of the total, and every session, subagent and approval review read all of it ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)). MWT's example way of working asks for a component per job, named for it, rather than roles people would play, and keeps only the concepts: 7.9 KB instead of 14.8 KB. |
-| 2026-11-22 | MWT reads every connection it can, the Internet's and a network grant's, so you can read what went out on your behalf: TLS ended with its CA's certificate, the request read and judged one by one, the host reached at the address the destination check approved with TLS MWT starts again. What it can't read is passed through with why; which hosts it reads is yours to set on the Proxy activity page, per host and for any other, never by a failure, since the VM would then choose what goes unread; reading adds about 0.3 ms a request on a kept connection, 1.9 ms on a new one ([Each connection](#each-connection), [Not read](#not-read), [What reading costs](#what-reading-costs)). |
+| 2026-11-22 | MWT reads every connection it can, the Internet's and a network grant's, so you can read what went out on your behalf: TLS ended with its CA's certificate, the request read and judged one by one, the host reached at the address the destination check approved with TLS MWT starts again. What it can't read is passed through with why; which hosts it reads is yours to set on the activity log, per host and for any other, never by a failure, since the VM would then choose what goes unread; reading adds about 0.3 ms a request on a kept connection, 1.9 ms on a new one ([Each connection](#each-connection), [Not read](#not-read), [What reading costs](#what-reading-costs)). |
 | 2026-11-22 | On a network grant, each request MWT reads is a card of its own under the grant, and a connection it can't read is asked about after its first bytes, with the name it asked for and why, before anything is reached; of two grants opening an address, the one naming it most exactly decides ([Private networks](#private-networks)). |
 | 2026-11-22 | The log keeps every exchange MWT reads, the Internet's included, as much of each body as your setting says (64 KiB at first), for as long as the activity's retention rule; a request with nothing to judge alone shares a kept connection, so reading every host costs a TLS handshake a connection, not a request ([What the log keeps of a request](#exchanges), [Each intercepted request](#each-intercepted-request)). |
 | 2026-11-22 | The VM and MWT keep six channels, each there because msb offers nothing else for its job; one channel waits for a second backend with no network card ([Channels](#channels)). |
@@ -3929,6 +3959,8 @@ history is in git.
 | 2026-11-22 | Plain HTTP is read, each request judged and logged; its host is the one its `Host` names, the client's word, so no placeholder goes in one, its card names the address it goes to and *Allow similar* covers that address only. HTTP/2 is read too, offered only to a client that offers no HTTP/1.1 (gRPC's): one that speaks either is read over HTTP/1.1 all the same, so HTTP/2 for it would add only risk; each stream is a request of its own, a value going only in a carrier ([Drivers](#drivers), [Each intercepted request](#each-intercepted-request)). |
 | 2026-11-22 | What the core looks through is the VM's text: HTTP/2 headers go up written again without Huffman coding, a WebSocket's frames masked with zeros (its extensions offer taken out, so nothing comes compressed), and each stream's text is looked through apart from the framing and other streams, so a value split across two frames is found. A request MWT refuses is looked through for real values too ([Drivers](#drivers)). |
 | 2026-11-22 | Two requests whose body MWT holds only the start of never share a card: what follows may differ, and one decision would let through a body nobody saw ([Approvals](#approvals)). |
+| 2026-11-22 | The Proxy activity page is the Activity log, the name the agents' instructions and the firewall already gave it, since it holds the VM's changes, host commands and handoffs as well as its traffic. What MWT reads is a dialog opened from its header, two lists (*Read*, *Not read*) and what a host on neither gets, rather than a card always on the page. The badges say what happened: *Read* and *Not read* for traffic, *Cert refused* (was *Not read*) for a client refusing MWT's certificate, *Swapped*, *No answer*, *Wrong host*, *VM change*, *Grant change*, *Host command*, *MWT tool*, each with its meaning on hover and in a legend ([Pages](#pages), [Not read](#not-read)). |
+| 2026-11-22 | Every event of the activity log keeps what MWT knew when it happened, since the log is where you watch what the VM does: details written as labelled words when it is logged, stored beside it in the journal like a request's exchange, and read when its line opens. Words rather than the records they came from, so the log says what was true then and a later MWT draws a months-old event; the cost is that a detail is searched as words, not filtered as a field. An event naming a grant keeps that grant as it was. The agent's own words are kept, shown apart as claims ([Pages](#pages), [docs/storage.md](storage.md)). |
 
 <a id="later"></a>
 

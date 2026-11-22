@@ -23,7 +23,7 @@ defmodule MWTClient.Sandbox.MwtTools do
   """
 
   alias MWTClient.MCP.Caller
-  alias MWTClient.Sandbox.{Approval, Server}
+  alias MWTClient.Sandbox.{Approval, EventDetails, Server}
 
   @wait_ms 50_000
   @hold_seconds 30 * 60
@@ -199,6 +199,71 @@ defmodule MWTClient.Sandbox.MwtTools do
 
   def about(%{grant: :workspace}),
     do: %{title: "Copy the workspace's from-vm onto your machine", pattern: "copy back"}
+
+  @doc """
+  What an event about a call says when its line opens
+  (`MWTClient.Sandbox.EventDetails`): the tool, the item, what it changes,
+  the arguments it was called with, and apart, who called, as the call
+  claimed.
+  """
+  @spec details(use()) :: EventDetails.t()
+  def details(use), do: EventDetails.safely("a call of MWT's tools", fn -> describe(use) end)
+
+  defp describe(use) do
+    claims = Map.get(use, :claims) || %{}
+    thread = Approval.thread(claims) || %{}
+
+    EventDetails.new([
+      EventDetails.section("The call", [
+        {"Tool", use.tool},
+        {"Needs", grant_words(use.grant)},
+        {"Item", use[:kind] && noun(use[:kind])},
+        {"Title", use[:title]},
+        {"Item id", use[:id]},
+        {"Size", use[:bytes] && "#{use[:bytes]} bytes"},
+        {"What changes", use[:from] && use[:to] && words(use)},
+        {"Over the hour's limit", use[:over_limit] && "yes: it asks"}
+      ]),
+      EventDetails.section("Arguments", argument_rows(use[:args])),
+      EventDetails.agent("In the agent's words", [
+        {"Agent", claims[:agent]},
+        {"Thread", Map.get(thread, :title)},
+        {"Working in", Map.get(thread, :folder)}
+      ])
+    ])
+  end
+
+  defp grant_words(:read), do: "reading MWT's items"
+  defp grant_words(:create), do: "adding an item"
+  defp grant_words(:change), do: "changing an item"
+  defp grant_words(:git_fetch), do: "fetching a project"
+  defp grant_words(:git_fetch_remote), do: "fetching a project's remote, on your machine"
+  defp grant_words(:git_handoff), do: "handing work off"
+  defp grant_words(:share_sync), do: "syncing shared folders"
+  defp grant_words(:workspace), do: "copying the workspace back"
+  defp grant_words(_other), do: nil
+
+  # Each argument as text: words as they are, anything else as JSON.
+  defp argument_rows(args) when is_map(args) do
+    args
+    |> Enum.sort_by(fn {name, _value} -> to_string(name) end)
+    |> Enum.map(fn
+      {name, value} when is_binary(value) ->
+        {to_string(name), if(String.contains?(value, "\n"), do: {:code, value}, else: value)}
+
+      {name, value} ->
+        {to_string(name), {:code, argument_json(value)}}
+    end)
+  end
+
+  defp argument_rows(_args), do: []
+
+  defp argument_json(value) do
+    case Jason.encode(value, pretty: true) do
+      {:ok, json} -> json
+      {:error, _} -> inspect(value, limit: 50, printable_limit: 2_000)
+    end
+  end
 
   @doc "What a change does, in a line, or nil."
   @spec words(use()) :: String.t() | nil

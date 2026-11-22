@@ -85,6 +85,36 @@ defmodule MWTClient.Storage.JournalTest do
     assert count.() == [[1]]
   end
 
+  test "an event's details are kept with it, read back, and go with it", %{username: username} do
+    details = [%{title: "The ask", by: :mwt, rows: [{"Why", {:text, "to check the deploy"}}]}]
+
+    Journal.record(username, Map.put(row(1), :detailed, 1))
+    Journal.record_details(username, "e1", details)
+    Journal.record(username, row(2))
+    # For an event never recorded: not kept.
+    Journal.record_details(username, "e9", details)
+
+    assert Journal.details(username, "e1") == details
+    assert Journal.details(username, "e2") == nil
+    assert Journal.details(username, "e9") == nil
+
+    count = fn ->
+      Storage.run(username, :journal, & &1.query!("SELECT count(*) FROM events_details").rows)
+    end
+
+    assert count.() == [[1]]
+    Storage.run(username, :journal, & &1.query!("DELETE FROM events WHERE id = 'e1'"))
+    assert count.() == [[0]]
+
+    # Clearing the activity takes every event's details too.
+    Journal.record(username, Map.put(row(3), :detailed, 1))
+    Journal.record_details(username, "e3", details)
+    :ok = Journal.flush(username)
+    assert count.() == [[1]]
+    :ok = MWTClient.Storage.Maintenance.clear(username, "agent_activity")
+    assert count.() == [[0]]
+  end
+
   test "16 MiB of exchanges waiting are written at once, without the timer", %{
     username: username
   } do

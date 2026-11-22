@@ -104,7 +104,11 @@ defmodule MWTClient.Sandbox.Server.Tools do
               if(how == :ok, do: :tool, else: :refused),
               "#{approval.title} · #{text}"
             ),
-            Event.asked_by(approval.agent, approval.thread)
+            Map.put(
+              Event.asked_by(approval.agent, approval.thread),
+              :details,
+              Approval.details(approval, text)
+            )
           )
         )
     end
@@ -187,10 +191,9 @@ defmodule MWTClient.Sandbox.Server.Tools do
   defp event(grant, outcome, summary, use) do
     claims = Map.get(use, :claims, %{})
 
-    Map.merge(
-      event(grant, outcome, summary),
-      Event.asked_by(claims[:agent], Approval.thread(claims))
-    )
+    event(grant, outcome, summary)
+    |> Map.merge(Event.asked_by(claims[:agent], Approval.thread(claims)))
+    |> Map.put(:details, MwtTools.details(use))
   end
 
   defp over_limit?(state, use) do

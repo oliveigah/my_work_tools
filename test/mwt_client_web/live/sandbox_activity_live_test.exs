@@ -1,6 +1,6 @@
 defmodule MWTClientWeb.SandboxActivityLiveTest do
   @moduledoc """
-  The proxy activity page's figures: counts on the groups, the timeline,
+  The activity log's figures: counts on the groups, the timeline,
   the busiest destinations, and the live or paused log.
   """
   use MWTClientWeb.ConnCase, async: true
@@ -48,10 +48,10 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     ])
   end
 
-  test "is called Proxy activity, and says it is live", %{conn: conn} do
+  test "is called Activity log, and says it is live", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
-    assert has_element?(view, "#sandbox-nav-activity", "Proxy activity")
-    assert has_element?(view, "#activity-header", "Proxy activity")
+    assert has_element?(view, "#sandbox-nav-activity", "Activity log")
+    assert has_element?(view, "#activity-header", "Activity log")
     assert has_element?(view, "#activity-live")
   end
 
@@ -124,49 +124,110 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     ])
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
-    assert has_element?(view, "#event-event-a1 summary", "Not read")
+    assert has_element?(view, "#event-event-a1 summary", "Cert refused")
 
     view |> element("#event-dont-read-event-a1") |> render_click()
     assert MWTClient.Sandbox.reading(username).rules == [%{host: "pinned.example", read?: false}]
 
-    # Its line now offers the other way, and the card lists it.
+    # Its line now offers the other way, and What MWT reads lists it.
     assert has_element?(view, "#event-read-event-a1")
-    assert has_element?(view, "#activity-reading-rule-pinned-example")
+    view |> element("#activity-reading-open") |> render_click()
+    assert has_element?(view, "#activity-reading-unread-pinned-example")
   end
 
-  test "what MWT reads is set on the page: the default, and hosts opted in or out", %{
+  test "each event says what it means: hovered, in the legend, and opened", %{
     conn: conn,
     username: username
   } do
     traffic(username)
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
-    assert has_element?(view, "#activity-reading-empty")
-    assert has_element?(view, "#activity-reading-default-every_host[aria-checked=true]")
-
-    # Added from the card: an address is refused, a host taken.
-    view
-    |> form("#activity-reading-form", reading: %{host: "10.0.0.5", read: "false"})
-    |> render_submit()
-
-    assert MWTClient.Sandbox.reading(username).rules == []
-
-    view
-    |> form("#activity-reading-form", reading: %{host: "*.pinned.example", read: "false"})
-    |> render_submit()
 
     assert has_element?(
              view,
-             "#activity-reading-rule-any-pinned-example-read-false[aria-checked=true]"
+             "#event-event-a1 summary span[title*='as bytes, unread']",
+             "Not read"
            )
 
-    view |> element("#activity-reading-rule-any-pinned-example-read-true") |> render_click()
-    assert MWTClient.Sandbox.reading(username).rules == [%{host: "*.pinned.example", read?: true}]
+    assert has_element?(view, "#event-meaning-event-a1", "as bytes, unread")
 
-    view |> element("#activity-reading-rule-any-pinned-example-remove") |> render_click()
+    # The legend has every outcome, in the filters' groups.
+    for {group, outcomes} <- Event.groups(), outcome <- outcomes do
+      assert has_element?(view, "#activity-legend-#{group}-group")
+      assert has_element?(view, "#activity-legend-outcome-#{outcome}[data-group=#{group}]")
+    end
+  end
+
+  test "what MWT reads opens from the header: two lists, and what a host on neither gets", %{
+    conn: conn,
+    username: username
+  } do
+    traffic(username)
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+
+    # Not on the page until asked for.
+    refute has_element?(view, "#activity-reading")
+    view |> element("#activity-reading-open") |> render_click()
+    assert has_element?(view, "#activity-reading-read-empty")
+    assert has_element?(view, "#activity-reading-unread-empty")
+    assert has_element?(view, "#activity-reading-default-every_host[aria-checked=true]")
+
+    # Added to a list: an address is refused, and stays in its field; a
+    # host is taken, and the fields empty.
+    view
+    |> form("#activity-reading-unread-form", reading: %{host: "10.0.0.5"})
+    |> render_submit()
+
+    assert MWTClient.Sandbox.reading(username).rules == []
+    assert has_element?(view, "#activity-reading-unread-host-0")
+
+    view
+    |> form("#activity-reading-unread-form", reading: %{host: "*.pinned.example"})
+    |> render_submit()
+
+    assert MWTClient.Sandbox.reading(username).rules == [
+             %{host: "*.pinned.example", read?: false}
+           ]
+
+    assert has_element?(view, "#activity-reading-unread-any-pinned-example")
+    assert has_element?(view, "#activity-reading-unread-count", "1")
+    refute has_element?(view, "#activity-reading-unread-host-0")
+
+    # Moved to the other list, by its arrow or by adding it there.
+    view |> element("#activity-reading-unread-any-pinned-example-move") |> render_click()
+    assert MWTClient.Sandbox.reading(username).rules == [%{host: "*.pinned.example", read?: true}]
+    assert has_element?(view, "#activity-reading-read-any-pinned-example")
+    refute has_element?(view, "#activity-reading-unread-any-pinned-example")
+
+    view
+    |> form("#activity-reading-unread-form", reading: %{host: "*.pinned.example"})
+    |> render_submit()
+
+    assert MWTClient.Sandbox.reading(username).rules == [
+             %{host: "*.pinned.example", read?: false}
+           ]
+
+    view |> element("#activity-reading-unread-any-pinned-example-remove") |> render_click()
     assert MWTClient.Sandbox.reading(username).rules == []
 
-    # From a busiest destination: hex.pm is read, one click passes it; an
-    # address names nothing to read, and has no switch.
+    view |> element("#activity-reading-default-token_hosts") |> render_click()
+    assert MWTClient.Sandbox.reading(username).default == :token_hosts
+
+    # Closed, it is gone again; the header says hosts on neither list
+    # aren't read.
+    view |> element("#activity-reading-done") |> render_click()
+    refute has_element?(view, "#activity-reading")
+    assert has_element?(view, "#activity-reading-open-default", "others not read")
+  end
+
+  test "a busiest destination switches whether its host is read", %{
+    conn: conn,
+    username: username
+  } do
+    traffic(username)
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+
+    # hex.pm is read, one click passes it; an address names nothing to
+    # read, and has no switch.
     toggle = "#activity-hosts button[phx-click=reading_put][phx-value-host='hex.pm']"
     assert has_element?(view, toggle, "read")
 
@@ -178,9 +239,6 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     view |> element(toggle) |> render_click()
     refute MWTClient.Sandbox.Reading.read?(MWTClient.Sandbox.reading(username), "hex.pm")
     assert has_element?(view, toggle, "not read")
-
-    view |> element("#activity-reading-default-token_hosts") |> render_click()
-    assert MWTClient.Sandbox.reading(username).default == :token_hosts
   end
 
   test "a token grant's host offers nothing of the kind: it is read for its value", %{
@@ -265,6 +323,95 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
 
     # A tunnel was never read: it says so instead.
     assert has_element?(view, "#event-exchange-event-a2", "Passed through as bytes")
+  end
+
+  test "a line opens to its details: an edited grant says what changed, and what it is", %{
+    conn: conn,
+    username: username
+  } do
+    fields = %{
+      "kind" => "token",
+      "name" => "GitHub",
+      "purpose" => "The GitHub API",
+      "hosts" => "api.github.com",
+      "env" => "GH_TOKEN",
+      "value" => "ghp_real_value_0123456789"
+    }
+
+    {:ok, grant} = MWTClient.Sandbox.create_grant(username, fields)
+
+    {:ok, _edited} =
+      MWTClient.Sandbox.update_grant(
+        username,
+        grant.id,
+        Map.put(fields, "hosts", "api.github.com\nuploads.github.com")
+      )
+
+    [edited | _] = MWTClient.Sandbox.events(username, %{q: "edited"})
+    assert edited.detailed?
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+    line = "#event-#{edited.id}"
+
+    # Read when it opens, as a request's content is.
+    assert has_element?(view, "#{line} details[data-read=no]")
+    render_hook(view, "open_event", %{"id" => edited.id})
+
+    assert has_element?(view, "#event-details-#{edited.id}", "What changed")
+    assert has_element?(view, "#event-details-#{edited.id}", "uploads.github.com")
+    assert has_element?(view, "#event-details-#{edited.id}", "The grant, then")
+    refute render(view) =~ "ghp_real_value_0123456789"
+
+    json =
+      view
+      |> element("#event-json-#{edited.id}")
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.text()
+      |> Jason.decode!()
+
+    assert Enum.any?(json["details"], &(&1["section"] == "What changed"))
+  end
+
+  test "an agent's words show apart, and the word filter finds what only the details say", %{
+    conn: conn,
+    username: username
+  } do
+    alias MWTClient.Sandbox.EventDetails
+
+    Server.cast(
+      username,
+      {:log,
+       %{
+         outcome: :command,
+         summary: "A command · you ran it",
+         details: [
+           EventDetails.section("Command", [{"Script", {:code, "kubectl rollout status"}}]),
+           EventDetails.agent("In the agent's words", [{"Why", "to see the rollout"}])
+         ]
+       }}
+    )
+
+    _ = :sys.get_state(GenServer.whereis(MWTClient.Vault.Store.via(Server, username)))
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+
+    view |> form("#activity-filters", %{q: "rollout status"}) |> render_change()
+    [event] = MWTClient.Sandbox.events(username, %{q: "rollout status"})
+    assert has_element?(view, "#activity-log #event-#{event.id}")
+
+    render_hook(view, "open_event", %{"id" => event.id})
+
+    assert has_element?(
+             view,
+             "#event-details-#{event.id} section[data-by=agent]",
+             "to see the rollout"
+           )
+
+    assert has_element?(
+             view,
+             "#event-details-#{event.id} section[data-by=mwt]",
+             "kubectl rollout status"
+           )
   end
 
   test "new activity updates the figures while the page is open", %{

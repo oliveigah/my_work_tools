@@ -24,7 +24,7 @@ defmodule MWTClient.Sandbox.Server.Firewall do
   require Logger
 
   alias MWTClient.Notifications
-  alias MWTClient.Sandbox.{Activity, Allowance, Approval, Firewall, Gate, Grant}
+  alias MWTClient.Sandbox.{Activity, Allowance, Approval, EventDetails, Firewall, Gate, Grant}
   alias MWTClient.Sandbox.Server.{Approvals, Forwarding, HostRuns, State}
 
   @connections MWTClient.Sandbox.Connections
@@ -141,7 +141,14 @@ defmodule MWTClient.Sandbox.Server.Firewall do
         state =
           state
           |> State.change(:firewall, fn _ -> changed end)
-          |> State.log(%{outcome: :firewall, summary: summary})
+          |> State.log(%{
+            outcome: :firewall,
+            summary: summary,
+            details: [
+              EventDetails.changes(settings(firewall), settings(changed))
+              | Enum.map(Firewall.lists(), &list_changes(&1, firewall, changed))
+            ]
+          })
           |> State.changed()
 
         {:ok, state}
@@ -161,11 +168,70 @@ defmodule MWTClient.Sandbox.Server.Firewall do
         summary:
           "#{Firewall.rule_name(finding.rule)} · #{finding.summary} · #{words(finding.action)}",
         host: finding.host,
-        port: finding.port
+        port: finding.port,
+        details: [
+          rule_details(finding.rule),
+          EventDetails.section("What it saw", [
+            {"Seen", finding.summary},
+            {"Destination",
+             finding.host && "#{finding.host}#{finding.port && ":#{finding.port}"}"},
+            {"What MWT did", words(finding.action)}
+          ])
+        ]
       })
 
     if finding.action == :alert, do: notify_alert(state, finding), else: state
   end
+
+  # A rule as the Firewall page says it, for an event about it.
+  defp rule_details(nil), do: nil
+
+  defp rule_details(rule) do
+    case Enum.find(Firewall.rules(), &(&1.id == rule)) do
+      nil ->
+        nil
+
+      found ->
+        EventDetails.section("The rule", [
+          {"Rule", found.name},
+          {"It catches", found.text}
+        ])
+    end
+  end
+
+  # The switch and each rule's action, for an edit's before and after.
+  defp settings(firewall) do
+    [{"Firewall", if(firewall.enabled, do: "on", else: "off")}] ++
+      for rule <- Firewall.rules(), do: {rule.name, to_string(Firewall.action(firewall, rule.id))}
+  end
+
+  # A list's entries added and taken off, rather than the whole list twice.
+  defp list_changes(list, before, now) do
+    old = Map.get(before, list) || []
+    new = Map.get(now, list) || []
+
+    EventDetails.section("The #{list} list", [
+      {"Added", {:list, new -- old}},
+      {"Taken off", {:list, old -- new}}
+    ])
+  end
+
+  defp grant_name(state, id) do
+    case Enum.find(state.grants, &(&1.id == id)) do
+      %Grant{name: name} -> name
+      nil -> id
+    end
+  end
+
+  # An event the isolation kept, in a line.
+  defp event_line(%{at: at, summary: summary} = event) do
+    host = Map.get(event, :host)
+
+    "#{Calendar.strftime(at, "%H:%M:%S")} #{Map.get(event, :outcome)} " <>
+      if(host, do: "#{host} · ", else: "") <> summary
+  end
+
+  defp event_line(other), do: inspect(other)
 
   defp words(:isolate), do: "VM isolated"
   defp words(:block), do: "blocked"
@@ -207,7 +273,20 @@ defmodule MWTClient.Sandbox.Server.Firewall do
     |> State.log(%{
       outcome: :firewall,
       summary:
-        "VM isolated by #{Firewall.isolated_by(incident)} · nothing it sends leaves through MWT until you release it"
+        "VM isolated by #{Firewall.isolated_by(incident)} · nothing it sends leaves through MWT until you release it",
+      details: [
+        incident.rule && rule_details(incident.rule),
+        EventDetails.section("The isolation", [
+          {"By", Firewall.isolated_by(incident)},
+          {"Seen", incident.summary},
+          {"Destination",
+           incident.host && "#{incident.host}#{incident.port && ":#{incident.port}"}"},
+          {"Grants turned off", {:list, Enum.map(grants_on(state), &grant_name(state, &1.id))}}
+        ]),
+        EventDetails.section("Just before", [
+          {"Events", {:list, Enum.map(Enum.take(incident.events, 15), &event_line/1)}}
+        ])
+      ]
     })
     |> notify_isolated(incident)
     |> State.write_inbox()
@@ -246,7 +325,21 @@ defmodule MWTClient.Sandbox.Server.Firewall do
           |> State.change(:firewall, fn _ -> released end)
           |> Map.put(:firewall_refused, 0)
           |> Forwarding.sync()
-          |> State.log(%{outcome: :firewall, summary: "Released by you#{trusted}"})
+          |> State.log(%{
+            outcome: :firewall,
+            summary: "Released by you#{trusted}",
+            details: [
+              EventDetails.section("The isolation released", [
+                {"Isolated at", Calendar.strftime(incident.at, "%Y-%m-%d %H:%M:%S UTC")},
+                {"For", EventDetails.duration(DateTime.diff(State.now(), incident.at, :second))},
+                {"By", Firewall.isolated_by(incident)},
+                {"Seen", incident.summary},
+                {"Trusted from now on", trust? && incident.host},
+                {"Grants to turn back on",
+                 {:list, Enum.map(Map.get(incident, :grants_on, []), &grant_name(state, &1.id))}}
+              ])
+            ]
+          })
           |> restore_grants(Map.get(incident, :grants_on, []))
           |> State.write_inbox()
           |> State.saved()
@@ -393,7 +486,8 @@ defmodule MWTClient.Sandbox.Server.Firewall do
       |> State.change(:grants, &all_off(&1.grants))
       |> State.log(%{
         outcome: :grant,
-        summary: "Turned off, #{isolated_words(incident)}: #{Enum.join(names, ", ")}"
+        summary: "Turned off, #{isolated_words(incident)}: #{Enum.join(names, ", ")}",
+        details: [EventDetails.section("Grants turned off", [{"Grants", {:list, names}}])]
       })
     end
   end

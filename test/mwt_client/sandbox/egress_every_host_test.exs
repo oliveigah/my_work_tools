@@ -171,7 +171,7 @@ defmodule MWTClient.Sandbox.EgressEveryHostTest do
 
     assert %{
              outcome: :tunnel,
-             summary: "Not read: you set it as Not read (What MWT reads, Proxy activity)"
+             summary: "Not read: you set it as Not read (What MWT reads, Activity log)"
            } =
              event(username, &(&1.outcome == :tunnel))
   end

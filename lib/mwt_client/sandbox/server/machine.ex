@@ -15,6 +15,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
   alias MWTClient.Sandbox.{
     Bubble,
     Build,
+    EventDetails,
     Disks,
     Guest,
     Image,
@@ -546,7 +547,13 @@ defmodule MWTClient.Sandbox.Server.Machine do
         do:
           State.log(state, %{
             outcome: :vm,
-            summary: "Home copied before recreating (#{done.taken.id})"
+            summary: "Home copied before recreating (#{done.taken.id})",
+            details: [
+              EventDetails.section("The copy", [
+                {"Copy", done.taken.id},
+                {"Image it ran", Map.get(done.taken, :tag)}
+              ])
+            ]
           }),
         else: state
 
@@ -568,7 +575,16 @@ defmodule MWTClient.Sandbox.Server.Machine do
         )
         |> State.log(%{
           outcome: :vm,
-          summary: "VM created from #{done.ref} and started#{create_words(done.options)}"
+          summary: "VM created from #{done.ref} and started#{create_words(done.options)}",
+          details: [
+            EventDetails.section("How it was made", [
+              {"Image", done.ref},
+              {"Home", home_words(done.options.home)},
+              {"Cache", if(done.options.cache == :clear, do: "cleared", else: "kept")},
+              {"Memory", if(done.options.seed_memory, do: "copied from yours", else: "kept")}
+            ]),
+            vm_details(state)
+          ]
         })
         |> booted(done.booted)
         |> State.changed()
@@ -604,7 +620,11 @@ defmodule MWTClient.Sandbox.Server.Machine do
           :vm,
           &%{&1.vm | busy: nil, error: message}
         )
-        |> State.log(%{outcome: :vm, summary: "Copying your memory into the VM failed"})
+        |> State.log(%{
+          outcome: :vm,
+          summary: "Copying your memory into the VM failed",
+          details: [EventDetails.section("What failed", [{"Error", {:code, message}}])]
+        })
     end
   end
 
@@ -615,14 +635,24 @@ defmodule MWTClient.Sandbox.Server.Machine do
       :vm,
       &%{&1.vm | busy: nil, status: :running, started_at: State.now(), error: nil}
     )
-    |> State.log(%{outcome: :vm, summary: "VM started"})
+    |> State.log(%{outcome: :vm, summary: "VM started", details: [vm_details(state)]})
     |> booted(booted)
   end
 
   def finished(state, {:vm, :stop}, {:ok, _output}) do
     %{state | inbox_sync: nil}
     |> State.change(:vm, &%{&1.vm | busy: nil, status: :stopped, started_at: nil, error: nil})
-    |> State.log(%{outcome: :vm, summary: "VM stopped"})
+    |> State.log(%{
+      outcome: :vm,
+      summary: "VM stopped",
+      details: [
+        vm_details(state, [
+          {"Ran for",
+           state.vm.started_at &&
+             EventDetails.duration(DateTime.diff(State.now(), state.vm.started_at, :second))}
+        ])
+      ]
+    })
     |> Copying.answer_waiters()
   end
 
@@ -633,7 +663,16 @@ defmodule MWTClient.Sandbox.Server.Machine do
     |> State.change(:vm, &%{&1.vm | busy: nil, error: nil, reclaimed: results})
     |> State.log(%{
       outcome: :vm,
-      summary: "Disk space reclaimed: #{div(freed, 1_048_576)} MB freed"
+      summary: "Disk space reclaimed: #{div(freed, 1_048_576)} MB freed",
+      details: [
+        EventDetails.section("Each disk", [
+          {"Disks",
+           {:list,
+            Enum.map(results, fn {disk, r} ->
+              "#{disk}: #{div(r.before, 1_048_576)} MB → #{div(r.after, 1_048_576)} MB"
+            end)}}
+        ])
+      ]
     })
   end
 
@@ -648,7 +687,14 @@ defmodule MWTClient.Sandbox.Server.Machine do
     |> State.change(:vm, &%{&1.vm | busy: nil, error: message})
     |> State.log(%{
       outcome: :vm,
-      summary: "msb #{action} failed: #{String.slice(message, 0, 200)}"
+      summary: "msb #{action} failed: #{String.slice(message, 0, 200)}",
+      details: [
+        EventDetails.section("What failed", [
+          {"Action", to_string(action)},
+          {"Error", {:code, message}}
+        ]),
+        vm_details(state)
+      ]
     })
     |> check()
   end
@@ -735,9 +781,36 @@ defmodule MWTClient.Sandbox.Server.Machine do
     end)
     |> State.log(%{
       outcome: :vm,
-      summary: "The VM's memory now starts from yours (#{count} memories)"
+      summary: "The VM's memory now starts from yours (#{count} memories)",
+      details: [EventDetails.section("Memory", [{"Copied from yours", "#{count} memories"}])]
     })
   end
+
+  @doc """
+  The VM as it is set, for an event about it (`MWTClient.Sandbox.EventDetails`):
+  its name, the image it was made from, what it may use; `rows` after them.
+  """
+  def vm_details(state, rows \\ []) do
+    settings = state.settings
+
+    EventDetails.section(
+      "The VM",
+      [
+        {"Name", state.vm.name},
+        {"Made from", state.created_ref},
+        {"CPUs", settings.cpus},
+        {"Memory", "#{settings.memory_gib} GiB"},
+        {"Disks",
+         "root #{settings.disk_gib} GiB, Home #{settings.home_gib} GiB, " <>
+           "Cache #{settings.cache_gib} GiB, Work #{settings.work_gib} GiB"},
+        {"VMs inside", settings.nested_virt && "on"}
+      ] ++ rows
+    )
+  end
+
+  defp home_words(:empty), do: "emptied"
+  defp home_words({:snapshot, id}), do: "from the copy #{id}"
+  defp home_words(_kept), do: "kept"
 
   defp create_words(options) do
     words =
@@ -832,7 +905,16 @@ defmodule MWTClient.Sandbox.Server.Machine do
       :image,
       &%{&1.image | building?: true, building: building, error: nil, log: []}
     )
-    |> State.log(%{outcome: :vm, summary: "Building image #{ref}"})
+    |> State.log(%{
+      outcome: :vm,
+      summary: "Building image #{ref}",
+      details: [
+        EventDetails.section("The build", [
+          {"Image", ref},
+          {"Containerfile", {:code, state.settings.containerfile || "MWT's own"}}
+        ])
+      ]
+    })
   end
 
   @doc """
@@ -856,7 +938,17 @@ defmodule MWTClient.Sandbox.Server.Machine do
         :image,
         &%{&1.image | tag: build.ref, loaded?: true, building?: false, building: nil, error: nil}
       )
-      |> State.log(%{outcome: :vm, summary: "Image #{build.ref} built"})
+      |> State.log(%{
+        outcome: :vm,
+        summary: "Image #{build.ref} built",
+        details: [
+          EventDetails.section("The build", [
+            {"Image", build.ref},
+            {"Last lines of its log",
+             {:code, state.image.log |> Enum.take(30) |> Enum.reverse() |> Enum.join("\n")}}
+          ])
+        ]
+      })
       |> State.changed()
 
     if removed == [] do
@@ -866,7 +958,16 @@ defmodule MWTClient.Sandbox.Server.Machine do
       username = state.username
 
       state
-      |> State.log(%{outcome: :vm, summary: "Older images deleted: #{Enum.join(refs, ", ")}"})
+      |> State.log(%{
+        outcome: :vm,
+        summary: "Older images deleted: #{Enum.join(refs, ", ")}",
+        details: [
+          EventDetails.section("Images", [
+            {"Deleted", {:list, refs}},
+            {"Kept", {:list, Enum.map(kept, & &1.ref)}}
+          ])
+        ]
+      })
       |> State.task(:delete_builds, fn -> Enum.each(refs, &Image.delete(username, &1)) end)
     end
   end

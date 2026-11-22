@@ -809,7 +809,8 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       grant_id: approval.grant_id,
       method: approval.method,
       path: approval.path,
-      exchange_id: is_map(approval.request) && Map.get(approval.request, :exchange)
+      exchange_id: is_map(approval.request) && Map.get(approval.request, :exchange),
+      details: Approval.details(approval, how)
     })
   end
 

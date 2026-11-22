@@ -270,7 +270,7 @@ defmodule MWTClient.Sandbox.EgressNetworkTest do
       assert approval.title == "Connect to svc.corp.example (127.0.0.1:#{service})"
       assert {"Name asked for", "svc.corp.example"} in approval.facts
 
-      assert {"Not read", "you set it as Not read (What MWT reads, Proxy activity)"} in approval.facts
+      assert {"Not read", "you set it as Not read (What MWT reads, Activity log)"} in approval.facts
 
       :ok = Sandbox.decide(username, approval.id, :deny)
       assert {:error, _closed} = Task.await(client)

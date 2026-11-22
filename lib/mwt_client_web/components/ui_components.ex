@@ -60,6 +60,11 @@ defmodule MWTClientWeb.UIComponents do
   attr :id, :string, required: true
   attr :label, :string, default: "More about this"
   attr :class, :any, default: nil
+
+  attr :tip_class, :any,
+    default: "w-max max-w-80",
+    doc: "the text's width, for one that holds a list"
+
   slot :inner_block, required: true
 
   def help(assigns) do
@@ -79,7 +84,10 @@ defmodule MWTClientWeb.UIComponents do
         role="tooltip"
         data-help-tip
         phx-mounted={JS.ignore_attributes(["style", "data-open"])}
-        class="pointer-events-none invisible fixed left-0 top-0 z-[70] w-max max-w-80 translate-y-0.5 rounded-lg border border-line bg-panel px-3 py-2 text-left text-[11px] font-normal normal-case leading-[1.125rem] tracking-normal text-ink opacity-0 shadow-xl shadow-black/15 transition-[opacity,translate] duration-150 data-open:visible data-open:translate-y-0 data-open:opacity-100 dark:shadow-black/50"
+        class={[
+          "pointer-events-none invisible fixed left-0 top-0 z-[70] translate-y-0.5 rounded-lg border border-line bg-panel px-3 py-2 text-left text-[11px] font-normal normal-case leading-[1.125rem] tracking-normal text-ink opacity-0 shadow-xl shadow-black/15 transition-[opacity,translate] duration-150 data-open:visible data-open:translate-y-0 data-open:opacity-100 dark:shadow-black/50",
+          @tip_class
+        ]}
       >
         {render_slot(@inner_block)}
       </span>
@@ -111,10 +119,12 @@ defmodule MWTClientWeb.UIComponents do
           const box = this.trigger.getBoundingClientRect()
           this.tip.setAttribute("data-open", "")
           const tip = this.tip.getBoundingClientRect()
+          // Below when it fits, else above when it fits there; fitting
+          // neither, on the side with more room.
           const roomBelow = window.innerHeight - box.bottom
-          const top = roomBelow >= tip.height + gap || box.top < tip.height + gap
-            ? box.bottom + gap
-            : box.top - tip.height - gap
+          const below = roomBelow >= tip.height + gap ||
+            (box.top < tip.height + gap && roomBelow >= box.top)
+          const top = below ? box.bottom + gap : box.top - tip.height - gap
           const left = Math.min(
             Math.max(gap, box.left + box.width / 2 - tip.width / 2),
             window.innerWidth - tip.width - gap

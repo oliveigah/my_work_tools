@@ -77,6 +77,7 @@ defmodule MWTClient.Sandbox.Server do
     CredentialEndpoint,
     Disks,
     Event,
+    EventDetails,
     Exchange,
     Gate,
     Grant,
@@ -442,7 +443,7 @@ defmodule MWTClient.Sandbox.Server do
   defp answer(:reading, _from, state),
     do: {:reply, Map.get(state, :reading) || MWTClient.Sandbox.Reading.new(), state}
 
-  # Which hosts the proxy reads, as you set it on the Proxy activity page.
+  # Which hosts MWT reads, as you set it on the activity log.
   defp answer({:reading_set, change}, _from, state) do
     alias MWTClient.Sandbox.Reading
 
@@ -508,7 +509,8 @@ defmodule MWTClient.Sandbox.Server do
           |> State.log(%{
             outcome: :grant,
             summary: "#{changed.name}: #{words}",
-            grant_id: changed.id
+            grant_id: changed.id,
+            details: Grant.changes(grant, changed)
           })
           |> State.write_inbox()
           |> State.changed()
@@ -924,7 +926,12 @@ defmodule MWTClient.Sandbox.Server do
       state =
         state
         |> State.replace_grant(updated)
-        |> State.log(%{outcome: :grant, summary: "#{grant.name} edited", grant_id: id})
+        |> State.log(%{
+          outcome: :grant,
+          summary: "#{grant.name} edited",
+          grant_id: id,
+          details: Grant.changes(grant, updated)
+        })
         |> State.write_inbox()
         |> State.changed()
 
@@ -1216,23 +1223,33 @@ defmodule MWTClient.Sandbox.Server do
       {:reply, {:ok, project},
        state
        |> State.change(:projects, &(&1.projects ++ [project]))
-       |> State.log(%{outcome: :project, summary: "#{project.name} is a project"})
+       |> State.log(%{
+         outcome: :project,
+         summary: "#{project.name} is a project",
+         details: Project.details(project)
+       })
        |> State.write_inbox()
        |> State.changed()}
     end
   end
 
   defp answer({:put_project, %Project{name: name} = project, summary}, _from, state) do
-    if Enum.any?(state.projects, &(&1.name == name)) do
-      {:reply, {:ok, project},
-       state
-       |> State.change(:projects, fn state ->
-         Enum.map(state.projects, &if(&1.name == name, do: project, else: &1))
-       end)
-       |> State.log(%{outcome: :project, summary: summary})
-       |> State.changed()}
-    else
-      {:reply, {:error, :not_found}, state}
+    case Enum.find(state.projects, &(&1.name == name)) do
+      %Project{} = before ->
+        {:reply, {:ok, project},
+         state
+         |> State.change(:projects, fn state ->
+           Enum.map(state.projects, &if(&1.name == name, do: project, else: &1))
+         end)
+         |> State.log(%{
+           outcome: :project,
+           summary: summary,
+           details: Project.changes(before, project) ++ Project.details(project)
+         })
+         |> State.changed()}
+
+      nil ->
+        {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -1263,7 +1280,11 @@ defmodule MWTClient.Sandbox.Server do
          state
          |> State.change(:projects, &Enum.reject(&1.projects, fn p -> p.name == name end))
          |> State.change(:mirror, &Map.delete(&1.mirror, name))
-         |> State.log(%{outcome: :project, summary: "#{name} is no longer a project"})
+         |> State.log(%{
+           outcome: :project,
+           summary: "#{name} is no longer a project",
+           details: Project.details(project)
+         })
          |> State.write_inbox()
          |> State.changed()}
     end
@@ -1289,7 +1310,16 @@ defmodule MWTClient.Sandbox.Server do
     state =
       state
       |> State.change(:mirror, &Map.put(&1.mirror, name, entry))
-      |> then(&if(summary, do: State.log(&1, %{outcome: :project, summary: summary}), else: &1))
+      |> then(fn state ->
+        if summary,
+          do:
+            State.log(state, %{
+              outcome: :project,
+              summary: summary,
+              details: [mirror_details(name, entry, state)]
+            }),
+          else: state
+      end)
 
     {:reply, :ok, state}
   end
@@ -1827,7 +1857,19 @@ defmodule MWTClient.Sandbox.Server do
               error: "The build failed (exit #{status}). See the log."
           }
         )
-        |> State.log(%{outcome: :vm, summary: "Image build failed"})
+        |> State.log(%{
+          outcome: :vm,
+          summary: "Image build failed",
+          details: [
+            EventDetails.section("The build", [
+              {"Exit", status},
+              {"Image",
+               state.image.building && "#{state.image.building.name}:#{state.image.building.tag}"},
+              {"Last lines of its log",
+               {:code, state.image.log |> Enum.take(60) |> Enum.reverse() |> Enum.join("\n")}}
+            ])
+          ]
+        })
       end
 
     {:noreply, state}
@@ -1890,6 +1932,27 @@ defmodule MWTClient.Sandbox.Server do
     end)
   end
 
+  # The clone of a project, as an update left it: its error in full.
+  defp mirror_details(name, entry, state) do
+    EventDetails.section("The clone", [
+      {"Project", name},
+      {"Folder",
+       case Enum.find(state.projects, &(&1.name == name)) do
+         %Project{path: path} -> path
+         nil -> nil
+       end},
+      {"Error", entry[:error] && {:code, entry.error}},
+      {"Branches it reads", {:list, tip_lines(entry[:tips])}}
+    ])
+  end
+
+  defp tip_lines(tips) when is_map(tips) do
+    for {branch, commit} <- Enum.sort(tips),
+        do: "#{branch} #{String.slice(to_string(commit), 0, 12)}"
+  end
+
+  defp tip_lines(_none), do: []
+
   # A handoff's event, signed with the agent and thread that made it.
   # The handoff numbered `id`: in memory while it waits for you, else as kept.
   defp handoff(state, id) do
@@ -1926,7 +1989,12 @@ defmodule MWTClient.Sandbox.Server do
 
   defp handoff_event(handoff, summary) do
     thread = %{id: handoff.thread_id, title: handoff.thread}
-    Map.merge(Event.asked_by(handoff.agent, thread), %{outcome: :handoff, summary: summary})
+
+    Map.merge(Event.asked_by(handoff.agent, thread), %{
+      outcome: :handoff,
+      summary: summary,
+      details: Handoff.details(handoff)
+    })
   end
 
   # A command's output can hold anything it printed, secrets included.

@@ -130,7 +130,7 @@ defmodule MWTClient.Sandbox.Grant do
   See `docs/agent_sandbox.md` for the whole model.
   """
 
-  alias MWTClient.Sandbox.{Allowance, Param}
+  alias MWTClient.Sandbox.{Allowance, EventDetails, Param}
 
   @enforce_keys [:id, :name, :kind]
   defstruct [
@@ -769,4 +769,131 @@ defmodule MWTClient.Sandbox.Grant do
   defp old_purpose(:google), do: "Google Cloud: gcloud and Google APIs."
   defp old_purpose(:database), do: "A database, through a tunnel on the user's machine."
   defp old_purpose(_recipe), do: ""
+  ## Details
+
+  @doc """
+  The grant as it is, for an event that names it
+  (`MWTClient.Sandbox.EventDetails`): what it opens and how, its state,
+  what it allows without asking, how much it was used. Never its value.
+  An agent's proposal is set apart, in its words.
+  """
+  @spec details(t()) :: EventDetails.t()
+  def details(%__MODULE__{} = grant) do
+    EventDetails.safely("a grant", fn ->
+      EventDetails.new([
+        EventDetails.section(
+          "The grant, then",
+          [{"Grant", {:link, grant.name, "/tools/sandbox/grants/#{grant.id}"}}] ++
+            described(grant) ++
+            [
+              {"Allowed without asking", {:list, Enum.map(grant.allowances, &allowance_words/1)}},
+              {"Uses", grant.uses > 0 && grant.uses},
+              {"Last used", grant.last_used_at && time_words(grant.last_used_at)}
+            ]
+        ),
+        proposal_details(grant.proposal)
+      ])
+    end)
+  end
+
+  @doc """
+  What an edit changed, each setting before and after
+  (`MWTClient.Sandbox.EventDetails`), `[]` when none shows a difference.
+  """
+  @spec changes(t(), t()) :: EventDetails.t()
+  def changes(%__MODULE__{} = before, %__MODULE__{} = now) do
+    EventDetails.safely("a grant's edit", fn ->
+      EventDetails.new([EventDetails.changes(described(before), described(now))])
+    end)
+  end
+
+  # Every setting worth saying, each a text, a script ({:code, _}) or a
+  # list; nil or empty for one the grant doesn't have.
+  defp described(grant) do
+    [
+      {"Name", grant.name},
+      {"Type", kind_words(grant.kind)},
+      {"For", grant.purpose},
+      {"State", state_words(grant)},
+      {"When MWT starts", start_words(grant.start)},
+      {"Always ask me", grant.ceiling == :ask && "on"},
+      {"Only for its subgrants", grant.reach == :subgrants && "yes"},
+      {"Hosts", {:list, grant.hosts}},
+      {"Destinations", {:list, grant.destinations}},
+      {"Host list",
+       {:list, Enum.map(grant.host_rules || [], &"#{&1.host}: #{host_action_words(&1.action)}")}},
+      {"Variables", {:list, grant.env}},
+      {"File variables", {:list, grant.file_env}},
+      {"Placeholder headers", {:list, grant.carriers}},
+      {"Git credentials", grant.git && "for its hosts"},
+      {"Internet", grant.internet && "open"},
+      {"Value", source_words(grant.source)},
+      {"Script", {:code, grant.script}},
+      {"Folder", grant.dir},
+      {"Writes in its folder", grant.writes_dir && "yes"},
+      {"Confined", grant.confined && "yes"},
+      {"Request", Enum.join(Enum.reject([grant.method, grant.url], &is_nil/1), " ")},
+      {"Request headers", {:list, Enum.map(grant.headers, fn {name, _value} -> name end)}},
+      {"Body", {:code, grant.body}},
+      {"Parameters", {:list, Enum.map(grant.params, & &1.name)}},
+      {"MWT tools", grant.tools && Atom.to_string(grant.tools)},
+      {"Command-line tools", {:list, grant.cli_tools}},
+      {"Checks", {:list, Enum.map(grant.checks, &"#{&1.name}: #{check_words(&1.on)}")}},
+      {"Under", grant.parent && {:link, grant.parent, "/tools/sandbox/grants/#{grant.parent}"}},
+      {"Preset", grant.preset && to_string(grant.preset)}
+    ]
+  end
+
+  defp host_action_words(:ask), do: "Ask"
+  defp host_action_words(:auto), do: "Auto-approve"
+  defp host_action_words(:block), do: "Block"
+  defp host_action_words(other), do: to_string(other)
+
+  defp kind_words(:token), do: "Token: placeholders MWT swaps for the value"
+  defp kind_words(:network), do: "Network: destinations opened"
+  defp kind_words(:command), do: "Command: a script run on your machine"
+  defp kind_words(:request), do: "Request: sent by MWT with a token's value"
+  defp kind_words(:mwt), do: "MWT's tools"
+  defp kind_words(_other), do: nil
+
+  defp state_words(%{state: :on, expires_at: nil}), do: "on, until turned off"
+  defp state_words(%{state: :on, expires_at: at}), do: "on, until #{time_words(at)}"
+  defp state_words(%{state: :off}), do: "off"
+
+  defp start_words(:off), do: "off"
+  defp start_words(:on), do: "on, each use asks"
+  defp start_words(:auto), do: "on, auto-approved"
+  defp start_words(_other), do: nil
+
+  defp source_words({:minted, how}), do: "minted by MWT (#{how})"
+  defp source_words(_stored), do: nil
+
+  defp allowance_words(%Allowance{pattern: :all} = allowance),
+    do: "every use" <> until_words(allowance.until)
+
+  defp allowance_words(%Allowance{pattern: pattern} = allowance),
+    do: "uses like “#{pattern}”" <> until_words(allowance.until)
+
+  defp until_words(nil), do: ", while the grant is on"
+  defp until_words(until), do: ", until #{time_words(until)}"
+
+  defp check_words(on),
+    do: Enum.map_join(on, ", ", &if(&1 == :enable, do: "when turned on", else: "daily"))
+
+  defp proposal_details(nil), do: nil
+
+  defp proposal_details(proposal) do
+    thread = proposal.thread || %{}
+
+    EventDetails.agent("Proposed by the agent", [
+      {"Agent", proposal.agent},
+      {"Why", proposal.reason},
+      {"For how long", proposal.minutes && "#{proposal.minutes} min"},
+      {"Thread", Map.get(thread, :title)},
+      {"Proposed at", proposal.at && time_words(proposal.at)},
+      {"Reviewed at", proposal.reviewed_at && time_words(proposal.reviewed_at)}
+    ])
+  end
+
+  defp time_words(at), do: Calendar.strftime(at, "%Y-%m-%d %H:%M:%S UTC")
 end

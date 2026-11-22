@@ -39,11 +39,18 @@ defmodule MWTClient.Sandbox.Event do
   journal; `exchange` holds it once a page has read it, and is never
   written with the event.
 
+  `details` is what the event says when its line opens
+  (`MWTClient.Sandbox.EventDetails`): given when it is logged, kept apart
+  in the journal like an exchange, and read back only when a page opens
+  the line. `detailed?` says it has some, so a page knows to read them;
+  read back from the journal, `details` is nil until then.
+
   Events are kept in the identity's `journal.db` (`row/1`,
   `MWTClient.Storage.Journal`) and read back by
   `MWTClient.Sandbox.Activity`.
   """
 
+  alias MWTClient.Sandbox.EventDetails
   alias MWTClient.Storage.Values
 
   @enforce_keys [:id, :at, :outcome, :summary]
@@ -64,7 +71,9 @@ defmodule MWTClient.Sandbox.Event do
     :thread_id,
     :thread,
     :exchange_id,
-    :exchange
+    :exchange,
+    :details,
+    detailed?: false
   ]
 
   @type outcome ::
@@ -104,14 +113,16 @@ defmodule MWTClient.Sandbox.Event do
           thread_id: String.t() | nil,
           thread: String.t() | nil,
           exchange_id: String.t() | nil,
-          exchange: MWTClient.Sandbox.Exchange.t() | :none | nil
+          exchange: MWTClient.Sandbox.Exchange.t() | :none | nil,
+          details: MWTClient.Sandbox.EventDetails.t() | nil,
+          detailed?: boolean()
         }
 
   @outcomes ~w(tunnel read read_failed lookup swapped allowed denied timed_out refused blocked violation grant vm
                command project handoff tool firewall)a
 
   @groups %{
-    "traffic" => [:tunnel, :read],
+    "traffic" => [:read, :tunnel],
     "credentials" => [:swapped, :allowed, :denied, :timed_out, :refused],
     "blocked" => [:blocked, :violation, :read_failed],
     "lookups" => [:lookup],
@@ -137,11 +148,24 @@ defmodule MWTClient.Sandbox.Event do
   @spec new_id() :: String.t()
   def new_id, do: "event-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false)
 
-  @doc "What the log's word filter looks in: the summary, host, path and method, lowercased."
+  @doc """
+  What the log's word filter looks in: the summary, host, path and method,
+  and the start of the details (`MWTClient.Sandbox.EventDetails.search_text/1`),
+  lowercased.
+  """
   @spec search_text(t()) :: String.t()
   def search_text(%__MODULE__{} = event) do
-    [event.summary, event.host, event.path, event.method] |> Enum.join(" ") |> String.downcase()
+    [event.summary, event.host, event.path, event.method]
+    |> Enum.join(" ")
+    |> String.downcase()
+    |> then(&Enum.join([&1, EventDetails.search_text(event.details)], " "))
+    |> String.trim_trailing()
   end
+
+  @doc "The details to keep with the event: none when it has nothing to say."
+  @spec details(t()) :: EventDetails.t() | nil
+  def details(%__MODULE__{details: [_ | _] = details}), do: details
+  def details(%__MODULE__{}), do: nil
 
   @doc "The event as a row of the journal (`MWTClient.Storage.Journal.record/2`)."
   @spec row(t()) :: MWTClient.Storage.Journal.row()
@@ -163,6 +187,7 @@ defmodule MWTClient.Sandbox.Event do
       thread_id: event.thread_id,
       thread: event.thread,
       exchange_id: event.exchange_id,
+      detailed: if(details(event), do: 1, else: 0),
       search_text: search_text(event)
     }
   end
@@ -171,13 +196,13 @@ defmodule MWTClient.Sandbox.Event do
   @spec columns() :: [String.t()]
   def columns,
     do: ~w(id at outcome summary grant_id host port method path up down ms agent thread_id thread
-         exchange_id)
+         exchange_id detailed)
 
   @doc "An event read back from the journal, its columns as `columns/0` lists them."
   @spec from_row(list()) :: t()
   def from_row(
         [id, at, outcome, summary, grant_id, host, port, method, path, up, down, ms] ++
-          [agent, thread_id, thread, exchange_id]
+          [agent, thread_id, thread, exchange_id, detailed]
       ) do
     %__MODULE__{
       id: id,
@@ -195,7 +220,8 @@ defmodule MWTClient.Sandbox.Event do
       agent: agent,
       thread_id: thread_id,
       thread: thread,
-      exchange_id: exchange_id
+      exchange_id: exchange_id,
+      detailed?: detailed == 1
     }
   end
 

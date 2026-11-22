@@ -44,7 +44,7 @@ defmodule MWTClient.Sandbox.Dns do
 
   require Logger
 
-  alias MWTClient.Sandbox.{Gate, Grant, Routes, Server, Sockets}
+  alias MWTClient.Sandbox.{EventDetails, Gate, Grant, Routes, Server, Sockets}
   alias MWTClient.Vault.Store
 
   @answer_within 5_000
@@ -273,7 +273,9 @@ defmodule MWTClient.Sandbox.Dns do
     case query(message) do
       {:ok, name, type, query} ->
         screened(username, query, name, type, seen, fn way ->
-          with :ok <- note(username, seen, name, type), do: forward(query, way)
+          result = forward(query, way)
+          :ok = note(username, seen, name, type, nil, answered(result, name, type, way))
+          result
         end)
 
       {:refuse, 5} ->
@@ -359,7 +361,7 @@ defmodule MWTClient.Sandbox.Dns do
     end
   end
 
-  defp note(username, seen, name, type, summary \\ nil) do
+  defp note(username, seen, name, type, summary, details \\ []) do
     now = System.monotonic_time(:second)
 
     {outcome, key} =
@@ -377,10 +379,54 @@ defmodule MWTClient.Sandbox.Dns do
 
         Server.cast(
           username,
-          {:log, %{outcome: outcome, summary: summary || "Looked up (#{type})", host: name}}
+          {:log,
+           %{
+             outcome: outcome,
+             summary: summary || "Looked up (#{type})",
+             host: name,
+             details: details
+           }}
         )
+
+        :ok
     end
   end
+
+  # What a lookup got: the addresses its answer gave the name, and from
+  # which resolver; or why it got none.
+  defp answered(result, name, type, way) do
+    rows =
+      case result do
+        {:ok, answer} ->
+          case addresses(answer, name) do
+            {[], _seconds} ->
+              [{"Answer", "no address"}]
+
+            {addresses, seconds} ->
+              [
+                {"Answer", {:list, Enum.map(addresses, &to_string(:inet.ntoa(&1)))}},
+                {"Kept for", "#{seconds} s"}
+              ]
+          end
+
+        {:error, reason} ->
+          [{"Answer", "none: #{inspect(reason)}"}]
+
+        other ->
+          [{"Answer", "none: #{inspect(other)}"}]
+      end
+
+    [
+      EventDetails.section(
+        "The lookup",
+        [{"Name", name}, {"Type", to_string(type)}, {"Asked", way_words(way)}] ++ rows
+      )
+    ]
+  end
+
+  defp way_words({address, port}), do: "#{:inet.ntoa(address)}:#{port}"
+  defp way_words({address, port, anchor}), do: "#{:inet.ntoa(address)}:#{port}, through #{anchor}"
+  defp way_words(_other), do: nil
 
   # Where a covered name is asked: the grant's resolver, through its way
   # out when it has one, or this machine's.

@@ -200,43 +200,119 @@ defmodule MWTClientWeb.SandboxLive.Components do
     """
   end
 
-  @doc "A coloured badge for an activity outcome."
+  @doc """
+  A coloured badge for an activity outcome. Hovered, it says what the
+  outcome means (`outcome_meaning/1`).
+  """
   attr :outcome, :atom, required: true
+  attr :id, :string, default: nil
 
   def outcome_badge(assigns) do
     {label, classes} = outcome_style(assigns.outcome)
-    assigns = assign(assigns, label: label, classes: classes)
+
+    assigns =
+      assign(assigns, label: label, classes: classes, meaning: outcome_meaning(assigns.outcome))
 
     ~H"""
-    <span class={[
-      "inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-      @classes
-    ]}>
+    <span
+      id={@id}
+      title={@meaning}
+      class={[
+        "inline-flex shrink-0 cursor-default items-center whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+        @classes
+      ]}
+    >
       {@label}
     </span>
     """
   end
 
-  @doc "The words and colours of each `t:MWTClient.Sandbox.Event.outcome/0`."
+  @doc """
+  The words and colours of each `t:MWTClient.Sandbox.Event.outcome/0`.
+
+  A word for what happened, read in a log of everything the VM did: the
+  traffic ones say whether MWT read it, so `Read` and `Not read` pair up
+  as the two lists of What MWT reads do; the rest name what changed.
+  """
   @spec outcome_style(Event.outcome()) :: {String.t(), String.t()}
-  def outcome_style(:tunnel), do: {"Passed", "bg-deep text-faint"}
   def outcome_style(:read), do: {"Read", "bg-deep text-muted"}
-  def outcome_style(:read_failed), do: {"Not read", "bg-warn-soft/60 text-warn-strong"}
+  def outcome_style(:tunnel), do: {"Not read", "bg-deep text-faint"}
+  def outcome_style(:read_failed), do: {"Cert refused", "bg-warn-soft/60 text-warn-strong"}
   def outcome_style(:lookup), do: {"Lookup", "bg-deep text-faint"}
-  def outcome_style(:swapped), do: {"Credential", "bg-accent-soft/60 text-accent-strong"}
+  def outcome_style(:swapped), do: {"Swapped", "bg-accent-soft/60 text-accent-strong"}
   def outcome_style(:allowed), do: {"Approved", "bg-ok-soft/60 text-ok-strong"}
   def outcome_style(:denied), do: {"Denied", "bg-bad-soft/60 text-bad"}
-  def outcome_style(:timed_out), do: {"Timed out", "bg-warn-soft/60 text-warn-strong"}
+  def outcome_style(:timed_out), do: {"No answer", "bg-warn-soft/60 text-warn-strong"}
   def outcome_style(:refused), do: {"Grant off", "bg-warn-soft/60 text-warn-strong"}
   def outcome_style(:blocked), do: {"Blocked", "bg-bad-soft/60 text-bad"}
-  def outcome_style(:violation), do: {"Violation", "bg-bad text-white"}
-  def outcome_style(:grant), do: {"Grant", "bg-violet/15 text-violet-strong"}
-  def outcome_style(:vm), do: {"VM", "bg-hover text-muted"}
-  def outcome_style(:command), do: {"Host", "bg-bad-soft/50 text-bad"}
+  def outcome_style(:violation), do: {"Wrong host", "bg-bad text-white"}
+  def outcome_style(:grant), do: {"Grant change", "bg-violet/15 text-violet-strong"}
+  def outcome_style(:vm), do: {"VM change", "bg-hover text-muted"}
+  def outcome_style(:command), do: {"Host command", "bg-bad-soft/50 text-bad"}
   def outcome_style(:project), do: {"Project", "bg-hover text-muted"}
   def outcome_style(:handoff), do: {"Handoff", "bg-accent-soft/60 text-accent-strong"}
-  def outcome_style(:tool), do: {"MWT", "bg-accent-soft/60 text-accent-strong"}
+  def outcome_style(:tool), do: {"MWT tool", "bg-accent-soft/60 text-accent-strong"}
   def outcome_style(:firewall), do: {"Firewall", "bg-bad text-white"}
+
+  @doc """
+  What an outcome means, in a sentence: shown when its badge is hovered,
+  in the activity log's legend, and on its line opened.
+  """
+  @spec outcome_meaning(Event.outcome()) :: String.t()
+  def outcome_meaning(:read),
+    do: "MWT read this request and sent it as the VM wrote it: the line opens to what it carried."
+
+  def outcome_meaning(:tunnel),
+    do:
+      "MWT passed the connection through as bytes, unread, so there is nothing to show: the line says why."
+
+  def outcome_meaning(:read_failed),
+    do:
+      "The VM's client refused MWT's certificate, so nothing went out. Not reading its host lets it through."
+
+  def outcome_meaning(:lookup), do: "The VM looked up a host name, and MWT answered."
+
+  def outcome_meaning(:swapped),
+    do: "MWT put a grant's real value in for the VM's placeholder, then sent the request."
+
+  def outcome_meaning(:allowed),
+    do: "An agent's ask was allowed: by you, or by what its grant allows without asking."
+
+  def outcome_meaning(:denied), do: "An agent's ask was declined: nothing went out with it."
+
+  def outcome_meaning(:timed_out),
+    do: "Nobody answered an agent's ask in time, so it was declined."
+
+  def outcome_meaning(:refused),
+    do: "A placeholder came while its grant was off, so MWT refused the request."
+
+  def outcome_meaning(:blocked),
+    do: "MWT refused the connection: a destination it always refuses, or one whose grant is off."
+
+  def outcome_meaning(:violation),
+    do: "A placeholder headed for a host its grant doesn't list, so MWT cut the request."
+
+  def outcome_meaning(:grant),
+    do: "A grant was added, edited or removed, turned on or off, or its value replaced."
+
+  def outcome_meaning(:vm),
+    do: "The VM started, stopped or was recreated, or its image or copies of its Home changed."
+
+  def outcome_meaning(:command),
+    do:
+      "A command an agent asked to run on your machine: run, declined or ended. Never its output."
+
+  def outcome_meaning(:project),
+    do: "A repository became a project or stopped being one, or its settings or mirror changed."
+
+  def outcome_meaning(:handoff),
+    do: "An agent handed off work or updated it, or you landed it, sent it back or closed it."
+
+  def outcome_meaning(:tool),
+    do: "An agent used MWT's notes, diagrams, flash cards or HTTP requests, or copied files out."
+
+  def outcome_meaning(:firewall),
+    do: "MWT's firewall found something, isolated the VM or released it, or its settings changed."
 
   @doc "The VM's status as a dot and a word."
   attr :vm, VM, required: true

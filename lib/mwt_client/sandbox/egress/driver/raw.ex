@@ -20,6 +20,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Raw do
 
   @behaviour MWTClient.Sandbox.Egress.Driver
 
+  alias MWTClient.Sandbox.EventDetails
   alias MWTClient.Sandbox.Egress.Driver
 
   @idle 300_000
@@ -91,11 +92,32 @@ defmodule MWTClient.Sandbox.Egress.Driver.Raw do
           port: raw.ctx.port,
           up: raw.up,
           down: raw.down,
-          ms: System.monotonic_time(:millisecond) - raw.ctx.started
+          ms: System.monotonic_time(:millisecond) - raw.ctx.started,
+          details: details(raw.ctx)
         }},
        :close
      ], raw}
   end
+
+  # The connection as MWT saw it: where it went, what it offered, why it
+  # wasn't read.
+  defp details(ctx) do
+    [
+      EventDetails.section("The connection", [
+        {"Address", "#{:inet.ntoa(ctx.ip)}:#{ctx.port}"},
+        {"Name it asked for", ctx.name},
+        {"Transport", ctx.transport |> to_string() |> String.upcase()},
+        {"TLS", if(ctx.tls?, do: "yes", else: "no")},
+        {"Protocol offered", ctx.alpn},
+        {"Under the grant",
+         is_binary(ctx.under) && {:link, ctx.under, "/tools/sandbox/grants/#{ctx.under}"}},
+        {"Why not read", why_words(ctx.why)}
+      ])
+    ]
+  end
+
+  defp why_words({:passed, reason}), do: Driver.why(reason)
+  defp why_words(_read), do: nil
 
   # Why MWT didn't read it (`MWTClient.Sandbox.Gate.reading/3`): with
   # reading only token grants' hosts, it is passed through as it always

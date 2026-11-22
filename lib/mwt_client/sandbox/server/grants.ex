@@ -102,7 +102,8 @@ defmodule MWTClient.Sandbox.Server.Grants do
     |> State.log(%{
       outcome: :grant,
       summary: "#{grant.name} #{words} · to review",
-      grant_id: grant.id
+      grant_id: grant.id,
+      details: if(previous, do: Grant.changes(previous, grant), else: [])
     })
     |> State.write_inbox()
     |> State.changed()
@@ -160,7 +161,8 @@ defmodule MWTClient.Sandbox.Server.Grants do
       |> Map.update(:made, %{}, &MWTClient.Sandbox.Made.drop_grant(&1, id))
     end)
     |> State.change(:grants, &Enum.reject(&1.grants, fn g -> g.id in gone end))
-    |> State.log(%{outcome: :grant, summary: summary})
+    # Gone from the state, so the grant as it was goes with the event.
+    |> State.log(%{outcome: :grant, summary: summary, details: Grant.details(grant)})
     |> State.write_inbox()
     |> State.changed()
   end

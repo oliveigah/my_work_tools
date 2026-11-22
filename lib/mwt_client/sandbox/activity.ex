@@ -47,8 +47,9 @@ defmodule MWTClient.Sandbox.Activity do
   @doc """
   One event, opened: with what its request carried and got back
   (`MWTClient.Sandbox.Exchange`) in `exchange`, `:none` when nothing of it
-  was kept (yet), or nil for an event of no such request. Nil when the
-  event is gone from the journal.
+  was kept (yet), or nil for an event of no such request; and what it says
+  when opened (`MWTClient.Sandbox.EventDetails`) in `details`, `[]` for
+  none. Nil when the event is gone from the journal.
   """
   @spec opened(String.t(), String.t()) :: Event.t() | nil
   def opened(username, id) do
@@ -57,7 +58,12 @@ defmodule MWTClient.Sandbox.Activity do
     case query(username, sql, [id]) do
       [row] ->
         event = Event.from_row(row)
-        %{event | exchange: event.exchange_id && (Journal.exchange(username, id) || :none)}
+
+        %{
+          event
+          | exchange: event.exchange_id && (Journal.exchange(username, id) || :none),
+            details: (event.detailed? && Journal.details(username, id)) || []
+        }
 
       [] ->
         nil

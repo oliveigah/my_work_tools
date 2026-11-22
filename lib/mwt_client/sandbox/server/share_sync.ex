@@ -37,7 +37,17 @@ defmodule MWTClient.Sandbox.Server.ShareSync do
   Runs in the server's process; the sync itself runs in a task.
   """
 
-  alias MWTClient.Sandbox.{CopyBack, FolderSync, Grant, Inbound, Projects, Share, Workspace}
+  alias MWTClient.Sandbox.{
+    CopyBack,
+    EventDetails,
+    FolderSync,
+    Grant,
+    Inbound,
+    Projects,
+    Share,
+    Workspace
+  }
+
   alias MWTClient.Sandbox.Server.{Firewall, State, Values}
 
   # Tried again this often while the VM is busy with something else.
@@ -498,6 +508,20 @@ defmodule MWTClient.Sandbox.Server.ShareSync do
     end
   end
 
+  # Which files a copy back wrote and took off, from what the record
+  # brought before it and after.
+  defp copy_back_details(before, record) do
+    old = (before && before.brought) || %{}
+    new = record.brought || %{}
+
+    EventDetails.section("The copy back", [
+      {"Written", {:list, for({path, entry} <- Enum.sort(new), old[path] != entry, do: path)}},
+      {"Taken off",
+       {:list, for(path <- Enum.sort(Map.keys(old)), not is_map_key(new, path), do: path)}},
+      {"Size of from-vm", "#{record.status.files} files, #{record.status.bytes} bytes"}
+    ])
+  end
+
   # A copy back's record, kept; what it brought in the log, under its
   # grant; a real value told to the firewall.
   defp copied(state, nil), do: {state, nil}
@@ -517,7 +541,8 @@ defmodule MWTClient.Sandbox.Server.ShareSync do
             summary:
               "from-vm copied onto your machine: #{status.written} written, #{status.removed} removed; " <>
                 "#{status.files} files there",
-            grant_id: grant_id
+            grant_id: grant_id,
+            details: [copy_back_details(state.copy_back, record)]
           })
           |> then(&if(grant_id, do: State.used(&1, grant_id), else: &1))
 

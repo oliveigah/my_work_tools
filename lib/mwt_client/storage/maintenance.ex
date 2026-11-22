@@ -104,6 +104,7 @@ defmodule MWTClient.Storage.Maintenance do
   def clear(username, "agent_activity") do
     :ok = Journal.flush(username)
     Storage.run(username, :journal, & &1.query!("DELETE FROM events_exchanges"))
+    Storage.run(username, :journal, & &1.query!("DELETE FROM events_details"))
     Storage.run(username, :journal, & &1.query!("DELETE FROM events"))
     :ok
   end

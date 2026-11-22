@@ -10,7 +10,7 @@ defmodule MWTClient.Sandbox.Project do
   leaves its clone, slots and work in the VM unchanged.
   """
 
-  alias MWTClient.Sandbox.{HostGit, Shares}
+  alias MWTClient.Sandbox.{EventDetails, HostGit, Shares}
 
   @enforce_keys [:name, :path, :mirrored_branch]
   defstruct [
@@ -285,4 +285,34 @@ defmodule MWTClient.Sandbox.Project do
 
   def explain(:bad_checks),
     do: "The checks are one command line, of at most 300 characters."
+
+  @doc """
+  The project as it is, for an event about it (`MWTClient.Sandbox.EventDetails`):
+  its folder, the branch its clone follows, its slots, its checks.
+  """
+  @spec details(t()) :: EventDetails.t()
+  def details(%__MODULE__{} = project) do
+    EventDetails.safely("a project", fn ->
+      EventDetails.new([EventDetails.section("The project", described(project))])
+    end)
+  end
+
+  @doc "What a change of its settings changed, `[]` for nothing."
+  @spec changes(t(), t()) :: EventDetails.t()
+  def changes(%__MODULE__{} = before, %__MODULE__{} = now) do
+    EventDetails.safely("a project's settings", fn ->
+      EventDetails.new([EventDetails.changes(described(before), described(now))])
+    end)
+  end
+
+  defp described(project) do
+    [
+      {"Name", project.name},
+      {"Folder", project.path},
+      {"Clone follows", project.mirrored_branch},
+      {"Slots", {:list, Enum.map(project.slots || [], &"slot-#{&1}")}},
+      {"Checks before a handoff", {:code, project.checks}},
+      {"Closed", project.closed && "yes"}
+    ]
+  end
 end

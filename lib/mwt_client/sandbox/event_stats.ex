@@ -1,6 +1,6 @@
 defmodule MWTClient.Sandbox.EventStats do
   @moduledoc """
-  The proxy activity page's figures, worked out from the events of the
+  The activity log's figures, worked out from the events of the
   journal (`MWTClient.Sandbox.Activity.stats/3`), so a page gets a small
   summary rather than the events each time it redraws.
 
@@ -18,13 +18,13 @@ defmodule MWTClient.Sandbox.EventStats do
       start given (the page's window, or the oldest event kept) to now.
 
   The series are the groups the page offers, so a group chosen leaves its
-  own colour in the timeline: `:passed`, `:credentials`, `:blocked` and
+  own colour in the timeline: `:traffic`, `:credentials`, `:blocked` and
   `:other` for everything else (lookups, changes, host commands).
   """
 
   alias MWTClient.Sandbox.Event
 
-  @series [:passed, :credentials, :blocked, :other]
+  @series [:traffic, :credentials, :blocked, :other]
 
   # How long each bar of the timeline may stand for. The shortest that
   # draws the whole span in no more than `@bars` bars is used.
@@ -33,7 +33,7 @@ defmodule MWTClient.Sandbox.EventStats do
   @shortest_span 15 * 60
   @hosts 8
 
-  @type series :: :passed | :credentials | :blocked | :other
+  @type series :: :traffic | :credentials | :blocked | :other
   @type bucket :: %{at: DateTime.t(), counts: %{series() => non_neg_integer()}, total: integer()}
 
   @type t :: %{
@@ -65,7 +65,7 @@ defmodule MWTClient.Sandbox.EventStats do
 
   @doc "Which series an event's outcome falls in."
   @spec series_of(Event.outcome()) :: series()
-  def series_of(outcome) when outcome in [:tunnel, :read], do: :passed
+  def series_of(outcome) when outcome in [:tunnel, :read], do: :traffic
 
   def series_of(outcome) when outcome in [:swapped, :allowed, :denied, :timed_out, :refused],
     do: :credentials

@@ -124,7 +124,7 @@ defmodule MWTClient.Sandbox do
   def event(username, id), do: Activity.opened(username, id)
 
   @doc """
-  The proxy activity page's figures over the events kept that pass the
+  The activity log's figures over the events kept that pass the
   same filters as `events/2` (`:limit` and `:before` aside): counts per
   group, bytes, busiest hosts, and a timeline (`MWTClient.Sandbox.EventStats`),
   from `:since`, or the oldest event kept, to now.

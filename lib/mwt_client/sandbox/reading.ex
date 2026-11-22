@@ -1,7 +1,8 @@
 defmodule MWTClient.Sandbox.Reading do
   @moduledoc """
-  Which hosts the proxy reads: what you set on the Proxy activity page,
-  saved with the sandbox and published to the network path
+  Which hosts MWT reads: what you set in What MWT reads, a dialog of the
+  activity log (a list of hosts read, one of hosts not read, and what a
+  host on neither list gets), saved with the sandbox and published to the network path
   (`MWTClient.Sandbox.Gate.reading/3`). Pure.
 
     * **`default`**: what MWT does with a host no rule names. `:every_host`,

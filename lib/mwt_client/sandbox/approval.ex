@@ -57,6 +57,8 @@ defmodule MWTClient.Sandbox.Approval do
   only, for the full view and copying (`MWTClient.Sandbox.RequestView`).
   """
 
+  alias MWTClient.Sandbox.EventDetails
+
   @enforce_keys [:id, :kind, :title, :requested_at, :deadline]
   defstruct [
     :id,
@@ -342,4 +344,166 @@ defmodule MWTClient.Sandbox.Approval do
     do: false
 
   def final?(%__MODULE__{}), do: true
+  ## Details
+
+  @doc """
+  What an event about this approval says when its line opens
+  (`MWTClient.Sandbox.EventDetails`): what was asked and how it was
+  decided (`how`, in words), the command and how it ran, the tool call or
+  the subgrant proposed, what MWT worked out, and apart, what the agent
+  wrote. Never a command's output: only its size and what was found in it.
+  """
+  @spec details(t(), String.t() | nil) :: MWTClient.Sandbox.EventDetails.t()
+  def details(%__MODULE__{} = approval, how) do
+    EventDetails.safely("an approval", fn ->
+      EventDetails.new([
+        ask_section(approval, how),
+        command_section(approval),
+        run_section(approval.run),
+        tool_section(approval.tool),
+        proposal_section(approval.proposal),
+        EventDetails.section("What MWT worked out", shown_facts(approval.facts || [])),
+        agent_section(approval)
+      ])
+    end)
+  end
+
+  defp ask_section(approval, how) do
+    EventDetails.section("The ask", [
+      {"Kind", kind_words(approval)},
+      {"What", approval.title},
+      {"Request", request_line(approval)},
+      {"Access asked for", approval.need},
+      {"For how long", approval.minutes && "#{approval.minutes} min"},
+      {"Allow similar covers", approval.pattern},
+      {"Asked at", time_words(approval.requested_at)},
+      {"Waited", waited_words(approval)},
+      {"Decided", how}
+    ])
+  end
+
+  defp kind_words(%{kind: :activation, proposal: %{}}), do: "A subgrant proposed"
+  defp kind_words(%{kind: :activation}), do: "A grant to turn on, or access to set up"
+  defp kind_words(%{kind: :request}), do: "A request carrying a grant's placeholder"
+  defp kind_words(%{kind: :connection}), do: "A connection through a network grant"
+  defp kind_words(%{kind: :tool}), do: "A call of MWT's tools"
+  defp kind_words(%{kind: :command, call: %{}}), do: "A request subgrant, sent by MWT"
+  defp kind_words(%{kind: :command}), do: "A command on your machine"
+
+  defp request_line(%{kind: kind, method: method, host: host, path: path})
+       when kind in [:request, :connection] and is_binary(host),
+       do: Enum.join(Enum.reject([method, host <> (path || "")], &is_nil/1), " ")
+
+  defp request_line(_approval), do: nil
+
+  defp command_section(%{kind: :command} = approval) do
+    EventDetails.section(if(approval.call, do: "Request", else: "Command"), [
+      {if(approval.call, do: "As sent", else: "Script"), {:code, approval.script}},
+      {"Folder", approval.dir},
+      {"Time limit", approval.timeout && "#{approval.timeout} s"},
+      {"Whose text",
+       if(approval.script_from == :grant,
+         do: "a saved command of the grant",
+         else: "the agent's, through Ask to run commands"
+       )},
+      {"Saved command", approval.saved_as},
+      {"Values",
+       {:list, Enum.map(approval.values || [], fn {name, value} -> "#{name}=#{value}" end)}},
+      {"What MWT guessed", {:list, approval.hints || []}}
+    ])
+  end
+
+  defp command_section(_approval), do: nil
+
+  defp run_section(nil), do: nil
+
+  # A run as it was kept, older ones with fewer of its keys.
+  defp run_section(run) do
+    started = Map.get(run, :started_at)
+    finished = Map.get(run, :finished_at)
+    findings = Map.get(run, :findings) || []
+    cut = Map.get(run, :cut) || 0
+
+    EventDetails.section("How it ran", [
+      {"Started", time_words(started)},
+      {"Ended", time_words(finished)},
+      {"Took", started && finished && "#{DateTime.diff(finished, started, :second)} s"},
+      {"Exit", Map.get(run, :exit)},
+      {"HTTP status", Map.get(run, :status)},
+      {"Output",
+       Map.get(run, :state) == :done &&
+         "#{Map.get(run, :bytes) || 0} bytes" <> if(cut > 0, do: ", #{cut} not kept", else: "")},
+      {"Output goes to", output_words(Map.get(run, :output_to))},
+      {"Stopped", Map.get(run, :stopped) && "by you"},
+      {"Time limit", Map.get(run, :timed_out) && "hit"},
+      {"Couldn't start", Map.get(run, :error)},
+      {"Found in its output", {:list, Enum.map(findings, &MWTClient.Sandbox.Inbound.words/1)}}
+    ])
+  end
+
+  defp output_words(:send), do: "the agent"
+  defp output_words(:review), do: "you, before the agent"
+  defp output_words(_other), do: nil
+
+  defp tool_section(nil), do: nil
+
+  defp tool_section(tool) do
+    kind = Map.get(tool, :kind)
+
+    EventDetails.section("MWT tool", [
+      {"Tool", Map.get(tool, :tool)},
+      {"Item", is_atom(kind) && kind && Atom.to_string(kind)},
+      {"Title", Map.get(tool, :title)},
+      {"Item id", Map.get(tool, :id)},
+      {"What changes", Map.get(tool, :words)}
+    ])
+  end
+
+  defp proposal_section(nil), do: nil
+
+  # Decided, a proposal keeps only a few of its keys (`settle/3`).
+  defp proposal_section(proposal) do
+    get = &Map.get(proposal, &1)
+
+    EventDetails.section("Subgrant proposed", [
+      {"Name", get.(:name)},
+      {"Under", get.(:parent_name)},
+      {"For", get.(:purpose)},
+      {"Script", {:code, get.(:script)}},
+      {"Folder", get.(:dir)},
+      {"Request", Enum.join(Enum.reject([get.(:method), get.(:url)], &is_nil/1), " ")},
+      {"Headers", {:list, Enum.map(get.(:headers) || [], fn {name, _value} -> name end)}},
+      {"Body", {:code, get.(:body)}},
+      {"Parameters", {:list, Enum.map(get.(:params) || [], & &1.name)}},
+      {"What MWT guessed", {:list, get.(:hints) || []}}
+    ])
+  end
+
+  # The facts the ask's own rows already say are left out.
+  defp shown_facts(facts),
+    do: Enum.reject(facts, fn {label, _value} -> label in ["Grant", "Script", "Request"] end)
+
+  defp agent_section(approval) do
+    thread = approval.thread || %{}
+
+    EventDetails.agent(
+      "In the agent's words",
+      [
+        {"Agent", approval.agent},
+        {"Why", approval.reason},
+        {"Thread", Map.get(thread, :title)},
+        {"Working in", Map.get(thread, :folder)},
+        {"Would save it as", approval.suggest_save},
+        {"Saved, it would be for", approval.save_for}
+      ] ++ (approval.claims || [])
+    )
+  end
+
+  defp waited_words(%{requested_at: asked} = approval) do
+    seconds = DateTime.diff(approval.decided_at || DateTime.utc_now(), asked, :second)
+    if seconds < 120, do: "#{seconds} s", else: "#{div(seconds, 60)} min"
+  end
+
+  defp time_words(nil), do: nil
+  defp time_words(at), do: Calendar.strftime(at, "%Y-%m-%d %H:%M:%S UTC")
 end

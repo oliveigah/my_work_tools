@@ -309,6 +309,17 @@ journal writes it after the events of its batch, and only for events that
 name it; a trigger deletes it with its event, so retention and clearing
 cover it, and its size counts as the activity's.
 
+What an event says when its line opens (`MWTClient.Sandbox.EventDetails`,
+`MWTClient.Storage.Migrations.JournalEventDetails`, `journal.db` version
+4) is kept the same way, in `events_details(event_id, details)`: one
+compressed term per event that has some, marked by `events.detailed = 1`
+so a page knows to read it, at most 16 KiB of words each before
+compression. Written after its event in the same batch, read only when a
+line opens, deleted with its event by a trigger. Events from before have
+none. The first 2 KiB of them go into `search_text`, so the log's word
+filter finds what only the details say (a command's script, a file a
+copy back wrote).
+
 Measured: a million events take 7.7 s to insert (129,000 a second; 7.1 s
 unencrypted) and 155 MB on disk. One kind in one hour: 0.4 ms. Top hosts
 over 100,000 events: 47 ms. A scan of every row's details: 175 ms.

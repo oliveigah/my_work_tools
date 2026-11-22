@@ -46,6 +46,7 @@ defmodule MWTClient.Sandbox.Gate do
   alias MWTClient.Sandbox.{
     CertificateAuthority,
     Destinations,
+    EventDetails,
     Firewall,
     Grant,
     Made,
@@ -779,8 +780,8 @@ defmodule MWTClient.Sandbox.Gate do
   or `{:pass, why}`, `why` for the log.
 
   MWT reads every connection it can (`Tcp.readable/2`), the
-  Internet's and a network grant's, as you set it on the Proxy activity
-  page (`MWTClient.Sandbox.Reading`): a host you opted out is passed
+  Internet's and a network grant's, as you set it in What MWT reads, on
+  the activity log (`MWTClient.Sandbox.Reading`): a host you opted out is passed
   through (`:listed`), and with only token grants' hosts read, every host
   you didn't opt in (`:off`). A network grant's
   connection it doesn't read is asked about as a connection
@@ -969,7 +970,8 @@ defmodule MWTClient.Sandbox.Gate do
           grant_id: through,
           method: request.operation,
           path: request.resource,
-          exchange_id: request.id
+          exchange_id: request.id,
+          details: about_details(message.about)
         })
 
         {:forward, Values.replace([]), %{out: view.tunnel_secrets, grant: nil}}
@@ -1194,4 +1196,14 @@ defmodule MWTClient.Sandbox.Gate do
   defp observe(username, observation), do: Watch.observe(username, observation)
 
   defp log(username, attrs), do: Server.cast(username, {:log, attrs})
+
+  # What MWT made of a request of another protocol than HTTP, from its
+  # driver (`MWTClient.Sandbox.Describe`): what it worked out, and apart,
+  # the words the request carried, as claims.
+  defp about_details(about) do
+    [
+      EventDetails.section("What MWT read of it", [{"Request", about.title} | about.facts]),
+      EventDetails.agent("In the request's own words", about.claims)
+    ]
+  end
 end

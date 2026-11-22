@@ -77,7 +77,7 @@ defmodule MWTClient.Sandbox.EventStatsTest do
 
     last = List.last(timeline.buckets)
     assert last.at == ~U[2026-11-15 12:00:00Z]
-    assert %{counts: %{passed: 1, credentials: 1}} = Enum.at(timeline.buckets, -2)
+    assert %{counts: %{traffic: 1, credentials: 1}} = Enum.at(timeline.buckets, -2)
     assert timeline.peak == 2
   end
 
@@ -95,7 +95,7 @@ defmodule MWTClient.Sandbox.EventStatsTest do
     counts = Enum.map(timeline.buckets, & &1.counts)
 
     assert counts |> Enum.map(& &1.blocked) |> Enum.sum() == 2
-    assert counts |> Enum.map(&(&1.passed + &1.credentials + &1.other)) |> Enum.sum() == 0
+    assert counts |> Enum.map(&(&1.traffic + &1.credentials + &1.other)) |> Enum.sum() == 0
   end
 
   test "nothing to show is still a timeline" do

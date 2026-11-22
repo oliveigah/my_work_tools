@@ -564,8 +564,8 @@ defmodule MWTClient.Sandbox.Egress.Driver do
 
   @doc "Why MWT didn't read a call (`passed/0`), in a few words for the log."
   @spec why(passed()) :: String.t()
-  def why(:listed), do: "you set it as Not read (What MWT reads, Proxy activity)"
-  def why(:off), do: "MWT is set to read only token grants' hosts"
+  def why(:listed), do: "you set it as Not read (What MWT reads, Activity log)"
+  def why(:off), do: "it is on neither list, and those aren't read (What MWT reads, Activity log)"
   def why(:silent), do: "the server speaks first"
   def why(:not_tls), do: "it isn't TLS"
   def why(:no_name), do: "TLS to an address, naming no host"

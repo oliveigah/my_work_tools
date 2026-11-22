@@ -541,7 +541,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
             error={@vm_errors[:log_body_kib]}
           >
             <:help>
-              Every request MWT reads is kept in Proxy activity with what came back; this is how much of each body, the request's and the answer's, from 0 (heads only) to 1024. A package install makes hundreds of requests, so a larger one fills the log sooner: how long it is kept is the Agent activity rule on the Storage page. The card for a request always shows what MWT read before deciding, at most 64 KiB.
+              Every request MWT reads is kept in the Activity log with what came back; this is how much of each body, the request's and the answer's, from 0 (heads only) to 1024. A package install makes hundreds of requests, so a larger one fills the log sooner: how long it is kept is the Agent activity rule on the Storage page. The card for a request always shows what MWT read before deciding, at most 64 KiB.
             </:help>
           </.setting>
         </.section>

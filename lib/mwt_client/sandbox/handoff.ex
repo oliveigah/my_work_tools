@@ -8,7 +8,7 @@ defmodule MWTClient.Sandbox.Handoff do
   """
 
   alias MWTClient.Git.{FileDiff, Files}
-  alias MWTClient.Sandbox.{Guest, HandoffStore, HostGit, Shown}
+  alias MWTClient.Sandbox.{EventDetails, Guest, HandoffStore, HostGit, Shown}
   alias MWTClient.Search
 
   @enforce_keys [:id, :title, :project, :repo, :onto, :source, :head, :opened_at]
@@ -360,6 +360,76 @@ defmodule MWTClient.Sandbox.Handoff do
     |> Stream.map(&Map.get(&1, :note))
     |> Stream.filter(&(is_binary(&1) and &1 != ""))
   end
+
+  @doc """
+  What an event about this handoff says when its line opens
+  (`MWTClient.Sandbox.EventDetails`): where it comes from and goes, its
+  size, how it landed, the last of its timeline, and apart, what the agent
+  wrote of it: its title and description.
+  """
+  @spec details(t()) :: EventDetails.t()
+  def details(%__MODULE__{} = handoff),
+    do: EventDetails.safely("a handoff", fn -> describe(handoff) end)
+
+  defp describe(handoff) do
+    stats = handoff.stats || %{}
+    accepted = handoff.accepted || %{}
+    landed = handoff.landed || %{}
+
+    EventDetails.new([
+      EventDetails.section("The handoff", [
+        {"Handoff", {:link, "##{handoff.id}", "/tools/sandbox/handoffs?id=#{handoff.id}"}},
+        {"Project", handoff.project},
+        {"Status", status_words(handoff.status)},
+        {"Revision", handoff.revision},
+        {"Branch in the VM", handoff.source && Map.get(handoff.source, :branch)},
+        {"Based on", base_label(handoff)},
+        {"Lands onto", handoff.onto},
+        {"Commit", handoff.head},
+        {"Size", size_words(stats)},
+        {"Conflicts", Map.get(stats, :conflicts, 0) > 0 && "#{stats.conflicts} files"},
+        {"Behind its base", Map.get(stats, :behind, 0) > 0 && "#{stats.behind} commits"},
+        {"Landed",
+         accepted[:how] &&
+           "#{landed_words(accepted.how)} on #{accepted[:branch]}" <>
+             if(accepted[:new_branch?], do: " (new)", else: "")},
+        {"Landed commit", landed[:commit]},
+        {"In the worktree", accepted[:worktree]}
+      ]),
+      EventDetails.section("Latest", [
+        {"Timeline",
+         {:list,
+          handoff.timeline
+          |> Enum.take(-4)
+          |> Enum.map(&"#{Calendar.strftime(&1.at, "%H:%M")} #{&1.text}")}}
+      ]),
+      EventDetails.agent("In the agent's words", [
+        {"Agent", handoff.agent},
+        {"Thread", handoff.thread},
+        {"Title", handoff.title},
+        {"Description", {:code, handoff.body}}
+      ])
+    ])
+  end
+
+  defp status_words(:open), do: "waiting for you"
+  defp status_words(:sent_back), do: "sent back"
+  defp status_words(:withdrawn), do: "taken back by its agent"
+  defp status_words(:accepted), do: "landed"
+  defp status_words(:closed), do: "closed"
+  defp status_words(_other), do: nil
+
+  defp landed_words(:as_is), do: "as it is, by a fast-forward"
+  defp landed_words(:commit), do: "as one commit"
+  defp landed_words(:commits), do: "its own commits"
+  defp landed_words(:changes), do: "as changes"
+  defp landed_words(_other), do: "landed"
+
+  defp size_words(%{commits: commits, files: files} = stats),
+    do:
+      "#{commits} commits, #{files} files, +#{Map.get(stats, :added, 0)} −#{Map.get(stats, :removed, 0)}"
+
+  defp size_words(_stats), do: nil
 
   @doc "The size of a handoff, kept on its record for the list."
   @spec stats(facts()) :: map()

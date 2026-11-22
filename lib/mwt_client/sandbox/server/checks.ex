@@ -21,7 +21,7 @@ defmodule MWTClient.Sandbox.Server.Checks do
   """
 
   alias MWTClient.Notifications
-  alias MWTClient.Sandbox.{Check, Grant, HostRun, Scratch}
+  alias MWTClient.Sandbox.{Check, EventDetails, Grant, HostRun, Scratch}
   alias MWTClient.Sandbox.Server.{Approvals, State, Values}
 
   @timeout 60
@@ -183,7 +183,16 @@ defmodule MWTClient.Sandbox.Server.Checks do
           summary:
             "#{grant.name}: check “#{check.name}” " <>
               if(ok?, do: "holds", else: "failed (#{exit_words(result)})"),
-          grant_id: grant.id
+          grant_id: grant.id,
+          details: [
+            check_details(check),
+            EventDetails.section("How it ran", [
+              {"Result", if(ok?, do: "holds", else: "failed")},
+              {"Exit", result[:exit]},
+              {"Couldn't run", result[:error]},
+              {"Output", {:code, kept.output}}
+            ])
+          ]
         })
 
       state =
@@ -193,6 +202,16 @@ defmodule MWTClient.Sandbox.Server.Checks do
 
       state |> State.write_inbox() |> State.changed()
     end
+  end
+
+  defp check_details(check) do
+    EventDetails.section("The check", [
+      {"Name", check.name},
+      {"Script", {:code, check.script}},
+      {"Runs",
+       Enum.map_join(check.on, ", ", &if(&1 == :enable, do: "when turned on", else: "daily"))},
+      {"Turns the grant off when it fails", if(check.gates, do: "yes", else: "no")}
+    ])
   end
 
   defp exit_words(%{error: error}) when is_binary(error), do: "it couldn't run"
@@ -208,7 +227,8 @@ defmodule MWTClient.Sandbox.Server.Checks do
         |> State.log(%{
           outcome: :grant,
           summary: "#{grant.name} turned off: its check “#{check.name}” failed",
-          grant_id: grant.id
+          grant_id: grant.id,
+          details: [check_details(check)]
         })
       else
         state
@@ -236,7 +256,8 @@ defmodule MWTClient.Sandbox.Server.Checks do
           |> State.log(%{
             outcome: :grant,
             summary: "#{grant.name}: check “#{check.name}” added",
-            grant_id: grant.id
+            grant_id: grant.id,
+            details: [check_details(check)]
           })
           |> run(updated, :all)
           |> State.write_inbox()
@@ -262,7 +283,8 @@ defmodule MWTClient.Sandbox.Server.Checks do
         |> State.log(%{
           outcome: :grant,
           summary: "#{grant.name}: check “#{check.name}” removed",
-          grant_id: grant.id
+          grant_id: grant.id,
+          details: [check_details(check)]
         })
         |> State.write_inbox()
         |> State.changed()

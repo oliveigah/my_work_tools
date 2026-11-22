@@ -239,7 +239,7 @@ defmodule MWTClientWeb.SandboxLive.Overview do
         <.card id="overview-activity" title="Latest activity" body_class="">
           <:actions>
             <.link patch={~p"/tools/sandbox/activity"} class="text-[11px] text-accent hover:underline">
-              Proxy activity
+              Activity log
             </.link>
           </:actions>
           <div :if={@recent == []}>

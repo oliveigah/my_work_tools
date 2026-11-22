@@ -98,6 +98,8 @@ defmodule MWTClient.Storage.JanitorTest do
   # Without auto_vacuum the file never shrinks on its own: a size limit that
   # counted it would delete for ever. Limits count the pages in use.
   test "what a kind takes is its pages in use, not the file", %{username: username} do
+    # Its tables and indexes take a page each when empty.
+    empty = Usage.group_bytes(username, :journal, "events")
     for n <- 1..3_000, do: event(username, "e#{n}", 1)
     events(username)
     full = Usage.group_bytes(username, :journal, "events")
@@ -105,7 +107,7 @@ defmodule MWTClient.Storage.JanitorTest do
 
     :ok = Maintenance.clear(username, "agent_activity")
 
-    assert Usage.group_bytes(username, :journal, "events") < div(full, 10)
+    assert Usage.group_bytes(username, :journal, "events") < empty + div(full - empty, 10)
     assert Usage.file_bytes(username, :journal) >= div(file, 2)
     assert Usage.free_bytes(username, :journal) > 0
   end

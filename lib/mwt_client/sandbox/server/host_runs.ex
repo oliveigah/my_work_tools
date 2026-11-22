@@ -529,7 +529,8 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
   def command_event(approval, how) do
     Map.merge(Event.asked_by(approval.agent, approval.thread), %{
       outcome: :command,
-      summary: "#{approval.title} · #{how}"
+      summary: "#{approval.title} · #{how}",
+      details: Approval.details(approval, how)
     })
   end
 

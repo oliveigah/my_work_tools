@@ -25,6 +25,7 @@ defmodule MWTClient.Sandbox.Server.State do
     Build,
     CertificateAuthority,
     Event,
+    EventDetails,
     Grant,
     Handoff,
     HandoffRecords,
@@ -233,12 +234,39 @@ defmodule MWTClient.Sandbox.Server.State do
   Adds an event to the activity log, kept in the identity's journal
   (`MWTClient.Storage.Journal`), and tells the pages. The last
   #{@recent_events} stay in memory too (`recent_events/1`).
+
+  Its details are what the caller gives (`MWTClient.Sandbox.EventDetails`),
+  then, for an event that names a grant, the grant as it is now
+  (`MWTClient.Sandbox.Grant.details/1`): what it opened, its state and
+  allowances when it happened, whatever it becomes after. A caller logs
+  after making its change, so a grant's event shows the grant changed.
   """
   def log(state, attrs) do
-    event = struct!(Event, Map.merge(%{id: Event.new_id(), at: now()}, attrs))
+    details =
+      (Map.get(attrs, :details) || []) ++ grant_details(state, Map.get(attrs, :grant_id))
+
+    event =
+      Event
+      |> struct!(Map.merge(%{id: Event.new_id(), at: now()}, attrs))
+      |> then(&%{&1 | details: EventDetails.new(details)})
+      |> then(&%{&1 | detailed?: Event.details(&1) != nil})
+
     Journal.record(state.username, Event.row(event))
+
+    if event.detailed?,
+      do: Journal.record_details(state.username, event.id, event.details)
+
     broadcast(state, {:sandbox_event, event})
     Map.put(state, :recent_events, Enum.take([event | recent_events(state)], @recent_events))
+  end
+
+  defp grant_details(_state, nil), do: []
+
+  defp grant_details(state, id) do
+    case Enum.find(state.grants, &(&1.id == id)) do
+      nil -> []
+      grant -> Grant.details(grant)
+    end
   end
 
   @doc """
