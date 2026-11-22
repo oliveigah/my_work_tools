@@ -52,6 +52,35 @@ defmodule MWTClient.Sandbox.InboxTest do
     refute File.read!(Path.join(dir, "agents-block.md")) =~ "way of working"
   end
 
+  test "the guides are in the inbox, and mwt help prints them" do
+    dir = Path.join(System.tmp_dir!(), "inbox-test-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(dir) end)
+
+    # A guide MWT no longer has goes; the others are written.
+    File.mkdir_p!(Path.join(dir, "guides"))
+    File.write!(Path.join(dir, "guides/gone.md"), "old")
+    :ok = Inbox.write(dir, [], "")
+
+    guides = Instructions.guides()
+
+    assert File.ls!(Path.join(dir, "guides")) |> Enum.sort() ==
+             Enum.sort(Map.keys(guides) |> Enum.map(&(&1 <> ".md")))
+
+    mwt = Path.join(dir, "bin/mwt")
+    assert {handoff, 0} = System.cmd(mwt, ["help", "handoff"])
+    assert handoff == guides["handoff"]
+
+    assert {usage, 0} = System.cmd(mwt, ["help"])
+
+    assert usage =~
+             "Guides, mwt help TOPIC: #{guides |> Map.keys() |> Enum.sort() |> Enum.join(" ")}\n"
+
+    for topic <- ["gone", "nope", "../AGENTS"] do
+      assert {said, 1} = System.cmd(mwt, ["help", topic], stderr_to_stdout: true)
+      assert said =~ "mwt: there is no guide #{topic}. Guides: access handoff"
+    end
+  end
+
   test "the user's way of working joins the agents' instructions" do
     dir = Path.join(System.tmp_dir!(), "inbox-test-#{System.unique_integer([:positive])}")
     on_exit(fn -> File.rm_rf!(dir) end)

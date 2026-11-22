@@ -147,7 +147,7 @@ defmodule MWTClient.Sandbox.InstructionsTest do
       # Both read the description from its front matter and put the words
       # typed after /handoff where $ARGUMENTS is.
       assert command =~ ~r/\A---\ndescription: .+\nargument-hint: .+\n---\n/
-      assert command =~ "mwt handoff --title" and command =~ "$ARGUMENTS"
+      assert command =~ "mwt help handoff" and command =~ "$ARGUMENTS"
 
       File.write!(claude, "changed in the VM\n")
       assert {"", 0} = boot.()
@@ -207,18 +207,99 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     end
   end
 
-  test "the standing text forbids the usual login steps and explains MWT's answers" do
+  test "the standing text forbids the usual login steps and says what MWT's refusals mean" do
     text = Instructions.text()
     assert text =~ "gh auth login"
-    assert text =~ "mwt_grant_off"
     assert text =~ "/mnt/mwt/grants.md"
     assert text =~ "mwt request GRANT_ID --reason"
     assert text =~ "mwt request --need"
     assert text =~ "~/.optmem/memo wake"
-    # Agent threads: a message from MWT, and a thread MWT can't reach.
+    assert text =~ "mwt_denied_by_user"
+    assert text =~ "mwt_isolated"
     assert text =~ "A message from MWT"
-    assert text =~ "Is this an MWT thread?"
-    assert text =~ "**Claude (MWT)**"
+    # Every code is explained where it is looked up.
+    assert Instructions.guides()["access"] =~ "mwt_grant_off"
+    # A thread MWT can't reach: `mwt project` says so, and the guide too.
+    assert Instructions.guides()["projects"] =~ "**Claude (MWT)**"
+  end
+
+  test "the standing text holds what every task needs, and sends to a guide for the rest" do
+    text = Instructions.text()
+    guides = Instructions.guides()
+
+    assert Map.keys(guides) |> Enum.sort() ==
+             ~w(access handoff projects propose run workspace)
+
+    # Every guide is named in the text, or in another guide, so an agent
+    # finds it; and every guide named exists.
+    named = Regex.scan(~r/mwt help ([a-z-]+)/, Enum.join([text | Map.values(guides)], "\n"))
+
+    for [_, topic] <- named,
+        topic != "TOPIC",
+        do: assert(Map.has_key?(guides, topic), "mwt help #{topic} names no guide")
+
+    for topic <- Map.keys(guides),
+        do: assert(Enum.any?(named, &(&1 == ["mwt help " <> topic, topic])), "#{topic} unnamed")
+
+    # The rules every task needs stay in the text itself.
+    assert text =~ "Take your slot first, before anything else"
+    assert text =~ "Never commit unless the user says so"
+    assert text =~ "Hand off only when the user asks"
+    assert text =~ "Conventional Commit"
+  end
+
+  # What agents read has a budget, in bytes. Claude Code and Codex load the
+  # standing text, the user's way of working and the project's AGENTS.md
+  # whole into every session, subagent and approval review, and Codex warns
+  # once they pass 32 KiB together. A change that needs more room makes it
+  # first, by moving what only some tasks need into a guide or tightening
+  # what is there. Raising a budget is the user's call.
+  @budgets %{
+    "priv/sandbox/agents.md" => 12_288,
+    "priv/sandbox/way-of-working-example.md" => 9_216,
+    "AGENTS.md" => 8_192
+  }
+  @guide_budget 8_192
+  @codex_warns_at 32_768
+
+  test "what agents read in every session keeps within its budget" do
+    for {file, budget} <- @budgets do
+      size = byte_size(File.read!(Path.join(File.cwd!(), file)))
+
+      assert size <= budget,
+             "#{file} is #{size} bytes, over its budget of #{budget}. Agents read it in " <>
+               "every session: make room first (move what only some tasks need into a " <>
+               "guide, or tighten what is there) rather than raise the budget, which is " <>
+               "the user's call."
+    end
+
+    # Together, as Codex counts them in a project whose user started from
+    # MWT's example: under its warning, whatever the budgets add up to.
+    total =
+      byte_size(Instructions.block(way_of_working: Instructions.way_of_working_example())) +
+        byte_size(File.read!(Path.join(File.cwd!(), "AGENTS.md")))
+
+    assert total < @codex_warns_at,
+           "What agents read in every session is #{total} bytes together, past the " <>
+             "#{@codex_warns_at} at which Codex warns: make room before adding."
+  end
+
+  test "each guide keeps within its budget" do
+    for {topic, text} <- Instructions.guides() do
+      assert byte_size(text) <= @guide_budget,
+             "mwt help #{topic} is #{byte_size(text)} bytes, over the #{@guide_budget} a " <>
+               "guide may take: it is read whole when needed, so split it by situation or " <>
+               "tighten it, rather than raise the budget, which is the user's call."
+    end
+  end
+
+  test "the /handoff command follows the handoff guide" do
+    command =
+      File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", "handoff-command.md"]))
+
+    assert command =~ "mwt help handoff"
+    assert command =~ "$ARGUMENTS"
+    assert Instructions.guides()["handoff"] =~ "mwt handoff --title"
   end
 
   test "the user's way of working follows the instructions, under MWT's heading, when written" do
@@ -248,7 +329,7 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     assert example =~ ~r/\A### The main operation, first\n/
     assert example =~ "\n### Decisions: which to bring to the user\n"
     assert example =~ "\n### Building blocks\n"
-    assert example =~ "**Roles, as people would share the work.**"
+    assert example =~ "**A component per job the operation needs, named for that job.**"
     refute example =~ ~r/^## /m
 
     assert {:ok, %{way_of_working: _}} =
@@ -341,13 +422,13 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     refute text =~ "kubectl get pods"
   end
 
-  test "the standing text says to keep commands small and to transform in the VM" do
-    text = Instructions.text()
-    assert text =~ "Bring the raw output back and do the rest here in the VM"
+  test "the guides say to keep commands small and to transform in the VM" do
+    guides = Instructions.guides()
+    assert guides["run"] =~ "Bring the raw output back and do the rest here in the VM"
     # Subgrants come first: called by id, proposed with their design in mind.
-    assert text =~ "mwt call gh-repo-view REPO_NAME=oliveigah/klife"
-    assert text =~ "mwt propose commands"
-    assert text =~ "The narrowest shape that works"
-    assert text =~ "You send an id and values, never a command"
+    assert Instructions.text() =~ "mwt call gh-repo-view REPO_NAME=oliveigah/klife"
+    assert Instructions.text() =~ ~r/You send an id and values,\s+never a command/
+    assert guides["propose"] =~ "mwt propose commands"
+    assert guides["propose"] =~ "The narrowest shape that works"
   end
 end

@@ -22,6 +22,10 @@ usage() {
   cat <<'USAGE'
 mwt - ask MWT, the user's control panel, for access
 
+  mwt help [TOPIC]
+      This, or the guide on TOPIC: what only some tasks need, to read
+      before you do what it covers. The topics are listed at the end.
+
   mwt grants
       Every grant: its id, what it is for, how to use it, whether it is on.
 
@@ -277,6 +281,44 @@ and its output came back (124 if it hit its time limit). Otherwise, with a
 line on stderr: 120 still waiting for the user, 121 it didn't run or its
 output didn't come back, 122 the ask was wrong, 123 MWT isn't answering.
 USAGE
+  printf '\nGuides, mwt help TOPIC: %s\n' "$(guide_topics)"
+}
+
+# The guides MWT writes beside this command, in its inbox
+# (MWTClient.Sandbox.Instructions.guides/0): what only some tasks need,
+# which the standing instructions send an agent to read.
+guides_dir() {
+  local inbox
+  inbox=$(cd -- "$(dirname -- "$0")/.." && pwd -P) || return 1
+  printf '%s/guides' "$inbox"
+}
+
+guide_topics() {
+  local dir file topics=""
+  dir=$(guides_dir) || return 0
+  for file in "$dir"/*.md; do
+    [ -e "$file" ] || continue
+    file=${file##*/}
+    topics="$topics ${file%.md}"
+  done
+  printf '%s' "${topics# }"
+}
+
+# Prints the guide on $1, or says which there are.
+guide() {
+  local dir
+  dir=$(guides_dir)
+  case $1 in
+    '' | *[!a-z-]*) ;;
+    *)
+      if [ -r "$dir/$1.md" ]; then
+        cat -- "$dir/$1.md"
+        return 0
+      fi
+      ;;
+  esac
+  echo "mwt: there is no guide $1. Guides: $(guide_topics)" >&2
+  return 1
 }
 
 # A JSON string: quotes, backslashes and control characters escaped.
@@ -1111,7 +1153,11 @@ case $command in
     send "{\"command\":\"vm\",\"id\":$(json "$vm_id")}"
     ;;
   help | -h | --help)
-    usage
+    if [ -n "$grant" ]; then
+      guide "$grant" || exit 1
+    else
+      usage
+    fi
     ;;
   *)
     echo "mwt: unknown command $command. See: mwt help" >&2

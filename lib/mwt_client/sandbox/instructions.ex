@@ -1,11 +1,17 @@
 defmodule MWTClient.Sandbox.Instructions do
   @moduledoc """
-  What agents in the VM are told: access comes only from MWT's grants, what
-  MWT's answers mean, how to ask for a command on the host as a last resort,
-  how to use mise and their own memory (`priv/sandbox/agents.md`), and which
-  grants exist right now (`grants/2`). How the user likes to work with
-  agents is their own text, not a fact of the VM (`Settings`,
-  `way_of_working`), joining the instructions only when they wrote one.
+  What agents in the VM are told: what every task needs, in every session
+  (`priv/sandbox/agents.md`): where to work, how a project's slots and
+  handoffs go, that access comes only from MWT's grants, and their own
+  memory; what only some tasks need, in guides they read when that text
+  sends them there (`guides/0`); and which grants exist right now
+  (`grants/2`). How the user likes to work with agents is their own text,
+  not a fact of the VM (`Settings`, `way_of_working`), joining the
+  instructions only when they wrote one.
+
+  The standing text is kept short on purpose: Claude Code and Codex load
+  it, whole, into every session, subagent and approval review, and a rule
+  every task needs is followed less often among pages that only some do.
 
   The instructions reach Claude Code and Codex through their global files in
   the VM's Home, `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, as a block
@@ -51,6 +57,21 @@ defmodule MWTClient.Sandbox.Instructions do
   @doc "MWT's example of a way of working, for the user to start from."
   @spec way_of_working_example() :: String.t()
   def way_of_working_example, do: priv("way-of-working-example.md")
+
+  @doc """
+  The guides, by topic: what only some tasks need, which agents read when
+  the standing text sends them there (`mwt help TOPIC`, from
+  `/mnt/mwt/guides/TOPIC.md`), rather than carry in every session. Each is
+  `priv/sandbox/guides/TOPIC.md`.
+  """
+  @spec guides() :: %{String.t() => String.t()}
+  def guides do
+    dir = Path.join([:code.priv_dir(:mwt_client), "sandbox", "guides"])
+
+    for file <- File.ls!(dir), Path.extname(file) == ".md", into: %{} do
+      {Path.rootname(file), File.read!(Path.join(dir, file))}
+    end
+  end
 
   defp priv(file), do: File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", file]))
 
@@ -123,17 +144,17 @@ defmodule MWTClient.Sandbox.Instructions do
     Written by MWT whenever a grant changes. To use one that is off, ask the
     user with: mwt request GRANT_ID --reason "what you are about to do"
     For access no grant gives: mwt request --need "what, and for which host" --reason "why",
-    or, when you know what it takes, propose the grant: mwt propose token|network (mwt help).
+    or, when you know what it takes, propose the grant (read mwt help propose first).
     One proposed and not yet reviewed stays off until the user accepts it on its page.
 
     A subgrant is one fixed use of a grant, which MWT carries out for you
     when you call it by its id, with a value for each parameter:
     mwt call ID NAME=value --reason "why now"
     Look for one before anything else: it may run without asking. To run
-    something on the user's machine that no subgrant does (see mwt host
-    first), propose one (mwt propose, see mwt help) when you will need it
-    again. Otherwise, only while Ask to run commands is on may you ask to
-    run a command you write, and the user approves every run: send the
+    something on the user's machine that no subgrant does, propose one
+    when you will need it again (mwt help propose). Otherwise, only while
+    Ask to run commands is on may you ask to run a command you write, and
+    the user approves every run: read mwt help run first, send the
     smallest command that gets what you need, and work on its output here
     in the VM.
 

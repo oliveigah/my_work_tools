@@ -23,6 +23,8 @@ defmodule MWTClient.Sandbox.Inbox do
       presents one (`login_file/1`): placeholders only;
     * `AGENTS.md`, `grants.md` - what agents are told, and the grants as they
       are now;
+    * `guides/<topic>.md` - what only some tasks need, which `mwt help
+      TOPIC` prints (`Instructions.guides/0`);
     * `bin/mwt-boot`, `agents-block.md`, `handoff-command.md`, `bin/memo` -
       what the VM copies for itself after each boot: the script MWT runs in
       it, the instructions as a block for the agents' own files, the
@@ -114,6 +116,13 @@ defmodule MWTClient.Sandbox.Inbox do
     # (`MWTClient.Sandbox.Mirror.remote_url/0`).
     put_changed(dir, "bin/git-remote-mwt", priv("mwt-git-remote"), 0o755)
     put_changed(dir, "AGENTS.md", Instructions.text(opts))
+    # What only some tasks need, which `mwt help TOPIC` prints.
+    hold(
+      dir,
+      "guides",
+      Map.new(Instructions.guides(), fn {topic, text} -> {topic <> ".md", {text, 0o644}} end)
+    )
+
     # What the VM copies for itself after each boot (`bin/mwt-boot`): MWT
     # writes nothing into storage the VM can write.
     put_changed(dir, "agents-block.md", Instructions.block(opts))

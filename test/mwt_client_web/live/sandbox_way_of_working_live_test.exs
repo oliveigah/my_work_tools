@@ -27,7 +27,7 @@ defmodule MWTClientWeb.SandboxWayOfWorkingLiveTest do
     view |> element("#way-of-working-example") |> render_click()
 
     assert render(element(view, "#way-of-working-text")) =~
-             "Roles, as people would share the work."
+             "A component per job the operation needs, named for that job."
 
     assert_push_event(view, "way_of_working_fill", %{text: ^example})
     assert Sandbox.snapshot(username).settings.way_of_working == ""

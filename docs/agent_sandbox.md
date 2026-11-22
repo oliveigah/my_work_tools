@@ -449,6 +449,7 @@ disks.
 | `bin/mwt`, `bin/mwt-acp`, `bin/mwt-present`          | The [`mwt` command](#agent-channel); the ACP shell; the presentations           |
 | `bin/mwt-boot`, `agents-block.md`, `handoff-command.md`, `bin/memo` | What the boot script copies; `memo` when you have OptMem       |
 | `AGENTS.md`, `grants.md`, `host.md`                  | What agents are told; what `mwt grants` prints; [your machine](#host-commands)  |
+| `guides/<topic>.md`                                  | What only some tasks need, which `mwt help TOPIC` prints                        |
 
 **MWT's layer** is only pointers into `/mnt/mwt`, so one image serves any
 identity, the CA changes without a rebuild, and old tags keep working:
@@ -476,7 +477,19 @@ disk, with an empty memory when there is none; `/etc/mwt-vm`, which
 `mwt vm` checks against the VM MWT runs; Claude (MWT) and Codex (MWT) in
 the VM's `~/.config/zed/settings.json`. It starts `mwt ports --watch`.
 
-**What agents are told** (`priv/sandbox/agents.md`), in short:
+**What agents are told** comes in two parts. `priv/sandbox/agents.md`
+holds what every task needs, and is kept short: Claude Code and Codex load
+it whole into every session, subagent and approval review, and a rule
+every task needs is followed less often among pages that only some tasks
+need. The rest is in guides, `priv/sandbox/guides/TOPIC.md`, which reach
+the VM at `/mnt/mwt/guides` and which `mwt help TOPIC` prints: `projects`
+(slots in detail, another thread's task, catching up), `handoff` (the
+steps, which `/handoff` follows, and what comes after), `access` (token
+grants, subgrants, the network, every `mwt_*` code), `propose`, `run` and
+`workspace`. Each line of `agents.md` that leaves something to a guide
+names it, as what to read before doing that.
+
+In short, `agents.md` says:
 
 - work in `/work`, not in shared folders' read-only copies, and `mwt sync`
   before relying on what one holds now; the [workspace](#the-workspace)
@@ -486,8 +499,8 @@ the VM's `~/.config/zed/settings.json`. It starts `mwt ports --watch`.
   ([Projects and handoffs](#projects-and-handoffs));
 - access only from grants (`mwt grants`, `mwt request`, `mwt exec`; no
   logins, no pasted or written tokens), each use possibly waiting for you;
-  what the `mwt_*` codes mean; subgrants (`mwt call`, `mwt propose`) before
-  `mwt run`, the smallest last resort;
+  a refusal by you or an isolation never worked around; subgrants
+  (`mwt call`) before `mwt run`, the last resort;
 - `mise install` first, ports 4100 to 4199 for what you'll open, notes and
   flash cards only when asked, and their memory (the OptMem block).
 
@@ -498,13 +511,13 @@ agents is your taste, not a fact of the VM: **Your way of working**
 which reaches agents at the VM's next start, when the boot script writes
 the block again. Up to 20,000 characters, since agents read it in every
 session. MWT offers an example to start from
-(`priv/sandbox/way-of-working-example.md`), in three parts:
+(`priv/sandbox/way-of-working-example.md`): concepts only, with no worked
+examples, since agents read it in every session. In three parts:
 
 - **The main operation, first:** what the system exists for in your world
-  (in a supermarket, a customer gets the products and takes them home)
   and what it actually needs, which agents state back and get your yes on
-  before they design, tracing every role to it, and bringing back at once
-  when the work shows it is other than you both thought.
+  before they design, tracing every component to it, and bringing back at
+  once when the work shows it is other than you both thought.
 - **Decisions:** agents ask you only what is yours to decide and costly if
   wrong (what others rely on, data that is kept, how it behaves in
   production, who carries the work or the risk), early, and decide the
@@ -513,15 +526,14 @@ session. MWT offers an example to start from
   step, and what each option would do in your world, in plausible
   scenarios (the usual case, more load, a failing dependency, a broken
   assumption).
-- **Building blocks:** a system designed as roles serving the main
-  operation, the way people doing the job by hand would share it, cut
-  where what they live with or what their failure stops differs; few
-  simple blocks, one meaning each, premises stated and held where the
-  choice is made, composed and reused, with what comes in the hundreds
-  as data; a block shared when its callers need the same concept, each
-  supplying what differs through a callback, split when one needs
-  another meaning, and asked about when in doubt. Most of its examples
-  come from klife, a Kafka client for Elixir, and its protocol library.
+- **Building blocks:** a component per job the main operation needs,
+  named for that job (never a character, a metaphor or a name that says
+  nothing), cut where what they live with or what their failure stops
+  differs; few simple blocks, one meaning each, premises stated and held
+  where the choice is made, composed and reused, with what comes in the
+  hundreds as data; a block shared when its callers need the same
+  concept, each supplying what differs through a callback, split when one
+  needs another meaning, and asked about when in doubt.
 
 <a id="shared-folders"></a>
 
@@ -2338,6 +2350,7 @@ script that talks with socat (in the default image), on every shell's
 can use it. `mwt help` prints the list:
 
 ```
+mwt help [TOPIC]                             this list, or a guide on what only some tasks need
 mwt grants                                   every grant: id, what it is for, how to use it, state
 mwt exec GRANT_ID -- COMMAND [ARG…]          a command in the VM with a token grant's placeholders (Who uses its value)
 mwt request GRANT_ID --reason "…" [--minutes 60] [--wait 60]
@@ -3515,6 +3528,7 @@ history is in git.
 | 2026-11-22 | A credential endpoint a grant takes is answered by MWT itself rather than refused: it makes the credential with the grant's value, keeps it as a value made from the grant, going only where it was made for, and hands the VM a placeholder. The first is `signJwt`, for the service accounts a grant names, the signed JWT going only to its `aud` host; values made for one tool's request belong to one grant, since a request may carry one grant's placeholders ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
 | 2026-11-22 | A token grant may give a Google login file whose refresh MWT answers from the grant's mint, the access token its own placeholder and the ID token, when the mint prints one, a placeholder standing for the grant's current ID token, minted fresh on the way out, holding only its `iss`, `aud`, `iat`, `exp`, `email` and `hd`; values made for one tool's request belong to one grant ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
 | 2026-11-22 | A minted grant may keep each value at most N minutes, whatever its expiry says, since a service may take a token only while it is young ([Where real values come from](#where-real-values-come-from)). |
+| 2026-11-22 | What agents are told every session shrank from 34 KB to 10 KB: the rules every task needs stay in `agents.md`, and what only some tasks need (slots in detail, handing off, token grants and MWT's refusals, proposing, host commands, the workspace) moved to guides that `mwt help TOPIC` prints, which the rules name as what to read first. With your way of working and a project's own `AGENTS.md`, Codex warned of the total, and every session, subagent and approval review read all of it ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)). MWT's example way of working asks for a component per job, named for it, rather than roles people would play, and keeps only the concepts: 7.9 KB instead of 14.8 KB. |
 
 <a id="later"></a>
 
