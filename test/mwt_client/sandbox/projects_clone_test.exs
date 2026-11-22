@@ -12,10 +12,16 @@ defmodule MWTClient.Sandbox.ProjectsCloneTest do
     git(repo, ["tag", "v1"])
 
     assert {:ok, project} = Projects.open(username, repo)
-    assert git(clone, ["remote", "get-url", "origin"]) == Project.remote_url(project) <> "\n"
+    # Each remote is named for where it reaches; no origin to mix them up.
+    assert git(clone, ["remote", "get-url", "host-origin"]) == Project.remote_url(project) <> "\n"
+
+    assert git(clone, ["remote", "get-url", "remote-origin"]) ==
+             Project.remote_url(project) <> "/remote-origin\n"
+
+    assert git(clone, ["remote"]) == "host-origin\nremote-origin\n"
     assert git(clone, ["branch", "--show-current"]) == "master\n"
-    assert git(clone, ["config", "branch.master.remote"]) == "origin\n"
-    assert sha(clone, "origin/develop") == sha(repo, "develop")
+    assert git(clone, ["config", "branch.master.remote"]) == "host-origin\n"
+    assert sha(clone, "host-origin/develop") == sha(repo, "develop")
     assert sha(clone, "v1") == sha(repo, "v1")
     refute File.exists?(clone <> ".wt")
 
@@ -30,7 +36,7 @@ defmodule MWTClient.Sandbox.ProjectsCloneTest do
     mirror: clone
   } do
     {:ok, _} = Projects.open(username, repo)
-    fetched = sha(clone, "origin/master")
+    fetched = sha(clone, "host-origin/master")
     commit(clone, [{"local.txt", "local\n"}], "local work")
     head = sha(clone, "HEAD")
     git(clone, ["branch", "keep-me"])
@@ -48,7 +54,7 @@ defmodule MWTClient.Sandbox.ProjectsCloneTest do
     assert git(clone, ["branch", "--show-current"]) == "master\n"
     assert sha(clone, "HEAD") == head
     assert sha(clone, "keep-me") == head
-    assert sha(clone, "origin/master") == fetched
+    assert sha(clone, "host-origin/master") == fetched
     assert git(clone, ["status", "--porcelain"]) == status
     assert git(clone, ["write-tree"]) == index
     assert File.read!(Path.join(clone, "untracked.txt")) == "keep\n"
@@ -90,18 +96,21 @@ defmodule MWTClient.Sandbox.ProjectsCloneTest do
     assert File.read!(Path.join(tree, "a.txt")) == "active task changes\n"
     assert File.read!(Path.join(tree, "_build/warm")) == "keep\n"
     assert git(clone, ["config", "branch.active-task.mwt-thread"]) == "existing-thread\n"
-    assert git(clone, ["remote", "get-url", "origin"]) == Project.remote_url(project) <> "\n"
-    assert sha(clone, "origin/master") == sha(repo, "master")
+
+    assert git(clone, ["remote", "get-url", "host-origin"]) ==
+             Project.remote_url(project) <> "\n"
+
+    assert sha(clone, "host-origin/master") == sha(repo, "master")
 
     # The mirror's own remote goes, with its branches, which nothing would
-    # update; what tracked it tracks origin, and the task's base follows.
-    assert git(clone, ["remote"]) =~ "origin"
-    refute git(clone, ["remote"]) =~ "host"
+    # update; what tracked it tracks host-origin, and the task's base
+    # follows.
+    assert git(clone, ["remote"]) == "host-origin\nremote-origin\n"
     assert git(clone, ["for-each-ref", "refs/remotes/host/"]) == ""
-    assert git(clone, ["config", "branch.master.remote"]) == "origin\n"
+    assert git(clone, ["config", "branch.master.remote"]) == "host-origin\n"
 
     assert git(clone, ["config", "branch.active-task.mwt-base"]) ==
-             "refs/remotes/origin/master\n"
+             "refs/remotes/host-origin/master\n"
 
     refute File.exists?(Path.join(clone <> ".wt", "slot-1"))
     refute File.exists?(Path.join(clone <> ".wt", "slot-3"))
@@ -133,7 +142,7 @@ defmodule MWTClient.Sandbox.ProjectsCloneTest do
     git(clone, ["update-ref", "refs/remotes/host/master", sha(clone, "HEAD")])
 
     assert {:ok, _} = Mirror.run(project, Guest.local(vm))
-    refute git(clone, ["remote"]) =~ "host"
+    assert git(clone, ["remote"]) == "host-origin\nremote-origin\n"
     assert git(clone, ["for-each-ref", "refs/remotes/host/"]) == ""
 
     # A remote you named host yourself, elsewhere, is yours: it stays.
@@ -142,18 +151,78 @@ defmodule MWTClient.Sandbox.ProjectsCloneTest do
     assert git(clone, ["remote", "get-url", "host"]) == Path.join(vm, "elsewhere.git") <> "\n"
   end
 
-  test "later refreshes preserve custom origin and commit identity configuration", %{
+  test "a clone made before the remotes were renamed gets them in place, tasks and all", %{
+    username: username,
+    repo: repo,
+    mirror: clone,
+    vm: vm
+  } do
+    {:ok, project} = Projects.ensure(username, repo)
+    assert {:ok, _} = Mirror.run(project, Guest.local(vm))
+    url = Project.remote_url(project)
+    # As version 1 left it: origin your repository, upstream its remote.
+    git(clone, ["remote", "rename", "host-origin", "origin"])
+    git(clone, ["remote", "rename", "remote-origin", "upstream"])
+    git(clone, ["config", "remote.upstream.url", url <> "/upstream"])
+    git(clone, ["config", "mwt.clone-version", "1"])
+    tree = Path.join(clone <> ".wt", "slot-1")
+    git(clone, ["worktree", "add", "-q", "--no-track", "-b", "fix", tree, "origin/master"])
+    git(clone, ["config", "branch.fix.mwt-base", "refs/remotes/origin/master"])
+    git(clone, ["config", "branch.other.mwt-base", "refs/heads/fix"])
+    File.write!(Path.join(tree, "a.txt"), "unfinished\n")
+    head = sha(tree, "HEAD")
+
+    assert {:ok, _} = Mirror.run(project, Guest.local(vm))
+    assert git(clone, ["remote"]) == "host-origin\nremote-origin\n"
+    assert git(clone, ["remote", "get-url", "host-origin"]) == url <> "\n"
+    assert git(clone, ["remote", "get-url", "remote-origin"]) == url <> "/remote-origin\n"
+    assert sha(clone, "host-origin/master") == sha(repo, "master")
+
+    assert git(clone, ["symbolic-ref", "refs/remotes/host-origin/HEAD"]) ==
+             "refs/remotes/host-origin/master\n"
+
+    assert git(clone, ["for-each-ref", "refs/remotes/origin/", "refs/remotes/upstream/"]) == ""
+    assert git(clone, ["config", "branch.master.remote"]) == "host-origin\n"
+    assert git(clone, ["config", "branch.fix.mwt-base"]) == "refs/remotes/host-origin/master\n"
+    assert git(clone, ["config", "branch.other.mwt-base"]) == "refs/heads/fix\n"
+    assert git(clone, ["config", "mwt.clone-version"]) == "2\n"
+    assert sha(tree, "HEAD") == head
+    assert File.read!(Path.join(tree, "a.txt")) == "unfinished\n"
+  end
+
+  test "a version 1 clone whose origin the VM pointed elsewhere keeps it, and gets host-origin",
+       %{username: username, repo: repo, mirror: clone, vm: vm} do
+    {:ok, project} = Projects.ensure(username, repo)
+    assert {:ok, _} = Mirror.run(project, Guest.local(vm))
+    git(clone, ["remote", "rename", "host-origin", "origin"])
+    git(clone, ["remote", "set-url", "origin", "example:another-repository"])
+    git(clone, ["remote", "rename", "remote-origin", "upstream"])
+    git(clone, ["remote", "set-url", "upstream", "example:a-fork"])
+    git(clone, ["config", "mwt.clone-version", "1"])
+
+    assert {:ok, _} = Mirror.run(project, Guest.local(vm))
+    assert git(clone, ["remote", "get-url", "origin"]) == "example:another-repository\n"
+    assert git(clone, ["remote", "get-url", "upstream"]) == "example:a-fork\n"
+
+    assert git(clone, ["remote", "get-url", "host-origin"]) ==
+             Project.remote_url(project) <> "\n"
+
+    assert git(clone, ["remote", "get-url", "remote-origin"]) ==
+             Project.remote_url(project) <> "/remote-origin\n"
+  end
+
+  test "later refreshes preserve custom remotes and commit identity configuration", %{
     username: username,
     repo: repo,
     mirror: clone
   } do
     {:ok, _} = Projects.open(username, repo)
-    git(clone, ["remote", "set-url", "origin", "example:another-repository"])
+    git(clone, ["remote", "set-url", "host-origin", "example:another-repository"])
     git(clone, ["config", "user.name", "VM developer"])
     git(clone, ["config", "user.email", "vm@example.test"])
 
     assert {:ok, _} = Projects.mirror(username, "app")
-    assert git(clone, ["remote", "get-url", "origin"]) == "example:another-repository\n"
+    assert git(clone, ["remote", "get-url", "host-origin"]) == "example:another-repository\n"
     assert git(clone, ["config", "user.name"]) == "VM developer\n"
     assert git(clone, ["config", "user.email"]) == "vm@example.test\n"
   end

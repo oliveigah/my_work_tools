@@ -152,9 +152,9 @@ defmodule MWTClient.Sandbox.HandoffsLandingTest do
       assert sha(repo, feature) == sha(first, "HEAD")
       assert {:ok, %{commits: [_, _]}} = Handoffs.facts(username, 1)
 
-      git(mirror, ["fetch", repo, "+refs/heads/#{feature}:refs/remotes/origin/#{feature}"])
-      second = new_worktree(mirror, "tweak-login", "refs/remotes/origin/" <> feature)
-      git(second, ["branch", "--set-upstream-to", "origin/" <> feature])
+      git(mirror, ["fetch", repo, "+refs/heads/#{feature}:refs/remotes/host-origin/#{feature}"])
+      second = new_worktree(mirror, "tweak-login", "refs/remotes/host-origin/" <> feature)
+      git(second, ["branch", "--set-upstream-to", "host-origin/" <> feature])
 
       assert sha(second, "HEAD") == sha(repo, feature)
       commit(second, [{"login.txt", "third\n"}], "login third")
@@ -165,7 +165,7 @@ defmodule MWTClient.Sandbox.HandoffsLandingTest do
       main = sha(repo, "master")
       assert {:ok, plan} = Handoffs.prepare(username, %{cwd: second, title: "Tweak login"})
       assert plan.onto == feature
-      assert plan.ref == "refs/remotes/origin/" <> feature
+      assert plan.ref == "refs/remotes/host-origin/" <> feature
 
       assert {:ok, second_handoff, :opened} =
                Handoffs.open(username, %{cwd: second, title: "Tweak login"})
@@ -231,16 +231,17 @@ defmodule MWTClient.Sandbox.HandoffsLandingTest do
       refute File.exists?(Path.join(snapshot, "new-main.txt"))
     end
 
-    test "host metadata refresh leaves origin references and local work unchanged", context do
+    test "host metadata refresh leaves host-origin references and local work unchanged",
+         context do
       %{username: username, repo: repo, mirror: mirror} = context
       {_project, tree} = project_with_worktree(context)
-      before = git(mirror, ["for-each-ref", "refs/remotes/origin/"])
+      before = git(mirror, ["for-each-ref", "refs/remotes/host-origin/"])
       git(repo, ["checkout", "-q", "-b", "release"])
       commit(repo, [{"release.txt", "release\n"}], "release work")
       git(repo, ["checkout", "-q", "master"])
       File.write!(Path.join(tree, "a.txt"), "ongoing\n")
       assert :ok = Projects.fresh(username, "app")
-      assert git(mirror, ["for-each-ref", "refs/remotes/origin/"]) == before
+      assert git(mirror, ["for-each-ref", "refs/remotes/host-origin/"]) == before
       assert File.read!(Path.join(tree, "a.txt")) == "ongoing\n"
       assert "release" in Projects.mirrored(username, "app")
     end

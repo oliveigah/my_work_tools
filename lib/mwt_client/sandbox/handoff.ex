@@ -431,6 +431,52 @@ defmodule MWTClient.Sandbox.Handoff do
 
   defp size_words(_stats), do: nil
 
+  @doc """
+  The base in words that say which level it is: one of your branches as
+  "the user's main (host-origin/main here)", else a VM branch or commit as
+  it is named there.
+  """
+  @spec base_words(t()) :: String.t()
+  def base_words(handoff) do
+    case yours(handoff) do
+      nil -> base_label(handoff)
+      branch -> "the user's #{branch} (host-origin/#{branch} here)"
+    end
+  end
+
+  @doc """
+  The base as git in the VM's clone names it now: `host-origin/main` for
+  one of your branches, whatever a record made before the remotes were
+  renamed kept (`refs/remotes/origin/main`); else the VM ref or commit.
+  """
+  @spec base_in_vm(t()) :: String.t()
+  def base_in_vm(handoff) do
+    case yours(handoff) do
+      nil -> handoff.base_ref || base_label(handoff)
+      branch -> "host-origin/" <> branch
+    end
+  end
+
+  @doc """
+  Whether MWT deleted the handoff's branch in the VM when it landed, and no
+  revision came from it since: a thread carrying it on, once it is sent
+  back, makes it again first (`mwt worktree resume`).
+  """
+  @spec branch_deleted?(t()) :: boolean()
+  def branch_deleted?(%{timeline: timeline}) do
+    match?(
+      %{kind: :branch_deleted},
+      timeline
+      |> Enum.reverse()
+      |> Enum.find(&(&1.kind in [:branch_deleted, :opened, :updated, :caught_up]))
+    )
+  end
+
+  # Your branch the handoff is based on, or nil for a VM branch or commit.
+  defp yours(%{base_branch: branch}) when is_binary(branch), do: branch
+  defp yours(%{base_ref: nil} = handoff), do: handoff.mirrored_branch || handoff.onto
+  defp yours(_handoff), do: nil
+
   @doc "The size of a handoff, kept on its record for the list."
   @spec stats(facts()) :: map()
   def stats(facts) do
@@ -626,11 +672,11 @@ defmodule MWTClient.Sandbox.Handoff do
 
   def explain({:catch_up, onto, behind, []}),
     do:
-      "The user's #{onto} has #{commit_count(behind)} this branch doesn't have, so it wasn't built or tested with them. Run mwt handoff again: it fetches and catches up with origin/#{onto}, and runs the checks again first."
+      "The user's #{onto} has #{commit_count(behind)} this branch doesn't have, so it wasn't built or tested with them. Run mwt handoff again: it fetches and catches up with host-origin/#{onto}, and runs the checks again first."
 
   def explain({:catch_up, onto, _behind, files}),
     do:
-      "This doesn't apply to the user's #{onto} as it is now, in: #{Enum.join(files, ", ")}. Run mwt handoff again: it fetches, rebases onto origin/#{onto} and stops at the conflicts for you to resolve."
+      "This doesn't apply to the user's #{onto} as it is now, in: #{Enum.join(files, ", ")}. Run mwt handoff again: it fetches, rebases onto host-origin/#{onto} and stops at the conflicts for you to resolve."
 
   def explain(:detached), do: "This worktree is on no branch. Hand off a branch."
 

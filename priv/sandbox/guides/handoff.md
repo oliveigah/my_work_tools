@@ -31,10 +31,10 @@ step that needs no judgment; yours are the words, and what it stops at.
 
        mwt handoff --title "fix(scope): what it does" --body /tmp/handoff-BRANCH.md
 
-   It fetches origin; commits the changes with your title (for a new
+   It fetches host-origin; commits the changes with your title (for a new
    revision, folded into the handoff's commit, while nothing was committed
    after it); catches up with the task's recorded base by rebasing onto
-   `origin/BASE`; runs the project's checks, if it has any; and sends that
+   `host-origin/BASE`; runs the project's checks, if it has any; and sends that
    exact commit.
 5. **When it stops** (new files, a conflict, failing checks, files the
    checks changed), do what it says, and run it again: after a conflict,

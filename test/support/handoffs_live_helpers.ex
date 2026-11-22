@@ -66,12 +66,17 @@ defmodule MWTClientWeb.HandoffsLiveHelpers do
   @doc """
   An agent's handoff: a task in a free worktree slot, from a thread there,
   based on your master unless it says, with one commit, then `mwt handoff`.
-  `mwt worktree new` fetches origin first, as here.
+  `mwt worktree new` fetches host-origin first, as here.
   """
   def hand_off(username, vm, task, title, change, base \\ "master") do
     project = Enum.find(Sandbox.snapshot(username).projects, &(&1.name == "app"))
 
-    git(Path.join(vm, "app"), ["fetch", "-q", project.path, "+refs/heads/*:refs/remotes/origin/*"])
+    git(Path.join(vm, "app"), [
+      "fetch",
+      "-q",
+      project.path,
+      "+refs/heads/*:refs/remotes/host-origin/*"
+    ])
 
     {:ok, %{slots: slots}} = Projects.slots(username, "app")
     %{path: free} = Enum.find(slots, &(&1.free? and &1.name != "slot-0"))

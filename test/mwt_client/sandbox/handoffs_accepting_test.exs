@@ -179,7 +179,7 @@ defmodule MWTClient.Sandbox.HandoffsAcceptingTest do
       {:ok, _} = Projects.mirror(username, "app")
       assert {0, listed} = Channel.answer("handoffs", %{"cwd" => tree}, username)
       assert listed =~ "sent back to you" and listed =~ "Catch up with mine."
-      assert listed =~ "conflicts with their master in: a.txt"
+      assert listed =~ "conflicts with the user's master (host-origin/master here) in: a.txt"
 
       assert {:ok, %Handoff{status: :closed}} = Handoffs.close(username, 1)
       assert Handoffs.accept(username, 1, {:commit, "master"}) == {:error, :not_open}

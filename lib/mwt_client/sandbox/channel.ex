@@ -464,10 +464,10 @@ defmodule MWTClient.Sandbox.Channel do
     first =
       case how do
         :opened ->
-          "Handed off as ##{handoff.id}: #{handoff.source.branch} based on #{Handoff.base_label(handoff)}."
+          "Handed off as ##{handoff.id}: #{handoff.source.branch} based on #{Handoff.base_words(handoff)}."
 
         :updated ->
-          "Updated handoff ##{handoff.id} (revision #{handoff.revision}): #{handoff.source.branch} based on #{Handoff.base_label(handoff)}."
+          "Updated handoff ##{handoff.id} (revision #{handoff.revision}): #{handoff.source.branch} based on #{Handoff.base_words(handoff)}."
       end
 
     Enum.join(
@@ -475,7 +475,7 @@ defmodule MWTClient.Sandbox.Channel do
         first,
         "#{count(handoff.stats[:commits] || 0, "commit")}, #{count(handoff.stats[:files] || 0, "file")} changed, at #{String.slice(handoff.head, 0, 12)}. It is caught up with #{Handoff.base_label(handoff)} as the user has it now.",
         "The user reviews this exact revision: work you do from here doesn't change it. They land it on its base or another branch they choose: as it is (a fast-forward, these same commits) when that branch hasn't moved, or as one commit.",
-        "If they say it came too soon, undo its commits but keep the work, uncommitted for them to see: git reset $(git merge-base HEAD #{handoff.base_ref || "origin/" <> Handoff.base_label(handoff)})",
+        "If they say it came too soon, undo its commits but keep the work, uncommitted for them to see: git reset $(git merge-base HEAD #{Handoff.base_in_vm(handoff)})",
         "More work stays uncommitted until they ask for the handoff again: mwt handoff then folds it into the handoff's commit, as a new revision.",
         "See what they decide with: mwt handoffs"
       ],
@@ -500,7 +500,7 @@ defmodule MWTClient.Sandbox.Channel do
       [
         "##{handoff.id}  #{state}#{yours}",
         "  #{handoff.title}",
-        "  #{handoff.source.branch}, compared with origin/#{Handoff.base_label(handoff)}; revision #{handoff.revision}"
+        "  #{handoff.source.branch}, compared with #{Handoff.base_words(handoff)}; revision #{handoff.revision}"
       ] ++
         place_lines(handoff, look, held) ++ fact_lines(handoff, facts) ++ note_lines(handoff)
 
@@ -514,9 +514,11 @@ defmodule MWTClient.Sandbox.Channel do
        when status in [:open, :sent_back, :withdrawn] do
     case held do
       nil ->
-        [
-          "  Its branch is in no worktree now. To continue it, ask the user to start a thread in a free slot, which runs: mwt worktree resume #{handoff.source.branch}"
-        ]
+        if Handoff.branch_deleted?(handoff),
+          do: ["  " <> Handoffs.resume_words(handoff.source.branch)],
+          else: [
+            "  Its branch is in no worktree now. To continue it, ask the user to start a thread in a free slot, which runs: mwt worktree resume #{handoff.source.branch}"
+          ]
 
       %{missing?: true} ->
         [
@@ -539,7 +541,7 @@ defmodule MWTClient.Sandbox.Channel do
     behind =
       if facts.behind > 0,
         do: [
-          "  Their #{Handoff.base_label(handoff)} has #{count(facts.behind, "commit")} this branch doesn't have."
+          "  #{capitalized(Handoff.base_words(handoff))} has #{count(facts.behind, "commit")} this branch doesn't have."
         ],
         else: []
 
@@ -547,16 +549,16 @@ defmodule MWTClient.Sandbox.Channel do
       case facts.conflicts do
         [] when facts.behind > 0 ->
           [
-            "  It applies cleanly to their #{Handoff.base_label(handoff)}, but wasn't built or tested with those commits.",
+            "  It applies cleanly to #{Handoff.base_words(handoff)}, but wasn't built or tested with those commits.",
             "  The user may land it as one commit anyway; a revision catches up with them first (mwt handoff does)."
           ]
 
         [] ->
-          ["  It applies cleanly to their #{Handoff.base_label(handoff)}."]
+          ["  It applies cleanly to #{Handoff.base_words(handoff)}."]
 
         files ->
           [
-            "  It conflicts with their #{Handoff.base_label(handoff)} in: " <>
+            "  It conflicts with #{Handoff.base_words(handoff)} in: " <>
               Enum.join(files, ", "),
             "  It lands only once caught up: the next mwt handoff rebases onto it and stops at the conflicts for you to resolve."
           ]
@@ -564,6 +566,8 @@ defmodule MWTClient.Sandbox.Channel do
 
     behind ++ conflicts
   end
+
+  defp capitalized(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
 
   # What the user said the last time they sent it back.
   defp note_lines(%{status: :sent_back, timeline: timeline}) do
@@ -603,20 +607,20 @@ defmodule MWTClient.Sandbox.Channel do
 
   @review_words [
     "Leave your work uncommitted, so the user sees every change in Zed: never commit unless they say so. When it is done and tested, tell them it is ready for review and where, and wait.",
-    "Hand off only when they ask (/handoff is that ask): write a title and notes, git add the new files that belong to the work, then mwt handoff --title \"…\" --body FILE. It fetches origin, commits the changes to files git has with the title (folding them into the handoff's commit for a new revision), catches up with the task's base by rebasing onto origin/BASE, runs the project's checks, if any, and sends that exact commit; when it stops, do what it says and run it again.",
-    "If they say a handoff came too soon, undo its commits but keep the work, uncommitted for them to see: git reset $(git merge-base HEAD origin/BASE)",
-    "origin is the user's repository on their machine, through MWT: git fetch origin brings their branches as origin/BRANCH. A push to it is refused: work goes back by mwt handoff."
+    "Hand off only when they ask (/handoff is that ask): write a title and notes, git add the new files that belong to the work, then mwt handoff --title \"…\" --body FILE. It fetches host-origin, commits the changes to files git has with the title (folding them into the handoff's commit for a new revision), catches up with the task's base by rebasing onto host-origin/BASE, runs the project's checks, if any, and sends that exact commit; when it stops, do what it says and run it again.",
+    "If they say a handoff came too soon, undo its commits but keep the work, uncommitted for them to see: git reset $(git merge-base HEAD host-origin/BASE)",
+    "host-origin is the user's repository on their machine, through MWT: git fetch host-origin brings their branches as host-origin/BRANCH. remote-origin is that repository's own remote, origin (GitHub, say), as their machine fetches it: remote-origin/BRANCH. There is no origin. A push to either is refused: work goes back by mwt handoff."
   ]
 
   defp branch_words(nil),
-    do: "The user's branches are origin/BRANCH here (git fetch origin brings them)."
+    do: "The user's branches are host-origin/BRANCH here (git fetch host-origin brings them)."
 
   defp branch_words(branches) do
     shown = Enum.take(branches, 30)
     more = if length(branches) > length(shown), do: ", …", else: ""
 
-    "The user's branches, as origin/BRANCH (git fetch origin brings them): " <>
-      Enum.map_join(shown, ", ", &("origin/" <> &1)) <> more <> "."
+    "The user's branches, as host-origin/BRANCH (git fetch host-origin brings them): " <>
+      Enum.map_join(shown, ", ", &("host-origin/" <> &1)) <> more <> "."
   end
 
   defp project_words(project, where, look, thread, branches) do
@@ -629,7 +633,7 @@ defmodule MWTClient.Sandbox.Channel do
     place =
       case here do
         %{free?: true} = slot ->
-          "You are in #{slot_label(slot)}, #{slot.path}, which is #{Slots.words(slot)}. Take it now, before anything else, even if the ask may change no code: mwt worktree new TASK --from BRANCH, with TASK named for what the user asked (fix-login-timeout, explain-handoff-sync; never task or wip) and BRANCH the branch they want the work based on: if they named none, ask them which first (their branches are origin/BRANCH here). Until then it shows as free, and the user may start another thread in it."
+          "You are in #{slot_label(slot)}, #{slot.path}, which is #{Slots.words(slot)}. Take it now, before anything else, even if the ask may change no code: mwt worktree new TASK --from BRANCH, with TASK named for what the user asked (fix-login-timeout, explain-handoff-sync; never task or wip) and BRANCH the branch they want the work based on: if they named none, ask them which first (their branches are host-origin/BRANCH here). Until then it shows as free, and the user may start another thread in it."
 
         %{branch: nil} = slot ->
           "You are in #{slot_label(slot)}, #{slot.path}: #{Slots.words(slot)}. It isn't free: if that work isn't your thread's, stop and tell the user."
@@ -642,7 +646,7 @@ defmodule MWTClient.Sandbox.Channel do
       end
 
     targets =
-      "#{branch_words(branches)} Each task names the branch it is based on when it starts: mwt worktree new TASK --from BRANCH, the branch the user named, or the one they answer when you ask; it fetches origin first. mwt handoff rebases the task onto origin/BRANCH before it sends the work. The user lands a handoff on its base or another branch they choose, or on a new mwt/ branch: as it is (a fast-forward) when that branch hasn't moved since, or as one commit."
+      "#{branch_words(branches)} Each task names the branch it is based on when it starts: mwt worktree new TASK --from BRANCH, the branch the user named, or the one they answer when you ask; it fetches host-origin first. mwt handoff rebases the task onto host-origin/BRANCH before it sends the work. The user lands a handoff on its base or another branch they choose, or on a new mwt/ branch: as it is (a fast-forward) when that branch hasn't moved since, or as one commit."
 
     checks =
       case project.checks do
@@ -655,11 +659,11 @@ defmodule MWTClient.Sandbox.Channel do
 
     Enum.join(
       [
-        "Project #{project.name}: a clone of the user's repository, #{clone}, whose origin is that repository on their machine, through MWT.",
+        "Project #{project.name}: a clone of the user's repository, #{clone}, whose host-origin is that repository on their machine, through MWT.",
         place,
         targets,
         checks,
-        "The clone's branches are the VM's: MWT never moves, resets or deletes one. Use refs/heads/TASK to base work on another VM task, or a commit ID for a snapshot."
+        "The clone's branches are the VM's: MWT never moves or resets one, and deletes a task's branch only once its handoff landed with nothing done on it since. Use refs/heads/TASK to base work on another VM task, or a commit ID for a snapshot."
       ] ++
         slot_lines(look, here) ++ [identity_words(HostGit.identity(project.path)) | @review_words],
       "\n"
@@ -723,10 +727,10 @@ defmodule MWTClient.Sandbox.Channel do
     what =
       case outcome do
         :started ->
-          "Started the task #{slot.branch} in #{slot.name}, #{slot.path}: a new branch from origin/#{onto}, the user's #{onto} as just fetched. What git ignores there (deps, _build, …) stays from the slot's last task."
+          "Started the task #{slot.branch} in #{slot.name}, #{slot.path}: a new branch from host-origin/#{onto}, the user's #{onto} as just fetched. What git ignores there (deps, _build, …) stays from the slot's last task."
 
         :resumed ->
-          "Put the branch #{slot.branch}, as it was, in #{slot.name}, #{slot.path}. Its recorded base stays with it. mwt handoff fetches origin, catches up with that base and runs the checks before sending."
+          "Put the branch #{slot.branch}, as it was, in #{slot.name}, #{slot.path}. Its recorded base stays with it. mwt handoff fetches host-origin, catches up with that base and runs the checks before sending."
 
         :already ->
           "#{slot.branch} is in #{slot.name} already, #{slot.path}."

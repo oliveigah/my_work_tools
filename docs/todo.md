@@ -99,71 +99,26 @@ What could be done, best first:
 4. **Keep other accounts out.** The copy executable only by an `mwt`
    group: other users can't use it, but code running as you still can.
 
-## Telling your machine from its remote, in the VM's Git
+## Cleaning up MWT's review store
 
-Noted on 2026-11-19. The VM's clone is a clone of your repository the way
-your repository is a clone of its remote (GitHub, say), and that model
-keeps things simple. But the names don't say which level they mean:
-
-- In the VM, `origin` is your repository on your machine
-  (`mwt::<project id>`), and `upstream` is your repository's own remote, as
-  your machine last fetched it (`mwt::<project id>/upstream`). On your
-  machine, `origin` is that remote. So `origin/main` is your local `main`
-  in the VM and GitHub's `main` on your machine.
-- `upstream` already means something else in most Git workflows: the
-  repository a fork was made from.
-- Agents, messages and you mix them up: "solve the conflicts with host
-  master" meant your `main`, which the VM calls `origin/main`; "their main"
-  in `mwt handoffs` means the same.
-- An older mirror called your repository `host`; it became `origin` so that
-  Git's defaults and every tool's habits (`git pull`, `origin/HEAD`, an
-  agent reaching for `origin`) just work. Any new name gives some of that
-  up.
-
-Ideas, not settled:
-
-- Name the remote branch views after where they are: `upstream` becoming
-  something that says "your machine's remote" (`remote`, or your remote's
-  own name under a prefix, such as `host-origin/main`), keeping `origin` as
-  your machine.
-- Say the level in words wherever MWT speaks: `mwt project`, `mwt
-  handoffs`, the Projects and Handoffs pages and the agents' instructions
-  saying "your `main`" and "`main` on GitHub, as your machine last fetched
-  it", never a bare `origin/main`.
-- Show how the two levels stand: your `main` ahead of or behind its remote
-  (not pushed after a landing, not pulled before a task starts), so a task
-  isn't based on a `main` you haven't caught up yet.
-
-Decided on 2026-11-21: the names stay until the sandbox's redesign; until
-then, MWT's messages say which level they mean.
-
-## Cleaning up the VM's branches
-
-Noted on 2026-11-21. Every task is a branch in the project's clone
-(`mwt worktree new`), and nothing removes one: freeing a slot keeps its
-branch, and MWT promises never to move, reset or delete a branch there
-(`priv/sandbox/agents.md`, "The VM's clone" in `docs/agent_sandbox.md`).
-So they pile up, task after task.
-
-Wanted: **every couple of days, MWT removes the branches whose work has
-landed, or that hold nothing, and never one that isn't safe to delete.**
+Noted on 2026-11-21. MWT's review store keeps a ref per handoff
+(`refs/handoffs/<id>`) and per revision (`refs/handoff-revisions/<id>/<n>`),
+and no `git gc` runs there, so it only grows (the threat model review of
+2026-11-21); each handoff may bring up to 1 GiB. The VM's task branches
+already go when their handoff lands (`Slots.delete_landed/4`).
 
 What is known:
 
-- **Merged isn't always visible to git.** A handoff landed as one commit
-  leaves the branch's commits off your branch, so `git branch --merged`
-  misses it. MWT's handoff records know: a branch whose tip is a revision
-  that landed has nothing more. A branch whose tip your branches reach
-  (`origin/*`) is merged as git sees it; so is a task that never committed
-  (a question, a review), whose tip is its base.
-- **Never deleted**: a branch a slot holds; one whose handoff is open or
-  was sent back; one with commits that no landed revision and none of your
-  branches hold, however old, since that work would be lost.
-- **It changes a promise**: the agents' instructions and the document
-  would say which branches MWT deletes, and when.
-- **The same on your machine**: MWT's review store keeps a ref per
-  handoff revision and only grows (the threat model review of 2026-11-21);
-  the refs of landed and closed handoffs could go in the same sweep.
+- What the refs keep: the Handoffs page's diff of a handoff, and the
+  commit a sent-back task's branch is made again at in the VM, once git
+  there pruned it.
+- Landed and closed handoffs' refs could go once they are archived
+  (landed or closed for 30 days), leaving their record, notes and
+  timeline: a landed one's changes are on your branch; a closed one's
+  would be gone for good.
+- Dropping a handoff past the kept records deletes `refs/handoffs/<id>`
+  but leaves its `refs/handoff-revisions/<id>/*` (`forget/2` in
+  `handoffs.ex`).
 
 ## Mints that take another grant's value
 

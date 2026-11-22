@@ -25,7 +25,7 @@ defmodule MWTClient.Sandbox.LeftoversCloneTest do
   } do
     {:ok, _} = Projects.open(username, repo)
     git(clone, ["config", "--unset", "mwt.project"])
-    git(clone, ["update-ref", "refs/remotes/host/master", sha(clone, "origin/master")])
+    git(clone, ["update-ref", "refs/remotes/host/master", sha(clone, "host-origin/master")])
     git(clone, ["symbolic-ref", "refs/remotes/host/HEAD", "refs/remotes/host/master"])
     File.rm_rf!(repo)
     assert {:ok, [%{name: "app", unmerged: []}]} = Leftovers.list(username)

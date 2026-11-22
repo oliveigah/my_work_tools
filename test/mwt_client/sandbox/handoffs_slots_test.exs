@@ -73,16 +73,22 @@ defmodule MWTClient.Sandbox.HandoffsSlotsTest do
       assert [{"slot-1", "fix", false}, {"slot-2", "cart", false}, {"slot-3", nil, true}] =
                states(username)
 
-      # Landed: slot-1 is free without anyone touching it, and the next
-      # task takes it, on a new branch from your branch as it is now.
-      {:ok, _} = Handoffs.accept(username, 1, {:commit, "master"})
-      assert [{"slot-1", "fix", true} | _] = states(username)
+      # Landed with nothing done on it since: its branch goes, so task
+      # branches don't pile up, and slot-1 is on no branch, at that same
+      # commit, free; the next task takes it, on a new branch from your
+      # branch as it is now.
+      {:ok, landed_fix} = Handoffs.accept(username, 1, {:commit, "master"})
+      assert [{"slot-1", nil, true} | _] = states(username)
+      assert git(mirror, ["branch", "--list", "fix"]) == ""
+      assert sha(one, "HEAD") == landed_fix.head
+      assert %{kind: :branch_deleted, text: deleted} = List.last(landed_fix.timeline)
+      assert deleted =~ "MWT deleted its branch fix in the VM"
+      assert deleted =~ "#{one} is on no branch now"
 
       # Its thread, asked for more, is told to take it again first.
       assert {0, landed} = Channel.answer("project", %{"cwd" => one}, username)
 
-      assert landed =~
-               "You are in slot-1, #{one}, which is free (fix, based on master, handoff #1 landed)."
+      assert landed =~ "You are in slot-1, #{one}, which is free. Take it now"
 
       assert landed =~ "Take it now, before anything else"
 
@@ -92,16 +98,19 @@ defmodule MWTClient.Sandbox.HandoffsSlotsTest do
       assert sha(one, "HEAD") == sha(repo, "master")
       assert File.read!(Path.join(one, "_build/app.beam")) == "warm\n"
 
-      # The handoff's branch stays, as every branch of the VM's: its commit
-      # is your branch's now, as it is (a fast-forward).
-      assert git(mirror, ["branch", "--list", "fix"]) =~ "fix"
-      assert git(mirror, ["log", "-1", "--format=%s", "origin/master"]) == "the fix\n"
-      assert sha(mirror, "origin/master") == sha(mirror, "fix")
+      # Its commit is your branch's now, as it is (a fast-forward); the
+      # branches of tasks that haven't landed stay.
+      assert git(mirror, ["log", "-1", "--format=%s", "host-origin/master"]) == "the fix\n"
+      assert sha(mirror, "host-origin/master") == landed_fix.head
       assert git(mirror, ["branch", "--list", "cart", "docs"]) =~ "cart"
 
-      # Sent back after you accepted it, it resumes from its handoff's
-      # commit, in a free slot, from a thread there.
+      # Sent back after you accepted it: its thread is told to make the
+      # branch again first, and a thread in a free slot resumes it from its
+      # handoff's commit.
       {:ok, _} = Handoffs.send_back(username, 1, "One more thing.")
+      assert {0, listed} = Channel.answer("handoffs", %{"cwd" => slot(mirror, 3)}, username)
+      assert listed =~ "Its branch fix was deleted in the VM when it landed."
+      assert listed =~ "Run mwt worktree resume fix in your slot before you change anything"
       assert {0, resumed} = worktree(username, slot(mirror, 3), "resume", %{"name" => "fix"})
       assert resumed =~ "Put the branch fix, as it was, in slot-3"
       assert git(slot(mirror, 3), ["log", "-1", "--format=%s"]) == "the fix\n"
@@ -222,10 +231,11 @@ defmodule MWTClient.Sandbox.HandoffsSlotsTest do
       assert updated =~ "#1"
       assert [%Handoff{id: 1, status: :open, revision: 2}] = handoffs(username)
 
-      # Landed, there is nothing to take back: more work is a new task.
+      # Landed, there is nothing to take back: its branch went, and more
+      # work is a new task.
       {:ok, _} = Handoffs.accept(username, 1, {:commit, "master"})
       assert {1, landed} = withdraw.(a, "more")
-      assert landed =~ "Handoff #1 landed: there is nothing to take back."
+      assert landed =~ "This worktree is on no branch, so it has no handoff to take back"
       assert landed =~ "mwt worktree new TASK"
     end
 

@@ -53,7 +53,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
     ~H"""
     <.page_header id="projects-header" title="Projects">
       <:help>
-        The projects you work with now. Each is a git repository in a folder you share, cloned in the VM at /work/NAME: its origin is your repository on this machine, through MWT, so git fetch brings your committed branches there as origin/BRANCH; a push is refused. The clone's branches are the VM's. Agents work in its worktree slots, one task branch at a time: slot-0 is the clone itself, and you add more beside it. Each task is based on the branch you name or they ask you for (mwt worktree new TASK --from BRANCH), and they leave their work uncommitted for you to review in Zed there. When you ask, they commit it as you, rebase it onto that base and hand it off (mwt handoff); you land it on the branch you choose: as it is (a fast-forward) when that branch hasn't moved, or as one commit. Only committed work travels; nothing of your working tree. Close a project you aren't working with: it leaves this page and MWT stops following it, while everything in the VM stays. Open project brings it back, or opens another repository from your shared folders.
+        The projects you work with now. Each is a git repository in a folder you share, cloned in the VM at /work/NAME: its host-origin is your repository on this machine, through MWT, so git fetch host-origin brings your committed branches there as host-origin/BRANCH, and its remote-origin is your repository's own remote origin, as remote-origin/BRANCH; a push is refused. The clone's branches are the VM's. Agents work in its worktree slots, one task branch at a time: slot-0 is the clone itself, and you add more beside it. Each task is based on the branch you name or they ask you for (mwt worktree new TASK --from BRANCH), and they leave their work uncommitted for you to review in Zed there. When you ask, they commit it as you, rebase it onto that base and hand it off (mwt handoff); you land it on the branch you choose: as it is (a fast-forward) when that branch hasn't moved, or as one commit. Only committed work travels; nothing of your working tree. Close a project you aren't working with: it leaves this page and MWT stops following it, while everything in the VM stays. Open project brings it back, or opens another repository from your shared folders.
       </:help>
       <:actions>
         <.button id="projects-open" variant="primary" phx-click="open_dialog">
@@ -246,7 +246,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   attr :project, :map, required: true
   attr :mirror, :any, required: true
 
-  # Your branches, origin/BRANCH in the VM once fetched: what a task can
+  # Your branches, host-origin/BRANCH in the VM once fetched: what a task can
   # start from and lands on.
   defp branches(assigns) do
     branches =
@@ -265,15 +265,15 @@ defmodule MWTClientWeb.SandboxLive.Projects do
     >
       <span class="mr-0.5 flex items-center gap-1 text-[11px] text-faint">
         <.icon name="hero-arrows-right-left-micro" class="size-3.5" />
-        {count(length(@branches), "branch")} on origin
+        {count(length(@branches), "branch")} on host-origin
         <.help id={"project-branches-help-#{@project.name}"} label="About your branches in the VM">
-          Every committed local branch of your repository, which the VM's clone fetches through MWT as origin/BRANCH: a task starts from one (mwt worktree new TASK --from BRANCH fetches first) and rebases onto it before its handoff. A fetch moves origin/* only: the clone's own branches and files stay as they are. Your repository's own remote branches don't travel: check one out on your machine to bring it.
+          Every committed local branch of your repository, which the VM's clone fetches through MWT as host-origin/BRANCH: a task starts from one (mwt worktree new TASK --from BRANCH fetches first) and rebases onto it before its handoff. A fetch moves host-origin/* only: the clone's own branches and files stay as they are. Your repository's own remote's branches reach the VM apart, as remote-origin/BRANCH; a task starts from yours: check one out on your machine to start from it.
         </.help>
       </span>
       <code
         :for={branch <- @shown}
         class="rounded bg-deep px-1.5 py-px font-mono text-[11px] text-muted"
-        title={"origin/#{branch} at #{String.slice(@mirror.tips[branch], 0, 10)}"}
+        title={"host-origin/#{branch} at #{String.slice(@mirror.tips[branch], 0, 10)}"}
       >
         {branch}
       </code>

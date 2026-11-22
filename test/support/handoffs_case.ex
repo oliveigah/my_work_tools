@@ -92,7 +92,7 @@ defmodule MWTClient.HandoffsCase do
   own, from `from`: recorded as a task (its base in git config), as
   `mwt worktree new` records one, so it hands off; not a slot.
   """
-  def new_worktree(clone, branch, from \\ "refs/remotes/origin/master") do
+  def new_worktree(clone, branch, from \\ "refs/remotes/host-origin/master") do
     tree = Path.join(clone <> ".wt", branch)
     git(clone, ["worktree", "add", "-q", "--no-track", "-b", branch, tree, from])
     git(clone, ["config", "branch.#{branch}.mwt-base", from])
@@ -119,11 +119,11 @@ defmodule MWTClient.HandoffsCase do
 
   @doc """
   `mwt worktree ACTION` in `cwd`: a new task from your master unless
-  `fields` names another base. It fetches origin first, as the command does.
+  `fields` names another base. It fetches host-origin first, as the command does.
   """
   def worktree(username, cwd, action, fields \\ %{}) do
     {mirror, repo} = Process.get(:fetch)
-    git(mirror, ["fetch", "-q", repo, "+refs/heads/*:refs/remotes/origin/*"])
+    git(mirror, ["fetch", "-q", repo, "+refs/heads/*:refs/remotes/host-origin/*"])
     base = if action == "new", do: %{"from" => "master"}, else: %{}
 
     Channel.answer(

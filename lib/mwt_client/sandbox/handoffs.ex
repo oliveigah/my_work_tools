@@ -29,6 +29,8 @@ defmodule MWTClient.Sandbox.Handoffs do
     TaskBase
   }
 
+  require Logger
+
   @type error ::
           :vm_not_running
           | :not_found
@@ -361,6 +363,8 @@ defmodule MWTClient.Sandbox.Handoffs do
       end)
     else
       %Handoff{} = handoff -> {:error, {:not_withdrawable, handoff, handoff.source.branch}}
+      # A slot whose handoff landed with nothing since is on no branch.
+      {:error, :detached} -> {:error, {:not_withdrawable, nil, nil}}
       error -> error
     end
   end
@@ -576,19 +580,27 @@ defmodule MWTClient.Sandbox.Handoffs do
         Projects.used(username, handoff.project)
 
         result =
-          update(username, id, "##{id} landed", fn record ->
-            %{
-              record
-              | status: :accepted,
-                onto: accepted.branch,
-                host_branch: accepted.branch,
-                host_head: accepted.undo.after,
-                landed: %{commit: accepted.undo.after, head: record.head, branch: accepted.branch},
-                accepted: accepted,
-                timeline:
-                  record.timeline ++ [event(:accepted, "You landed " <> accepted_words(accepted))]
-            }
-          end)
+          with {:ok, landed} <-
+                 update(username, id, "##{id} landed", fn record ->
+                   %{
+                     record
+                     | status: :accepted,
+                       onto: accepted.branch,
+                       host_branch: accepted.branch,
+                       host_head: accepted.undo.after,
+                       landed: %{
+                         commit: accepted.undo.after,
+                         head: record.head,
+                         branch: accepted.branch
+                       },
+                       accepted: accepted,
+                       timeline:
+                         record.timeline ++
+                           [event(:accepted, "You landed " <> accepted_words(accepted))]
+                   }
+                 end) do
+            {:ok, delete_branch(username, landed)}
+          end
 
         # Mirror following also runs in the background; make this landing visible now.
         _ = Projects.fresh(username, handoff.project)
@@ -655,6 +667,59 @@ defmodule MWTClient.Sandbox.Handoffs do
       end
     end)
   end
+
+  # Its task's branch in the VM, once it landed: deleted when nothing was
+  # done on it since (`Projects.delete_landed_branch/2`), so task branches
+  # don't pile up in the clone. Either way the timeline says what became of
+  # it, so a branch that stays says why. The landing stands whatever
+  # happens here: a timeline that can't be written is logged, not returned.
+  defp delete_branch(username, handoff) do
+    case Projects.delete_landed_branch(username, handoff) do
+      {:ok, :gone} ->
+        handoff
+
+      outcome ->
+        {kind, text} = branch_event(handoff.source.branch, outcome)
+
+        case update(username, handoff.id, "##{handoff.id} #{kind}", fn record ->
+               %{record | timeline: record.timeline ++ [event(kind, text)]}
+             end) do
+          {:ok, updated} ->
+            updated
+
+          {:error, reason} ->
+            Logger.warning("Handoff ##{handoff.id}: #{text} Not kept: #{inspect(reason)}")
+            handoff
+        end
+    end
+  end
+
+  defp branch_event(branch, {:ok, {:deleted, slot}}) do
+    where = if slot, do: "; #{slot} is on no branch now, free for the next task", else: ""
+
+    {:branch_deleted,
+     "MWT deleted its branch #{branch} in the VM, as nothing was done on it since#{where}. " <>
+       "mwt worktree resume #{branch} makes it again."}
+  end
+
+  defp branch_event(branch, {:ok, {:kept, why}}),
+    do: {:branch_kept, "Its branch #{branch} stays in the VM: #{kept_words(why)}."}
+
+  defp branch_event(branch, {:error, :vm_not_running}),
+    do:
+      {:branch_kept,
+       "Its branch #{branch} stays in the VM: the VM wasn't running when you landed it."}
+
+  defp branch_event(branch, {:error, reason}),
+    do:
+      {:branch_kept,
+       "Its branch #{branch} stays in the VM: MWT couldn't delete it. #{Projects.explain(reason)}"}
+
+  defp kept_words(:commits), do: "it has commits since this revision"
+  defp kept_words({:base_of, task}), do: "the task #{task} is based on it"
+  defp kept_words({:uncommitted, path}), do: "#{path} has uncommitted work on it"
+  defp kept_words({:other, path}), do: "#{path}, which isn't a slot, has it checked out"
+  defp kept_words({:missing, path}), do: "the worktree that has it, #{path}, is gone"
 
   defp caught_up({:ok, moved}), do: {:ok, moved}
   defp caught_up({:error, problem}), do: {:error, {:catch_up, problem}}
@@ -816,7 +881,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   that it is the ask to hand off again.
 
       iex> MWTClient.Sandbox.Handoffs.catch_up_note("master", 1, ["a.txt"])
-      "Catch up with master: it has 1 commit this handoff doesn't, which changes the same lines in a.txt. Run mwt handoff: it fetches and rebases onto origin/master, and stops at the conflicts. Resolve them keeping what both sides meant, git add each, and run mwt handoff again until it hands off. This note is the user's ask to hand off again once it has caught up and its checks pass."
+      "Catch up with master: it has 1 commit this handoff doesn't, which changes the same lines in a.txt. Run mwt handoff: it fetches and rebases onto host-origin/master, and stops at the conflicts. Resolve them keeping what both sides meant, git add each, and run mwt handoff again until it hands off. This note is the user's ask to hand off again once it has caught up and its checks pass."
   """
   @spec catch_up_note(String.t(), non_neg_integer(), [String.t()]) :: String.t()
   def catch_up_note(branch, behind, conflicts) do
@@ -834,10 +899,10 @@ defmodule MWTClient.Sandbox.Handoffs do
     steps =
       case conflicts do
         [] ->
-          "Run mwt handoff: it fetches, rebases onto origin/#{branch} and runs the checks."
+          "Run mwt handoff: it fetches, rebases onto host-origin/#{branch} and runs the checks."
 
         _files ->
-          "Run mwt handoff: it fetches and rebases onto origin/#{branch}, and stops at the conflicts. " <>
+          "Run mwt handoff: it fetches and rebases onto host-origin/#{branch}, and stops at the conflicts. " <>
             "Resolve them keeping what both sides meant, git add each, and run mwt handoff again until it hands off."
       end
 
@@ -849,6 +914,14 @@ defmodule MWTClient.Sandbox.Handoffs do
   # it so in `mwt handoffs`.
   defp tell_thread(username, handoff, note, catch_up?) do
     text = if note == "", do: "No note: ask the user what they want.", else: note
+
+    # A landed handoff's branch is gone, and its slot is on no branch: the
+    # thread makes it again before changing anything, while the slot is
+    # still free (a slot with uncommitted work can't take it).
+    text =
+      if Handoff.branch_deleted?(handoff),
+        do: resume_words(handoff.source.branch) <> "\n" <> text,
+        else: text
 
     delivery =
       case AgentThreads.say(username, handoff.thread_id, text,
@@ -877,6 +950,13 @@ defmodule MWTClient.Sandbox.Handoffs do
       {:error, _reason} -> handoff
     end
   end
+
+  @doc "What a thread does first to carry on a handoff whose branch MWT deleted when it landed."
+  @spec resume_words(String.t()) :: String.t()
+  def resume_words(branch),
+    do:
+      "Its branch #{branch} was deleted in the VM when it landed. Run mwt worktree resume #{branch} " <>
+        "in your slot before you change anything: it makes the branch again at the handoff's commit."
 
   # On the last send back, which this delivery was for.
   defp deliveries(timeline, delivery) do
@@ -976,6 +1056,10 @@ defmodule MWTClient.Sandbox.Handoffs do
   def explain({:not_your_task, branch}),
     do:
       "Another thread holds #{branch}: only that thread hands it off or takes its handoff back. Tell the user, and go on in this thread only read-only (mwt project says what that allows). Nothing was handed off."
+
+  def explain({:not_withdrawable, nil, nil}),
+    do:
+      "This worktree is on no branch, so it has no handoff to take back: a task's branch goes once its handoff lands. For more work, take your slot again for it, named for what the user asked now: mwt worktree new TASK --from BRANCH."
 
   def explain({:not_withdrawable, nil, branch}),
     do:

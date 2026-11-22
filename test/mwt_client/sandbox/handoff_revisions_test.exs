@@ -26,7 +26,7 @@ defmodule MWTClient.Sandbox.HandoffRevisionsTest do
 
     refute File.exists?(Path.join(repo, "vm.txt"))
 
-    assert git(clone, ["config", "--get", "remote.origin.url"]) ==
+    assert git(clone, ["config", "--get", "remote.host-origin.url"]) ==
              Project.remote_url(project) <> "\n"
   end
 

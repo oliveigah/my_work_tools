@@ -278,7 +278,7 @@ defmodule MWTClient.Sandbox.HandoffsSlotsUpkeepTest do
         "-b",
         "push-options",
         old,
-        "origin/master"
+        "host-origin/master"
       ])
 
       assert {0, there} = Channel.answer("project", %{"cwd" => old}, username)

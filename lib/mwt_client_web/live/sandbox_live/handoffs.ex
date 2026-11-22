@@ -609,6 +609,8 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
   # Saved as a branch, which older MWTs offered.
   defp event_icon(:saved), do: "hero-bookmark-micro"
   defp event_icon(:closed), do: "hero-x-mark-micro"
+  defp event_icon(:branch_deleted), do: "hero-trash-micro"
+  defp event_icon(:branch_kept), do: "hero-information-circle-micro"
   defp event_icon(_reopened), do: "hero-arrow-path-micro"
 
   defp event_tone(:accepted), do: "text-violet-strong"

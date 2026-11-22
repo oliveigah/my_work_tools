@@ -582,7 +582,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert {:ok, "master\n"} = exec.("git -C /work/#{project} branch --show-current")
 
     assert {:ok, "mwt::" <> _} =
-             exec.("git -C /work/#{project} config --get remote.origin.url")
+             exec.("git -C /work/#{project} config --get remote.host-origin.url")
 
     # A task in a worktree slot, from a thread there, a commit, a handoff.
     tree = "/work/#{project}.wt/slot-1"
@@ -938,14 +938,14 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     # push is refused.
     assert {:ok, fetched} =
              exec.(
-               "cd /work/#{project} && PATH=/mnt/mwt/bin:$PATH git fetch origin 2>&1 && git branch -r"
+               "cd /work/#{project} && PATH=/mnt/mwt/bin:$PATH git fetch host-origin 2>&1 && git branch -r"
              )
 
-    assert fetched =~ "origin/master"
+    assert fetched =~ "host-origin/master"
 
     assert {:error, pushed} =
              exec.(
-               "cd /work/#{project} && PATH=/mnt/mwt/bin:$PATH git push origin HEAD:refs/heads/elsewhere 2>&1"
+               "cd /work/#{project} && PATH=/mnt/mwt/bin:$PATH git push host-origin HEAD:refs/heads/elsewhere 2>&1"
              )
 
     assert pushed =~ "use mwt handoff"

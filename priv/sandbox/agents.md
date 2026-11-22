@@ -33,9 +33,11 @@ To move a file that isn't a project's code to or from the user's machine
 ## Projects: slots, review, handoffs
 
 A project is a git repository in a folder the user shared, cloned here at
-`/work/NAME`. Its `origin` is their repository, through MWT:
-`git fetch origin` brings their committed branches as `origin/BRANCH`, and
-a push to it is refused. `mwt project` says where you are in one, its
+`/work/NAME`. Its `host-origin` is their repository, through MWT:
+`git fetch host-origin` brings their committed branches as
+`host-origin/BRANCH`. Its `remote-origin` is that repository's own remote
+(GitHub, say), as their machine fetches it. There is no `origin`, and a
+push is refused. `mwt project` says where you are in one, its
 slots and branches, and its rules. `mwt help projects` covers the rest:
 catching up with their branch, carrying on another thread's task, freeing
 a slot.

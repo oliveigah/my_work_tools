@@ -275,7 +275,7 @@ defmodule MWTClient.Sandbox.Projects do
   @doc """
   Adds a worktree slot to the project, the lowest number it doesn't have,
   and makes it in the VM at once when the VM runs (else when it starts):
-  free, on no branch at `origin/<default branch>`. Returns its name.
+  free, on no branch at `host-origin/<default branch>`. Returns its name.
   """
   @spec add_slot(String.t(), String.t()) :: {:ok, String.t()} | {:error, error()}
   def add_slot(username, name) do
@@ -521,7 +521,8 @@ defmodule MWTClient.Sandbox.Projects do
   common=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
   branch=$(git symbolic-ref -q --short HEAD || true)
   head=$(git rev-parse --verify --quiet HEAD || true)
-  origin=$(git config --get remote.origin.url || true)
+  # remote.origin.url: a clone not renamed yet (`MWTClient.Sandbox.Mirror`).
+  origin=$(git config --get remote.host-origin.url || git config --get remote.origin.url || true)
   id=$(git config --get mwt.project || true)
   printf '%s\0' "$top" "$common" "$branch" "$head" "$origin" "$id"
   """
@@ -584,7 +585,7 @@ defmodule MWTClient.Sandbox.Projects do
   Takes a worktree slot of the project the folder `cwd` of the VM is in,
   for the task `task` (`MWTClient.Sandbox.Slots.take/5`): `:new` starts the
   branch `task` from the base named in `opts` (`:from`, `TaskBase`), as
-  the clone last fetched it, `origin/<base>` (`mwt worktree new` fetches
+  the clone last fetched it, `host-origin/<base>` (`mwt worktree new` fetches
   first). A new task with no base named is
   refused, listing your branches: the agent asks you which unless you
   said. `:resume` puts the existing branch `task` back, with the base it
@@ -604,13 +605,15 @@ defmodule MWTClient.Sandbox.Projects do
     with {:ok, project, where, guest} <- locate(username, cwd),
          {:ok, base} <- slot_base(project, guest, how, from),
          latest = latest(username, project),
+         restored = if(how == :resume, do: latest.(task)),
          {:ok, slot, outcome} <-
            project
            |> Slots.take(guest, how, task,
              base: base,
              here: here(where, project, guest),
              latest: latest,
-             restore: if(how == :resume, do: restore(latest, task)),
+             restore: restored && restored.head,
+             restore_base: restored && restore_base(restored),
              thread: Keyword.get(opts, :thread)
            )
            |> with_zed(guest)
@@ -640,14 +643,12 @@ defmodule MWTClient.Sandbox.Projects do
 
   defp with_zed(result, _guest), do: result
 
-  # The commit a deleted task branch is made again at when resumed: its
-  # latest handoff's, such as one sent back after you accepted it.
-  defp restore(latest, task) do
-    case latest.(task) do
-      nil -> nil
-      handoff -> handoff.head
-    end
-  end
+  # The base a deleted task branch records again when resumed, made again
+  # at its latest handoff's commit (such as one sent back after landing,
+  # which deleted it), as `mwt worktree new` did: what makes it a task,
+  # which hands off.
+  defp restore_base(%{base_branch: branch}) when is_binary(branch), do: TaskBase.ref(branch)
+  defp restore_base(%{base_ref: ref}), do: ref
 
   @doc """
   Frees the worktree slot the folder `cwd` of the VM is in, for its own
@@ -683,6 +684,24 @@ defmodule MWTClient.Sandbox.Projects do
       locked(username, name, fn ->
         with {:ok, project, _found} <- find(username, name) do
           Slots.free(project, guest, slot, latest: latest(username, project))
+        end
+      end)
+    end
+  end
+
+  @doc """
+  Deletes the VM branch of a handoff that just landed, when nothing was
+  done on it since (`MWTClient.Sandbox.Slots.delete_landed/4`). The VM must
+  be running: a handoff landed while it is stopped keeps its branch.
+  """
+  @spec delete_landed_branch(String.t(), MWTClient.Sandbox.Handoff.t()) ::
+          {:ok, Slots.landed_branch()} | {:error, error()}
+  def delete_landed_branch(username, handoff) do
+    with {:ok, _project, %{vm: vm}} <- find(username, handoff.project),
+         {:ok, guest} <- guest(username, vm) do
+      locked(username, handoff.project, fn ->
+        with {:ok, project, _context} <- find(username, handoff.project) do
+          Slots.delete_landed(project, guest, handoff.source, handoff.head)
         end
       end)
     end

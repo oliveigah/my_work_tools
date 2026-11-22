@@ -171,7 +171,7 @@ its job:
 | ------- | --------- | ---- | ------- | ------------------------------ |
 | **Proxy** | the VM | network card → msb (`--proxy`) → relay, `127.0.0.1:3128` in the bubble → `proxy.sock` | every TCP connection ([Network](#network)) | msb's only hook for TCP, which the VM can't go around |
 | **DNS** | the VM | network card → msb (`--dns-nameserver`) → relay, `127.0.0.1:5353` → `dns.sock` | every lookup ([DNS](#dns)) | msb sends lookups to a nameserver of its own, never through the proxy |
-| **Agent channel** | the VM | vsock port 5000 → msb (`--vsock`) → `channel.sock` | `mwt` and its MCP, git fetches from `origin` (`mwt::`), Zed's threads (`mwt-acp`), the ports report ([Agent channel](#agent-channel)) | the proxy refuses this machine's own addresses, so nothing on the network reaches MWT |
+| **Agent channel** | the VM | vsock port 5000 → msb (`--vsock`) → `channel.sock` | `mwt` and its MCP, git fetches from `host-origin` and `remote-origin` (`mwt::`), Zed's threads (`mwt-acp`), the ports report ([Agent channel](#agent-channel)) | the proxy refuses this machine's own addresses, so nothing on the network reaches MWT |
 | **`msb exec`** | MWT | msb's agent in the VM | the boot script; `/mnt/mwt`, shared folders and OptMem copied in; the monitor's samples; slots and handoffs (git over `ext::`); Kill | msb's vsock carries the VM's connections to this machine, never this machine's into the VM |
 | **`msb ssh serve`** | MWT, and Zed | the launcher → msb's SSH server → msb's agent in the VM | ports 4100 to 4199 forwarded here ([Servers in the VM](#servers-in-the-vm-on-your-machine)), Zed's remote project | msb's only way to carry TCP into the VM, and Zed needs an SSH server |
 | **Relay control** | MWT | `control.sock`, to the relay | `status`, `stop`, the VM's memory resized | msb records the VM's pid as the bubble sees it, so only something inside can stop it |
@@ -3186,8 +3186,9 @@ card says why, until the hour has room again. The count is kept in memory: a res
 ## Projects and handoffs
 
 The VM is a development machine with a clone of each of your
-repositories: its `origin` is your repository on this machine, through
-MWT, as your repository's own `origin` is a Git server. The VM works in
+repositories: its `host-origin` is your repository on this machine,
+through MWT, as your repository's own `origin` is a Git server, and its
+`remote-origin` is that server, as your machine fetches it. The VM works in
 its clone as you work in yours; the one difference is how work comes
 back: not by a push, but by a handoff you review and land. Work lands
 only on your machine for now.
@@ -3197,19 +3198,20 @@ only on your machine for now.
 | Term | Meaning |
 | --- | --- |
 | **Project** | A git repository of yours, in a shared folder, and its clone in the VM, `/work/<name>`, with its settings on the Projects page. Submodules and LFS are left out for now. |
-| **Origin** | In the VM, your repository through MWT (`mwt::<project id>`): its branches are `origin/<branch>` there. From your machine, your repository's own remote. |
-| **Upstream** | In the VM, your repository's own remote branches, as your machine fetched them, read through MWT (`mwt::<project id>/upstream`). |
+| **host-origin** | In the VM, your repository on your machine, through MWT (`mwt::<project id>`): its branches are `host-origin/<branch>` there. |
+| **remote-origin** | In the VM, your repository's own remote `origin` (GitHub, say), as your machine fetches it, read through MWT (`mwt::<project id>/remote-origin`): `remote-origin/<branch>` there. The VM's clone has no `origin`. |
 | **Worktree slot** | A checkout of the clone that holds one task at a time: `slot-0` is the clone itself, `/work/<name>`; the others are worktrees of it, `/work/<name>.wt/slot-N`, which you add and remove. |
-| **Task** | A branch `mwt worktree new` started in a slot, from a base (`origin/<branch>`, another task's branch or a commit), for one thread. |
+| **Task** | A branch `mwt worktree new` started in a slot, from a base (`host-origin/<branch>`, another task's branch or a commit), for one thread. Its branch goes once its handoff lands with nothing done on it since. |
 | **Handoff** | A task's exact commit, with its title and notes, which an agent sends once you reviewed it in the VM and asked (`mwt handoff`). Handing off again makes a revision. |
-| **Catch up** | The agent rebasing its task onto its base as you have it now: `git fetch origin`, `git rebase origin/<base>` (`mwt handoff` does both); or MWT replaying a handoff's commits there, from the Handoffs page, where they apply cleanly. |
+| **Catch up** | The agent rebasing its task onto its base as you have it now: `git fetch host-origin`, `git rebase host-origin/<base>` (`mwt handoff` does both); or MWT replaying a handoff's commits there, from the Handoffs page, where they apply cleanly. |
 | **Land** | Putting a handoff on a branch of yours, once you click Land: as it is (a fast-forward) when that branch hasn't moved, else as one commit (`accept` in the code). |
 | **Send back** | Returning a handoff to its thread with a note. |
 
 ```
-the VM                       your machine                  a Git server
-/work/app ── origin ──▶      your repository ── origin ──▶ GitHub, …
-  fetch, through MWT           your own workflow
+the VM                           your machine                  a Git server
+/work/app ── host-origin ──▶     your repository ── origin ──▶ GitHub, …
+  │          fetch, through MWT    your own workflow              ▲
+  └───────── remote-origin ──▶ (your machine fetches it) ─────────┘
   ├─ slot-0 (the clone)
   ├─ /work/app.wt/slot-1
   └─ /work/app.wt/slot-2
@@ -3226,7 +3228,7 @@ the VM                       your machine                  a Git server
   the closed ones and the repositories in your shared folders that aren't
   projects yet, and looks deeper in a shared folder one folder at a time,
   never out of it. Opening one makes its clone in the VM: your committed
-  branches and tags, once, as `origin/*`, and its default branch (main,
+  branches and tags, once, as `host-origin/*`, and its default branch (main,
   master, then the one you have checked out) checked out in slot-0.
 - **Open in Zed** opens the clone (slot-0), or a slot, over the VM's SSH
   connection. An existing clone opens even when its folder is no longer
@@ -3234,34 +3236,56 @@ the VM                       your machine                  a Git server
 - **Close** takes a project off the page; its clone, slots, branches and
   handoffs stay in the VM. **Forget** lets go of its settings; the VM's
   work stays too.
-- **The page shows** each open project's branches as origin has them, its
+- **The page shows** each open project's branches as host-origin has them, its
   checks, a warning when commits in the VM would have no author, and its
   slots: which are free, what the others hold (task, base, handoff,
   uncommitted work, the thread holding it, whether a Zed window has it
   open, servers running there), with Release, Open in Zed and Remove.
 
+<a id="the-vms-clone"></a>
+
 ### The VM's clone
 
 - **The clone is the VM's.** Its branches, commits, index and files follow
-  Git: MWT never moves, resets or deletes a branch there, switches a
-  checkout, or sets edits aside. A landed task's branch stays until
-  someone deletes it in the VM.
+  Git: MWT never moves or resets a branch there, switches a busy
+  checkout, or sets edits aside. The one branch it deletes is a task's,
+  once its handoff lands with nothing done on it since ([After
+  landing](#after-landing)); every other branch stays until someone
+  deletes it in the VM.
+- **Each remote is named for the level it reaches,** `host-origin` and
+  `remote-origin`, and the clone has no `origin`. With `origin` as your
+  repository in the VM, `origin/main` meant your `main` there and
+  GitHub's on your machine, and agents, MWT's messages and you mixed them
+  up ("solve the conflicts with host master" meant your `main`). MWT's
+  messages name the level too: "the user's `main` (`host-origin/main`
+  here)". The cost is Git's default: a bare `git fetch` or `git pull` on
+  a branch that tracks nothing names no remote, and an agent's habit of
+  `git fetch origin` fails, saying there is no `origin`, until it reads
+  its instructions.
+- **A clone made before the rename** (`mwt.clone-version` 1, with `origin`
+  and `upstream`) is renamed in place the next time MWT updates it (each
+  VM start, or when your branches move): its tracking branches and tasks'
+  recorded bases follow, and nothing checked out moves. A remote of that
+  name the VM pointed elsewhere stays the VM's. Handoff records keep the
+  base they were made with (`refs/remotes/origin/main`), read as your
+  branch.
 - **A clone made from an older mirror** keeps its checkout and slots; its
-  `host/*` branches become `origin/*`, and its `host` remote goes, since
-  nothing would update it.
-- **`origin` is your repository, through MWT.** Its URL, `mwt::<project
+  `host/*` branches become `host-origin/*`, and its `host` remote goes,
+  since nothing would update it.
+- **`host-origin` is your repository, through MWT.** Its URL, `mwt::<project
   id>`, runs MWT's remote helper (`git-remote-mwt`, in `/mnt/mwt/bin`):
   the VM names a registered project, never a path on your machine, and
   MWT runs `git upload-pack` on a view of your repository holding only
   its branches and tags (`MWTClient.Sandbox.GitTransport`). Its
   configuration, hooks, other refs, ignored files and uncommitted work
-  don't travel. A fetch moves `origin/*` and nothing else; `git pull`
+  don't travel. A fetch moves `host-origin/*` and nothing else; `git pull`
   fetches through MWT, then merges or rebases in the VM.
 - **A push is refused**, saying work goes back by `mwt handoff`. A push
   that answered "ok" while your branch didn't move would lie; a handoff
   carries what a push can't: its title, notes, checks and thread.
-- **`upstream` is your repository's own remote, as your machine has it**
-  (`mwt::<project id>/upstream`): its `refs/remotes/origin/*`, so a task
+- **`remote-origin` is your repository's own remote, as your machine has
+  it** (`mwt::<project id>/remote-origin`): its `refs/remotes/origin/*`,
+  so a task
   can start from a colleague's branch you fetched. MWT doesn't fetch from
   that remote for the VM unless the grant below is on.
 - **Who commits:** opening the clone sets its
@@ -3280,8 +3304,8 @@ like the Internet ([Grant kinds](#grant-kinds)):
 
 | Grant | What it allows | When MWT starts |
 | --- | --- | --- |
-| **Fetch from your repositories** | `git fetch`, `git ls-remote` and clones of `origin` and `upstream`: your committed branches and tags, and your remote branches as your machine last fetched them. Reads only. | Enabled, auto |
-| **Fetch from your remotes** | Before `upstream` answers, your machine fetches your repository's own remote into MWT's store (never into your repository), with your credentials, non-interactively, at most once a minute. The VM never sees a credential or chooses a URL. | Enabled, auto |
+| **Fetch from your repositories** | `git fetch`, `git ls-remote` and clones of `host-origin` and `remote-origin`: your committed branches and tags, and your remote branches as your machine last fetched them. Reads only. | Enabled, auto |
+| **Fetch from your remotes** | Before `remote-origin` answers, your machine fetches your repository's own remote into MWT's store (never into your repository), with your credentials, non-interactively, at most once a minute. The VM never sees a credential or chooses a URL. | Enabled, auto |
 | **Hand off** | `mwt handoff`: commits into MWT's review store, never into your repository. Your review is the gate. | Enabled, auto |
 
 Landing, on your machine or later on a remote, is yours, on the Handoffs
@@ -3299,7 +3323,7 @@ path each time.
   `/work/<name>.wt/slot-N` for each number the project has
   (`Project.slots`, 1 to 9). A new project has slot-0 alone; the Projects
   page's **Add slot** makes the lowest number missing, at once, free, on no
-  branch at `origin/<default branch>`, locked (`git worktree lock`, so
+  branch at `host-origin/<default branch>`, locked (`git worktree lock`, so
   Zed's `git worktree remove` leaves it); **Remove** takes a free one out,
   with its build. slot-0 is never removed. Folders never move, so a Zed
   window or a thread open on one never breaks. A slot keeps its folder
@@ -3309,10 +3333,12 @@ path each time.
   a branch no task started (slot-0 on its own `master`); or on a task's
   branch whose latest handoff landed or was closed at the commit it is on,
   clean. Uncommitted work makes any slot busy. A slot is free as soon as
-  its handoff lands, without MWT touching it.
+  its handoff lands; with nothing done on it since, MWT takes it off the
+  branch, at the same commit, and deletes the branch ([After
+  landing](#after-landing)).
 - **A thread takes its slot first,** before anything else, even for a
-  question: `mwt worktree new TASK --from BASE` fetches origin, then
-  starts the branch TASK from `origin/BASE` (or another task's branch, or
+  question: `mwt worktree new TASK --from BASE` fetches host-origin, then
+  starts the branch TASK from `host-origin/BASE` (or another task's branch, or
   a commit) in the slot the thread is in, records the base
   (`branch.TASK.mwt-base`) and the thread (`branch.TASK.mwt-thread`).
   Names that say nothing (`task`, `wip`, …) are refused; with no base
@@ -3326,8 +3352,9 @@ path each time.
 - **The hold lasts until the handoff lands or is closed,** or the slot is
   freed (`mwt worktree free` by its thread when you say the task is done,
   or **Release** on the Projects page). `mwt worktree resume BRANCH` puts
-  a sent-back task's branch in a free slot, or, in the slot that has it,
-  moves the hold to the thread running it.
+  a sent-back task's branch in a free slot, making it again at its latest
+  handoff's commit, with its base, when landing deleted it; or, in the
+  slot that has it, moves the hold to the thread running it.
 - **A thread works only in the slot it was opened in.** Every thread in
   the VM can write every folder, so agents are told never to change,
   build or run things in another slot, not even by absolute path.
@@ -3355,9 +3382,9 @@ mwt project                         where you are, the slots, the rules
   commit message an agent writes, as a Conventional Commit:
   `type(scope): summary`, with the scopes your history uses.
 - **`mwt handoff` does every step that needs no judgment,** in the slot:
-  it fetches origin; commits the changes to files git has with the
+  it fetches host-origin; commits the changes to files git has with the
   title, and stops at new files it wasn't told about; catches up by
-  rebasing the task onto `origin/<base>` (going on with a rebase the
+  rebasing the task onto `host-origin/<base>` (going on with a rebase the
   agent resolved, first, before anything else: until it ends the worktree
   is on no branch), only replaying what came after a task's earlier
   landing as one commit; runs the project's checks once per commit
@@ -3384,7 +3411,7 @@ mwt project                         where you are, the slots, the rules
   takes work done since; the decision panel says when the task moved on.
 - **A handoff that came too soon:** you close it and say so in its
   thread; it undoes its commits and keeps the work uncommitted
-  (`git reset $(git merge-base HEAD origin/<base>)`).
+  (`git reset $(git merge-base HEAD host-origin/<base>)`).
 
 <a id="landing"></a>
 
@@ -3398,7 +3425,7 @@ mwt project                         where you are, the slots, the rules
 - **How:** **as it is** when that branch hasn't moved since the handoff
   caught up with it and has all the task started from: a fast-forward to
   the handoff's own commit, the very one its checks ran on. The VM's next
-  fetch finds it on `origin/<branch>`, so the clone and your repository
+  fetch finds it on `host-origin/<branch>`, so the clone and your repository
   agree, and `git branch --merged` says so. With several commits, you may
   choose **as one** instead. When the branch moved since, it lands **as
   one commit** with its changes on top, marked untested with what came
@@ -3425,8 +3452,45 @@ mwt project                         where you are, the slots, the rules
   changes to tracked files. No hook runs. **Undo** puts it back while it
   still has what landed.
 - **Send back** works before and after landing, and MWT tells the thread
-  when it can reach it. Landing, closing and sending back leave the VM's
-  branches and files alone.
+  when it can reach it. Closing and sending back leave the VM's branches
+  and files alone; landing leaves its files alone, and deletes the task's
+  branch when nothing was done on it since (below).
+
+<a id="after-landing"></a>
+
+### After landing
+
+Every task is a branch in the project's clone, and nothing else removed
+one, so they piled up, task after task. Landing is the moment a task's
+work is done and safely on your branch, so it is when the branch goes
+(`Slots.delete_landed/4`, from `Handoffs.accept/4`):
+
+- **Deleted when nothing was done on it since:** still at the revision
+  that landed, which your branch now holds (as it is, or squashed into one
+  commit), and checked out in no folder with uncommitted work. The slot on
+  it goes on no branch, at that same commit, free as it already was; its
+  files and build don't change. The branch's `branch.NAME.*` settings go
+  with it. The deletion only happens while the branch is still at that
+  revision (`git update-ref -d` with it), so a commit made meanwhile keeps
+  it.
+- **Kept**, with the reason on the handoff's timeline: commits since that
+  revision; uncommitted work where it is checked out; another task based
+  on it (`--from refs/heads/BRANCH`), whose base would be gone; checked out
+  in a worktree that isn't a slot, where someone works that MWT doesn't
+  know; that worktree's folder gone; the VM not running when you landed
+  it. A branch kept stays until someone deletes it in the VM: nothing
+  sweeps the clone later.
+- **Sent back after landing,** its thread is told first that the branch
+  went, and to run `mwt worktree resume BRANCH` in its slot before it
+  changes anything (`mwt handoffs` says it too): resume makes the branch
+  again at the handoff's commit, with its base and the thread's hold, and
+  needs a slot with no uncommitted work. Git keeps a deleted branch's
+  commits in the VM for weeks before pruning them; a handoff sent back
+  later than that can't be resumed from the VM, and MWT doesn't bring the
+  commit back from its review store.
+- **Undo** of a landing reopens the handoff without its branch in the VM:
+  it lands again from MWT's review store, and its thread resumes it if
+  you send it back.
 
 ### Left in the VM
 
@@ -3666,7 +3730,7 @@ notification ([Desktop notifications](#desktop-notifications)).
   the commands running on this machine above them, with Stop; what was
   decided below, where a command opens
   to its script and output.
-- **Projects:** each open project with its branches as origin has them, its
+- **Projects:** each open project with its branches as host-origin has them, its
   checks, a warning when commits would have no author, and its slots (Add
   slot; Release, Open in Zed, Remove); Close, Forget, *Open project*, and
   "Only in the VM". Read again every 5 s while open ([Projects and
@@ -3839,7 +3903,7 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     (`host_run_test.exs`, `host_command_channel_test.exs`, `confine_test.exs`).
 27. A grant paused by *Only while…* refuses every use (`check_test.exs`).
 28. A fetch from the VM carries your committed branches and tags, and from
-    `upstream` your remote branches as last fetched; never configuration,
+    `remote-origin` your remote branches as last fetched; never configuration,
     hooks, other refs, ignored files or uncommitted work. A push is refused
     and moves nothing (`git_transport_test.exs`).
 29. A hook or `core.fsmonitor` planted in the VM's clone runs in the VM, never
@@ -3961,6 +4025,8 @@ history is in git.
 | 2026-11-22 | Two requests whose body MWT holds only the start of never share a card: what follows may differ, and one decision would let through a body nobody saw ([Approvals](#approvals)). |
 | 2026-11-22 | The Proxy activity page is the Activity log, the name the agents' instructions and the firewall already gave it, since it holds the VM's changes, host commands and handoffs as well as its traffic. What MWT reads is a dialog opened from its header, two lists (*Read*, *Not read*) and what a host on neither gets, rather than a card always on the page. The badges say what happened: *Read* and *Not read* for traffic, *Cert refused* (was *Not read*) for a client refusing MWT's certificate, *Swapped*, *No answer*, *Wrong host*, *VM change*, *Grant change*, *Host command*, *MWT tool*, each with its meaning on hover and in a legend ([Pages](#pages), [Not read](#not-read)). |
 | 2026-11-22 | Every event of the activity log keeps what MWT knew when it happened, since the log is where you watch what the VM does: details written as labelled words when it is logged, stored beside it in the journal like a request's exchange, and read when its line opens. Words rather than the records they came from, so the log says what was true then and a later MWT draws a months-old event; the cost is that a detail is searched as words, not filtered as a field. An event naming a grant keeps that grant as it was. The agent's own words are kept, shown apart as claims ([Pages](#pages), [docs/storage.md](storage.md)). |
+| 2026-11-22 | The VM's clone names each remote for the level it reaches, `host-origin` (your repository on your machine) and `remote-origin` (its own remote `origin`, as your machine fetches it), and has no `origin`, since `origin/main` meant your `main` in the VM and GitHub's on your machine, and agents, messages and you mixed them up; clones made before are renamed in place ([The VM's clone](#the-vms-clone)). |
+| 2026-11-22 | Landing a handoff deletes its task's branch in the VM when nothing was done on it since, taking its slot off the branch at the same commit, so task branches don't pile up; a branch with anything on it stays, and the handoff's timeline says why. Nothing sweeps the clone periodically ([After landing](#after-landing)). |
 
 <a id="later"></a>
 
@@ -4003,9 +4069,9 @@ Open: not built, or not tried yet.
   the Memory card; seeding it with only some projects' memories.
 - **Projects:** a folder picker and the upstream branches on the Projects
   page; submodules and LFS files; your uncommitted work sent by git, as a
-  snapshot beside `origin/BRANCH`.
+  snapshot beside `host-origin/BRANCH`.
 - **Handoffs:** landing on a repository's own remote; revisions read through
-  `origin`; handoffs in MWT's Git tool, and that tool on repositories in the
+  `host-origin`; handoffs in MWT's Git tool, and that tool on repositories in the
   VM; MWT's review store cleaned up when its repository is gone.
 - **Agent threads:** telling the thread that asked when you turn its grant
   on; the threads on the Overview; saying when one waits for your permission

@@ -209,7 +209,7 @@ defmodule MWTClient.Sandbox.GitTransportTest do
     socket
   end
 
-  test "upstream serves your repository's own remote branches, as you last fetched them",
+  test "remote-origin serves your repository's own remote branches, as you last fetched them",
        context do
     # Your repository's own remote, a Git server of yours, with a branch
     # of a colleague's that your machine fetched.
@@ -229,21 +229,21 @@ defmodule MWTClient.Sandbox.GitTransportTest do
     commit(work, [{"c.txt", "theirs, later\n"}], "more of it")
     git(work, ["push", "-q", "origin", "colleague"])
 
-    upstream = context.remote <> "/upstream"
-    assert {refs, 0} = remote_git(context, context.base, ["ls-remote", upstream])
+    remote_origin = context.remote <> "/remote-origin"
+    assert {refs, 0} = remote_git(context, context.base, ["ls-remote", remote_origin])
     assert refs =~ "#{fetched}\trefs/heads/colleague"
     refute refs =~ "refs/heads/HEAD"
 
     assert {_, 0} = remote_git(context, context.base, ["clone", context.remote, context.clone])
-    git(context.clone, ["remote", "add", "upstream", upstream])
-    assert {_, 0} = remote_git(context, context.clone, ["fetch", "-q", "upstream"])
-    assert sha(context.clone, "upstream/colleague") == fetched
+    git(context.clone, ["remote", "add", "remote-origin", remote_origin])
+    assert {_, 0} = remote_git(context, context.clone, ["fetch", "-q", "remote-origin"])
+    assert sha(context.clone, "remote-origin/colleague") == fetched
 
     # On, your machine fetches it first, into MWT's store: your
     # repository's own remote branches don't move.
     {:ok, _} = MWTClient.Sandbox.turn_on(context.username, "git-fetch-remote", :until_off, :all)
-    assert {_, 0} = remote_git(context, context.clone, ["fetch", "-q", "upstream"])
-    assert sha(context.clone, "upstream/colleague") == sha(work, "HEAD")
+    assert {_, 0} = remote_git(context, context.clone, ["fetch", "-q", "remote-origin"])
+    assert sha(context.clone, "remote-origin/colleague") == sha(work, "HEAD")
     assert sha(context.repo, "origin/colleague") == fetched
   end
 

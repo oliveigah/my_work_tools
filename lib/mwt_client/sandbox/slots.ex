@@ -5,7 +5,7 @@ defmodule MWTClient.Sandbox.Slots do
   `/work/<name>`; the others are worktrees of it,
   `/work/<name>.wt/slot-N`, one for each number in `Project.slots`, added
   and removed on the Projects page. They share the clone's branches and
-  its `origin/*`, so a fetch in one is seen in all.
+  its `host-origin/*`, so a fetch in one is seen in all.
 
   A slot keeps its folder between tasks, so what git ignores (`deps`,
   `_build`, `node_modules`, `target`) stays warm, and the line that opens
@@ -13,7 +13,7 @@ defmodule MWTClient.Sandbox.Slots do
   handoffs go by branch.
 
   The numbered slots are made when the project's clone is opened, and
-  when added (`ensure/2`): on no branch, at `origin/<default branch>`, so
+  when added (`ensure/2`): on no branch, at `host-origin/<default branch>`, so
   each is there to open in Zed before any task. One whose folder went is
   made again then, or when taken.
 
@@ -49,7 +49,7 @@ defmodule MWTClient.Sandbox.Slots do
   held by a thread that is gone is freed on the Projects page, which marks
   the held slots no Zed window has open.
 
-  Taking a slot starts a new branch from the task's base, `origin/<base>`
+  Taking a slot starts a new branch from the task's base, `host-origin/<base>`
   as the clone last fetched it (`mwt worktree new` fetches first), or
   checks out an existing branch, such as one whose handoff was sent back
   after its slot went to another task (`:resume`). A thread takes only the
@@ -66,7 +66,9 @@ defmodule MWTClient.Sandbox.Slots do
   number missing. Folders never move, so nothing open in Zed breaks.
   `slot-0`, the clone, is never removed.
 
-  The branches are the VM's: MWT never deletes one. A landed task's branch
+  The branches are the VM's: MWT never moves or resets one, and deletes a
+  task's branch only when its handoff lands with nothing done on it since
+  (`delete_landed/4`), so task branches don't pile up. Any other branch
   stays until someone deletes it, in the VM, with git.
 
   Numbered slots are locked (`git worktree lock`): `git worktree remove`
@@ -173,10 +175,11 @@ defmodule MWTClient.Sandbox.Slots do
   # The thread $8 taking it is recorded as the branch's holder, or none.
   @take """
   set -e
-  m=$1 p=$2 mode=$3 b=$4 start=$5 lock=$6 restore=$7 thread=$8
+  m=$1 p=$2 mode=$3 b=$4 start=$5 lock=$6 restore=$7 thread=$8 restore_base=$9
   git -C "$m" worktree prune
   if [ "$mode" = resume ] && [ -n "$restore" ] && ! git -C "$m" rev-parse -q --verify "refs/heads/$b" >/dev/null; then
     git -C "$m" branch "$b" "$restore"
+    git -C "$m" config "branch.$b.mwt-base" "${restore_base:-$start}"
   fi
   if [ -d "$p" ]; then
     if [ -n "$(git -C "$p" status --porcelain | head -n 1)" ]; then
@@ -250,6 +253,43 @@ defmodule MWTClient.Sandbox.Slots do
   git -C "$p" switch -q --detach
   """
 
+  # Deletes the task branch $2 of the repository $1 (its git folder) when
+  # it is still at $3, the revision that landed, and nothing else needs it;
+  # the slots' folders follow. Says what it did on one line: `deleted
+  # [SLOT]`, or why it kept the branch. A slot on it goes on no branch, at
+  # the same commit.
+  @delete_landed ~S"""
+  set -e
+  m=$1 branch=$2 head=$3
+  shift 3
+  ref=refs/heads/$branch
+  tip=$(git -C "$m" rev-parse -q --verify "$ref" || true)
+  [ -n "$tip" ] || { echo gone; exit 0; }
+  [ "$tip" = "$head" ] || { echo commits; exit 0; }
+  git -C "$m" config --get-regexp '^branch[.].*[.]mwt-base$' 2>/dev/null |
+    while read -r key base; do
+      [ "$base" != "$ref" ] || { t=${key#branch.}; echo "base ${t%.mwt-base}"; }
+    done | head -n 1 | grep . && exit 0
+  tree=$(git -C "$m" worktree list --porcelain |
+    while IFS= read -r line; do
+      case $line in
+        "worktree "*) p=${line#worktree } ;;
+        "branch $ref") printf '%s\n' "$p"; break ;;
+      esac
+    done)
+  if [ -n "$tree" ]; then
+    slot=
+    for s in "$@"; do [ "$s" != "$tree" ] || slot=$s; done
+    [ -n "$slot" ] || { echo "other $tree"; exit 0; }
+    [ -d "$tree" ] || { echo "missing $tree"; exit 0; }
+    if [ -n "$(git -C "$tree" status --porcelain | head -n 1)" ]; then echo "uncommitted $tree"; exit 0; fi
+    git -C "$tree" switch -q --detach
+  fi
+  git -C "$m" update-ref -d "$ref" "$head"
+  git -C "$m" config --remove-section "branch.$branch" 2>/dev/null || true
+  echo "deleted $tree"
+  """
+
   @doc "The folder of the project's slot `name` (`slot-0`, the clone; `slot-1`, …) in the VM."
   @spec path(Project.t(), %{root: Path.t()}, String.t()) :: Path.t()
   def path(project, guest, "slot-0"), do: Project.mirror_path(project, guest)
@@ -270,14 +310,14 @@ defmodule MWTClient.Sandbox.Slots do
 
   @doc """
   Makes the project's numbered slots that aren't there, in the VM: on no
-  branch, at `origin/<default branch>`, so they are free and can be opened
+  branch, at `host-origin/<default branch>`, so they are free and can be opened
   in Zed before any task. Run once the clone is there, which has that
   branch.
   """
   @spec ensure(Project.t(), map()) :: :ok | {:error, String.t()}
   def ensure(project, guest) do
     clone = Project.mirror_path(project, guest)
-    start = "refs/remotes/origin/" <> project.mirrored_branch
+    start = TaskBase.ref(project.mirrored_branch)
     paths = for name <- names(project), name != "slot-0", do: path(project, guest, name)
 
     case guest.exec.(["sh", "-c", @make, "mwt-slots", clone, start, @lock | paths]) do
@@ -527,6 +567,7 @@ defmodule MWTClient.Sandbox.Slots do
     * `:latest`: the latest handoff of a branch (`t:latest/0`);
     * `:restore`: for `:resume`, the commit to make the branch again at
       when it was deleted: its latest handoff's;
+    * `:restore_base`: the base it records again then, that handoff's;
     * `:thread`: the asking agent's thread id, recorded as the branch's
       holder (nil when the agent names none).
 
@@ -568,7 +609,7 @@ defmodule MWTClient.Sandbox.Slots do
           start =
             case Keyword.get(opts, :base) do
               %{ref: ref} -> ref
-              nil -> "refs/remotes/origin/" <> project.mirrored_branch
+              nil -> TaskBase.ref(project.mirrored_branch)
             end
 
           mode = if how == :new, do: "new", else: "resume"
@@ -585,7 +626,8 @@ defmodule MWTClient.Sandbox.Slots do
                  start,
                  @lock,
                  Keyword.get(opts, :restore) || "",
-                 thread || ""
+                 thread || "",
+                 Keyword.get(opts, :restore_base) || ""
                ]) do
             {:ok, _} ->
               {:ok, %{slot | state: :clean, branch: task, free?: false, thread: thread}, outcome}
@@ -740,6 +782,56 @@ defmodule MWTClient.Sandbox.Slots do
       end
     end
   end
+
+  @typedoc """
+  What landing did to a task's branch in the VM: deleted, with the slot
+  that was on it (nil when none was); or kept, and why.
+  """
+  @type landed_branch ::
+          {:deleted, Path.t() | nil}
+          | :gone
+          | {:kept,
+             :commits | {:base_of, String.t()} | {:uncommitted | :other | :missing, Path.t()}}
+
+  @doc """
+  Deletes a task's branch once its handoff landed, when nothing was done on
+  it since: still at `head`, the revision that landed, and in no folder
+  with uncommitted work. A slot on it goes on no branch, at that same
+  commit, free as it was (`free?/1`); its files don't change. Kept, and
+  why, when it has commits since, when another task is based on it
+  (`--from refs/heads/BRANCH`), when a worktree that isn't a slot has it
+  (someone works there that MWT doesn't know), or when its worktree's
+  folder is gone. The deletion only happens while the branch is still at
+  `head` (`git update-ref -d`), so a commit made meanwhile keeps it.
+
+  Its commits stay in the VM's object store, out of `git branch`, until git
+  prunes them, weeks later: `mwt worktree resume BRANCH` makes the branch
+  again at its latest handoff's commit, such as when you send a landed
+  handoff back.
+  """
+  @spec delete_landed(Project.t(), map(), Handoff.source(), String.t()) ::
+          {:ok, landed_branch()} | {:error, String.t()}
+  def delete_landed(project, guest, %{folder: folder, branch: branch}, head) do
+    slots = Enum.map(names(project), &path(project, guest, &1))
+
+    case guest.exec.(["sh", "-c", @delete_landed, "mwt-slot", folder, branch, head | slots]) do
+      {:ok, output} -> landed_outcome(String.trim(output))
+      {:error, text} -> {:error, Shown.text(text)}
+    end
+  end
+
+  defp landed_outcome("deleted"), do: {:ok, {:deleted, nil}}
+  defp landed_outcome("deleted " <> slot), do: {:ok, {:deleted, Shown.text(slot)}}
+  defp landed_outcome("gone"), do: {:ok, :gone}
+  defp landed_outcome("commits"), do: {:ok, {:kept, :commits}}
+  defp landed_outcome("base " <> task), do: {:ok, {:kept, {:base_of, Shown.text(task)}}}
+  defp landed_outcome("other " <> path), do: {:ok, {:kept, {:other, Shown.text(path)}}}
+  defp landed_outcome("missing " <> path), do: {:ok, {:kept, {:missing, Shown.text(path)}}}
+
+  defp landed_outcome("uncommitted " <> path),
+    do: {:ok, {:kept, {:uncommitted, Shown.text(path)}}}
+
+  defp landed_outcome(other), do: {:error, "Unexpected answer: " <> Shown.text(other)}
 
   defp yours(slot, slots, opts) do
     case Keyword.fetch(opts, :here) do

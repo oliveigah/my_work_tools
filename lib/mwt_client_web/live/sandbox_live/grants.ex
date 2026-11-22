@@ -1025,7 +1025,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   def summary(%Grant{kind: :mwt, tools: :change}), do: "mwt mcp  ·  update_*, as a diff"
 
   def summary(%Grant{kind: :mwt, tools: :git_fetch}),
-    do: "git fetch origin and upstream, in the projects' clones"
+    do: "git fetch host-origin and remote-origin, in the projects' clones"
 
   def summary(%Grant{kind: :mwt, tools: :git_fetch_remote}),
     do: "your repositories' remotes, fetched by this machine into MWT's store"
@@ -2156,13 +2156,13 @@ defmodule MWTClientWeb.SandboxLive.Grants do
       <dd id="grant-git-tools" class="text-[11px] text-ink">
         <%= case @grant.tools do %>
           <% :git_fetch -> %>
-            <code class="font-mono">git fetch origin</code>
-            and <code class="font-mono">git fetch upstream</code>
-            in a project's clone: your committed branches and tags, and your repository's own remote branches. MWT serves them from a view of your repository; its configuration, hooks and working files never travel. A push is always refused.
+            <code class="font-mono">git fetch host-origin</code>
+            and <code class="font-mono">git fetch remote-origin</code>
+            in a project's clone: your committed branches and tags, and the branches of your repository's own remote origin. MWT serves them from a view of your repository; its configuration, hooks and working files never travel. A push is always refused.
           <% :git_fetch_remote -> %>
-            Before <code class="font-mono">upstream</code>
+            Before <code class="font-mono">remote-origin</code>
             answers, this machine runs <code class="font-mono">git fetch</code>
-            of your repository's own remote, with your credentials and without prompting, into MWT's store, never into your repository, at most once a minute. Off, upstream shows the remote branches as you last fetched them.
+            of your repository's own remote, with your credentials and without prompting, into MWT's store, never into your repository, at most once a minute. Off, remote-origin shows the remote branches as you last fetched them.
           <% :git_handoff -> %>
             <code class="font-mono">mwt handoff</code>: an agent's exact commit, into MWT's review store, never into your repository. Landing is never a grant: you decide it on the Handoffs page.
           <% :share_sync -> %>

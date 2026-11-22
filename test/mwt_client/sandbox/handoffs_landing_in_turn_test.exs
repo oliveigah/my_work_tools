@@ -19,7 +19,10 @@ defmodule MWTClient.Sandbox.HandoffsLandingInTurnTest do
       {_, 0} = mwt.(["handoff", "--title", "The fix"])
       {:ok, first} = Handoffs.accept(username, 1, {:branch, "master", "fix"})
       branch = first.accepted.branch
+      # Each landing deleted the task's branch: sent back, its thread
+      # makes it again before it changes anything.
       {:ok, _} = Handoffs.send_back(username, 1, "More work")
+      {_, 0} = mwt.(["worktree", "resume", "fix"])
       first_head = sha(tree, "HEAD")
       File.write!(Path.join(tree, "task.txt"), "revision\n")
       assert {said, 0} = mwt.(["handoff", "--title", "The fix"])
@@ -29,6 +32,7 @@ defmodule MWTClient.Sandbox.HandoffsLandingInTurnTest do
       assert git(repo, ["show", branch <> ":task.txt"]) == "revision\n"
 
       {:ok, _} = Handoffs.send_back(username, 1, "Another revision")
+      {_, 0} = mwt.(["worktree", "resume", "fix"])
       git(repo, ["checkout", "-q", branch])
       commit(repo, [{"host.txt", "host\n"}], "host work")
       host = sha(repo, "HEAD")
@@ -36,7 +40,7 @@ defmodule MWTClient.Sandbox.HandoffsLandingInTurnTest do
       File.write!(Path.join(tree, "task.txt"), "another revision\n")
       # It catches up with what you added there before it goes.
       assert {said, 0} = mwt.(["handoff", "--title", "The fix"])
-      assert said =~ "Rebased onto origin/#{branch}"
+      assert said =~ "Rebased onto host-origin/#{branch}"
       assert sha(tree, "HEAD~1") == host
       assert {:ok, updated} = Handoffs.accept(username, 1)
       assert updated.accepted.branch == branch
@@ -81,7 +85,7 @@ defmodule MWTClient.Sandbox.HandoffsLandingInTurnTest do
 
       # mwt handoff catches up first: B goes as it is, on top of A.
       assert {said, 0} = cli(context, second).(["handoff", "--title", "Task B"])
-      assert said =~ "Rebased onto origin/master"
+      assert said =~ "Rebased onto host-origin/master"
       assert {:ok, %{behind: 0, as: :as_is}} = Handoffs.preview(username, 2, {:commit, "master"})
       assert {:ok, _} = Handoffs.accept(username, 2)
       assert sha(repo, "master") == sha(second, "HEAD")

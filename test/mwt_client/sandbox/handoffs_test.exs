@@ -125,7 +125,7 @@ defmodule MWTClient.Sandbox.HandoffsTest do
       %{projects: projects, mirror: entries} = Sandbox.snapshot(username)
       shares = Sandbox.snapshot(username).settings.shares
       previous = entries["app"].tips["master"]
-      fetched = sha(clone, "origin/master")
+      fetched = sha(clone, "host-origin/master")
 
       commit(repo, [{"b.txt", "yours\n"}], "second")
       :ok = Projects.follow(username, projects, entries, vm, 60, shares)
@@ -133,7 +133,7 @@ defmodule MWTClient.Sandbox.HandoffsTest do
 
       assert :ok = Projects.fresh(username, "app")
       assert Sandbox.snapshot(username).mirror["app"].tips["master"] == sha(repo, "master")
-      assert sha(clone, "origin/master") == fetched
+      assert sha(clone, "host-origin/master") == fetched
       refute File.exists?(Path.join(clone, "b.txt"))
     end
 
@@ -167,7 +167,7 @@ defmodule MWTClient.Sandbox.HandoffsTest do
       assert [%Project{mirrored_branch: "trunk"}] = Projects.list(username)
       assert sha(clone, "HEAD") == initial
       assert git(clone, ["branch", "--show-current"]) == "master\n"
-      assert sha(clone, "origin/master") == initial
+      assert sha(clone, "host-origin/master") == initial
 
       assert {:ok, %Project{mirrored_branch: "trunk"}} =
                Projects.update(username, "app", %{"mirrored_branch" => "develop"})

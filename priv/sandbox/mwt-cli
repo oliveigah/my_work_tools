@@ -7,7 +7,7 @@
 set -u
 
 channel=${MWT_CHANNEL:-VSOCK-CONNECT:2:5000}
-# git finds the helper of a project's origin (git-remote-mwt) beside this
+# git finds the helper of a project's remotes (git-remote-mwt) beside this
 # command, even from a shell that didn't read /etc/profile.d.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
 case ":$PATH:" in
@@ -201,13 +201,13 @@ mwt - ask MWT, the user's control panel, for access
   mwt project
       Where you are in a project: its clone, /work/NAME (slot-0), or one
       of its worktree slots, /work/NAME.wt/slot-N; the user's branches,
-      origin/BRANCH here; who holds each slot; and the rules.
+      host-origin/BRANCH here; who holds each slot; and the rules.
 
   mwt worktree new TASK --from BASE
       Take the worktree slot you are in when it is free: first, before
-      anything else, even for a question. It fetches origin, then starts
+      anything else, even for a question. It fetches host-origin, then starts
       a new branch TASK from BASE: the user's branch the work is based on
-      (origin/BASE here; ask them which when they named none, mwt project
+      (host-origin/BASE here; ask them which when they named none, mwt project
       lists them), refs/heads/TASK for another VM task, or a commit ID.
       Without --from nothing starts, and the answer lists their branches.
       The task is named for what the user asked (fix-login-timeout, not
@@ -221,7 +221,8 @@ mwt - ask MWT, the user's control panel, for access
   mwt worktree resume BRANCH
       Put an existing branch, such as one whose handoff was sent back after
       its slot went to another task, in the slot you are in, when it is
-      free. Run in the slot that has BRANCH, held by another thread, it
+      free. A branch deleted when its handoff landed is made again at the
+      handoff's commit: resume it before you change anything. Run in the slot that has BRANCH, held by another thread, it
       moves the hold to yours: only when the user asks you to carry on
       that task.
 
@@ -235,11 +236,11 @@ mwt - ask MWT, the user's control panel, for access
   mwt handoff --title "what this is" [--body FILE] [--onto BASE] [--no-checks]
       Only once the user asks for it (/handoff), after they reviewed your
       uncommitted work in the VM. In your slot, it does every step that
-      needs no judgment: fetches origin; commits the changes to files git
+      needs no judgment: fetches host-origin; commits the changes to files git
       has, with the title as the message (for a new revision, folded into
       the handoff's commit while nothing was committed after it); catches
       up with the task's base (rebases the task's commits onto
-      origin/BASE); runs the project's checks, if it has any (mwt project
+      host-origin/BASE); runs the project's checks, if it has any (mwt project
       names them); then hands that exact commit off to the user. It stops,
       saying what to do, at new files git doesn't know (git add those that
       belong to the work first), conflicts (resolve and git add them: the
@@ -251,7 +252,7 @@ mwt - ask MWT, the user's control panel, for access
       lands on unless they choose another). --body takes the description
       from a file (- for stdin). --no-checks skips the checks, only when
       the user says so. Run it again on the same branch, when they ask
-      again, to update it with a new revision. A git push to origin is
+      again, to update it with a new revision. A git push to host-origin is
       refused: work goes back this way.
 
   mwt handoff withdraw --reason "what the user asked now"
@@ -441,9 +442,9 @@ exchange() {
 # What a handoff needs that no agent has to do, here in the agent's own
 # slot: MWT names the selected base, the title, the project's checks and,
 # for a new revision, the commit to fold it into (its "prepare" answer);
-# then origin is fetched, the changes to files git has are committed with
+# then host-origin is fetched, the changes to files git has are committed with
 # the title (into the last revision's commit, while nothing was committed
-# on it since), the task's commits rebased onto origin/BASE, and the
+# on it since), the task's commits rebased onto host-origin/BASE, and the
 # checks run, if the project has any. It stops, saying what to do, where
 # only the agent can go on: new files git doesn't know (which belong to
 # the work is the agent's to say), conflicts, failing checks. Nothing is
@@ -485,7 +486,7 @@ handoff_steps() {
   fi
   onto=$(plan_value onto "$plan")
   base_ref=$(plan_value ref "$plan")
-  base_ref=${base_ref:-refs/remotes/origin/$onto}
+  base_ref=${base_ref:-refs/remotes/host-origin/$onto}
   base_name=${base_ref#refs/remotes/}
   subject=$(plan_value title "$plan")
   checks=$(plan_value checks "$plan")
@@ -497,10 +498,10 @@ handoff_steps() {
 
   # 0. The user's branches as they are now: the catch-up rebases onto them.
   case $base_ref in
-    refs/remotes/origin/*)
-      if ! git fetch -q origin 2>"$gitdir/mwt-fetch.log"; then
+    refs/remotes/host-origin/*)
+      if ! git fetch -q host-origin 2>"$gitdir/mwt-fetch.log"; then
         cat "$gitdir/mwt-fetch.log" >&2
-        echo "mwt: fetching origin failed (git's words are above), so the task couldn't catch up with $base_name. Nothing was handed off." >&2
+        echo "mwt: fetching host-origin failed (git's words are above), so the task couldn't catch up with $base_name. Nothing was handed off." >&2
         exit 1
       fi
       ;;
@@ -1100,9 +1101,9 @@ case $command in
           exit 1
         fi
         name=${positional[1]}
-        # A task starts from origin/BASE as the user has it now.
-        if git rev-parse --git-dir >/dev/null 2>&1 && ! git fetch -q origin; then
-          echo "mwt: fetching origin failed (git's words are above), so the user's branches here may be old. Nothing was started." >&2
+        # A task starts from host-origin/BASE as the user has it now.
+        if git rev-parse --git-dir >/dev/null 2>&1 && ! git fetch -q host-origin; then
+          echo "mwt: fetching host-origin failed (git's words are above), so the user's branches here may be old. Nothing was started." >&2
           exit 1
         fi
         ;;

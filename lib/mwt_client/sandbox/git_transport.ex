@@ -6,9 +6,10 @@ defmodule MWTClient.Sandbox.GitTransport do
   never a host path or command. Git serves a temporary bare view holding
   only refs MWT chose, borrowing its objects:
 
-    * `origin` (`mwt::<id>`): your repository's branches and tags;
-    * `upstream` (`mwt::<id>/upstream`): your repository's own remote
-      branches (its `refs/remotes/origin/*`) as branches. With the grant
+    * `host-origin` (`mwt::<id>`): your repository's branches and tags;
+    * `remote-origin` (`mwt::<id>/remote-origin`): your repository's own
+      remote `origin`'s branches (its `refs/remotes/origin/*`) as
+      branches. With the grant
       Git: fetch from your remotes on, this machine fetches that remote
       first, at most once a minute, into MWT's store
       (`MWTClient.Sandbox.HandoffStore`), never into your repository,
@@ -101,8 +102,8 @@ defmodule MWTClient.Sandbox.GitTransport do
       Map.get(ask, "protocol", "") not in ["", "version=1", "version=2"] ->
         {:error, "Unsupported Git protocol."}
 
-      Map.get(ask, "remote", "origin") not in ["origin", "upstream"] ->
-        {:error, "The remote is origin (mwt::ID) or upstream (mwt::ID/upstream)."}
+      Map.get(ask, "remote", "host-origin") not in ["host-origin", "remote-origin"] ->
+        {:error, "The remote is host-origin (mwt::ID) or remote-origin (mwt::ID/remote-origin)."}
 
       Map.keys(ask) -- ["command", "project", "service", "protocol", "remote"] != [] ->
         {:error, "Git requests take a project ID and service, not paths or options."}
@@ -131,7 +132,7 @@ defmodule MWTClient.Sandbox.GitTransport do
     :exit, _reason -> {:error, "MWT is not available; it may be locked or closed."}
   end
 
-  defp remote(ask), do: Map.get(ask, "remote", "origin")
+  defp remote(ask), do: Map.get(ask, "remote", "host-origin")
 
   # The grant Git: fetch from your repositories decides each transfer.
   defp allowed(username, project, remote) do
@@ -176,8 +177,8 @@ defmodule MWTClient.Sandbox.GitTransport do
     end
   end
 
-  # Your repository's branches and tags, for origin.
-  defp refs(project, "origin", _username, objects) do
+  # Your repository's branches and tags, for host-origin.
+  defp refs(project, "host-origin", _username, objects) do
     case HostGit.run(
            project.path,
            ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/", "refs/tags/"],
@@ -189,10 +190,10 @@ defmodule MWTClient.Sandbox.GitTransport do
     end
   end
 
-  # Its remote's branches, as branches, for upstream: fetched by this
-  # machine into MWT's store first when the grant allows, else as your
-  # repository last fetched them.
-  defp refs(project, "upstream", username, objects) do
+  # Its remote origin's branches, as branches, for remote-origin: fetched
+  # by this machine into MWT's store first when the grant allows, else as
+  # your repository last fetched them.
+  defp refs(project, "remote-origin", username, objects) do
     %{dir: dir} = Server.call(username, :projects, 1_000)
     store = HandoffStore.path(dir, project.path)
 

@@ -1,8 +1,9 @@
 defmodule MWTClient.Sandbox.Project do
   @moduledoc """
   A registered host repository with a writable clone at `/work/<name>` in
-  the VM, whose `origin` is your repository through MWT. Its branches,
-  commits and files are the VM's; your branches reach it as `origin/*`.
+  the VM, whose `host-origin` is your repository through MWT. Its branches,
+  commits and files are the VM's; your branches reach it as
+  `host-origin/*`.
 
   `slots` are the numbers of its worktree slots beside the clone,
   `/work/<name>.wt/slot-N` (`MWTClient.Sandbox.Slots`); the clone itself is
@@ -249,7 +250,7 @@ defmodule MWTClient.Sandbox.Project do
   def id(%__MODULE__{path: path}),
     do: :crypto.hash(:sha256, path) |> Base.encode16(case: :lower)
 
-  @doc "The VM origin, resolved by MWT to this registered host repository."
+  @doc "The VM's host-origin, resolved by MWT to this registered host repository."
   @spec remote_url(t()) :: String.t()
   def remote_url(%__MODULE__{} = project), do: "mwt::" <> id(project)
 

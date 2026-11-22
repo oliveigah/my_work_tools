@@ -1,16 +1,16 @@
 #!/bin/bash
-# Git's remote helper for mwt::<project-id> (origin: the user's repository
-# on their machine) and mwt::<project-id>/upstream (its own remote's
-# branches). Only the transport crosses into MWT: branches, indexes,
+# Git's remote helper for mwt::<project-id> (host-origin: the user's
+# repository on their machine) and mwt::<project-id>/remote-origin (that
+# repository's own remote origin's branches). Only the transport crosses into MWT: branches, indexes,
 # commits and working trees remain Git's. A push is refused.
 set -u
 
 project=${2#mwt::}
-remote=origin
+remote=host-origin
 case $project in
-  */upstream)
-    project=${project%/upstream}
-    remote=upstream
+  */remote-origin)
+    project=${project%/remote-origin}
+    remote=remote-origin
     ;;
 esac
 channel=${MWT_CHANNEL:-VSOCK-CONNECT:2:5000}
@@ -29,7 +29,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-[[ $project =~ ^[0-9a-f]{64}$ ]] || fail "this remote needs an open project's ID (mwt::<project-id>, or mwt::<project-id>/upstream)."
+[[ $project =~ ^[0-9a-f]{64}$ ]] || fail "this remote needs an open project's ID (mwt::<project-id>, or mwt::<project-id>/remote-origin)."
 
 connect() {
   [ "$1" = git-upload-pack ] || fail "pushes go through review; use mwt handoff."

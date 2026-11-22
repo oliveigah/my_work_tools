@@ -78,7 +78,7 @@ defmodule MWTClient.Sandbox.Leftovers do
       [ -d "$p" ] || continue
       if [ -n "$(git -C "$p" status --porcelain 2>/dev/null | head -n 1)" ]; then echo "uncommitted $n $p"; fi
     done
-    yours=$(git -C "$m" for-each-ref --format='%(refname)' refs/remotes/origin/ refs/remotes/host/ | grep -vE '^refs/remotes/(origin|host)/HEAD$')
+    yours=$(git -C "$m" for-each-ref --format='%(refname)' refs/remotes/host-origin/ refs/remotes/origin/ refs/remotes/host/ | grep -vE '^refs/remotes/(host-origin|origin|host)/HEAD$')
     git -C "$m" for-each-ref --format='%(refname)' refs/heads/ | sed 's|^refs/heads/||' | while IFS= read -r b; do
       if [ -n "$(git -C "$m" rev-list -n 1 "refs/heads/$b" --not $yours 2>/dev/null)" ]; then echo "unmerged $n $b"; fi
     done

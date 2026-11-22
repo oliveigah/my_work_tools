@@ -1,9 +1,12 @@
 defmodule MWTClient.Sandbox.TaskBase do
   @moduledoc """
   Resolves a handoff's comparison branch or commit without changing the
-  VM's history. The branch's origin upstream is preferred, then the
-  project's default host branch. An explicit --onto overrides that choice.
-  Older branch.mwt-base settings remain readable during migration.
+  VM's history. The branch's tracked `host-origin` branch is preferred,
+  then the project's default host branch. An explicit --onto overrides
+  that choice. Bases recorded before the remotes were renamed
+  (`refs/remotes/origin/*`, `refs/remotes/host/*`) stay readable: handoff
+  records keep them, and so does a closed project's clone until it is
+  opened again.
   """
 
   alias MWTClient.Sandbox.{HostGit, Project, Shown}
@@ -17,8 +20,10 @@ defmodule MWTClient.Sandbox.TaskBase do
 
     branch =
       case value do
+        "refs/remotes/host-origin/" <> name -> name
         "refs/remotes/origin/" <> name -> name
         "refs/remotes/host/" <> name -> name
+        "host-origin/" <> name -> name
         "origin/" <> name -> name
         "host/" <> name -> name
         "refs/" <> _ -> nil
@@ -37,9 +42,9 @@ defmodule MWTClient.Sandbox.TaskBase do
 
     cond do
       commit?(host) ->
-        {:ok, %{ref: "refs/remotes/origin/" <> branch, branch: branch, commit: host}}
+        {:ok, %{ref: ref(branch), branch: branch, commit: host}}
 
-      String.starts_with?(value, ["-", "origin/", "host/", "refs/remotes/"]) ->
+      String.starts_with?(value, ["-", "host-origin/", "origin/", "host/", "refs/remotes/"]) ->
         {:error, {:no_base, Shown.text(value)}}
 
       true ->
@@ -66,6 +71,11 @@ defmodule MWTClient.Sandbox.TaskBase do
   def label(%{branch: branch}) when is_binary(branch), do: branch
   def label(%{ref: ref}), do: ref_label(ref)
 
+  @doc "The ref your branch `branch` has in the VM's clone."
+  @spec ref(String.t()) :: String.t()
+  def ref(branch), do: "refs/remotes/host-origin/" <> branch
+
+  def ref_label("refs/remotes/host-origin/" <> branch), do: branch
   def ref_label("refs/remotes/origin/" <> branch), do: branch
   def ref_label("refs/remotes/host/" <> branch), do: branch
   def ref_label("refs/heads/" <> branch), do: branch
@@ -79,6 +89,7 @@ defmodule MWTClient.Sandbox.TaskBase do
 
     upstream =
       case upstream do
+        "refs/remotes/host-origin/" <> _ -> upstream
         "refs/remotes/origin/" <> _ -> upstream
         "refs/remotes/host/" <> _ -> upstream
         _ -> nil

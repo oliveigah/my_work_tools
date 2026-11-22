@@ -5,12 +5,21 @@ defmodule MWTClient.Sandbox.Mirror do
   branches, index and files alone.
 
   A new clone receives your committed branches and tags once, then
-  fetches through its MWT origin (`mwt::<id>`) like any clone; its
-  `upstream` (`mwt::<id>/upstream`) is your repository's own remote's
-  branches (`MWTClient.Sandbox.GitTransport`). Older mirrors become clones
-  in place, without moving their checkout or any worktree: their branches
-  are copied to `origin/*`, then their `host` remote goes, with its
-  branches, which nothing would update any more.
+  fetches through MWT like any clone, from two remotes named for the level
+  they reach (`MWTClient.Sandbox.GitTransport`): `host-origin`
+  (`mwt::<id>`), your repository on your machine, and `remote-origin`
+  (`mwt::<id>/remote-origin`), your repository's own remote `origin`, as
+  your machine fetches it. `origin` alone would mean your repository in
+  the VM and its remote on your machine, and agents, messages and you
+  mixed the two up; the cost is Git's default name, so a bare `git fetch`
+  or `git pull` with no tracking branch names no remote.
+
+  Clones made before (`mwt.clone-version` 1, with `origin` and `upstream`)
+  are renamed in place at the next run, their tracking branches and tasks'
+  recorded bases with them. Older mirrors become clones in place, without
+  moving their checkout or any worktree: their branches are copied to
+  `host-origin/*`, then their `host` remote goes, with its branches, which
+  nothing would update any more.
   """
 
   alias MWTClient.Sandbox.{Guest, HostGit, Project, Shown}
@@ -36,18 +45,43 @@ defmodule MWTClient.Sandbox.Mirror do
     mkdir -p "$m"
     git init -q "$m"
   fi
-  if git -C "$m" config --get mwt.clone-version >/dev/null; then echo ready
-  elif git -C "$m" rev-parse --verify --quiet HEAD >/dev/null; then echo migrate
-  else echo new; fi
+  case $(git -C "$m" config --get mwt.clone-version || true) in
+    2) echo ready ;;
+    ?*) echo rename ;;
+    *) if git -C "$m" rev-parse --verify --quiet HEAD >/dev/null; then echo migrate; else echo new; fi ;;
+  esac
   """
 
   @configure ~S"""
   set -e
   m=$1 mode=$2 branch=$3 url=$4 id=$5 name=$6 email=$7
   cd "$m"
-  if [ "$mode" != ready ]; then
-    git config remote.origin.url "$url"
-    git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  # Version 1 named your repository origin and its remote upstream: each
+  # is renamed when it is still MWT's, and the tasks' recorded bases
+  # follow. One the VM pointed elsewhere stays the VM's, under its name.
+  if [ "$mode" = rename ]; then
+    if [ "$(git config --get remote.origin.url || true)" = "$url" ] &&
+      ! git config --get remote.host-origin.url >/dev/null; then
+      git remote rename origin host-origin
+      git config --get-regexp '^branch[.].*[.]mwt-base$' |
+        while read -r key base; do
+          case $base in
+            refs/remotes/origin/*) git config "$key" "refs/remotes/host-origin/${base#refs/remotes/origin/}" ;;
+          esac
+        done || true
+    fi
+    if [ "$(git config --get remote.upstream.url || true)" = "$url/upstream" ] &&
+      ! git config --get remote.remote-origin.url >/dev/null; then
+      git remote rename upstream remote-origin
+      git config remote.remote-origin.url "$url/remote-origin"
+    fi
+  fi
+  if [ "$mode" = new ] || [ "$mode" = migrate ] ||
+    { [ "$mode" = rename ] && ! git config --get remote.host-origin.url >/dev/null; }; then
+    git config remote.host-origin.url "$url"
+    git config remote.host-origin.fetch '+refs/heads/*:refs/remotes/host-origin/*'
+  fi
+  if [ "$mode" = new ] || [ "$mode" = migrate ]; then
     git config mwt.project "$id"
     if [ -n "$name" ] && ! git config user.name >/dev/null; then git config user.name "$name"; fi
     if [ -n "$email" ] && ! git config user.email >/dev/null; then git config user.email "$email"; fi
@@ -56,36 +90,36 @@ defmodule MWTClient.Sandbox.Mirror do
         while read -r sha ref; do
           b=${ref#refs/remotes/host/}
           [ "$b" = HEAD ] && continue
-          if ! git show-ref --verify --quiet "refs/remotes/origin/$b"; then
-            git update-ref "refs/remotes/origin/$b" "$sha"
+          if ! git show-ref --verify --quiet "refs/remotes/host-origin/$b"; then
+            git update-ref "refs/remotes/host-origin/$b" "$sha"
           fi
         done
       git config --get-regexp '^branch[.].*[.]remote$' |
         while read -r key remote; do
-          [ "$remote" != host ] || git config "$key" origin
+          [ "$remote" != host ] || git config "$key" host-origin
         done || true
     else
-      git checkout -q --track -b "$branch" "refs/remotes/origin/$branch"
+      git checkout -q --track -b "$branch" "refs/remotes/host-origin/$branch"
     fi
-    git symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$branch"
-    git config mwt.clone-version 1
+    git symbolic-ref refs/remotes/host-origin/HEAD "refs/remotes/host-origin/$branch"
   fi
+  git config mwt.clone-version 2
   # Your repository's own remote's branches, through MWT, unless the VM
-  # has an upstream of its own.
-  if ! git config --get remote.upstream.url >/dev/null; then
-    git config remote.upstream.url "$url/upstream"
-    git config remote.upstream.fetch '+refs/heads/*:refs/remotes/upstream/*'
+  # has a remote-origin of its own.
+  if ! git config --get remote.remote-origin.url >/dev/null; then
+    git config remote.remote-origin.url "$url/remote-origin"
+    git config remote.remote-origin.fetch '+refs/heads/*:refs/remotes/remote-origin/*'
   fi
-  # A mirror's own remote (mwt::host, MWT's, never the VM's), once origin
-  # is there: its branches are origin's now, and nothing updates them.
-  # Tasks' recorded bases follow to origin. Each run, so a clone made
-  # before this goes too.
+  # A mirror's own remote (mwt::host, MWT's, never the VM's), once
+  # host-origin is there: its branches are host-origin's now, and nothing
+  # updates them. Tasks' recorded bases follow to host-origin. Each run,
+  # so a clone made before this goes too.
   if [ "$(git config --get remote.host.url || true)" = mwt::host ] &&
-    git config --get remote.origin.url >/dev/null; then
+    git config --get remote.host-origin.url >/dev/null; then
     git config --get-regexp '^branch[.].*[.]mwt-base$' |
       while read -r key base; do
         case $base in
-          refs/remotes/host/*) git config "$key" "refs/remotes/origin/${base#refs/remotes/host/}" ;;
+          refs/remotes/host/*) git config "$key" "refs/remotes/host-origin/${base#refs/remotes/host/}" ;;
         esac
       done || true
     git remote remove host
@@ -154,7 +188,7 @@ defmodule MWTClient.Sandbox.Mirror do
   end
 
   defp seed("new", path, guest, clone, branches) do
-    specs = Enum.map(branches, &"refs/heads/#{&1}:refs/remotes/origin/#{&1}")
+    specs = Enum.map(branches, &"refs/heads/#{&1}:refs/remotes/host-origin/#{&1}")
 
     case HostGit.run(
            path,

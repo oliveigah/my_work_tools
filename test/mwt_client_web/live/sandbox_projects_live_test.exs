@@ -193,7 +193,7 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
     assert order.() == ["project-app", "project-zeta"]
   end
 
-  test "an open project shows your branches, as origin has them", %{
+  test "an open project shows your branches, as host-origin has them", %{
     conn: conn,
     username: username,
     repo: repo,
@@ -205,9 +205,15 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
     {:ok, _} = Projects.mirror(username, "app")
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/projects")
-    assert has_element?(view, "#project-branches-app", "2 branches on origin")
+    assert has_element?(view, "#project-branches-app", "2 branches on host-origin")
     assert has_element?(view, "#project-branches-app code", "develop")
-    assert has_element?(view, "#project-branches-app code[title^='origin/master at']", "master")
+
+    assert has_element?(
+             view,
+             "#project-branches-app code[title^='host-origin/master at']",
+             "master"
+           )
+
     # No setting picks a branch any more.
     refute has_element?(view, "#project-mirrored-branch-app")
   end
@@ -461,7 +467,7 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
       "-b",
       "push-options",
       old,
-      "origin/master"
+      "host-origin/master"
     ])
 
     snapshot = Sandbox.snapshot(username)

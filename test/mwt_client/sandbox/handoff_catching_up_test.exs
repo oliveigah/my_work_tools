@@ -6,7 +6,7 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
 
   alias MWTClient.Sandbox.{Channel, HandoffStore, Handoffs, Projects, Server}
 
-  test "the CLI fetches, commits the work and catches up by rebasing onto origin", context do
+  test "the CLI fetches, commits the work and catches up by rebasing onto host-origin", context do
     %{username: username, repo: repo} = context
     {_project, tree} = project_with_worktree(context)
     commit(repo, [{"host.txt", "host\n"}], "host work")
@@ -17,7 +17,7 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
 
     assert {words, 0} = run.(["handoff", "--title", "Edit a"])
     assert words =~ "Committed what was uncommitted: Edit a"
-    assert words =~ "Rebased onto origin/master"
+    assert words =~ "Rebased onto host-origin/master"
     assert words =~ "The checks passed"
     assert words =~ "Handed off"
     assert sha(tree, "HEAD~1") == host
@@ -44,7 +44,7 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
     assert words =~ "Folded what was uncommitted into the handoff's commit"
     [%{head: second, revision: 2, stats: %{commits: 1}}] = handoffs(username)
     assert second != first
-    assert sha(tree, "HEAD~1") == sha(tree, "origin/master")
+    assert sha(tree, "HEAD~1") == sha(tree, "host-origin/master")
 
     # The user commits a piece of their own: it stays, and the next
     # revision is a commit on top of it.
@@ -190,9 +190,11 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
     {:ok, _} =
       Handoffs.accept(username, 1, {:branch, "master", "feature"}, one_commit: true)
 
+    # Landing deleted its branch: the thread makes it again first.
     {:ok, _} = Handoffs.send_back(username, 1, "More")
-    File.write!(Path.join(tree, "vm.txt"), "second\n")
     run = cli(context, tree)
+    assert {_, 0} = run.(["worktree", "resume", "fix"])
+    File.write!(Path.join(tree, "vm.txt"), "second\n")
 
     assert {words, 0} = run.(["handoff"])
     assert words =~ "after what landed on mwt/feature before"
