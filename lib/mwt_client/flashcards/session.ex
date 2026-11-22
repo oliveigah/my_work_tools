@@ -13,7 +13,8 @@ defmodule MWTClient.Flashcards.Session do
 
   A card judged not worth remembering is removed instead of answered
   (`remove/1`): the session moves on and lists it at the end, where it can
-  be put back.
+  be put back. So is a card whose answer is doubted, marked uncertain
+  instead of answered (`mark_uncertain/1`), listed at the end apart.
   """
 
   alias MWTClient.Flashcards.Card
@@ -27,6 +28,7 @@ defmodule MWTClient.Flashcards.Session do
           fronts: %{String.t() => String.t()},
           repeat?: boolean(),
           removed: [String.t()],
+          uncertain: [String.t()],
           skipped: non_neg_integer()
         }
 
@@ -37,6 +39,7 @@ defmodule MWTClient.Flashcards.Session do
             fronts: %{},
             repeat?: true,
             removed: [],
+            uncertain: [],
             skipped: 0
 
   @doc "A session asking `cards` in order."
@@ -104,8 +107,32 @@ defmodule MWTClient.Flashcards.Session do
 
   @doc "The fronts of the cards removed, in the order they were."
   @spec removed(t()) :: [{String.t(), String.t()}]
-  def removed(%__MODULE__{} = session) do
-    for id <- Enum.reverse(session.removed), do: {id, Map.fetch!(session.fronts, id)}
+  def removed(%__MODULE__{} = session), do: fronts(session, session.removed)
+
+  @doc """
+  Takes the card asked out of the session, as it was marked uncertain, and
+  moves on to the next one. A repeat of it waiting is dropped too.
+  """
+  @spec mark_uncertain(t()) :: t()
+  def mark_uncertain(%__MODULE__{current: %Card{id: id}} = session) do
+    %{drop(session, id) | uncertain: [id | session.uncertain]}
+  end
+
+  @doc """
+  Forgets that a card was marked uncertain, as when the mark is undone. It
+  is not asked again in this session.
+  """
+  @spec unmark_uncertain(t(), String.t()) :: t()
+  def unmark_uncertain(%__MODULE__{} = session, id) do
+    %{session | uncertain: List.delete(session.uncertain, id)}
+  end
+
+  @doc "The fronts of the cards marked uncertain, in the order they were."
+  @spec uncertain(t()) :: [{String.t(), String.t()}]
+  def uncertain(%__MODULE__{} = session), do: fronts(session, session.uncertain)
+
+  defp fronts(session, ids) do
+    for id <- Enum.reverse(ids), do: {id, Map.fetch!(session.fronts, id)}
   end
 
   @doc """
@@ -154,9 +181,13 @@ defmodule MWTClient.Flashcards.Session do
   @spec answered(t()) :: non_neg_integer()
   def answered(%__MODULE__{answers: answers}), do: length(answers)
 
-  @doc "How many cards were dealt with: answered, repeats included, or removed."
+  @doc """
+  How many cards were dealt with: answered, repeats included, removed or
+  marked uncertain.
+  """
   @spec handled(t()) :: non_neg_integer()
-  def handled(%__MODULE__{} = session), do: length(session.answers) + length(session.removed)
+  def handled(%__MODULE__{} = session),
+    do: length(session.answers) + length(session.removed) + length(session.uncertain)
 
   @doc "How many cards are still to ask, the one asked now included."
   @spec left(t()) :: non_neg_integer()

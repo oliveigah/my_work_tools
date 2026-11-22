@@ -204,7 +204,9 @@ search index points at. Times are microseconds since 1970, UTC.
 - **Flash cards:** one row each in `flashcards`, review state included,
   the back and search text last; lists, tags, counts and session picks
   read every column but those two. The session settings are a document
-  (see [Small state](#small-state)).
+  (see [Small state](#small-state)). `FlashcardsUncertain` (version 3)
+  adds the mark of a card the user doubts: `uncertain_at` and
+  `uncertain_note`, null while it isn't marked.
 
 ### Handoffs
 

@@ -3,8 +3,10 @@ defmodule MWTClientWeb.FlashcardsLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias MWTClient.Flashcards.Card
   alias MWTClient.Flashcards.Library
   alias MWTClientWeb.FlashcardsLive.Filter
+  alias MWTClientWeb.FlashcardsLive.Remember
 
   setup %{conn: conn} do
     sign_in(conn)
@@ -235,6 +237,143 @@ defmodule MWTClientWeb.FlashcardsLiveTest do
       view |> element("#restore-#{second.id}") |> render_click()
       assert {:ok, %{removed_at: nil}} = Library.get(username, second.id)
       refute has_element?(view, "#summary-removed")
+    end
+
+    test "marks a card uncertain, with what is doubted, and moves on, with a way back", %{
+      view: view,
+      username: username,
+      cards: cards
+    } do
+      view |> element(tag("mwt_client")) |> render_click()
+      view |> element("#start-session") |> render_click()
+
+      # Only once the answer shows.
+      render_keydown(view, "session_key", %{"key" => "u"})
+      refute has_element?(view, "#doubt-form")
+
+      first = asked(view, cards)
+      view |> element("#flip") |> render_click()
+      view |> element("#doubt-card") |> render_click()
+      assert has_element?(view, "#doubt-form")
+      refute has_element?(view, "#votes")
+
+      # While it is written, keys are typing, not votes.
+      render_keydown(view, "session_key", %{"key" => "1"})
+      assert {:ok, %{reviews: 0}} = Library.get(username, first.id)
+
+      view |> form("#doubt-form", uncertain: %{note: "Still true?"}) |> render_submit()
+      assert {:ok, %{uncertain_note: "Still true?", reviews: 0}} = Library.get(username, first.id)
+      assert has_element?(view, "#uncertain-notice", first.front)
+      assert has_element?(view, "#session-progress", "2 / 2")
+
+      view |> element("#undo-uncertain") |> render_click()
+      assert {:ok, %{uncertain_at: nil}} = Library.get(username, first.id)
+      refute has_element?(view, "#uncertain-notice")
+
+      # U does the same; Escape gives it up; nothing written is fine.
+      second = asked(view, cards)
+      render_keydown(view, "session_key", %{"key" => " "})
+      render_keydown(view, "session_key", %{"key" => "U"})
+      render_keydown(element(view, "#doubt-escape"), %{"key" => "Escape"})
+      refute has_element?(view, "#doubt-form")
+      assert has_element?(view, "#votes")
+
+      render_keydown(view, "session_key", %{"key" => "u"})
+      view |> form("#doubt-form") |> render_submit()
+
+      assert has_element?(view, "#remember-summary")
+      assert has_element?(view, "#summary-uncertain", second.front)
+
+      assert {:ok, %{uncertain_at: %DateTime{}, uncertain_note: nil}} =
+               Library.get(username, second.id)
+
+      view |> element("#unmark-#{second.id}") |> render_click()
+      assert {:ok, %{uncertain_at: nil}} = Library.get(username, second.id)
+      refute has_element?(view, "#summary-uncertain")
+    end
+
+    test "a card marked uncertain waits apart, out of sessions, until it is resolved", %{
+      conn: conn,
+      username: username,
+      cards: [slots | _]
+    } do
+      {:ok, _marked} = Library.mark_uncertain(username, slots.id, "Still warm?")
+      {:ok, view, _html} = live(conn, ~p"/tools/flashcards")
+
+      assert has_element?(view, "#uncertain-waiting", "1 card marked uncertain waits")
+      assert has_element?(view, "#uncertain-waiting", Remember.check_prompt([], :any))
+      assert has_element?(view, "#session-count", "1 uncertain left out")
+      assert has_element?(view, "#flashcard-totals", "2 due")
+
+      # The words to ask with name the tags picked, and the count says how
+      # many of the pick wait.
+      view |> element(tag("elixir")) |> render_click()
+      assert has_element?(view, "#uncertain-waiting", "0 in this pick")
+      assert has_element?(view, "#uncertain-waiting", "tagged elixir against the code")
+      view |> element(tag("worktrees")) |> render_click()
+      assert has_element?(view, "#uncertain-waiting", "1 in this pick")
+      assert has_element?(view, "#uncertain-waiting", "tagged elixir or worktrees")
+
+      assert Remember.check_prompt(["mwt_client", "egress", "proxy"], :all) ==
+               "Check my uncertain flash cards in MWT tagged mwt_client, egress and proxy against the code."
+
+      view |> element("#clear-tags") |> render_click()
+
+      view |> element("#start-session") |> render_click()
+      assert has_element?(view, "#session-progress", "1 / 2")
+      view |> element("#end-session") |> render_click()
+
+      view |> element("#see-uncertain") |> render_click()
+      assert_patch(view, ~p"/tools/flashcards/cards")
+      assert has_element?(view, "#card-list-panel", "Uncertain")
+      assert list_has?(view, "Why slots?")
+      refute list_has?(view, "Who lands a handoff?")
+
+      view |> element("#card-row-#{slots.id}") |> render_click()
+      assert has_element?(view, "#card-uncertain")
+      assert has_element?(view, "#uncertain-note[value='Still warm?']")
+      refute has_element?(view, "#mark-uncertain")
+
+      view
+      |> form("#uncertain-note-form", note: "Since slots keep _build?")
+      |> render_submit()
+
+      assert {:ok, %{uncertain_note: "Since slots keep _build?"}} =
+               Library.get(username, slots.id)
+
+      view |> element("#resolve-card") |> render_click()
+      assert {:ok, %{uncertain_at: nil} = resolved} = Library.get(username, slots.id)
+      assert Card.due?(resolved, DateTime.utc_now())
+      refute has_element?(view, "#card-uncertain")
+
+      view |> element("#back-to-deck") |> render_click()
+      refute has_element?(view, "#toggle-uncertain")
+
+      # Marked from Cards too.
+      view |> element("#card-row-#{slots.id}") |> render_click()
+      view |> element("#mark-uncertain") |> render_click()
+      assert has_element?(view, "#card-uncertain")
+      assert has_element?(view, "#toggle-uncertain", "1")
+
+      assert {:ok, %{uncertain_at: %DateTime{}, uncertain_note: nil}} =
+               Library.get(username, slots.id)
+    end
+
+    test "a card marked uncertain elsewhere leaves the session under way", %{
+      view: view,
+      username: username,
+      cards: [_slots, _handoff, elixir]
+    } do
+      view |> element(tag("elixir")) |> render_click()
+      view |> element("#start-session") |> render_click()
+      view |> element("#flip") |> render_click()
+      view |> element("#doubt-card") |> render_click()
+
+      Task.async(fn -> Library.mark_uncertain(username, elixir.id, nil) end) |> Task.await()
+      render(view)
+      refute has_element?(view, "#remember-session")
+      refute has_element?(view, "#doubt-form")
+      assert has_element?(view, "#session-setup")
     end
 
     test "ending a session part way says what was left", %{view: view} do

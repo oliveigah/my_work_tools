@@ -2,7 +2,12 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
   @moduledoc """
   The Remember view: choosing what a session asks, by mixing and matching
   tags, the session itself, one card at a time, flipped to its answer,
-  corrected if it needs it, and voted on or removed, and what it came to.
+  corrected if it needs it, and voted on, removed or marked uncertain, and
+  what it came to.
+
+  A card marked uncertain waits for a check against the code, by an agent
+  the user asks; the view says how many wait, and the words to ask with,
+  naming the tags picked, since sessions leave them out until then.
   """
   use MWTClientWeb, :html
 
@@ -24,6 +29,25 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
   @doc "The grades and the keys that cast them."
   def keys, do: Map.new(@votes, fn {grade, _label, key, _class} -> {key, grade} end)
 
+  @doc """
+  What the user asks an agent with, to check the cards marked uncertain:
+  those holding `tags`, any one or, with `:all`, every one, or every card
+  with none.
+  """
+  @spec check_prompt([String.t()], :any | :all) :: String.t()
+  def check_prompt([], _match), do: "Check my uncertain flash cards in MWT against the code."
+
+  def check_prompt(tags, match) do
+    {init, [last]} = Enum.split(tags, -1)
+
+    joined =
+      if init == [],
+        do: last,
+        else: "#{Enum.join(init, ", ")} #{if match == :all, do: "and", else: "or"} #{last}"
+
+    "Check my uncertain flash cards in MWT tagged #{joined} against the code."
+  end
+
   ## Choosing what to go over
 
   attr :filter, :map, required: true
@@ -31,12 +55,17 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
   attr :count, :map, required: true
   attr :size, :integer, required: true
   attr :fill, :boolean, required: true, doc: "whether sessions are filled with cards not due yet"
-  attr :totals, :map, required: true
+  attr :totals, :map, required: true, doc: "the deck's counts, as `Library.count/2` gives them"
   attr :matching, :list, required: true, doc: "the first cards the filter picks"
   attr :now, :any, required: true
 
   def start(assigns) do
-    assigns = assign(assigns, :asks, session_size(assigns.count, assigns.size, assigns.fill))
+    assigns =
+      assign(assigns,
+        asks: session_size(assigns.count, assigns.size, assigns.fill),
+        check_prompt: check_prompt(assigns.filter.tags, assigns.filter.match),
+        narrowed?: assigns.filter.tags != [] or assigns.filter.days != nil
+      )
 
     ~H"""
     <div id="remember-start" class="mx-auto w-full max-w-3xl px-6 py-8">
@@ -85,6 +114,9 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
               <%= cond do %>
                 <% @count.cards == 0 -> %>
                   No card has these tags{if @filter.days, do: " in those days"}.
+                <% @count.cards == @count.uncertain -> %>
+                  <span class="text-ink">{plural(@count.cards, "card")}</span>
+                  · all marked uncertain: sessions ask them once they are resolved.
                 <% @asks == 0 -> %>
                   <span class="text-ink">{plural(@count.cards, "card")}</span>
                   · none due now. Sessions ask only due cards: see Settings.
@@ -93,6 +125,9 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
                   · <span class={@count.due > 0 && "text-warn"}>{@count.due} due now</span>
                   · the session asks {plural(@asks, "card")}
               <% end %>
+              <span :if={@count.uncertain > 0 and @count.cards > @count.uncertain}>
+                · {@count.uncertain} uncertain left out
+              </span>
             </p>
             <.button
               id="start-session"
@@ -104,6 +139,28 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
               <.icon name="hero-play-micro" class="size-4" /> Start session
             </.button>
           </div>
+        </section>
+
+        <section
+          :if={@totals.uncertain > 0}
+          id="uncertain-waiting"
+          class="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-warn/30 bg-warn-soft/30 px-4 py-3"
+        >
+          <.icon name="hero-question-mark-circle" class="size-5 shrink-0 text-warn" />
+          <div class="min-w-0 flex-1">
+            <p class="text-[13px] text-ink">
+              {plural(@totals.uncertain, "card")} marked uncertain {if @totals.uncertain == 1,
+                do: "waits",
+                else: "wait"} to be checked<span :if={@narrowed?}>, {@count.uncertain} in this pick</span>
+            </p>
+            <p class="mt-0.5 text-xs text-muted">
+              Sessions leave them out until they are resolved. Ask an agent connected to MWT:
+              <span class="italic text-ink">“{@check_prompt}”</span>
+            </p>
+          </div>
+          <.button id="see-uncertain" phx-click="show_listing" phx-value-listing="uncertain">
+            See them <.icon name="hero-arrow-right-micro" class="size-3.5" />
+          </.button>
         </section>
 
         <section :if={@count.cards > 0} id="matching-cards" class="mt-6">
@@ -134,6 +191,7 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
                 <span class="hidden shrink-0 gap-1 sm:flex">
                   <.tag_chip :for={tag <- Enum.take(card.tags, 3)} name={tag} />
                 </span>
+                <.uncertain_badge :if={Card.uncertain?(card)} note={card.uncertain_note} />
                 <.strength box={card.box} reviews={card.reviews} />
                 <.due :if={card.reviews > 0} due_at={card.due_at} now={@now} class="w-16 text-right" />
               </.link>
@@ -179,8 +237,16 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
   attr :scope_label, :string, required: true
   attr :preview, :map, required: true, doc: "the days each vote would wait"
   attr :edit_form, :any, required: true, doc: "the card being corrected, nil while it isn't"
+
+  attr :uncertain_form, :any,
+    required: true,
+    doc: "what is doubted about the card asked, being written; nil while it isn't"
+
   attr :tags, :list, required: true
-  attr :just_removed, :any, required: true, doc: "`{id, front}` of the card just removed, or nil"
+
+  attr :set_aside, :any,
+    required: true,
+    doc: "`{:removed | :uncertain, id, front}` of the card just set aside so, or nil"
 
   def session(assigns) do
     assigns =
@@ -194,7 +260,7 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
     ~H"""
     <div
       id="remember-session"
-      phx-window-keydown={is_nil(@edit_form) && "session_key"}
+      phx-window-keydown={is_nil(@edit_form) && is_nil(@uncertain_form) && "session_key"}
       phx-hook=".SessionKeys"
       class="mx-auto flex w-full max-w-2xl flex-col px-6 py-6"
     >
@@ -220,6 +286,13 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
         phx-key="Escape"
         class="hidden"
       ></span>
+      <span
+        :if={@uncertain_form}
+        id="doubt-escape"
+        phx-window-keydown="cancel_doubt"
+        phx-key="Escape"
+        class="hidden"
+      ></span>
 
       <div class="mb-2 flex items-center gap-3">
         <span id="session-scope" class="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-muted">
@@ -241,25 +314,7 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
         </div>
       </div>
 
-      <div
-        :if={@just_removed}
-        id="removed-notice"
-        class="mb-4 flex animate-card-in items-center gap-2 rounded-lg border border-line-soft bg-panel px-3 py-2 text-xs text-muted"
-      >
-        <.icon name="hero-archive-box-x-mark-micro" class="size-4 shrink-0 text-faint" />
-        <span class="min-w-0 flex-1 truncate">
-          Removed “{Card.plain_front(elem(@just_removed, 1))}” from the deck.
-        </span>
-        <button
-          type="button"
-          id="undo-remove"
-          phx-click="restore_card"
-          phx-value-id={elem(@just_removed, 0)}
-          class="cursor-pointer font-medium text-accent transition-colors hover:text-accent-strong"
-        >
-          Undo
-        </button>
-      </div>
+      <.set_aside_notice :if={@set_aside} set_aside={@set_aside} />
 
       <%!-- Each card asked is a new element, so moving on never plays the
             flip backwards with the next card's answer on show. --%>
@@ -368,6 +423,8 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
       <div class="mt-6 min-h-16">
         <%= cond do %>
           <% @edit_form -> %>
+          <% @uncertain_form -> %>
+            <.doubt_form form={@uncertain_form} />
           <% @session.flipped? -> %>
             <div id="votes" class="flex animate-card-in items-stretch gap-2">
               <div class="grid flex-1 grid-cols-4 gap-2">
@@ -390,19 +447,34 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
                 </button>
               </div>
               <div class="w-px bg-line-soft"></div>
-              <button
-                type="button"
-                id="remove-card"
-                phx-click="remove_card"
-                title="Not worth remembering: take it out of the deck"
-                class="flex shrink-0 cursor-pointer flex-col items-center gap-0.5 rounded-xl border border-dashed border-line bg-transparent px-3 py-2.5 text-muted transition-all hover:border-bad/60 hover:bg-bad-soft/30 hover:text-bad active:scale-[0.97]"
-              >
-                <span class="flex items-center gap-1.5 whitespace-nowrap text-[13px] font-semibold">
-                  Not important
+              <%!-- Instead of a vote, stacked so the votes keep their width:
+                    each sets the card aside, out of what sessions ask. --%>
+              <div class="flex w-40 shrink-0 flex-col gap-1.5">
+                <button
+                  type="button"
+                  id="doubt-card"
+                  phx-click="doubt_card"
+                  title="You doubt the answer: set the card aside for an agent to check against the code"
+                  class="flex flex-1 cursor-pointer items-center gap-1.5 rounded-lg border border-dashed border-line bg-transparent px-2.5 text-muted transition-all hover:border-warn/60 hover:bg-warn-soft/30 hover:text-warn active:scale-[0.97]"
+                >
+                  <.icon name="hero-question-mark-circle-micro" class="size-3.5 shrink-0" />
+                  <span class="flex-1 whitespace-nowrap text-left text-xs font-semibold">Unsure</span>
+                  <.kbd>U</.kbd>
+                </button>
+                <button
+                  type="button"
+                  id="remove-card"
+                  phx-click="remove_card"
+                  title="Not worth remembering: take it out of the deck"
+                  class="flex flex-1 cursor-pointer items-center gap-1.5 rounded-lg border border-dashed border-line bg-transparent px-2.5 text-muted transition-all hover:border-bad/60 hover:bg-bad-soft/30 hover:text-bad active:scale-[0.97]"
+                >
+                  <.icon name="hero-archive-box-x-mark-micro" class="size-3.5 shrink-0" />
+                  <span class="flex-1 whitespace-nowrap text-left text-xs font-semibold">
+                    Not important
+                  </span>
                   <.kbd>X</.kbd>
-                </span>
-                <span class="text-[11px] opacity-80">remove from deck</span>
-              </button>
+                </button>
+              </div>
             </div>
           <% true -> %>
             <div class="flex justify-center">
@@ -419,6 +491,80 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
         <% end %>
       </div>
     </div>
+    """
+  end
+
+  attr :set_aside, :any, required: true, doc: "`{:removed | :uncertain, id, front}`"
+
+  # What was done to the card just left, with its undo.
+  defp set_aside_notice(%{set_aside: {kind, id, front}} = assigns) do
+    assigns = assign(assigns, kind: kind, id: id, front: Card.plain_front(front))
+
+    ~H"""
+    <div
+      id={"#{@kind}-notice"}
+      class="mb-4 flex animate-card-in items-center gap-2 rounded-lg border border-line-soft bg-panel px-3 py-2 text-xs text-muted"
+    >
+      <%= if @kind == :removed do %>
+        <.icon name="hero-archive-box-x-mark-micro" class="size-4 shrink-0 text-faint" />
+        <span class="min-w-0 flex-1 truncate">Removed “{@front}” from the deck.</span>
+      <% else %>
+        <.icon name="hero-question-mark-circle-micro" class="size-4 shrink-0 text-warn" />
+        <span class="min-w-0 flex-1 truncate">
+          Marked “{@front}” uncertain, for an agent to check.
+        </span>
+      <% end %>
+      <button
+        type="button"
+        id={if @kind == :removed, do: "undo-remove", else: "undo-uncertain"}
+        phx-click={if @kind == :removed, do: "restore_card", else: "unmark_uncertain"}
+        phx-value-id={@id}
+        class="cursor-pointer font-medium text-accent transition-colors hover:text-accent-strong"
+      >
+        Undo
+      </button>
+    </div>
+    """
+  end
+
+  attr :form, :any, required: true
+
+  # What the user doubts about the card asked, written in a line before it
+  # is set aside. Nothing written is fine: the mark alone says it.
+  defp doubt_form(assigns) do
+    ~H"""
+    <.form
+      for={@form}
+      id="doubt-form"
+      phx-change="doubt_change"
+      phx-submit="save_doubt"
+      autocomplete="off"
+      class="animate-card-in rounded-xl border border-warn/40 bg-panel p-3.5 shadow-sm"
+    >
+      <.input
+        field={@form[:note]}
+        id="doubt-note"
+        label="What are you unsure about? Optional"
+        maxlength={Card.max_uncertain_note()}
+        phx-mounted={JS.focus()}
+        placeholder="Is this still true since shares sync on demand?"
+      />
+      <div class="mt-2.5 flex flex-wrap items-center gap-2">
+        <.button type="submit" id="save-doubt" variant="primary" class="px-4">
+          <.icon name="hero-question-mark-circle-micro" class="size-4" /> Mark uncertain
+        </.button>
+        <.button type="button" id="cancel-doubt" variant="ghost" phx-click="cancel_doubt">
+          Cancel
+        </.button>
+        <span class="text-[11px] text-faint">
+          <.kbd>Enter</.kbd>
+          marks it and moves on ·
+          <.kbd>Esc</.kbd>
+          cancels.
+          Sessions leave it out until it is checked.
+        </span>
+      </div>
+    </.form>
     """
   end
 
@@ -453,6 +599,7 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
         remembered: asked - tally.forgot,
         forgotten: Session.forgotten(assigns.session),
         removed: Session.removed(assigns.session),
+        uncertain: Session.uncertain(assigns.session),
         skipped: assigns.session.skipped,
         votes: @votes
       )
@@ -498,7 +645,21 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
           Forgotten: these come back first next time
         </.summary_list>
 
-        <.summary_list :if={@removed != []} id="summary-removed" cards={@removed} restore>
+        <.summary_list
+          :if={@uncertain != []}
+          id="summary-uncertain"
+          cards={@uncertain}
+          undo={{"unmark_uncertain", "Not uncertain", "unmark"}}
+        >
+          Marked uncertain: ask an agent to check them
+        </.summary_list>
+
+        <.summary_list
+          :if={@removed != []}
+          id="summary-removed"
+          cards={@removed}
+          undo={{"restore_card", "Put back", "restore"}}
+        >
           Removed from the deck as not important
         </.summary_list>
 
@@ -515,7 +676,11 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
 
   attr :id, :string, required: true
   attr :cards, :list, required: true, doc: "`{id, front}`"
-  attr :restore, :boolean, default: false
+
+  attr :undo, :any,
+    default: nil,
+    doc: "`{event, label, id prefix}` of a button undoing what was done to each card, or nil"
+
   slot :inner_block, required: true
 
   defp summary_list(assigns) do
@@ -533,14 +698,14 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
             {Card.plain_front(front)}
           </.link>
           <button
-            :if={@restore}
+            :if={@undo}
             type="button"
-            id={"restore-#{id}"}
-            phx-click="restore_card"
+            id={"#{elem(@undo, 2)}-#{id}"}
+            phx-click={elem(@undo, 0)}
             phx-value-id={id}
             class="shrink-0 cursor-pointer px-3 py-2 text-xs text-accent transition-colors hover:text-accent-strong"
           >
-            Put back
+            {elem(@undo, 1)}
           </button>
         </li>
       </ul>
@@ -548,7 +713,8 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
     """
   end
 
-  defp session_size(count, size, true), do: min(size, count.cards)
+  # The cards marked uncertain are never asked, nor counted due.
+  defp session_size(count, size, true), do: min(size, count.cards - count.uncertain)
   defp session_size(count, size, false), do: min(size, count.due)
 
   defp progress(handled, left) when handled + left == 0, do: 100

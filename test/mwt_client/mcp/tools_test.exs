@@ -351,8 +351,8 @@ defmodule MWTClient.MCP.ToolsTest do
     assert call("list_flashcards", %{"days" => 1}, username)["total"] == 2
 
     assert call("list_flashcard_tags", %{}, username)["tags"] == [
-             %{"name" => "mwt_client", "cards" => 2, "due" => 2},
-             %{"name" => "worktrees", "cards" => 1, "due" => 1}
+             %{"name" => "mwt_client", "cards" => 2, "due" => 2, "uncertain" => 0},
+             %{"name" => "worktrees", "cards" => 1, "due" => 1, "uncertain" => 0}
            ]
 
     updated =
@@ -392,6 +392,114 @@ defmodule MWTClient.MCP.ToolsTest do
              %{"id" => id, "version" => 1, "back" => "Mine now"},
              other
            )
+  end
+
+  test "lists the cards the user marked uncertain, and resolves them, corrected or as they were",
+       %{username: username} do
+    alias MWTClient.Flashcards.Library, as: Flashcards
+
+    saved =
+      call(
+        "create_flashcards",
+        %{
+          "tags" => ["mwt_client"],
+          "cards" => [
+            %{"front" => "When do shares sync?", "back" => "Every 3 seconds."},
+            %{"front" => "Who lands a handoff?", "back" => "The user."},
+            %{"front" => "Why slots?", "back" => "Warm builds."}
+          ]
+        },
+        username
+      )
+
+    [stale, right, sure] = saved["cards"]
+    assert sure["uncertain"] == nil
+    {:ok, _marked} = Flashcards.mark_uncertain(username, stale["id"], "Since on-demand sync?")
+    {:ok, _marked} = Flashcards.mark_uncertain(username, right["id"], nil)
+
+    listed = call("list_flashcards", %{"uncertain" => true}, username)
+    assert listed["total"] == 2
+
+    assert %{"note" => "Since on-demand sync?", "marked_at" => "20" <> _} =
+             Enum.find(listed["items"], &(&1["id"] == stale["id"]))["uncertain"]
+
+    assert [%{"id" => id}] = call("list_flashcards", %{"uncertain" => false}, username)["items"]
+    assert id == sure["id"]
+    assert call("list_flashcards", %{}, username)["total"] == 3
+    assert call("get_flashcard", %{"id" => right["id"]}, username)["uncertain"]["note"] == nil
+
+    # Their due counts leave out what sessions don't ask.
+    assert [%{"name" => "mwt_client", "cards" => 3, "due" => 1, "uncertain" => 2}] =
+             call("list_flashcard_tags", %{}, username)["tags"]
+
+    args = %{"id" => stale["id"], "version" => 1, "back" => "On demand.", "resolved" => true}
+    corrected = call("update_flashcard", args, username)
+
+    assert {corrected["back"], corrected["uncertain"], corrected["version"]} ==
+             {"On demand.", nil, 2}
+
+    assert call("update_flashcard", args, username) == corrected
+
+    resolved =
+      call(
+        "update_flashcard",
+        %{"id" => right["id"], "version" => 1, "resolved" => true},
+        username
+      )
+
+    assert {resolved["back"], resolved["uncertain"], resolved["version"]} == {"The user.", nil, 1}
+    assert call("list_flashcards", %{"uncertain" => true}, username)["total"] == 0
+
+    # Only the user marks a card, and resolving is all an agent does to a mark.
+    assert tool_error?(
+             "update_flashcard",
+             %{"id" => sure["id"], "version" => 1, "resolved" => false},
+             username
+           )
+
+    assert tool_error?(
+             "update_flashcard",
+             %{"id" => sure["id"], "version" => 1, "uncertain" => "Doubt"},
+             username
+           )
+  end
+
+  test "a check of uncertain cards takes only the context the user names", %{username: username} do
+    alias MWTClient.Flashcards.Library, as: Flashcards
+
+    saved =
+      call(
+        "create_flashcards",
+        %{
+          "cards" => [
+            %{"front" => "Egress?", "back" => "A.", "tags" => ["mwt_client", "egress"]},
+            %{"front" => "Grants?", "back" => "B.", "tags" => ["mwt_client", "grants"]},
+            %{"front" => "Klife egress?", "back" => "C.", "tags" => ["klife", "egress"]},
+            %{"front" => "Sure egress?", "back" => "D.", "tags" => ["mwt_client", "egress"]}
+          ]
+        },
+        username
+      )
+
+    [egress, grants, klife, _sure] = saved["cards"]
+
+    for card <- [egress, grants, klife],
+        do: {:ok, _marked} = Flashcards.mark_uncertain(username, card["id"], nil)
+
+    tags = call("list_flashcard_tags", %{}, username)["tags"]
+    assert %{"cards" => 3, "uncertain" => 2} = Enum.find(tags, &(&1["name"] == "egress"))
+
+    scoped =
+      call(
+        "list_flashcards",
+        %{"uncertain" => true, "tags" => ["mwt_client", "egress"], "match" => "all"},
+        username
+      )
+
+    assert Enum.map(scoped["items"], & &1["id"]) == [egress["id"]]
+
+    worded = call("list_flashcards", %{"uncertain" => true, "query" => "klife"}, username)
+    assert Enum.map(worded["items"], & &1["id"]) == [klife["id"]]
   end
 
   test "flash card errors name the card and field to correct, and save nothing", %{

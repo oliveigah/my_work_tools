@@ -9,9 +9,13 @@ defmodule MWTClient.Flashcards.Transfer do
   the struct looks in the build that wrote it; the search text is left out,
   since it is derived and rebuilt on the way back in.
 
+  A file written before cards could be marked uncertain holds no mark:
+  its cards come in unmarked.
+
   Cards are matched by identifier, which is random and so names the same
   card on any installation. New cards are added. Where both sides hold one,
-  the version changed last wins, answers and removal included; should that be the
+  the version changed last wins, answers, removal and the uncertain mark
+  included; should that be the
   imported one, and the version here says something else, the version here
   is kept beside it as a copy, so merging never loses a card written on this
   side. Merging keeps the settings here; replacing takes the file's.
@@ -36,6 +40,8 @@ defmodule MWTClient.Flashcards.Transfer do
     :reviews,
     :lapses,
     :removed_at,
+    :uncertain_at,
+    :uncertain_note,
     :created_at,
     :updated_at
   ]
@@ -150,12 +156,25 @@ defmodule MWTClient.Flashcards.Transfer do
               (is_nil(removed_at) or is_struct(removed_at, DateTime)) do
     with true <- Card.id?(id),
          {:ok, written} <- Card.validate(Map.take(card, [:front, :back, :tags, :source])),
-         true <- Map.has_key?(written, :front) and Map.has_key?(written, :back) do
-      {:ok, card |> Map.take(@fields) |> Map.merge(written) |> Card.new()}
+         true <- Map.has_key?(written, :front) and Map.has_key?(written, :back),
+         {:ok, uncertain} <- prepare_uncertain(card) do
+      {:ok, card |> Map.take(@fields) |> Map.merge(written) |> Map.merge(uncertain) |> Card.new()}
     else
       _invalid -> :error
     end
   end
 
   defp prepare_card(_card), do: :error
+
+  defp prepare_uncertain(card) do
+    at = Map.get(card, :uncertain_at)
+
+    with true <- is_nil(at) or is_struct(at, DateTime),
+         {:ok, note} <- Card.uncertain_note(Map.get(card, :uncertain_note)) do
+      # A note without a mark says nothing.
+      {:ok, %{uncertain_at: at, uncertain_note: at && note}}
+    else
+      _invalid -> :error
+    end
+  end
 end

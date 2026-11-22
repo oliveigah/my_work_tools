@@ -53,6 +53,42 @@ defmodule MWTClient.Flashcards.CardTest do
     end
   end
 
+  describe "the uncertain mark" do
+    test "a note is kept trimmed, and nothing written is none" do
+      assert Card.uncertain_note("  Still true?  ") == {:ok, "Still true?"}
+      assert Card.uncertain_note("   ") == {:ok, nil}
+      assert Card.uncertain_note(nil) == {:ok, nil}
+      assert Card.uncertain_note(42) == {:error, "must be text"}
+
+      assert Card.uncertain_note(String.duplicate("x", Card.max_uncertain_note() + 1)) ==
+               {:error, "is longer than #{Card.max_uncertain_note()} characters"}
+    end
+
+    test "resolving takes the mark off and makes the card due, whatever its box" do
+      marked_at = ~U[2026-11-01 10:00:00Z]
+      now = ~U[2026-11-02 10:00:00Z]
+      later = ~U[2026-12-01 10:00:00Z]
+      card = Card.new(%{front: "Q", back: "A", box: 5, due_at: later})
+
+      marked = Card.mark_uncertain(card, "Still?", marked_at)
+      assert Card.uncertain?(marked)
+      assert marked.updated_at == marked_at
+      assert Card.mark_uncertain(marked, "Since X?", now).uncertain_at == marked_at
+
+      resolved = Card.resolve(marked, now)
+      refute Card.uncertain?(resolved)
+      assert {resolved.uncertain_note, resolved.due_at, resolved.box} == {nil, now, 5}
+
+      # Due already, it keeps how long it has been due; not marked, it is as it was.
+      overdue = %{marked | due_at: marked_at}
+      assert Card.resolve(overdue, now).due_at == marked_at
+      assert Card.resolve(card, now) == card
+
+      # An undo leaves when it is due alone.
+      assert Card.unmark_uncertain(marked, now).due_at == later
+    end
+  end
+
   test "a new card is due as soon as it is written" do
     card = Card.new(%{front: "Q", back: "A"})
 

@@ -26,6 +26,9 @@ defmodule MWTClient.MCP.Tools do
   @creates ~w(create_note create_diagram create_http_request import_http_request create_flashcards)
   @changes ~w(update_note update_diagram update_flashcard)
 
+  # What an agent writes a card with, by argument.
+  @card_fields [{"front", :front}, {"back", :back}, {"tags", :tags}, {"source", :source}]
+
   # Closed to agents in the VM: they add HTTP samples, never read any.
   @closed_to_vm ~w(list_http_requests get_http_request)
 
@@ -179,15 +182,26 @@ defmodule MWTClient.MCP.Tools do
   end
 
   defp preview("update_flashcard", args, username) do
-    fields = [{"front", :front}, {"back", :back}, {"tags", :tags}, {"source", :source}]
-
-    with {:ok, attrs} <- card_attrs(update_attrs(args, fields)),
+    with {:ok, attrs} <- card_attrs(update_attrs(args, @card_fields)),
          {:ok, card} <- Flashcards.get(username, args["id"]) do
-      fields = [:front, :back, :tags, :source]
-      from = Map.take(card, fields)
-      to = card |> Card.update(attrs) |> Map.take(fields)
+      updated = Card.update(card, attrs)
+      updated = if args["resolved"], do: Card.resolve(updated, DateTime.utc_now()), else: updated
+      from = card_shown(card)
+      to = card_shown(updated)
       change_use("update_flashcard", :card, card, card.front, args, {from, to})
     end
+  end
+
+  # What a change to a card shows: what it says, and the mark it carries.
+  defp card_shown(card) do
+    uncertain =
+      case card do
+        %Card{uncertain_at: nil} -> nil
+        %Card{uncertain_note: nil} -> "Marked uncertain"
+        %Card{uncertain_note: note} -> "Marked uncertain: " <> note
+      end
+
+    card |> Map.take([:front, :back, :tags, :source]) |> Map.put(:uncertain, uncertain)
   end
 
   defp card_attrs(attrs) do
@@ -353,15 +367,10 @@ defmodule MWTClient.MCP.Tools do
   end
 
   defp execute("update_flashcard", args, caller) do
-    attrs =
-      update_attrs(args, [
-        {"front", :front},
-        {"back", :back},
-        {"tags", :tags},
-        {"source", :source}
-      ])
+    attrs = update_attrs(args, @card_fields)
+    change = if args["resolved"], do: &Flashcards.resolve/4, else: &Flashcards.update/4
 
-    case Flashcards.update(caller.username, args["id"], attrs, change_opts(args, caller)) do
+    case change.(caller.username, args["id"], attrs, change_opts(args, caller)) do
       {:error, [{field, message} | _more]} -> {:error, "arguments.#{field} #{message}."}
       result -> changed(result, "flash card", "get_flashcard", &flashcard_data/1)
     end
@@ -379,9 +388,15 @@ defmodule MWTClient.MCP.Tools do
       days: args["days"]
     }
 
+    scope =
+      if is_boolean(args["uncertain"]),
+        do: Map.put(scope, :uncertain, args["uncertain"]),
+        else: scope
+
     {:ok,
      page(Flashcards.list(username, scope), args, fn card ->
-       Map.take(card, [
+       card
+       |> Map.take([
          :id,
          :front,
          :tags,
@@ -392,6 +407,7 @@ defmodule MWTClient.MCP.Tools do
          :created_at,
          :updated_at
        ])
+       |> Map.put(:uncertain, uncertain_data(card))
      end)}
   end
 
@@ -464,8 +480,12 @@ defmodule MWTClient.MCP.Tools do
       :created_at,
       :updated_at
     ])
+    |> Map.put(:uncertain, uncertain_data(card))
     |> Map.put(:path, "/tools/flashcards/cards?id=#{card.id}")
   end
+
+  defp uncertain_data(%{uncertain_at: nil}), do: nil
+  defp uncertain_data(card), do: %{note: card.uncertain_note, marked_at: card.uncertain_at}
 
   # Every saved item names its page, and so does every card of a batch.
   defp with_urls(data, base_url) do

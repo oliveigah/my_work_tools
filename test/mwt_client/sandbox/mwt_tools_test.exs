@@ -83,6 +83,27 @@ defmodule MWTClient.Sandbox.MwtToolsTest do
     assert replaced_by == {:agent, :vm, %{agent: "codex", thread: "Draw the checkout flow"}}
   end
 
+  test "resolving a card the user doubts waits for them with the mark coming off",
+       %{username: username} do
+    alias MWTClient.Flashcards.Library, as: Flashcards
+
+    {:ok, [{:created, card}]} = Flashcards.create(username, [%{front: "Q?", back: "Old."}])
+    {:ok, _marked} = Flashcards.mark_uncertain(username, card.id, "Still?")
+    args = %{"id" => card.id, "version" => 1, "back" => "New.", "resolved" => true}
+    task = Task.async(fn -> call(vm(username), "update_flashcard", args) end)
+
+    approval = wait_for_ask(username)
+    assert approval.tool.from.uncertain == "Marked uncertain: Still?"
+    assert {approval.tool.from.back, approval.tool.to.back} == {"Old.", "New."}
+    assert approval.tool.to.uncertain == nil
+    assert approval.tool.words == "back changed, resolved"
+    assert {:ok, %{uncertain_note: "Still?"}} = Flashcards.get(username, card.id)
+
+    :ok = Sandbox.decide(username, approval.id, :allow_once)
+
+    assert %{"back" => "New.", "uncertain" => nil, "version" => 2} = ok!(Task.await(task))
+  end
+
   test "denied, nothing changes", %{username: username} do
     {:ok, note} = Notes.save(username, Note.new_id(), %{body: "mine"})
     args = %{"id" => note.id, "version" => 1, "body" => "theirs"}

@@ -7,14 +7,16 @@ defmodule MWTClientWeb.FlashcardsLive do
       written and how many, then a session: one card at a time, its answer
       shown on a flip, and a vote that decides when it comes back
       (`MWTClient.Flashcards.Schedule`). Once the answer shows, the card can
-      be corrected, or removed from the deck as not important;
+      be corrected, removed from the deck as not important, or marked
+      uncertain, for an agent to check;
     * **Cards** - the cards the same filter picks, found by their words, and
-      written or changed beside how they will look; the removed ones apart;
+      written or changed beside how they will look; the uncertain ones and
+      the removed ones apart;
     * **Settings** - how sessions run.
 
   One filter serves both views, so what Remember would ask is what Cards
   lists. A session lives in this page (`MWTClient.Flashcards.Session`), but
-  every vote, correction and removal is kept as it is made, so leaving loses
+  every vote, correction, removal and mark is kept as it is made, so leaving loses
   nothing. Cards are written from outside this page too, by agents through
   MCP, so it follows `MWTClient.Flashcards.Library.subscribe/1` and redraws
   what others change.
@@ -70,8 +72,9 @@ defmodule MWTClientWeb.FlashcardsLive do
      |> assign(:session, session)
      |> assign(:session_scope, session && place[:session_scope])
      |> assign(:edit_form, edit_form(session, place[:edit]))
-     |> assign(:just_removed, nil)
-     |> assign(:bin?, Map.get(place, :bin?, false))
+     |> assign(:uncertain_form, nil)
+     |> assign(:set_aside, nil)
+     |> assign(:listing, Map.get(place, :listing, :deck))
      |> assign(:limit, Map.get(place, :limit, page_size()))
      |> assign(:card, nil)
      |> assign(:versions, nil)
@@ -88,7 +91,7 @@ defmodule MWTClientWeb.FlashcardsLive do
     asked = socket.assigns.session && socket.assigns.session.current
 
     socket.assigns
-    |> Map.take([:session, :session_scope, :filter, :tag_query, :bin?, :limit, :sticky])
+    |> Map.take([:session, :session_scope, :filter, :tag_query, :listing, :limit, :sticky])
     |> Map.merge(%{
       edit: edit_form && asked && %{for: asked.id, params: edit_form.params},
       # The card form as it was written in, until a draft taken back is shown.
@@ -96,16 +99,20 @@ defmodule MWTClientWeb.FlashcardsLive do
     })
   end
 
-  # A session left part way, with each card as it is now: one deleted or
-  # removed meanwhile is skipped, as it would have been on the page.
+  # A session left part way, with each card as it is now: one deleted,
+  # removed or marked uncertain meanwhile is skipped, as it would have been
+  # on the page.
   defp fresh_session(username, %Session{} = session) do
     session =
       [session.current | session.queue]
       |> Enum.reject(&is_nil/1)
       |> Enum.reduce(session, fn %Card{id: id}, session ->
         case Library.get(username, id) do
-          {:ok, %Card{removed_at: nil} = card} -> Session.refresh(session, card)
-          _gone -> Session.drop(session, id)
+          {:ok, card} ->
+            if askable?(card), do: Session.refresh(session, card), else: Session.drop(session, id)
+
+          :error ->
+            Session.drop(session, id)
         end
       end)
 
@@ -140,7 +147,7 @@ defmodule MWTClientWeb.FlashcardsLive do
              socket
              |> open_card(card)
              |> restore_draft()
-             |> assign(:bin?, Card.removed?(card))
+             |> assign(:listing, listing_for(card, socket.assigns.listing))
              |> assign_list()}
 
           :error ->
@@ -222,8 +229,9 @@ defmodule MWTClientWeb.FlashcardsLive do
                     scope_label={scope_label(@session_scope)}
                     preview={Schedule.preview(@session.current)}
                     edit_form={@edit_form}
+                    uncertain_form={@uncertain_form}
                     tags={@tags}
-                    just_removed={@just_removed}
+                    set_aside={@set_aside}
                   />
                 <% @session -> %>
                   <Remember.summary session={@session} scope_label={scope_label(@session_scope)} />
@@ -247,7 +255,8 @@ defmodule MWTClientWeb.FlashcardsLive do
                 hidden={@hidden}
                 count={@listed}
                 removed_count={@removed_count}
-                bin?={@bin?}
+                uncertain_count={@count.uncertain}
+                listing={@listing}
                 filter={@filter}
                 tags={@tags}
                 current_id={@card && @card.id}
@@ -379,9 +388,10 @@ defmodule MWTClientWeb.FlashcardsLive do
   end
 
   # Space or Enter shows the answer; once it shows, 1 to 4 vote, E edits the
-  # card and X removes it. Keys held down, and those pressed with a
-  # modifier, are someone else's shortcut. While the card is being edited,
-  # the page doesn't listen: what is typed goes to the form.
+  # card, U marks it uncertain and X removes it. Keys held down, and those
+  # pressed with a modifier, are someone else's shortcut. While the card is
+  # being edited, or what is doubted written, the page doesn't listen: what
+  # is typed goes to the form.
   def handle_event("session_key", %{"key" => key} = params, socket) do
     session = socket.assigns.session
 
@@ -389,7 +399,7 @@ defmodule MWTClientWeb.FlashcardsLive do
       params["repeat"] || params["ctrlKey"] || params["metaKey"] || params["altKey"] ->
         {:noreply, socket}
 
-      not under_way?(session) or socket.assigns.edit_form != nil ->
+      not under_way?(session) or writing?(socket) ->
         {:noreply, socket}
 
       key in [" ", "Enter"] and not session.flipped? ->
@@ -407,7 +417,85 @@ defmodule MWTClientWeb.FlashcardsLive do
       key in ["x", "X"] ->
         {:noreply, remove_current(socket)}
 
+      key in ["u", "U"] ->
+        {:noreply, doubt_current(socket)}
+
       true ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("doubt_card", _params, socket), do: {:noreply, doubt_current(socket)}
+
+  def handle_event("cancel_doubt", _params, socket),
+    do: {:noreply, assign(socket, :uncertain_form, nil)}
+
+  def handle_event("doubt_change", %{"uncertain" => params}, socket) do
+    {:noreply, assign(socket, :uncertain_form, uncertain_form(params))}
+  end
+
+  # The card asked is marked uncertain with what was written, and the
+  # session moves on.
+  def handle_event("save_doubt", %{"uncertain" => %{"note" => note} = params}, socket) do
+    %{username: username, session: session} = socket.assigns
+
+    case under_way?(session) && Library.mark_uncertain(username, session.current.id, note) do
+      {:ok, card} ->
+        {:noreply,
+         socket
+         |> assign(
+           session: Session.mark_uncertain(session),
+           set_aside: {:uncertain, card.id, card.front},
+           uncertain_form: nil
+         )
+         |> refresh()}
+
+      {:error, message} ->
+        {:noreply, assign(socket, :uncertain_form, uncertain_form(params, message))}
+
+      _gone ->
+        {:noreply, assign(socket, :uncertain_form, nil)}
+    end
+  end
+
+  # From the Cards editor: marks the card open, then changes what is doubted.
+  def handle_event("mark_uncertain", %{"id" => id}, socket) do
+    {:noreply, mark_open(socket, id, nil, "Marked uncertain")}
+  end
+
+  def handle_event("save_uncertain_note", %{"card_id" => id, "note" => note}, socket) do
+    {:noreply, mark_open(socket, id, note, "Note saved")}
+  end
+
+  def handle_event("unmark_uncertain", %{"id" => id}, socket) do
+    %{username: username, session: session} = socket.assigns
+
+    case Library.unmark_uncertain(username, id) do
+      {:ok, card} ->
+        socket =
+          socket
+          |> assign(:session, session && Session.unmark_uncertain(session, id))
+          |> update(:set_aside, &if(match?({_kind, ^id, _front}, &1), do: nil, else: &1))
+          |> update(:card, &if(&1 && &1.id == id, do: card, else: &1))
+          |> refresh()
+
+        {:noreply, put_notice(socket, :success, "No longer uncertain")}
+
+      :error ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("resolve_card", %{"id" => id}, socket) do
+    case Library.resolve(socket.assigns.username, id) do
+      {:ok, card} ->
+        {:noreply,
+         socket
+         |> update(:card, &if(&1 && &1.id == id, do: card, else: &1))
+         |> refresh()
+         |> put_notice(:success, "Resolved", body: "Your next session asks it.")}
+
+      _gone ->
         {:noreply, socket}
     end
   end
@@ -462,7 +550,7 @@ defmodule MWTClientWeb.FlashcardsLive do
         socket =
           socket
           |> assign(:session, session && Session.unremove(session, id))
-          |> update(:just_removed, &if(match?({^id, _front}, &1), do: nil, else: &1))
+          |> update(:set_aside, &if(match?({_kind, ^id, _front}, &1), do: nil, else: &1))
           |> update(:card, &if(&1 && &1.id == id, do: card, else: &1))
           |> refresh()
 
@@ -475,7 +563,7 @@ defmodule MWTClientWeb.FlashcardsLive do
 
   def handle_event("end_session", _params, socket) do
     session = socket.assigns.session
-    socket = assign(socket, edit_form: nil, just_removed: nil)
+    socket = assign(socket, edit_form: nil, uncertain_form: nil, set_aside: nil)
 
     if session && Session.handled(session) > 0 do
       {:noreply, assign(socket, :session, Session.stop(session))}
@@ -498,10 +586,11 @@ defmodule MWTClientWeb.FlashcardsLive do
     {:noreply, socket |> update(:limit, &(&1 + page_size())) |> assign_list()}
   end
 
-  def handle_event("toggle_removed", _params, socket) do
+  def handle_event("show_listing", %{"listing" => listing}, socket)
+      when listing in ~w(deck uncertain removed) do
     {:noreply,
      socket
-     |> assign(bin?: !socket.assigns.bin?, limit: page_size())
+     |> assign(listing: String.to_existing_atom(listing), limit: page_size())
      |> push_patch(to: ~p"/tools/flashcards/cards")
      |> assign_list()}
   end
@@ -638,8 +727,8 @@ defmodule MWTClientWeb.FlashcardsLive do
 
   # A card written, changed or deleted by an agent, or in another window.
   # A session under way asks the newest version of each card, and skips a
-  # card deleted; the card open is redrawn unless it was deleted. A form
-  # being written in is left as it is.
+  # card deleted, removed or marked uncertain; the card open is redrawn
+  # unless it was deleted. A form being written in is left as it is.
   @impl true
   def handle_info({:flashcards_changed, :settings}, socket) do
     {:noreply, socket |> assign_settings(Library.settings(socket.assigns.username)) |> refresh()}
@@ -655,22 +744,31 @@ defmodule MWTClientWeb.FlashcardsLive do
         {nil, _found} ->
           socket
 
-        {session, {:ok, %Card{removed_at: nil} = changed}} ->
-          assign(socket, :session, Session.refresh(session, changed))
+        {session, {:ok, changed}} ->
+          if askable?(changed),
+            do: assign(socket, :session, Session.refresh(session, changed)),
+            else: assign(socket, :session, Session.drop(session, what))
 
-        {session, _gone} when is_binary(what) ->
+        {session, :error} when is_binary(what) ->
           assign(socket, :session, Session.drop(session, what))
 
         _all ->
           socket
       end
 
+    # A form over a card no longer asked goes with it, rather than land on
+    # the next one.
+    socket =
+      if asked_id(session) != asked_id(socket.assigns.session),
+        do: assign(socket, edit_form: nil, uncertain_form: nil),
+        else: socket
+
     # Every card it had left gone before one was dealt with: nothing to sum up.
     socket =
       case socket.assigns.session do
         %Session{} = session ->
           if Session.done?(session) and Session.handled(session) == 0,
-            do: assign(socket, session: nil, edit_form: nil),
+            do: assign(socket, session: nil, edit_form: nil, uncertain_form: nil),
             else: socket
 
         nil ->
@@ -698,6 +796,22 @@ defmodule MWTClientWeb.FlashcardsLive do
   defp under_way?(nil), do: false
   defp under_way?(session), do: not Session.done?(session)
 
+  # Whether a session may ask the card: neither removed nor doubted.
+  defp askable?(card), do: not Card.removed?(card) and not Card.uncertain?(card)
+
+  defp asked_id(%Session{current: %Card{id: id}}), do: id
+  defp asked_id(_session), do: nil
+
+  # Which cards Cards lists once `card` is opened: the removed ones for a
+  # removed card, the uncertain ones while they are listed and it is one.
+  defp listing_for(card, listing) do
+    cond do
+      Card.removed?(card) -> :removed
+      listing == :uncertain and Card.uncertain?(card) -> :uncertain
+      true -> :deck
+    end
+  end
+
   defp view_path(:remember), do: ~p"/tools/flashcards"
   defp view_path(:cards), do: ~p"/tools/flashcards/cards"
   defp view_path(:settings), do: ~p"/tools/flashcards/settings"
@@ -714,7 +828,7 @@ defmodule MWTClientWeb.FlashcardsLive do
   end
 
   defp start(socket, scope, size) do
-    socket = assign(socket, edit_form: nil, just_removed: nil)
+    socket = assign(socket, edit_form: nil, uncertain_form: nil, set_aside: nil)
 
     case Library.pick(socket.assigns.username, scope, size) do
       [] ->
@@ -746,7 +860,7 @@ defmodule MWTClientWeb.FlashcardsLive do
     session = socket.assigns.session
 
     if answer_showing?(socket) do
-      socket = assign(socket, :just_removed, nil)
+      socket = assign(socket, :set_aside, nil)
 
       case Library.review(socket.assigns.username, session.current.id, grade) do
         {:ok, card} ->
@@ -776,16 +890,52 @@ defmodule MWTClientWeb.FlashcardsLive do
       _removed = Library.remove(socket.assigns.username, id)
 
       socket
-      |> assign(session: Session.remove(session), just_removed: {id, front}, edit_form: nil)
+      |> assign(
+        session: Session.remove(session),
+        set_aside: {:removed, id, front},
+        edit_form: nil
+      )
       |> refresh()
     else
       socket
     end
   end
 
+  defp mark_open(socket, id, note, done) do
+    case Library.mark_uncertain(socket.assigns.username, id, note) do
+      {:ok, card} ->
+        socket
+        |> update(:card, &if(&1 && &1.id == id, do: card, else: &1))
+        |> refresh()
+        |> put_notice(:info, done, body: "Sessions leave the card out until it is resolved.")
+
+      {:error, message} ->
+        put_flash(socket, :error, "The note " <> message)
+
+      :error ->
+        socket
+    end
+  end
+
+  defp doubt_current(socket) do
+    if answer_showing?(socket),
+      do: assign(socket, :uncertain_form, uncertain_form(%{})),
+      else: socket
+  end
+
   defp answer_showing?(socket) do
     session = socket.assigns.session
-    under_way?(session) and session.flipped? and socket.assigns.edit_form == nil
+    under_way?(session) and session.flipped? and not writing?(socket)
+  end
+
+  # Whether a form over the card asked takes what is typed.
+  defp writing?(socket),
+    do: socket.assigns.edit_form != nil or socket.assigns.uncertain_form != nil
+
+  defp uncertain_form(params, error \\ nil) do
+    params = Map.merge(%{"note" => ""}, params)
+    errors = if error, do: [note: {error, []}], else: []
+    to_form(params, as: :uncertain, errors: errors)
   end
 
   defp assign_settings(socket, settings) do
@@ -948,8 +1098,16 @@ defmodule MWTClientWeb.FlashcardsLive do
   end
 
   defp assign_list(socket) do
-    %{username: username, filter: filter, limit: limit, bin?: bin?} = socket.assigns
-    cards = Library.list(username, Map.put(filter, :removed, bin?))
+    %{username: username, filter: filter, limit: limit, listing: listing} = socket.assigns
+
+    scope =
+      case listing do
+        :deck -> filter
+        :uncertain -> Map.put(filter, :uncertain, true)
+        :removed -> Map.put(filter, :removed, true)
+      end
+
+    cards = Library.list(username, scope)
 
     assign(socket,
       entries: Enum.take(cards, limit),

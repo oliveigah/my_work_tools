@@ -27,7 +27,12 @@ defmodule MWTClient.Flashcards.Library do
 
   Every change to a card's front, back, tags or source counts up its
   `version`, and may keep what it replaced as a version to restore
-  (`MWTClient.Versions`). Answering a card is not such a change.
+  (`MWTClient.Versions`). Answering a card is not such a change, nor is
+  marking it uncertain or taking the mark off.
+
+  A card marked uncertain stays in lists, but no session asks it, and the
+  cards counted as due leave it out, so what a count says is due is what a
+  session can ask.
 
   At its first start with an identity whose cards are still in
   `flashcards.bin`, from before `library.db`, it imports them, their
@@ -55,8 +60,8 @@ defmodule MWTClient.Flashcards.Library do
 
   # What every read asks for, and what lists, tags, counts and picks read:
   # the same less the back and the search text, which they never show.
-  @light ~w(id front tags source box due_at reviewed_at reviews lapses removed_at created_at
-            updated_at version)
+  @light ~w(id front tags source box due_at reviewed_at reviews lapses removed_at uncertain_at
+            uncertain_note created_at updated_at version)
   @full @light ++ ~w(back search_text)
 
   @typedoc """
@@ -64,14 +69,17 @@ defmodule MWTClient.Flashcards.Library do
   one of them or, with `match: :all`, every one (no tags means every card),
   written within the last `days` days (nil means any time), and, for lists,
   holding every word of `query`. Cards removed from the deck are left out,
-  unless `removed: true`, which keeps only them.
+  unless `removed: true`, which keeps only them. Cards marked uncertain are
+  in, unless `uncertain` says: `true` keeps only them, `false` leaves them
+  out.
   """
   @type scope :: %{
           optional(:tags) => [String.t()],
           optional(:match) => :any | :all,
           optional(:days) => pos_integer() | nil,
           optional(:query) => String.t(),
-          optional(:removed) => boolean()
+          optional(:removed) => boolean(),
+          optional(:uncertain) => boolean()
         }
 
   @type summary :: %{
@@ -84,12 +92,22 @@ defmodule MWTClient.Flashcards.Library do
           reviews: non_neg_integer(),
           lapses: non_neg_integer(),
           removed_at: DateTime.t() | nil,
+          uncertain_at: DateTime.t() | nil,
+          uncertain_note: String.t() | nil,
           created_at: DateTime.t(),
           updated_at: DateTime.t()
         }
 
-  @typedoc "A tag with how many cards hold it and how many of those are due."
-  @type tag :: %{name: String.t(), cards: non_neg_integer(), due: non_neg_integer()}
+  @typedoc """
+  A tag with how many cards hold it, how many of those are due, and how
+  many are marked uncertain.
+  """
+  @type tag :: %{
+          name: String.t(),
+          cards: non_neg_integer(),
+          due: non_neg_integer(),
+          uncertain: non_neg_integer()
+        }
 
   @typedoc """
   Sent to subscribers when a card changes, naming it, `:all` when every card
@@ -205,6 +223,46 @@ defmodule MWTClient.Flashcards.Library do
   @spec restore(String.t(), String.t()) :: {:ok, Card.t()} | :error
   def restore(username, id), do: call(username, {:removed, id, nil, DateTime.utc_now()})
 
+  @doc """
+  Marks a card uncertain, as the user doubts its answer, with `note`, what
+  they doubt (nil or blank for nothing). Marking a card marked already
+  changes the note and keeps when it was first marked.
+  """
+  @spec mark_uncertain(String.t(), String.t(), String.t() | nil) ::
+          {:ok, Card.t()} | :error | {:error, String.t()}
+  def mark_uncertain(username, id, note) do
+    with {:ok, note} <- Card.uncertain_note(note) do
+      now = DateTime.utc_now()
+      call(username, {:uncertain, id, &Card.mark_uncertain(&1, note, now)})
+    end
+  end
+
+  @doc "Takes the uncertain mark off a card, nothing else changed, as an undo does."
+  @spec unmark_uncertain(String.t(), String.t()) :: {:ok, Card.t()} | :error
+  def unmark_uncertain(username, id) do
+    now = DateTime.utc_now()
+    call(username, {:uncertain, id, &Card.unmark_uncertain(&1, now)})
+  end
+
+  @doc """
+  Settles the doubt about a card marked uncertain: applies `attrs`, the
+  corrections the check called for, if any (as `update/4` reads them), and
+  takes the mark off, making the card due (`Card.resolve/2`), in one
+  change. A card not marked takes the corrections alone.
+
+  Options as for `update/4`. A card whose version is another by now is
+  left as it is, marked, and comes back as `{:stale, card}`: the check was
+  made on what it held before.
+  """
+  @spec resolve(String.t(), String.t(), map(), keyword()) ::
+          {:ok, Card.t()} | {:stale, Card.t()} | :error | {:error, [{atom(), String.t()}]}
+  def resolve(username, id, attrs \\ %{}, opts \\ []) when is_map(attrs) and is_list(opts) do
+    case Card.validate(attrs) do
+      {:ok, attrs} -> call(username, {:resolve, id, attrs, opts, DateTime.utc_now()})
+      error -> error
+    end
+  end
+
   @doc "Keeps an answer to a card, moving it as `MWTClient.Flashcards.Schedule.answer/3` says."
   @spec review(String.t(), String.t(), Schedule.grade(), DateTime.t()) :: {:ok, Card.t()} | :error
   def review(username, id, grade, now \\ DateTime.utc_now()) do
@@ -221,25 +279,45 @@ defmodule MWTClient.Flashcards.Library do
 
     username
     |> in_scope(scope, now, "")
-    |> Enum.flat_map(fn card -> Enum.map(card.tags, &{&1, Card.due?(card, now)}) end)
-    |> Enum.group_by(fn {name, _due?} -> String.downcase(name) end)
-    |> Enum.map(fn {_key, [{name, _due?} | _rest] = uses} ->
-      %{name: name, cards: length(uses), due: Enum.count(uses, &elem(&1, 1))}
+    |> Enum.flat_map(fn card -> Enum.map(card.tags, &{&1, card}) end)
+    |> Enum.group_by(fn {name, _card} -> String.downcase(name) end)
+    |> Enum.map(fn {_key, [{name, _card} | _rest] = uses} ->
+      cards = Enum.map(uses, &elem(&1, 1))
+
+      %{
+        name: name,
+        cards: length(cards),
+        due: Enum.count(cards, &askable?(&1, now)),
+        uncertain: Enum.count(cards, &Card.uncertain?/1)
+      }
     end)
     |> Enum.sort_by(&{-&1.cards, String.downcase(&1.name)})
   end
 
-  @doc "How many cards `scope` holds, and how many of them are due."
-  @spec count(String.t(), scope()) :: %{cards: non_neg_integer(), due: non_neg_integer()}
+  @doc """
+  How many cards `scope` holds, how many of them are due, and how many are
+  marked uncertain, which a session doesn't ask and so are never due.
+  """
+  @spec count(String.t(), scope()) :: %{
+          cards: non_neg_integer(),
+          due: non_neg_integer(),
+          uncertain: non_neg_integer()
+        }
   def count(username, scope) do
     now = DateTime.utc_now()
     cards = in_scope(username, scope, now, "")
-    %{cards: length(cards), due: Enum.count(cards, &Card.due?(&1, now))}
+
+    %{
+      cards: length(cards),
+      due: Enum.count(cards, &askable?(&1, now)),
+      uncertain: Enum.count(cards, &Card.uncertain?/1)
+    }
   end
 
   @doc """
   The cards a session of `size` in `scope` asks, as `Schedule.pick/4` picks
-  them, filling with cards not yet due as the settings say.
+  them, filling with cards not yet due as the settings say. Cards marked
+  uncertain are never picked.
   """
   @spec pick(String.t(), scope(), pos_integer()) :: [Card.t()]
   def pick(username, scope, size) do
@@ -247,7 +325,7 @@ defmodule MWTClient.Flashcards.Library do
 
     picked =
       username
-      |> in_scope(scope, now, "")
+      |> in_scope(Map.put(scope, :uncertain, false), now, "")
       |> Schedule.pick(size, settings(username).fill, now)
       |> Enum.map(& &1.id)
 
@@ -313,6 +391,8 @@ defmodule MWTClient.Flashcards.Library do
       {"reviews", reviews}, card -> %{card | reviews: reviews}
       {"lapses", lapses}, card -> %{card | lapses: lapses}
       {"removed_at", at}, card -> %{card | removed_at: Values.from_time(at)}
+      {"uncertain_at", at}, card -> %{card | uncertain_at: Values.from_time(at)}
+      {"uncertain_note", note}, card -> %{card | uncertain_note: note}
       {"created_at", at}, card -> %{card | created_at: Values.from_time(at)}
       {"updated_at", at}, card -> %{card | updated_at: Values.from_time(at)}
       {"version", version}, card -> %{card | version: version}
@@ -327,11 +407,21 @@ defmodule MWTClient.Flashcards.Library do
     end
   end
 
+  # Due, and a session may ask it.
+  defp askable?(card, now), do: Card.due?(card, now) and not Card.uncertain?(card)
+
   # The cards of `scope`, read as lists read them, the newest written
-  # first: removed or not, how recent and the words in SQL, the tags,
-  # matched without regard to case, here.
+  # first: removed or not, marked or not, how recent and the words in SQL,
+  # the tags, matched without regard to case, here.
   defp in_scope(username, scope, now, query) do
     removed = if Map.get(scope, :removed, false), do: "NOT NULL", else: "NULL"
+
+    uncertain =
+      case Map.fetch(scope, :uncertain) do
+        {:ok, true} -> "uncertain_at IS NOT NULL"
+        {:ok, false} -> "uncertain_at IS NULL"
+        :error -> "1"
+      end
 
     {since, since_params} =
       case Map.get(scope, :days) do
@@ -349,7 +439,7 @@ defmodule MWTClient.Flashcards.Library do
     |> cards(
       @light,
       """
-      WHERE removed_at IS #{removed} AND #{since} AND #{matching}
+      WHERE removed_at IS #{removed} AND #{uncertain} AND #{since} AND #{matching}
       ORDER BY created_at DESC, seq DESC
       """,
       since_params ++ search_params
@@ -408,13 +498,7 @@ defmodule MWTClient.Flashcards.Library do
     write(state, from, fn repo ->
       case fetch(repo, id) do
         {:ok, card} ->
-          attrs =
-            if Map.has_key?(attrs, :tags) do
-              others = select(repo, ~w(tags), "WHERE id != ?", [id])
-              Map.update!(attrs, :tags, &respell(&1, spellings(others)))
-            else
-              attrs
-            end
+          attrs = respell_tags(repo, id, attrs)
 
           # A change already made, sent again, is no change.
           if expected not in [nil, card.version] and Card.update(card, attrs) != card,
@@ -459,6 +543,57 @@ defmodule MWTClient.Flashcards.Library do
 
         {:ok, card} ->
           {{:ok, card}, state, nil}
+
+        :error ->
+          {:error, state, nil}
+      end
+    end)
+  end
+
+  def handle_call({:uncertain, id, fun}, from, state) do
+    write(state, from, fn repo ->
+      case fetch(repo, id) do
+        {:ok, card} ->
+          case fun.(card) do
+            ^card ->
+              {{:ok, card}, state, nil}
+
+            marked ->
+              marked = stored(marked)
+              put(repo, marked)
+              {{:ok, marked}, state, id}
+          end
+
+        :error ->
+          {:error, state, nil}
+      end
+    end)
+  end
+
+  def handle_call({:resolve, id, attrs, opts, now}, from, state) do
+    expected = Keyword.get(opts, :version)
+
+    write(state, from, fn repo ->
+      case fetch(repo, id) do
+        {:ok, card} ->
+          attrs = respell_tags(repo, id, attrs)
+
+          cond do
+            # A resolution already made, sent again, is no change.
+            card |> Card.update(attrs) |> Card.resolve(now) == card ->
+              {{:ok, card}, state, nil}
+
+            expected not in [nil, card.version] ->
+              {{:stale, card}, state, nil}
+
+            true ->
+              {{:ok, corrected}, state, _changed} =
+                change(repo, card, attrs, state, Keyword.get(opts, :by, :you), :edit)
+
+              settled = stored(Card.resolve(corrected, now))
+              put(repo, settled)
+              {{:ok, settled}, state, id}
+          end
 
         :error ->
           {:error, state, nil}
@@ -558,12 +693,14 @@ defmodule MWTClient.Flashcards.Library do
     repo.query!(
       """
       INSERT INTO flashcards (id, front, tags, source, box, due_at, reviewed_at, reviews, lapses,
-                              removed_at, created_at, updated_at, version, back, search_text)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              removed_at, uncertain_at, uncertain_note, created_at, updated_at,
+                              version, back, search_text)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (id) DO UPDATE SET
         front = excluded.front, tags = excluded.tags, source = excluded.source,
         box = excluded.box, due_at = excluded.due_at, reviewed_at = excluded.reviewed_at,
         reviews = excluded.reviews, lapses = excluded.lapses, removed_at = excluded.removed_at,
+        uncertain_at = excluded.uncertain_at, uncertain_note = excluded.uncertain_note,
         created_at = excluded.created_at, updated_at = excluded.updated_at,
         version = excluded.version, back = excluded.back, search_text = excluded.search_text
       """,
@@ -578,6 +715,8 @@ defmodule MWTClient.Flashcards.Library do
         card.reviews,
         card.lapses,
         Values.time(card.removed_at),
+        Values.time(card.uncertain_at),
+        card.uncertain_note,
         Values.time(card.created_at),
         Values.time(card.updated_at),
         card.version,
@@ -596,6 +735,7 @@ defmodule MWTClient.Flashcards.Library do
       | due_at: Values.stored_time(card.due_at),
         reviewed_at: Values.stored_time(card.reviewed_at),
         removed_at: Values.stored_time(card.removed_at),
+        uncertain_at: Values.stored_time(card.uncertain_at),
         created_at: Values.stored_time(card.created_at),
         updated_at: Values.stored_time(card.updated_at)
     }
@@ -612,10 +752,20 @@ defmodule MWTClient.Flashcards.Library do
       :reviews,
       :lapses,
       :removed_at,
+      :uncertain_at,
+      :uncertain_note,
       :created_at,
       :updated_at
     ])
   end
+
+  # Tags written into card `id` take the spelling the other cards use.
+  defp respell_tags(repo, id, %{tags: _tags} = attrs) do
+    others = select(repo, ~w(tags), "WHERE id != ?", [id])
+    Map.update!(attrs, :tags, &respell(&1, spellings(others)))
+  end
+
+  defp respell_tags(_repo, _id, attrs), do: attrs
 
   # The spelling each tag in use has, by its lowercase form.
   defp spellings(cards) do

@@ -266,6 +266,8 @@ defmodule MWTClient.MCP.Catalogue do
         "Update flash card",
         "Change an existing flash card by ID. Supply front, back, tags, source, or several; omitted fields stay unchanged. " <>
           "tags replaces the card's whole list. How well the user remembers the card is kept. " <>
+          "resolved=true settles a card the user marked uncertain, once you checked it: with the corrections it " <>
+          "needs in the same call, or alone when it was right; see mwt://guides/flashcards. " <>
           "Pass the version get_flashcard returned: a change based on an older version is refused, so it never " <>
           "overwrites an edit you haven't read. A missing ID is an error; it never creates a card.",
         flashcard_input()["properties"]
@@ -277,6 +279,14 @@ defmodule MWTClient.MCP.Catalogue do
           )
         )
         |> Map.put("version", version_input())
+        |> Map.put(
+          "resolved",
+          %{"type" => "boolean", "const" => true}
+          |> describe(
+            "Takes off the user's uncertain mark: you checked the card against the code and it now says what " <>
+              "is true, answering their note. The card comes back in their next session. Omit to leave the mark."
+          )
+        )
         |> object(["id", "version"])
         |> Map.put("minProperties", 3)
         |> examples([
@@ -290,6 +300,13 @@ defmodule MWTClient.MCP.Catalogue do
             "id" => "example_item_id",
             "version" => 2,
             "tags" => ["mwt_client", "agent sandbox", "worktrees"]
+          },
+          %{
+            "id" => "example_item_id",
+            "version" => 3,
+            "back" =>
+              "On demand: when a share is added, when the VM starts, from the Overview button, and when an agent runs `mwt sync`.",
+            "resolved" => true
           }
         ]),
         flashcard_result(),
@@ -302,7 +319,9 @@ defmodule MWTClient.MCP.Catalogue do
         "List flash cards, newest written first, to check what is already there before writing more. " <>
           "Search is case-insensitive and matches every query word across front, back, tags and source. " <>
           "tags keeps cards holding any of them, or all of them with match=all; days keeps cards written in the " <>
-          "last that many days. Cards the user removed from the deck are left out. " <>
+          "last that many days; uncertain=true keeps only the cards the user marked uncertain, for you to check, " <>
+          "and combines with the rest, so a check covers only the context the user names. " <>
+          "Cards the user removed from the deck are left out. " <>
           "Returns summaries without the back; use get_flashcard for it. " <>
           paging(),
         listing("Words to find in the front, back, tags or source; all words must match.")
@@ -325,10 +344,19 @@ defmodule MWTClient.MCP.Catalogue do
           %{"type" => "integer", "minimum" => 1, "maximum" => 3650}
           |> describe("Keep only cards written in the last this many days. Omit for any time.")
         )
+        |> put_in(
+          ["properties", "uncertain"],
+          boolean()
+          |> describe(
+            "true keeps only the cards the user marked uncertain; false leaves them out. Omit for both."
+          )
+        )
         |> examples([
           %{"query" => "", "limit" => 5, "offset" => 0},
           %{"tags" => ["mwt_client"], "days" => 7},
-          %{"tags" => ["mwt_client", "grants"], "match" => "all"}
+          %{"tags" => ["mwt_client", "grants"], "match" => "all"},
+          %{"uncertain" => true},
+          %{"uncertain" => true, "tags" => ["mwt_client", "egress"], "match" => "all"}
         ]),
         page_result(flashcard_summary()),
         true
@@ -345,8 +373,9 @@ defmodule MWTClient.MCP.Catalogue do
       tool(
         "list_flashcard_tags",
         "List flash card tags",
-        "List every tag the user's flash cards hold, with how many cards hold it and how many are due. " <>
-          "Call it before create_flashcards and reuse these names, so cards about one project share one tag.",
+        "List every tag the user's flash cards hold, with how many cards hold it, how many are due, and how " <>
+          "many the user marked uncertain. Call it before create_flashcards and reuse these names, so cards " <>
+          "about one project share one tag; and to find the tags of a context whose uncertain cards you check.",
         object(%{}, []) |> examples([%{}]),
         record(%{
           "tags" =>
@@ -354,7 +383,12 @@ defmodule MWTClient.MCP.Catalogue do
               record(%{
                 "name" => text(),
                 "cards" => describe(integer(), "Cards holding this tag."),
-                "due" => describe(integer(), "Of those, how many are due for review now.")
+                "due" => describe(integer(), "Of those, how many are due for review now."),
+                "uncertain" =>
+                  describe(
+                    integer(),
+                    "Of those, how many the user marked uncertain, to be checked."
+                  )
               }),
               10_000
             )
@@ -412,6 +446,17 @@ defmodule MWTClient.MCP.Catalogue do
         ),
       "due_at" => describe(timestamp(), "When the card is next due for review."),
       "reviews" => describe(integer(), "How many times the user answered it."),
+      "uncertain" =>
+        record(%{
+          "note" =>
+            text() |> nullable() |> describe("What the user doubts; null if they wrote nothing."),
+          "marked_at" => timestamp()
+        })
+        |> nullable()
+        |> describe(
+          "Set while the user doubts the card, until it is checked and resolved; null otherwise. " <>
+            "Only the user marks a card."
+        ),
       "created_at" => timestamp(),
       "updated_at" => timestamp()
     })

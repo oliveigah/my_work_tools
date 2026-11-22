@@ -1,8 +1,8 @@
 defmodule MWTClientWeb.FlashcardsLive.Components do
   @moduledoc """
   The small pieces the flash cards views share: a tag label, the fields a
-  card is written in, how well a card is known, when it is due, and the
-  words for the waits between boxes.
+  card is written in, how well a card is known, when it is due, the mark
+  of a card doubted, and the words for the waits between boxes.
   """
   use MWTClientWeb, :html
 
@@ -188,6 +188,22 @@ defmodule MWTClientWeb.FlashcardsLive.Components do
   end
 
   def chosen(_value), do: []
+
+  @doc "The mark of a card the user doubts, with what they doubt as its title."
+  attr :note, :string, default: nil
+  attr :class, :any, default: nil
+
+  def uncertain_badge(assigns) do
+    ~H"""
+    <span
+      class={["inline-flex shrink-0 items-center text-warn", @class]}
+      title={if @note, do: "Uncertain: " <> @note, else: "Uncertain"}
+      aria-label="Uncertain"
+    >
+      <.icon name="hero-question-mark-circle-micro" class="size-3.5" />
+    </span>
+    """
+  end
 
   @doc "A key, as the page shows it."
   slot :inner_block, required: true

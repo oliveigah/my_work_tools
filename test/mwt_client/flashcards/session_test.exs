@@ -79,6 +79,24 @@ defmodule MWTClient.Flashcards.SessionTest do
     assert {Session.handled(session), Session.left(session)} == {1, 2}
   end
 
+  test "a card marked uncertain leaves the session, repeats and all, and is listed apart", %{
+    cards: [a, b, _c] = cards
+  } do
+    session = cards |> Session.new() |> Session.answer(:forgot, a) |> Session.mark_uncertain()
+
+    assert session.current.id == "c"
+    assert Enum.map(session.queue, & &1.id) == ["a"]
+    assert Session.uncertain(session) == [{b.id, "Front b"}]
+    assert Session.removed(session) == []
+    assert {Session.handled(session), Session.left(session)} == {2, 2}
+
+    # Undone, it is no longer listed, nor asked again in this session.
+    session = Session.unmark_uncertain(session, b.id)
+    assert Session.uncertain(session) == []
+    assert Session.handled(session) == 1
+    refute Enum.any?([session.current | session.queue], &(&1.id == b.id))
+  end
+
   test "ending early counts the cards left", %{cards: [a | _] = cards} do
     session = cards |> Session.new() |> Session.answer(:good, a) |> Session.stop()
 

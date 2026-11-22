@@ -180,7 +180,8 @@ defmodule MWTClientWeb.VersionsComponents do
   def difference(%{kind: :card} = assigns) do
     assigns =
       assign(assigns,
-        changes: Diff.fields(assigns.from, assigns.to, [:front, :back, :tags, :source])
+        changes:
+          Diff.fields(assigns.from, assigns.to, [:front, :back, :tags, :source, :uncertain])
       )
 
     ~H"""
@@ -253,6 +254,7 @@ defmodule MWTClientWeb.VersionsComponents do
   defp field_label(:back), do: "Back"
   defp field_label(:tags), do: "Tags"
   defp field_label(:source), do: "Source"
+  defp field_label(:uncertain), do: "Uncertain"
 
   defp field_text(nil), do: "—"
   defp field_text([]), do: "—"

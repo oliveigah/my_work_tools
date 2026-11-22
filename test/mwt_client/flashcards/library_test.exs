@@ -61,8 +61,8 @@ defmodule MWTClient.Flashcards.LibraryTest do
     assert third.tags == ["Klife"]
 
     assert Library.tags(username) == [
-             %{name: "Klife", cards: 3, due: 3},
-             %{name: "Startup", cards: 1, due: 1}
+             %{name: "Klife", cards: 3, due: 3, uncertain: 0},
+             %{name: "Startup", cards: 1, due: 1, uncertain: 0}
            ]
   end
 
@@ -108,8 +108,8 @@ defmodule MWTClient.Flashcards.LibraryTest do
     assert [%{id: ^first}] = Library.list(username, %{days: 7})
     assert Library.list(username, %{days: 7, tags: ["elixir"]}) == []
 
-    assert Library.count(username, %{tags: ["mwt_client"]}) == %{cards: 1, due: 1}
-    assert Library.count(username, %{}) == %{cards: 2, due: 2}
+    assert Library.count(username, %{tags: ["mwt_client"]}) == %{cards: 1, due: 1, uncertain: 0}
+    assert Library.count(username, %{}) == %{cards: 2, due: 2, uncertain: 0}
   end
 
   test "a session picks the cards due in its scope", %{username: username} do
@@ -160,12 +160,17 @@ defmodule MWTClient.Flashcards.LibraryTest do
     assert ids(Library.list(username, %{tags: ["grants", "klife"]})) == 2
     assert [%{id: id}] = Library.list(username, %{tags: ["mwt_client", "grants"], match: :all})
     assert id == both.id
-    assert Library.count(username, %{tags: ["mwt_client"], match: :all}) == %{cards: 2, due: 2}
+
+    assert Library.count(username, %{tags: ["mwt_client"], match: :all}) == %{
+             cards: 2,
+             due: 2,
+             uncertain: 0
+           }
 
     # The tags of the cards picked, so each count says what adding it leaves.
     assert Library.tags(username, %{tags: ["mwt_client"], match: :all}) == [
-             %{name: "mwt_client", cards: 2, due: 2},
-             %{name: "grants", cards: 1, due: 1}
+             %{name: "mwt_client", cards: 2, due: 2, uncertain: 0},
+             %{name: "grants", cards: 1, due: 1, uncertain: 0}
            ]
 
     assert Enum.map(
@@ -198,9 +203,9 @@ defmodule MWTClient.Flashcards.LibraryTest do
     assert [%{front: "Worth it?"}] = Library.list(username)
     assert [%{id: id, removed_at: %DateTime{}}] = Library.list(username, %{removed: true})
     assert id == card.id
-    assert Library.count(username, %{}) == %{cards: 1, due: 1}
+    assert Library.count(username, %{}) == %{cards: 1, due: 1, uncertain: 0}
     assert Library.count(username, %{removed: true}).cards == 1
-    assert Library.tags(username) == [%{name: "signal", cards: 1, due: 1}]
+    assert Library.tags(username) == [%{name: "signal", cards: 1, due: 1, uncertain: 0}]
     assert Library.pick(username, %{}, 10) |> Enum.map(& &1.front) == ["Worth it?"]
 
     # Written again, it is told it was removed, and stays out.
@@ -214,6 +219,94 @@ defmodule MWTClient.Flashcards.LibraryTest do
     assert restored.box == reviewed.box
     assert length(Library.list(username)) == 2
     assert Library.remove(username, Card.new_id()) == :error
+  end
+
+  test "a card marked uncertain stays listed, out of sessions, until it is resolved", %{
+    username: username
+  } do
+    {:ok, [{:created, card}, {:created, _sure}]} =
+      Library.create(username, [
+        %{front: "When do shares sync?", back: "Every 3 seconds.", tags: ["mwt_client"]},
+        %{front: "Who lands a handoff?", back: "The user.", tags: ["mwt_client"]}
+      ])
+
+    {:ok, reviewed} = Library.review(username, card.id, :easy)
+    assert {:ok, marked} = Library.mark_uncertain(username, card.id, "  Still true?  ")
+    assert %DateTime{} = marked.uncertain_at
+    assert marked.uncertain_note == "Still true?"
+    assert {marked.box, marked.due_at, marked.version} == {reviewed.box, reviewed.due_at, 1}
+    assert Library.versions(username, card.id) == []
+
+    # Marking again changes the note, and keeps when it first was.
+    assert {:ok, again} = Library.mark_uncertain(username, card.id, "Since on-demand sync?")
+
+    assert {again.uncertain_at, again.uncertain_note} ==
+             {marked.uncertain_at, "Since on-demand sync?"}
+
+    assert length(Library.list(username)) == 2
+
+    assert [%{id: id, uncertain_note: "Since on-demand sync?"}] =
+             Library.list(username, %{uncertain: true})
+
+    assert id == card.id
+    assert [%{front: "Who lands a handoff?"}] = Library.list(username, %{uncertain: false})
+    assert Library.count(username, %{}) == %{cards: 2, due: 1, uncertain: 1}
+    assert Library.tags(username) == [%{name: "mwt_client", cards: 2, due: 1, uncertain: 1}]
+    assert Library.pick(username, %{}, 10) |> Enum.map(& &1.front) == ["Who lands a handoff?"]
+    assert Library.mark_uncertain(username, Card.new_id(), nil) == :error
+
+    assert {:error, "is longer than" <> _rest} =
+             Library.mark_uncertain(username, card.id, String.duplicate("x", 1_001))
+
+    # Resolved with the correction the check called for: one change, kept
+    # as a version, and due, so the next session asks it.
+    assert {:ok, resolved} =
+             Library.resolve(username, card.id, %{back: "On demand."}, by: :you, version: 1)
+
+    assert {resolved.back, resolved.version, resolved.uncertain_at} == {"On demand.", 2, nil}
+    assert resolved.uncertain_note == nil
+    assert resolved.box == reviewed.box
+    assert Card.due?(resolved, DateTime.utc_now())
+    assert [%{version: 1}] = Library.versions(username, card.id)
+    assert Library.count(username, %{}) == %{cards: 2, due: 2, uncertain: 0}
+
+    # Sent again, it is no change.
+    assert {:ok, ^resolved} =
+             Library.resolve(username, card.id, %{back: "On demand."}, version: 1)
+  end
+
+  test "resolving a card changed since it was read leaves it marked", %{username: username} do
+    {:ok, [{:created, card}]} = Library.create(username, [%{front: "Q", back: "A"}])
+    {:ok, _marked} = Library.mark_uncertain(username, card.id, nil)
+    {:ok, edited} = Library.update(username, card.id, %{back: "Edited meanwhile"})
+
+    # Right as it was read, but it reads otherwise now.
+    assert {:stale, ^edited} = Library.resolve(username, card.id, %{}, version: 1)
+    assert {:stale, ^edited} = Library.resolve(username, card.id, %{back: "B"}, version: 1)
+
+    assert {:ok, %{uncertain_at: %DateTime{}, back: "Edited meanwhile"}} =
+             Library.get(username, card.id)
+
+    assert {:ok, %{uncertain_at: nil, version: 2}} =
+             Library.resolve(username, card.id, %{}, version: 2)
+
+    # A card not marked takes the corrections alone.
+    assert {:ok, %{back: "B", uncertain_at: nil}} =
+             Library.resolve(username, card.id, %{back: "B"}, version: 2)
+
+    assert Library.resolve(username, card.id, %{front: ""}) == {:error, [front: "can't be blank"]}
+    assert Library.resolve(username, Card.new_id()) == :error
+  end
+
+  test "undoing a mark leaves the card as it was", %{username: username} do
+    {:ok, [{:created, card}]} = Library.create(username, [%{front: "Q", back: "A"}])
+    {:ok, reviewed} = Library.review(username, card.id, :good)
+    {:ok, _marked} = Library.mark_uncertain(username, card.id, "Hmm")
+
+    assert {:ok, unmarked} = Library.unmark_uncertain(username, card.id)
+    assert {unmarked.uncertain_at, unmarked.uncertain_note} == {nil, nil}
+    assert {unmarked.due_at, unmarked.box, unmarked.version} == {reviewed.due_at, 2, 1}
+    assert {:ok, ^unmarked} = Library.unmark_uncertain(username, card.id)
   end
 
   test "deletes", %{username: username} do
@@ -279,6 +372,11 @@ defmodule MWTClient.Flashcards.LibraryTest do
       refute_receive {:flashcards_changed, _id}, 50
 
       elsewhere.(fn -> Library.review(username, id, :hard) end)
+      assert_receive {:flashcards_changed, ^id}
+
+      elsewhere.(fn -> Library.mark_uncertain(username, id, "Sure?") end)
+      assert_receive {:flashcards_changed, ^id}
+      elsewhere.(fn -> Library.resolve(username, id) end)
       assert_receive {:flashcards_changed, ^id}
 
       elsewhere.(fn ->

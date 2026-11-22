@@ -34,6 +34,36 @@ defmodule MWTClient.Flashcards.TransferTest do
     assert Library.settings(other) == settings
   end
 
+  test "a card marked uncertain comes back marked; one from an older file, unmarked", %{
+    username: username
+  } do
+    {:ok, [{:created, card}]} = Library.create(username, [%{front: "Why?", back: "Because."}])
+    {:ok, card} = Library.mark_uncertain(username, card.id, "Still?")
+
+    {:ok, exported} = Transfer.export(username)
+    {:ok, prepared} = Transfer.prepare(Transfer.version(), exported)
+    other = also_unlock("other")
+    :ok = Transfer.replace(other, prepared)
+    assert {:ok, ^card} = Library.get(other, card.id)
+
+    older =
+      card("Old", ~U[2026-09-01 10:00:00.000001Z])
+      |> Map.from_struct()
+      |> Map.drop([:uncertain_at, :uncertain_note])
+
+    assert {:ok, %{cards: [%Card{uncertain_at: nil, uncertain_note: nil}]}} =
+             Transfer.prepare(1, %{cards: [older], settings: %{}})
+
+    # A note with no mark says nothing; a mark that is no time is damaged.
+    noted = Map.put(older, :uncertain_note, "Stray")
+
+    assert {:ok, %{cards: [%Card{uncertain_note: nil}]}} =
+             Transfer.prepare(1, %{cards: [noted], settings: %{}})
+
+    assert Transfer.prepare(1, %{cards: [Map.put(older, :uncertain_at, "today")], settings: %{}}) ==
+             {:error, "The flash cards in this file are damaged."}
+  end
+
   test "merging adds new cards and keeps the settings here", %{username: username} do
     mine = keep(username, card("Mine", ~U[2026-09-01 10:00:00.000001Z]))
     {:ok, settings} = Library.put_settings(username, %{session_size: 3})

@@ -7,6 +7,11 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
   (from here or from a session), it waits under Removed, where it can be
   put back or deleted for good.
 
+  A card marked uncertain stays in the deck, marked, and is listed apart
+  under Uncertain too, where it waits to be checked: its note says what is
+  doubted, and resolving it (an agent's check, or the user's) takes the
+  mark off.
+
   A new card keeps the tags and the source of the one added before it, so
   writing several about one thing means typing them once.
   """
@@ -21,7 +26,13 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
   attr :hidden, :integer, required: true
   attr :count, :integer, required: true
   attr :removed_count, :integer, required: true
-  attr :bin?, :boolean, required: true, doc: "whether the removed cards are listed"
+  attr :uncertain_count, :integer, required: true
+
+  attr :listing, :atom,
+    required: true,
+    values: [:deck, :uncertain, :removed],
+    doc: "which cards are listed: the deck's, only those marked uncertain, or those removed"
+
   attr :filter, :map, required: true
   attr :tags, :list, required: true
   attr :current_id, :string, default: nil
@@ -35,12 +46,12 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
     >
       <div class="flex h-9 shrink-0 items-center gap-2 border-b border-line-soft px-2.5">
         <span class="text-[11px] font-semibold uppercase tracking-wide text-muted">
-          {if @bin?, do: "Removed", else: "Cards"}
+          {listing_label(@listing)}
         </span>
         <span class="rounded bg-deep px-1.5 py-0.5 font-mono text-[10px] text-faint">{@count}</span>
         <div class="flex-1"></div>
         <.link
-          :if={!@bin?}
+          :if={@listing == :deck}
           id="new-card"
           patch={~p"/tools/flashcards/cards"}
           title="New card"
@@ -83,8 +94,10 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
       >
         <p :if={@entries == []} class="px-2 py-6 text-center text-xs text-faint">
           <%= cond do %>
-            <% @bin? -> %>
+            <% @listing == :removed -> %>
               No removed card{if filtered?(@filter), do: " matches"}.
+            <% @listing == :uncertain -> %>
+              No uncertain card{if filtered?(@filter), do: " matches"}.
             <% filtered?(@filter) -> %>
               No card matches.
             <% true -> %>
@@ -104,7 +117,7 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
               do: "bg-active shadow-[inset_2px_0_0_0_var(--color-accent)]",
               else: "hover:bg-hover"
             ),
-            @bin? && "opacity-75"
+            @listing == :removed && "opacity-75"
           ]}
         >
           <span class="line-clamp-2 text-xs leading-snug text-ink">
@@ -117,31 +130,71 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
                 +{length(entry.tags) - 2}
               </span>
             </span>
+            <.uncertain_badge :if={Card.uncertain?(entry)} note={entry.uncertain_note} />
             <.strength box={entry.box} reviews={entry.reviews} />
-            <.due :if={entry.reviews > 0 and !@bin?} due_at={entry.due_at} now={@now} />
+            <.due
+              :if={entry.reviews > 0 and @listing != :removed and !Card.uncertain?(entry)}
+              due_at={entry.due_at}
+              now={@now}
+            />
           </span>
         </.link>
 
         <.load_more id="card-more" list="card-list" hidden={@hidden} />
       </div>
 
-      <button
-        :if={@bin? or @removed_count > 0}
-        type="button"
-        id="toggle-removed"
-        phx-click="toggle_removed"
-        class="flex shrink-0 cursor-pointer items-center gap-2 border-t border-line-soft px-3 py-2 text-left text-xs text-muted transition-colors hover:bg-hover hover:text-ink"
-      >
-        <%= if @bin? do %>
-          <.icon name="hero-arrow-uturn-left-micro" class="size-3.5" /> Back to the deck
-        <% else %>
-          <.icon name="hero-archive-box-micro" class="size-3.5" /> Removed as not important
-          <span class="ml-auto font-mono text-[10px] text-faint">{@removed_count}</span>
-        <% end %>
-      </button>
+      <%= if @listing == :deck do %>
+        <.listing_button
+          :if={@uncertain_count > 0}
+          id="toggle-uncertain"
+          listing={:uncertain}
+          icon="hero-question-mark-circle-micro"
+          count={@uncertain_count}
+        >
+          Uncertain, to be checked
+        </.listing_button>
+        <.listing_button
+          :if={@removed_count > 0}
+          id="toggle-removed"
+          listing={:removed}
+          icon="hero-archive-box-micro"
+          count={@removed_count}
+        >
+          Removed as not important
+        </.listing_button>
+      <% else %>
+        <.listing_button id="back-to-deck" listing={:deck} icon="hero-arrow-uturn-left-micro">
+          Back to the deck
+        </.listing_button>
+      <% end %>
     </aside>
     """
   end
+
+  attr :id, :string, required: true
+  attr :listing, :atom, required: true
+  attr :icon, :string, required: true
+  attr :count, :integer, default: nil
+  slot :inner_block, required: true
+
+  defp listing_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={@id}
+      phx-click="show_listing"
+      phx-value-listing={@listing}
+      class="flex shrink-0 cursor-pointer items-center gap-2 border-t border-line-soft px-3 py-2 text-left text-xs text-muted transition-colors hover:bg-hover hover:text-ink"
+    >
+      <.icon name={@icon} class="size-3.5" /> {render_slot(@inner_block)}
+      <span :if={@count} class="ml-auto font-mono text-[10px] text-faint">{@count}</span>
+    </button>
+    """
+  end
+
+  defp listing_label(:deck), do: "Cards"
+  defp listing_label(:uncertain), do: "Uncertain"
+  defp listing_label(:removed), do: "Removed"
 
   attr :form, :any, required: true
   attr :form_key, :integer, required: true
@@ -155,7 +208,8 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
       assign(assigns,
         front: assigns.form[:front].value || "",
         back: assigns.form[:back].value || "",
-        removed?: assigns.card != nil and Card.removed?(assigns.card)
+        removed?: assigns.card != nil and Card.removed?(assigns.card),
+        uncertain?: assigns.card != nil and Card.uncertain?(assigns.card)
       )
 
     ~H"""
@@ -185,6 +239,42 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
           </.button>
         </div>
 
+        <div
+          :if={@uncertain? and !@removed?}
+          id="card-uncertain"
+          class="mb-5 rounded-xl border border-warn/40 bg-warn-soft/20 px-4 py-3"
+        >
+          <div class="flex flex-wrap items-center gap-3">
+            <.icon name="hero-question-mark-circle" class="size-5 shrink-0 text-warn" />
+            <p class="min-w-0 flex-1 text-[13px] text-muted">
+              Marked uncertain, {Calendar.strftime(@card.uncertain_at, "%b %-d")}. Sessions leave it
+              out until it is resolved: by an agent checking it against the code, or by you.
+            </p>
+            <.button id="resolve-card" phx-click="resolve_card" phx-value-id={@card.id}>
+              <.icon name="hero-check-circle-micro" class="size-4" /> Resolved
+            </.button>
+          </div>
+          <form
+            id="uncertain-note-form"
+            phx-submit="save_uncertain_note"
+            autocomplete="off"
+            class="mt-2.5 flex items-center gap-2"
+          >
+            <input type="hidden" name="card_id" value={@card.id} />
+            <input
+              type="text"
+              id="uncertain-note"
+              name="note"
+              value={@card.uncertain_note}
+              maxlength={Card.max_uncertain_note()}
+              aria-label="What you are unsure about"
+              placeholder="What are you unsure about? The agent checking it reads this."
+              class={MWTClientWeb.CoreComponents.input_classes()}
+            />
+            <.button type="submit" id="save-uncertain-note" class="shrink-0">Save note</.button>
+          </form>
+        </div>
+
         <div class="mb-5 flex flex-wrap items-center gap-3">
           <div class="min-w-0 flex-1">
             <h1 class="text-base font-semibold text-ink">
@@ -204,7 +294,7 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
                       do: "never forgotten",
                       else: "forgotten #{times(@card.lapses)}"}
                   </span>
-                  <span :if={!@removed?}>
+                  <span :if={!@removed? and !@uncertain?}>
                     · <.due due_at={@card.due_at} now={@now} class="text-xs" />
                   </span>
                 <% end %>
@@ -215,6 +305,15 @@ defmodule MWTClientWeb.FlashcardsLive.Cards do
             </p>
           </div>
           <.versions_button :if={@card} id="card-versions-button" open={@versions?} class="h-7" />
+          <.button
+            :if={@card && !@removed? && !@uncertain?}
+            id="mark-uncertain"
+            phx-click="mark_uncertain"
+            phx-value-id={@card.id}
+            title="You doubt the answer: set it aside for an agent to check against the code"
+          >
+            <.icon name="hero-question-mark-circle-micro" class="size-4" /> Unsure
+          </.button>
           <.button
             :if={@card && !@removed?}
             id="remove-card"

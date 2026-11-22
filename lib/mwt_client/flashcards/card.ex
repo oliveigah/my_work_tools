@@ -17,6 +17,13 @@ defmodule MWTClient.Flashcards.Card do
   and so an agent writing it again is told it was removed rather than
   adding it once more.
 
+  A card whose answer the user doubts, as stale or as raising a question,
+  is marked uncertain: `uncertain_at` says when, and `uncertain_note` what
+  they doubt, if they wrote it. Sessions don't ask it until the doubt is
+  settled (`resolve/2`), by an agent checking it against the code or by
+  the user; then it is due, so the next session asks it as it reads by
+  then. Only the user marks a card: an agent with a doubt asks them.
+
   `search_text` is the front, the back, the tags and the source,
   normalized once when they change, so searching does not redo it for every
   card on every keystroke.
@@ -35,6 +42,7 @@ defmodule MWTClient.Flashcards.Card do
   @max_tag 60
   @max_tags 10
   @max_id 64
+  @max_uncertain_note 1_000
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -48,6 +56,8 @@ defmodule MWTClient.Flashcards.Card do
           reviews: non_neg_integer(),
           lapses: non_neg_integer(),
           removed_at: DateTime.t() | nil,
+          uncertain_at: DateTime.t() | nil,
+          uncertain_note: String.t() | nil,
           created_at: DateTime.t(),
           updated_at: DateTime.t(),
           search_text: String.t(),
@@ -59,6 +69,8 @@ defmodule MWTClient.Flashcards.Card do
     :due_at,
     :reviewed_at,
     :removed_at,
+    :uncertain_at,
+    :uncertain_note,
     :created_at,
     :updated_at,
     :source,
@@ -86,6 +98,9 @@ defmodule MWTClient.Flashcards.Card do
 
   @doc "The most tags one card holds."
   def max_tags, do: @max_tags
+
+  @doc "The longest note on what the user doubts, in characters."
+  def max_uncertain_note, do: @max_uncertain_note
 
   @doc "A fresh card identifier, safe in a DOM id and a CSS selector."
   @spec new_id() :: String.t()
@@ -143,6 +158,8 @@ defmodule MWTClient.Flashcards.Card do
       reviews: Map.get(attrs, :reviews, 0),
       lapses: Map.get(attrs, :lapses, 0),
       removed_at: Map.get(attrs, :removed_at),
+      uncertain_at: Map.get(attrs, :uncertain_at),
+      uncertain_note: Map.get(attrs, :uncertain_note),
       created_at: created_at,
       updated_at: Map.get(attrs, :updated_at, created_at)
     }
@@ -234,6 +251,62 @@ defmodule MWTClient.Flashcards.Card do
   @doc "Whether the card was removed from the deck."
   @spec removed?(t()) :: boolean()
   def removed?(%__MODULE__{removed_at: removed_at}), do: removed_at != nil
+
+  @doc "Whether the user marked the card uncertain, and it isn't settled yet."
+  @spec uncertain?(t() | map()) :: boolean()
+  def uncertain?(%{uncertain_at: uncertain_at}), do: uncertain_at != nil
+
+  @doc """
+  A note on what the user doubts, as it is kept: trimmed, and nil when
+  nothing is written.
+  """
+  @spec uncertain_note(term()) :: {:ok, String.t() | nil} | {:error, String.t()}
+  def uncertain_note(nil), do: {:ok, nil}
+
+  def uncertain_note(value) do
+    case text(value, @max_uncertain_note, :optional) do
+      {:ok, ""} -> {:ok, nil}
+      other -> other
+    end
+  end
+
+  @doc """
+  The card marked uncertain at `now`, with `note` (through
+  `uncertain_note/1`). A card marked already keeps when it first was, and
+  takes the new note. How well it is remembered is kept.
+  """
+  @spec mark_uncertain(t(), String.t() | nil, DateTime.t()) :: t()
+  def mark_uncertain(%__MODULE__{} = card, note, now) do
+    changed(card, %{uncertain_at: card.uncertain_at || now, uncertain_note: note}, now)
+  end
+
+  @doc """
+  The card with its mark taken off as if it had never been made, as an undo
+  does: when it is due stays as it was.
+  """
+  @spec unmark_uncertain(t(), DateTime.t()) :: t()
+  def unmark_uncertain(%__MODULE__{} = card, now) do
+    changed(card, %{uncertain_at: nil, uncertain_note: nil}, now)
+  end
+
+  @doc """
+  The card with its doubt settled at `now`: unmarked, and due by `now`, so
+  the next session asks it as it reads after the check, whatever box it is
+  in. A card not marked is returned as it is.
+  """
+  @spec resolve(t(), DateTime.t()) :: t()
+  def resolve(%__MODULE__{uncertain_at: nil} = card, _now), do: card
+
+  def resolve(%__MODULE__{} = card, now) do
+    due_at = if DateTime.compare(card.due_at, now) == :gt, do: now, else: card.due_at
+    changed(card, %{uncertain_at: nil, uncertain_note: nil, due_at: due_at}, now)
+  end
+
+  # The card with `fields`, its change time `now` if they change it.
+  defp changed(card, fields, now) do
+    updated = struct(card, fields)
+    if updated == card, do: card, else: %{updated | updated_at: now}
+  end
 
   @doc "Whether the card was written within the last `days` days of `now`. Nil means any time."
   @spec within?(t(), pos_integer() | nil, DateTime.t()) :: boolean()

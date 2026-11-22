@@ -227,9 +227,15 @@ defmodule MWTClient.Sandbox.MwtTools do
   end
 
   def words(%{grant: :change, kind: :card, from: from, to: to}) do
-    case MWTClient.Versions.Diff.fields(from, to, [:front, :back, :tags, :source]) do
-      [] -> nil
-      changes -> Enum.map_join(changes, ", ", fn {field, _, _} -> "#{field} changed" end)
+    case MWTClient.Versions.Diff.fields(from, to, [:front, :back, :tags, :source, :uncertain]) do
+      [] ->
+        nil
+
+      changes ->
+        Enum.map_join(changes, ", ", fn
+          {:uncertain, _marked, nil} -> "resolved"
+          {field, _from, _to} -> "#{field} changed"
+        end)
     end
   end
 

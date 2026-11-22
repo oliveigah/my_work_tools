@@ -260,8 +260,10 @@ defmodule MWTClient.MCP.Guides do
     matched, and by when they were written, for example "the cards about
     mwt_client and grants" or "everything from the last 7 days". You write
     the cards; reviewing them is the user's alone. They also correct cards as
-    they review them, and remove the ones not worth remembering; removing
-    and deleting are not available through MCP.
+    they review them, remove the ones not worth remembering, and mark
+    uncertain the ones they doubt, for an agent to check; removing,
+    deleting and marking are not available through MCP. When you doubt a
+    card yourself, ask the user rather than change it.
 
     ## What is worth a card
 
@@ -330,6 +332,34 @@ defmodule MWTClient.MCP.Guides do
     words. Updates keep how well the
     user remembers the card. tags in an update replaces the whole list.
 
+    ## Uncertain cards
+
+    A card the user marked uncertain is one whose answer they doubt: stale,
+    or raising a question. Its uncertain holds their note, if they wrote
+    one; sessions don't ask it until it is resolved. When asked to check
+    them:
+
+    1. Check only the context they name ("my uncertain cards on MWT's
+       egress"), every one if they name none: list_flashcard_tags says
+       which tags hold uncertain cards. Call list_flashcards with uncertain=true
+       and its tags, the project and the topic with match=all, or query
+       words where no tag fits. What matches nothing, or could mean
+       several things, ask them rather than widen it. Then get_flashcard
+       for each one.
+    2. Check each against what it is about: its tags name the project, its
+       source the thread it came from. Read the code, its docs and its
+       history; the user's note says what to settle.
+    3. Make the card say what is true now, answering the note, in one
+       update_flashcard call with resolved=true: the corrections it needs
+       (front, back, tags), or resolved alone when it was right. A card is
+       still one idea: an answer to the note that is worth remembering goes
+       on the back; the rest, in what you tell the user.
+    4. Leave marked a card you can't settle: its project isn't here, or
+       the answer is the user's decision, not the code's. Tell them which,
+       and why.
+    5. Then tell the user which cards you took (the tags or words), and,
+       card by card, what changed and what was right.
+
     ## Tags
 
     Tags are labels, matched without regard to case; a card written with
@@ -337,8 +367,8 @@ defmodule MWTClient.MCP.Guides do
     each up to 60 characters. The user picks sessions by combining them,
     so a tag is worth its name only if it gathers cards: prefer one more
     card under an existing tag to a new tag for one card.
-    list_flashcard_tags returns them with how many cards hold each and how
-    many are due.
+    list_flashcard_tags returns them with how many cards hold each, how
+    many are due and how many are marked uncertain.
 
     ## Finding cards
 
