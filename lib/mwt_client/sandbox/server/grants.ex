@@ -175,14 +175,8 @@ defmodule MWTClient.Sandbox.Server.Grants do
   def turn_on(state, %Grant{kind: :token, reach: :subgrants}, _minutes, _uses, _why), do: state
 
   def turn_on(state, grant, minutes, uses, why) do
-    # Ask to run commands always asks, and a file has no uses to approve;
-    # the Internet never asks.
-    uses =
-      cond do
-        Grant.always_auto?(grant) -> :all
-        Grant.auto_approvable?(grant) -> uses
-        true -> :ask
-      end
+    # Ask to run commands always asks, and a file has no uses to approve.
+    uses = if Grant.auto_approvable?(grant), do: uses, else: :ask
 
     grant = %{grant | state: :on, expires_at: expires_at(minutes), minutes: minutes}
     State.schedule_expiry(grant)
@@ -246,7 +240,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
   end
 
   def set_mode(state, %Grant{} = grant, :ask) do
-    if Enum.any?(grant.allowances, &(&1.pattern == :all)) and not Grant.always_auto?(grant) do
+    if Enum.any?(grant.allowances, &(&1.pattern == :all)) do
       state
       |> State.replace_grant(%{
         grant
@@ -807,9 +801,9 @@ defmodule MWTClient.Sandbox.Server.Grants do
   @doc """
   A grant changed from its form: what you can change of it, checked as when
   it was added. It keeps its id, so agents still find it, its placeholder
-  and value, its kind and the grant it sits under, and its state: on or
-  off, for as long, asking or not, and the state it starts in, which its
-  page changes. Ask to run commands and MWT's tools are built in, and
+  and value, its kind and the grant it sits under, its host list, and its
+  state: on or off, for as long, asking or not, and the state it starts
+  in, which its page changes. Ask to run commands and MWT's tools are built in, and
   can't be changed.
   """
   def edit_grant(%Grant{} = grant, attrs, grants) do
@@ -843,6 +837,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
                request_headers: grant.request_headers,
                cli_tools: grant.cli_tools,
                checks: grant.checks,
+               host_rules: grant.host_rules,
                proposal: grant.proposal,
                state: grant.state,
                expires_at: grant.expires_at,

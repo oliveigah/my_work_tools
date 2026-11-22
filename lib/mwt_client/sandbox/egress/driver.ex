@@ -3,6 +3,16 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   What a protocol implements for MWT to read it, whatever transport
   carries it, and how a call's first bytes pick the driver that reads it.
 
+  A driver exists so that what the VM does outside it is seen and decided
+  request by request, the finest grain there is: it breaks a call into the
+  requests it carries (an HTTP request, a database query), and each is
+  judged on its own (let through, held for you on a card, refused) and
+  kept in the log with what came back. A call no driver reads can only be
+  decided whole, by where it goes (`Driver.Raw`). Putting a credential
+  into a request is one use of that reading, the HTTP driver's today, not
+  what a driver is for: a protocol with no value to carry is read for its
+  requests alone.
+
   ## Calls, and the cores that carry them
 
   A call is what the VM sends to one destination over one transport: a
@@ -51,10 +61,9 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   bytes. Where it is known not to fit yet:
 
     * **Multiplexed protocols** (HTTP/2, gRPC, Kafka with several requests
-      in flight): the core looks through what goes up with one list per
-      call, the last verdict's. Two requests in flight under different
-      grants need a list each (say, `{:send, :host, bytes}` naming the
-      request the bytes belong to).
+      in flight) send each stream's text with `{:send, :host, bytes,
+      stream}`, looked through with that stream's own list, and their
+      framing with `{:frame, :host, bytes}`.
     * **Switching** mid-call (HTTP's Upgrade, STARTTLS in SMTP, IMAP or
       Postgres): a driver can't hand its call to another, nor ask the core
       to start TLS on it. HTTP/1.1 passes an upgraded connection on
@@ -133,10 +142,13 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   `detect/2` is shown the server's (`ctx.first` is `:host`).
   """
 
-  alias MWTClient.Sandbox.Egress.Driver.{Http1, Raw}
+  alias MWTClient.Sandbox.Egress.Driver.{Http1, Http2, Raw}
   alias MWTClient.Sandbox.Egress.Request
 
-  @drivers [Http1, Raw]
+  # HTTP/1.1 before HTTP/2: inside TLS MWT ends, it picks the first of
+  # these a client offers, so only a client offering no HTTP/1.1 speaks
+  # HTTP/2 to it (`Driver.Http2`).
+  @drivers [Http1, Http2, Raw]
 
   @typedoc "One end of a call: the VM's client, or the host MWT connected to for it."
   @type side :: :vm | :host
@@ -149,8 +161,7 @@ defmodule MWTClient.Sandbox.Egress.Driver do
     * `:silent` - the client said nothing; the server speaks first;
     * `:not_tls` - plain bytes no driver reads;
     * `:no_name` - TLS to an address, naming no host for a certificate;
-    * `:h2_only`, `{:protocols, names}` - TLS offering only protocols no
-      driver speaks;
+    * `{:protocols, names}` - TLS offering only protocols no driver speaks;
     * `:inside_tls` - TLS MWT ended, with nothing inside a driver reads.
 
   A new core adds the reasons it gives here, with their words.
@@ -161,7 +172,6 @@ defmodule MWTClient.Sandbox.Egress.Driver do
           | :silent
           | :not_tls
           | :no_name
-          | :h2_only
           | {:protocols, [String.t()]}
           | :inside_tls
 
@@ -239,6 +249,24 @@ defmodule MWTClient.Sandbox.Egress.Driver do
       too, and counted for the firewall. A value or a misplaced placeholder
       in them stops them, and everything else queued for the host, and
       `handle_cut/2` comes instead of the rest of the list;
+    * `{:send, :host, bytes, stream}` - to the host, the VM's text of one
+      stream of the call (`stream`, a term of the driver's: the request's
+      `id` for its body, its WebSocket messages, its HTTP/2 stream): looked
+      through as `{:send, :host, _}` is, but as a stream of its own, so
+      what goes between two of its sends (frame headers, other streams)
+      can't hide a value split across them; with the list its request's
+      verdict gave, when `stream` is a judged request's `id`, or else the
+      call's. Counted;
+    * `{:frame, :host, bytes}` - to the host, framing the driver wrote
+      itself, holding none of the VM's text: frame and message headers,
+      lengths, stream ids, its own settings and pings. Counted, not looked
+      through. A driver that frames the VM's text sends the text with
+      `{:send, :host, _, stream}` and only the framing this way;
+    * `{:look, bytes}` - the VM's bytes the driver refused, sending none of
+      them: looked through for real values, so the firewall hears of one in
+      a request MWT refused (one it couldn't read) as it would had it gone
+      (a placeholder in them went nowhere: no leak). Found, what follows in
+      the list is dropped and `handle_cut/2` comes instead;
     * `{:write, :host, bytes}` - to the host, bytes the driver wrote with a
       value the core had it put in (`Replacing`): counted, not looked
       through for values, since they are meant to hold one. Nothing else
@@ -280,6 +308,9 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   """
   @type action ::
           {:send, side(), iodata()}
+          | {:send, :host, iodata(), term()}
+          | {:frame, :host, iodata()}
+          | {:look, iodata()}
           | {:write, :host, iodata()}
           | {:read, side(), timeout()}
           | {:connect, %{alpn: [String.t()]}}
@@ -317,10 +348,12 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   passed on).
 
   Asked of every driver each time MWT ends a client's TLS (`alpn/1`): MWT
-  offers the client all of them, in the drivers' order, and the one the
-  client settles on picks its driver, without `detect/2`. So list only
-  what the driver reads whole: offering `h2` makes every client that
-  prefers HTTP/2 speak it to MWT. The same list every time.
+  offers the client all of them, and picks the first, in the drivers'
+  order, that the client offers too; the one settled on picks its driver,
+  without `detect/2`. So a protocol a driver lists after another driver's
+  is spoken only by a client that offers none before it: HTTP/2
+  (`Driver.Http2`) only by one offering no HTTP/1.1. List only what the
+  driver reads whole. The same list every time.
   """
   @callback alpn() :: [String.t()]
 
@@ -536,7 +569,6 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   def why(:silent), do: "the server speaks first"
   def why(:not_tls), do: "it isn't TLS"
   def why(:no_name), do: "TLS to an address, naming no host"
-  def why(:h2_only), do: "the client offered only HTTP/2, which MWT doesn't read yet"
   def why(:inside_tls), do: "not HTTP inside its TLS · passed on decrypted, looked through"
 
   # The names are the VM's bytes: only visible ASCII is written out.

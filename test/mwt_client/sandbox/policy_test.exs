@@ -153,7 +153,7 @@ defmodule MWTClient.Sandbox.PolicyTest do
                {:refuse, :internet_off}
     end
 
-    test "the Internet never opens a private or reserved address, and never asks" do
+    test "the Internet never opens a private or reserved address, and asks only once it is read" do
       internet = %{Grant.internet() | state: :on, allowances: [allowance(:all, nil)]}
 
       for ip <- @private ++ @reserved, port <- @ports do
@@ -163,9 +163,14 @@ defmodule MWTClient.Sandbox.PolicyTest do
         assert reason in [:private, :reserved]
       end
 
+      assert {:allow, %Grant{internet: true}, _allowance, _about} =
+               Policy.decide(snapshot([internet]), {:connection, hd(@public), 443}, @now)
+
+      # Set to ask each time, a connection waits for its first bytes, as a
+      # network grant's does: an address alone is nothing to ask about.
       bare = %{internet | allowances: []}
 
-      assert {:allow, %Grant{internet: true}, _allowance, _about} =
+      assert {:ask, %Grant{internet: true}, _about} =
                Policy.decide(snapshot([bare]), {:connection, hd(@public), 443}, @now)
 
       # Off by the clock, it lets nothing through.

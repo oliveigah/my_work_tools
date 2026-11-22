@@ -40,11 +40,13 @@ defmodule MWTClient.Sandbox.Exchange do
         }
 
   @type request :: %{
-          method: String.t(),
-          host: String.t(),
-          path: String.t(),
-          headers: [{String.t(), String.t()}],
-          body: body()
+          required(:method) => String.t(),
+          required(:host) => String.t(),
+          required(:path) => String.t(),
+          required(:headers) => [{String.t(), String.t()}],
+          required(:body) => body(),
+          optional(:plain?) => true,
+          optional(:ip) => String.t()
         }
 
   @type response :: %{
@@ -83,13 +85,18 @@ defmodule MWTClient.Sandbox.Exchange do
         %{method: method, host: host, path: path, headers: headers} = request,
         limit \\ @body_limit
       ) do
-    %{
+    kept = %{
       method: method,
       host: host,
       path: path,
       headers: headers,
       body: body(Map.get(request, :body, ""), headers, limit)
     }
+
+    # One that came as plain HTTP says so, and to which address.
+    if Map.get(request, :plain?),
+      do: Map.merge(kept, %{plain?: true, ip: request.ip}),
+      else: kept
   end
 
   ## The response, as the bytes went to the VM
@@ -158,6 +165,44 @@ defmodule MWTClient.Sandbox.Exchange do
     end
   end
 
+  @doc """
+  An answer read as its parts rather than as bytes (an HTTP/2 stream's): its
+  status and headers, `kept` the start of its body as it came (at most
+  `limit` bytes of it), out of `seen` bytes in all.
+  """
+  @spec answer(
+          non_neg_integer(),
+          [{String.t(), String.t()}],
+          binary(),
+          non_neg_integer(),
+          non_neg_integer(),
+          String.t() | nil
+        ) ::
+          response()
+  def answer(status, headers, kept, seen, limit, note) do
+    body = body(kept, headers, limit)
+    cut? = seen > byte_size(kept) or body.cut?
+
+    %{
+      status: status,
+      reason: reason(status),
+      headers: headers,
+      body: %{
+        body
+        | cut?: cut?,
+          bytes: if(cut? and is_nil(declared_length(headers)), do: nil, else: body.bytes)
+      },
+      by_mwt?: false,
+      note: note
+    }
+  end
+
+  defp reason(status) do
+    Plug.Conn.Status.reason_phrase(status)
+  rescue
+    ArgumentError -> nil
+  end
+
   @doc "MWT's own answer, sent instead of the host's: a status and a JSON body."
   @spec mwt_answer(non_neg_integer(), binary()) :: response()
   def mwt_answer(status, json) do
@@ -212,7 +257,9 @@ defmodule MWTClient.Sandbox.Exchange do
       "request" =>
         %{
           "method" => request.method,
-          "url" => "https://" <> request.host <> request.path,
+          "url" =>
+            if(Map.get(request, :plain?), do: "http://", else: "https://") <>
+              request.host <> request.path,
           "headers" => headers_json(request.headers)
         }
         |> Map.merge(body_json(request.body, request.headers)),

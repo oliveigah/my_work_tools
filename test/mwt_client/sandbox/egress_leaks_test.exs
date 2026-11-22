@@ -659,8 +659,9 @@ defmodule MWTClient.Sandbox.EgressLeaksTest do
       {socket, "HTTP/1.1 200" <> _} = connect(proxy, "127.0.0.1:#{port}")
       :ok = :gen_tcp.send(socket, "POST / HTTP/1.1\r\n\r\nstolen=#{@real}")
 
+      # Plain HTTP is read: one MWT can't (no Host) is refused, nothing of it
+      # ever connected, and its bytes are looked through all the same.
       assert {:error, :closed} = :gen_tcp.recv(socket, 0, 5_000)
-      assert_receive {:server_closed, _reason}, 5_000
       refute_received {:server_got, _}
       assert isolated(username) == :real_value
     end

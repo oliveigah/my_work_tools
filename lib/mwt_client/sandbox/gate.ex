@@ -59,7 +59,7 @@ defmodule MWTClient.Sandbox.Gate do
   }
 
   alias MWTClient.Sandbox.Egress.{Request, Tcp}
-  alias MWTClient.Sandbox.Egress.Driver.Http1
+  alias MWTClient.Sandbox.Egress.Driver.{Http1, Http2}
   alias MWTClient.Sandbox.Server.{State, Values}
 
   @table __MODULE__
@@ -238,6 +238,36 @@ defmodule MWTClient.Sandbox.Gate do
     end
 
     :ok
+  end
+
+  @doc """
+  Records the answer for a name a network grant's host list asks about or
+  blocks (the Internet's included, `Grant.host_rules`), so a connection to
+  one of its addresses is held by that entry even when it names another
+  host, or none (`Policy`'s `{:unread, _, _, _}`, a plain HTTP request's
+  names). A no-op for any other name, or an answer with no address.
+  """
+  def remember_listed(username, name, answer) do
+    with %{grants: grants} <- view(username),
+         true <- held_by_a_list?(grants, name),
+         {[_ | _] = addresses, seconds} <- MWTClient.Sandbox.Dns.addresses(answer, name) do
+      answered(username, name, addresses, seconds)
+    end
+
+    :ok
+  end
+
+  defp held_by_a_list?(grants, name) do
+    Enum.any?(grants, fn
+      %Grant{kind: :network, host_rules: [_ | _]} = grant ->
+        match?(
+          %{action: action} when action in [:ask, :block],
+          Policy.strictest_rule(grant, [name])
+        )
+
+      _other ->
+        false
+    end)
   end
 
   # Whether MWT answered `name` for `ip` and still holds it.
@@ -489,8 +519,9 @@ defmodule MWTClient.Sandbox.Gate do
   can read it (`ask_connection/4`): read, each request is asked instead;
   `:read_only` while the Internet is off and no grant opens this public
   address, when only a host a token grant lists may be reached, read by
-  MWT (`route/5`); or `{:deny, why}`. The Internet set to always ask is
-  held by the server at once, as long as you take.
+  MWT (`route/5`); or `{:deny, why}`. The Internet's are asked the same
+  way, once its first bytes came: set to ask, or for an address whose
+  names include a host its list asks about or blocks.
   """
   def destination(username, ip, port) do
     view = view(username)
@@ -511,6 +542,7 @@ defmodule MWTClient.Sandbox.Gate do
       class =
         case decision do
           {:allow, %Grant{internet: true}, _allowance, _about} -> :public
+          {:ask, %Grant{internet: true}, _about} -> :public
           {:refuse, :internet_off} -> :public
           {:refuse, _reason} -> :refused
           _granted -> :granted
@@ -550,22 +582,75 @@ defmodule MWTClient.Sandbox.Gate do
 
         {:deny, summary}
 
-      {:ask, %Grant{internet: false} = grant, _about} ->
+      # Asked once the first bytes say whether MWT reads it, the Internet's
+      # too: an address alone is nothing to decide on.
+      {:ask, grant, _about} ->
         {:ask, grant.id}
-
-      {:ask, _internet, _about} ->
-        Server.call(username, {:destination, ip, port}, :infinity)
     end
   end
 
   @doc """
-  Asks you about a network grant's connection MWT can't read
-  (`destination/3` said `{:ask, grant_id}`): what it saw goes on the card
-  (`seen`: the name it asked for, why MWT can't read it). `{:ok,
-  grant_id}` or `{:deny, why}`, as long as you take.
+  Whether a connection MWT can't read goes on: one a network grant would
+  ask you about (`destination/3` said `{:ask, grant_id}`), or one under a
+  grant whose host list asks about or blocks a name it may be for. What it
+  saw (`seen`: the name it asked for, why MWT can't read it) decides with
+  the names MWT's DNS answered for the address (`Policy`'s `{:unread, _,
+  _, _}`), and goes on the card when you are asked. `{:ok, grant_id}` or
+  `{:deny, why}`, as long as you take.
+
+  `under` is the grant it went under. One the destination check let
+  through, whose grant has no entry that asks or blocks, goes on without
+  another look.
   """
-  def ask_connection(username, ip, port, seen),
-    do: Server.call(username, {:destination, ip, port, seen}, :infinity)
+  def unread(username, under, ip, port, seen, asking?) do
+    view = view(username)
+    grant = Enum.find(view.grants, &(&1.id == under))
+
+    cond do
+      is_nil(grant) ->
+        {:ok, under}
+
+      not asking? and not Enum.any?(grant.host_rules, &(&1.action in [:ask, :block])) ->
+        {:ok, under}
+
+      true ->
+        snapshot =
+          view.grants
+          |> Policy.snapshot(Map.get(view, :failing, %{}))
+          |> Map.merge(facts(username, view.grants, ip))
+          |> Map.put(:answered, answered_for(username, ip))
+
+        case Policy.decide(snapshot, {:unread, ip, port, [seen[:name]]}, State.now()) do
+          {:allow, %Grant{} = grant, _allowance, _about} ->
+            if not grant.internet, do: Server.cast(username, {:used, grant.id})
+            {:ok, grant.id}
+
+          {:refuse, {:host_blocked, grant, entry}} ->
+            summary = blocked_words(grant, entry, seen[:name] || "#{:inet.ntoa(ip)}")
+
+            log(username, %{
+              outcome: :blocked,
+              summary: summary,
+              host: seen[:name] || "#{:inet.ntoa(ip)}",
+              port: port,
+              grant_id: grant.id
+            })
+
+            {:deny, summary}
+
+          {:refuse, _reason} ->
+            {:deny, "Refused"}
+
+          {:ask, _grant, _about} ->
+            Server.call(username, {:destination, ip, port, seen}, :infinity)
+        end
+    end
+  end
+
+  @doc "Why a use of a host a grant's list blocks was refused, in words for the log."
+  @spec blocked_words(Grant.t(), String.t(), String.t()) :: String.t()
+  def blocked_words(%Grant{} = grant, entry, host),
+    do: "#{host} is blocked on #{grant.name} (#{entry}) · refused"
 
   @doc """
   What becomes of a connection once its first bytes named a host (`sni`)
@@ -680,7 +765,10 @@ defmodule MWTClient.Sandbox.Gate do
       %{
         destination: destination,
         report_every: if(counted?, do: @report_every),
-        secrets: view.tunnel_secrets
+        secrets: view.tunnel_secrets,
+        # Real values alone: what a request MWT refused is looked through
+        # for (`{:look, _}`), its placeholders being no leak.
+        values: view.secrets
       }
     end
   end
@@ -837,8 +925,21 @@ defmodule MWTClient.Sandbox.Gate do
   `describe/1`), and whatever the VM sends after it must carry no
   placeholder and no real value.
   """
+  def authorize(username, %Request{driver: Http1, plain?: true} = request) do
+    # Over plain HTTP the name is the client's word: a host list holds it by
+    # the strictest of that and the names MWT's DNS answered for the
+    # address it goes to.
+    names = Map.get(answered_for(username, request.ip), Destinations.unmap(request.ip), [])
+    authorize(username, request |> Http1.message() |> Map.put(:names, names))
+  end
+
   def authorize(username, %Request{driver: Http1} = request),
     do: authorize(username, Http1.message(request))
+
+  # An HTTP/2 stream is an HTTP request like any: the same judge, the same
+  # carriers for a value.
+  def authorize(username, %Request{driver: Http2} = request),
+    do: authorize(username, Http2.message(request))
 
   def authorize(username, %Request{} = request) do
     view = view(username)
@@ -955,7 +1056,10 @@ defmodule MWTClient.Sandbox.Gate do
           exchange_id: Map.get(request, :exchange)
         })
 
-        {:forward, Values.replace([]), scan(view, request.host)}
+        # Over plain HTTP no placeholder goes, whatever the host: it is
+        # looked for in what follows the head as one going elsewhere.
+        host = if Map.get(request, :plain?), do: nil, else: request.host
+        {:forward, Values.replace([]), scan(view, host)}
 
       {:refuse, reason} ->
         {event, observation, answer} = Values.refusal(reason, request)

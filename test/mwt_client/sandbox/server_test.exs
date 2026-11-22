@@ -535,6 +535,43 @@ defmodule MWTClient.Sandbox.ServerTest do
     assert Sandbox.waiting_count(username) == 0
   end
 
+  test "two requests MWT holds only the start of the body of never share a card", %{
+    username: username
+  } do
+    grant = github(username, :ask)
+    start = String.duplicate("a", 64 * 1024)
+
+    # The same start, and a Content-Length saying more is to come: what
+    # follows may differ, so each gets a card of its own.
+    upload =
+      request(grant, %{
+        method: "PUT",
+        path: "/repos/o/r/contents/big",
+        headers: [
+          {"authorization", "Bearer " <> grant.placeholder},
+          {"content-length", "200000"}
+        ],
+        body: start
+      })
+
+    first = authorize_async(username, upload)
+    _card = wait_for_approval(username)
+    second = authorize_async(username, upload)
+
+    waiting =
+      Enum.find_value(1..100, fn _ ->
+        case Sandbox.snapshot(username).waiting do
+          [_, _] = waiting -> waiting
+          _fewer -> Process.sleep(10) && nil
+        end
+      end)
+
+    assert Enum.all?(waiting, &(&1.retries == 0))
+    for approval <- waiting, do: :ok = Sandbox.decide(username, approval.id, :deny)
+    assert {:deny, 403, _} = Task.await(first)
+    assert {:deny, 403, _} = Task.await(second)
+  end
+
   test "a request that differs from the waiting card only in its headers gets a card of its own",
        %{username: username} do
     grant = github(username, :ask)
@@ -850,7 +887,7 @@ defmodule MWTClient.Sandbox.ServerTest do
     assert destination.({140, 82, 112, 3}, 443) == {:ok, "internet"}
     {:ok, _} = Sandbox.turn_off(username, "internet")
     assert destination.({140, 82, 112, 3}, 443) == :read_only
-    {:ok, _} = Sandbox.turn_on(username, "internet", :until_off, :ask)
+    {:ok, _} = Sandbox.turn_on(username, "internet", :until_off, :all)
     assert destination.({140, 82, 112, 3}, 443) == {:ok, "internet"}
     assert {:deny, _} = destination.({10, 20, 4, 12}, 5432)
     assert {:deny, _} = destination.({127, 0, 0, 1}, 5433)

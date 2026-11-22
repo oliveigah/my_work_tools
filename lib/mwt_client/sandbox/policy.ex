@@ -35,18 +35,33 @@ defmodule MWTClient.Sandbox.Policy do
       name under a wildcard, then the narrowest range, an entry naming
       ports before one that doesn't; on a tie, the one that would ask.
       Then an allowance for that address and port lets it through, or it
-      asks; the Internet never asks, its every use allowed while it is on.
+      asks: asked once its first bytes say whether MWT reads it, so the
+      Internet, which never asks about an address alone, asks the same way.
+      A name MWT's DNS answered for the address that the grant's host list
+      asks about or blocks makes it ask too, its first bytes deciding.
+    * **A connection MWT can't read** (`{:unread, ip, port, names}`) goes as
+      the strictest host-list entry for any name it may be for says (the
+      one it asked for, those MWT's DNS answered): Block refuses it, Ask
+      asks unless *Allow similar* covers it, Auto lets it through; with no
+      entry, as above.
     * **A request on a connection a network grant opened**
-      (`{:network_request, request}`, its `under` the grant) is that
-      grant's to allow, as its connections are: an allowance for requests
-      like it (`MWTClient.Sandbox.Describe`), or every use, lets it
-      through, or it asks. A placeholder in it is then the token grant's,
-      by the rules below.
+      (`{:network_request, request}`, its `under` the grant, the Internet
+      included) goes as the entry of the grant's host list naming its host
+      most exactly says (`Grant.host_rules`; over plain HTTP, the strictest
+      for its host and the names beside it): Block refuses it, Ask asks
+      unless an allowance for requests like it covers it (never the
+      grant's every-use one), Auto lets it through. With no entry, it is
+      the grant's to allow, as its connections are: an allowance for
+      requests like it (`MWTClient.Sandbox.Describe`), or every use, lets
+      it through, or it asks; the Internet auto-approved passes it without
+      a word. A placeholder in it is then the token grant's, by the rules
+      below.
     * **A request** with no placeholder in its headers passes, but on a
       connection only a token grant's host may use (`under: :read_only`,
       the Internet off) only while a grant listing that host is on: with
       the Internet off, a host reached because a grant lists it is reached
-      for that grant. A
+      for that grant. Over plain HTTP (`plain?`), no placeholder goes,
+      wherever it is in the request (`{:plain_http, grant}`). A
       placeholder to a host its grant doesn't list is refused, in a header,
       the target or the start of the body; so is a request with two grants'
       placeholders in its headers. With one, every header carrying
@@ -83,6 +98,7 @@ defmodule MWTClient.Sandbox.Policy do
     Describe,
     Destinations,
     Grant,
+    HostRules,
     Made,
     MwtTools,
     Placeholder,
@@ -106,6 +122,7 @@ defmodule MWTClient.Sandbox.Policy do
 
   @type use ::
           {:connection, Destinations.ip(), :inet.port_number()}
+          | {:unread, Destinations.ip(), :inet.port_number(), [String.t()]}
           | {:request, Describe.request()}
           | {:network_request, Describe.request()}
           | {:command, map()}
@@ -125,6 +142,8 @@ defmodule MWTClient.Sandbox.Policy do
           | {:subgrants_only, Grant.t()}
           | {:check_failing, Grant.t(), String.t()}
           | {:network_down, Grant.t()}
+          | {:host_blocked, Grant.t(), String.t()}
+          | {:plain_http, Grant.t()}
           | :no_command_grant
           | {:name_a_grant, [String.t()]}
           | {:no_such_grant, [String.t()]}
@@ -165,51 +184,28 @@ defmodule MWTClient.Sandbox.Policy do
   the text.
   """
   @spec decide(snapshot(), use(), DateTime.t()) :: answer()
-  def decide(%{grants: grants} = snapshot, {:connection, ip, port}, now) do
-    class = Destinations.classify(ip, snapshot.own, Map.get(snapshot, :networks, []))
-    pattern = "#{:inet.ntoa(ip)}:#{port}"
-    internet = Enum.find(grants, &Grant.internet?/1)
+  def decide(snapshot, {:connection, ip, port}, now) do
+    with {:ok, grant, about} <- opening(snapshot, ip, port, now) do
+      # A host entry that asks or refuses, for a name MWT's DNS answered for
+      # the address, holds the connection until its first bytes say which
+      # host it is for (`{:unread, _, _, _}`, or each request it carries):
+      # an address shared by many names opens for the others.
+      if strictest(grant, answered_names(snapshot, ip)) in [:ask, :block],
+        do: {:ask, grant, about},
+        else: allow_or_ask(grant, now, about)
+    end
+  end
 
-    answered = Map.get(snapshot, :answered)
+  def decide(snapshot, {:unread, ip, port, names}, now) do
+    with {:ok, grant, about} <- opening(snapshot, ip, port, now) do
+      names = Enum.uniq(names ++ answered_names(snapshot, ip))
 
-    # The network grants on that open it; one with a way out of its own
-    # (`Grant.anchor`) only while this machine routes the address through
-    # it.
-    candidates =
-      if (class == :public and internet) && live?(snapshot, internet, now) do
-        [{internet, %{source: "Every public address"}}]
-      else
-        for %Grant{kind: :network, internet: false} = grant <- grants,
-            live?(snapshot, grant, now),
-            specs =
-              Enum.filter(specs(grant), &opens?(&1, class, ip, port, snapshot.resolve, answered)),
-            specs != [],
-            do: {grant, Enum.max_by(specs, &exactness(&1, ip))}
+      case strictest_rule(grant, names) do
+        %{action: :block, host: entry} -> {:refuse, {:host_blocked, grant, entry}}
+        %{action: :ask} = rule -> host_ask(grant, now, about, rule)
+        %{action: :auto} -> host_auto(grant, now, about)
+        nil -> allow_or_ask(grant, now, about)
       end
-      |> Enum.sort_by(
-        fn {grant, spec} ->
-          {exactness(spec, ip), asks?(grant, pattern, now)}
-        end,
-        :desc
-      )
-
-    opening = Enum.find(candidates, fn {grant, _spec} -> way_out?(grant, snapshot) end)
-
-    case {opening, class} do
-      {nil, _class} when candidates != [] ->
-        {:refuse, {:network_down, candidates |> hd() |> elem(0)}}
-
-      {nil, :public} ->
-        {:refuse, :internet_off}
-
-      {nil, :refused} ->
-        {:refuse, :reserved}
-
-      {nil, :private} ->
-        {:refuse, :private}
-
-      {{grant, spec}, _class} ->
-        allow_or_ask(grant, now, %{pattern: pattern, listed_as: spec.source})
     end
   end
 
@@ -268,7 +264,20 @@ defmodule MWTClient.Sandbox.Policy do
         & &1.id
       )
 
+    # Over plain HTTP nothing proves which host gets the request, so no
+    # placeholder goes, wherever it is in it.
+    plain =
+      Map.get(request, :plain?, false) &&
+        (Enum.find(owners, & &1) ||
+           Enum.find(tokens, fn grant ->
+             String.contains?(request.path, grant.placeholder) or
+               String.contains?(body, grant.placeholder)
+           end))
+
     cond do
+      plain ->
+        {:refuse, {:plain_http, plain}}
+
       elsewhere ->
         {:refuse, {:wrong_host, elsewhere}}
 
@@ -338,15 +347,15 @@ defmodule MWTClient.Sandbox.Policy do
 
   def decide(%{grants: grants} = snapshot, {:network_request, request}, now) do
     case Enum.find(grants, &(&1.id == Map.get(request, :under) and &1.kind == :network)) do
-      %Grant{internet: false} = grant ->
+      %Grant{} = grant ->
         cond do
           why = failing(snapshot, grant) -> {:refuse, {:check_failing, grant, why}}
           not Grant.on?(grant, now) -> {:refuse, {:grant_off, grant}}
-          true -> allow_or_ask(grant, now, about(request))
+          true -> request_use(grant, now, request)
         end
 
-      # The Internet's, or a token grant's host with the Internet off.
-      _not_a_network_grant ->
+      # A token grant's host with the Internet off, or none.
+      nil ->
         :pass
     end
   end
@@ -550,8 +559,7 @@ defmodule MWTClient.Sandbox.Policy do
   # allowance of its covers it.
   defp asks?(grant, pattern, now) do
     Grant.ceiling(grant) == :ask or
-      (not (grant.internet and grant.state == :on) and
-         not Enum.any?(grant.allowances, &Allowance.covers?(&1, pattern, now)))
+      not Enum.any?(grant.allowances, &Allowance.covers?(&1, pattern, now))
   end
 
   # A grant that always asks asks, whatever allowance it was left with.
@@ -573,15 +581,146 @@ defmodule MWTClient.Sandbox.Policy do
       allowance ->
         {:allow, grant, allowance, about}
 
-      # The Internet on asks nothing, its allowance or not (a state saved
-      # by hand, a mode set before it was its own).
-      grant.internet and grant.state == :on ->
-        {:allow, grant, %Allowance{id: "internet", pattern: :all, until: nil}, about}
-
       true ->
         {:ask, grant, about}
     end
   end
+
+  # A use a host entry asks about: only an allowance you gave for uses
+  # like it (*Allow similar*) lets it through, never the grant's every-use
+  # one (*Auto-approve*), or the entry would ask nothing. Its card names
+  # the entry (`about.host_entry`).
+  defp host_ask(grant, now, about, rule) do
+    about = Map.put(about, :host_entry, rule.host)
+
+    allowance =
+      Grant.ceiling(grant) != :ask &&
+        Enum.find(
+          grant.allowances,
+          &(&1.pattern != :all and Allowance.covers?(&1, about.pattern, now))
+        )
+
+    if allowance, do: {:allow, grant, allowance, about}, else: {:ask, grant, about}
+  end
+
+  # A use a host entry lets through, unless the grant always asks.
+  defp host_auto(grant, _now, about) do
+    if Grant.ceiling(grant) == :ask,
+      do: {:ask, grant, about},
+      else: {:allow, grant, %Allowance{id: "host", pattern: :all, until: nil}, about}
+  end
+
+  # A request on a connection a network grant opened: its host's entry
+  # first, then the grant's own approval mode. The Internet lets through
+  # what it doesn't ask about without a word to the server, as it always
+  # has: a request there costs nothing more than its log line.
+  defp request_use(grant, now, request) do
+    names = [request.host | Map.get(request, :names, [])]
+
+    case strictest_rule(grant, names) do
+      %{action: :block, host: entry} ->
+        {:refuse, {:host_blocked, grant, entry}}
+
+      %{action: :ask} = rule ->
+        host_ask(grant, now, about(request), rule)
+
+      %{action: :auto} ->
+        if grant.internet, do: :pass, else: host_auto(grant, now, about(request))
+
+      nil ->
+        if grant.internet and Grant.auto_approved?(grant, now),
+          do: :pass,
+          else: allow_or_ask(grant, now, about(request))
+    end
+  end
+
+  # The network grant on that opens `ip` and `port`, the one naming it
+  # most exactly first, with what its card says (`about`), or why none
+  # does.
+  defp opening(%{grants: grants} = snapshot, ip, port, now) do
+    class = Destinations.classify(ip, snapshot.own, Map.get(snapshot, :networks, []))
+    pattern = "#{:inet.ntoa(ip)}:#{port}"
+    internet = Enum.find(grants, &Grant.internet?/1)
+    answered = Map.get(snapshot, :answered)
+
+    # The network grants on that open it; one with a way out of its own
+    # (`Grant.anchor`) only while this machine routes the address through
+    # it.
+    candidates =
+      if (class == :public and internet) && live?(snapshot, internet, now) do
+        [{internet, %{source: "Every public address"}}]
+      else
+        for %Grant{kind: :network, internet: false} = grant <- grants,
+            live?(snapshot, grant, now),
+            specs =
+              Enum.filter(specs(grant), &opens?(&1, class, ip, port, snapshot.resolve, answered)),
+            specs != [],
+            do: {grant, Enum.max_by(specs, &exactness(&1, ip))}
+      end
+      |> Enum.sort_by(
+        fn {grant, spec} ->
+          {exactness(spec, ip), asks?(grant, pattern, now)}
+        end,
+        :desc
+      )
+
+    opening = Enum.find(candidates, fn {grant, _spec} -> way_out?(grant, snapshot) end)
+
+    case {opening, class} do
+      {nil, _class} when candidates != [] ->
+        {:refuse, {:network_down, candidates |> hd() |> elem(0)}}
+
+      {nil, :public} ->
+        {:refuse, :internet_off}
+
+      {nil, :refused} ->
+        {:refuse, :reserved}
+
+      {nil, :private} ->
+        {:refuse, :private}
+
+      {{grant, spec}, _class} ->
+        {:ok, grant, %{pattern: pattern, listed_as: spec.source}}
+    end
+  end
+
+  # The names MWT's DNS answered for `ip`, as far as the snapshot knows.
+  defp answered_names(snapshot, ip) do
+    case Map.get(snapshot, :answered) do
+      %{} = answered -> Map.get(answered, Destinations.unmap(ip), [])
+      nil -> []
+    end
+  end
+
+  @doc """
+  The entry of `grant`'s host list that speaks for a use that may be for
+  any of `names` (the name a client asked for, the names MWT's DNS answered
+  for the address): the strictest of those naming each one most exactly,
+  `:block` before `:ask` before `:auto`, or nil when none covers any. A use
+  is held by the strictest name it could be for, so no name chosen for the
+  purpose gets it past an entry.
+  """
+  @spec strictest_rule(Grant.t(), [String.t() | nil]) :: Grant.host_rule() | nil
+  def strictest_rule(%Grant{host_rules: []}, _names), do: nil
+
+  def strictest_rule(%Grant{host_rules: rules}, names) do
+    names
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&HostRules.rule(rules, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(&strictness(&1.action), fn -> nil end)
+  end
+
+  defp strictest(grant, names) do
+    case strictest_rule(grant, names) do
+      %{action: action} -> action
+      nil -> nil
+    end
+  end
+
+  defp strictness(:block), do: 3
+  defp strictness(:ask), do: 2
+  defp strictness(:auto), do: 1
 
   # Why a gating check holds the grant off, or nil (`MWTClient.Sandbox.Check`).
   defp failing(snapshot, %Grant{id: id}), do: snapshot |> Map.get(:failing, %{}) |> Map.get(id)

@@ -36,7 +36,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
   alias MWTClient.Sandbox.{Describe, Exchange, Placeholder, Secrets}
   alias MWTClient.Sandbox.Egress.{Driver, Request}
-  alias MWTClient.Sandbox.Egress.Driver.Http1.{Answer, Framing, Response}
+  alias MWTClient.Sandbox.Egress.Driver.Http1.{Answer, Framing, Response, WebSocket}
 
   @head_limit 64 * 1024
   @body_peek 64 * 1024
@@ -60,7 +60,10 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # how its `answer` is read, whether its link is kept (`keep?`), went on
   # the kept one (`reused?`), and its bytes, to send again (`resend`) when
   # the host turns out to have closed that one (`retry?` when that's safe
-  # after it took them); `fresh?` until anything moved since it went.
+  # after it took them); `fresh?` until anything moved since it went; `ws`,
+  # a WebSocket whose messages MWT reads: its answer's head until it
+  # switched, then each side's frames (`WebSocket`); `read`, the request's
+  # bytes until it is judged, looked through should MWT refuse it.
   defstruct [
     :ctx,
     :by,
@@ -70,8 +73,10 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     :record,
     :answer,
     :resend,
+    :ws,
     phase: :head,
     buffer: "",
+    read: "",
     body: "",
     pending: "",
     linked?: false,
@@ -86,13 +91,29 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   def alpn, do: ["http/1.1"]
 
   @doc """
-  A request's first bytes: a method's name and a space, or bytes too few to
-  tell yet. On TCP, inside TLS MWT ended only: plain HTTP isn't read yet,
-  since nothing proves which host is there.
+  A request's first bytes, on TCP. Inside TLS MWT ended, a method's name
+  and a space, or bytes too few to tell yet. As plain bytes, from the
+  client, its whole request line (`GET /path HTTP/1.1`), so a plain
+  protocol that happens to begin with a word in capitals (IRC's `NICK
+  name`) isn't taken for HTTP. Read as plain bytes, nothing proves which
+  host is there: the request names its host itself (`Host`), and no real
+  value goes in it (`Request.plain?`).
   """
   @impl true
+  # HTTP/2's preface begins as a request would (`PRI * HTTP/2.0`): it is
+  # `Driver.Http2`'s.
+  def detect("PRI " <> _rest, %{transport: :tcp, tls?: true}), do: :no
+
   def detect(data, %{transport: :tcp, tls?: true}),
     do: if(data =~ ~r/\A[A-Z]{1,20}( |\z)/, do: :yes, else: :no)
+
+  def detect(data, %{transport: :tcp, tls?: false, first: :vm}) do
+    cond do
+      data =~ ~r/\A[A-Z]{1,20} [\x21-\x7e]+ HTTP\/1\.[01]\r\n/ -> :yes
+      byte_size(data) < 8192 and data =~ ~r/\A[A-Z]{1,20}( [^\r\n]*)?\z/ -> :more
+      true -> :no
+    end
+  end
 
   def detect(_data, _ctx), do: :no
 
@@ -106,7 +127,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   """
   @spec message(Request.t()) :: map()
   def message(%Request{data: data} = request) do
-    %{
+    message = %{
       host: request.name,
       port: request.port,
       method: request.operation,
@@ -116,6 +137,12 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
       under: request.under,
       exchange: request.id
     }
+
+    # Over plain HTTP, the address it goes to beside the name it claims:
+    # its card says both, and no value goes in it.
+    if request.plain?,
+      do: Map.merge(message, %{plain?: true, ip: "#{:inet.ntoa(request.ip)}"}),
+      else: message
   end
 
   @impl true
@@ -138,11 +165,32 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
   @impl true
   def handle_data(:vm, data, %{phase: :head} = http), do: head(http, http.buffer <> data)
-  def handle_data(:vm, data, %{phase: :body} = http), do: body(http, data)
+
+  def handle_data(:vm, data, %{phase: :body} = http),
+    do: body(%{http | read: http.read <> data}, data)
 
   # Asked for before the request was whole: the next one's start, kept.
   def handle_data(:vm, data, %{phase: :judging} = http),
     do: {[], %{http | pending: http.pending <> data}}
+
+  # A WebSocket's frames from the VM: written again, their text looked
+  # through as the request's own stream (`WebSocket`). Bytes that stop
+  # being frames go on as bytes from there.
+  def handle_data(:vm, data, %{phase: :answer, ws: %{vm_raw?: false} = ws} = http) do
+    reads = [{:read, :vm, :infinity}, {:read, :host, @idle}]
+
+    case WebSocket.feed(ws.vm, data) do
+      {:ok, parts, reader} ->
+        {frames_up(parts, http.request.id) ++ reads,
+         %{http | ws: %{ws | vm: reader}, fresh?: false}}
+
+      {:broken, parts, rest, reader} ->
+        rest = if rest != "", do: [{:send, :host, rest}], else: []
+
+        {frames_up(parts, http.request.id) ++ rest ++ reads,
+         %{http | ws: %{ws | vm: reader, vm_raw?: true}, fresh?: false}}
+    end
+  end
 
   # Past the body's end, a kept request's bytes are the next request's,
   # kept for it; anyone else's go nowhere. A VM sending more than a head's
@@ -170,6 +218,38 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   end
 
   ## The host's bytes
+
+  # A WebSocket's answer: its head, to the VM as it is; switched (`101`),
+  # its frames are read from then on; any other answer goes on as one MWT
+  # doesn't read the end of.
+  def handle_data(:host, data, %{phase: :answer, ws: %{switched?: false} = ws} = http) do
+    buffer = ws.head <> data
+
+    case :binary.split(buffer, "\r\n\r\n") do
+      [head, rest] ->
+        {vm, http} = to_vm(%{http | fresh?: false}, [head, "\r\n\r\n"])
+
+        case Response.read_head(head) do
+          {:ok, 101, _headers} ->
+            {more, http} = websocket_down(%{http | ws: %{ws | switched?: true, head: ""}}, rest)
+            {vm ++ more, http}
+
+          _other ->
+            {more, http} = to_vm(%{http | ws: nil}, rest)
+            {vm ++ more ++ [{:read, :host, @idle}], http}
+        end
+
+      [_partial] when byte_size(buffer) > @head_limit ->
+        {vm, http} = to_vm(%{http | ws: nil, fresh?: false}, buffer)
+        {vm ++ [{:read, :host, @idle}], http}
+
+      [_partial] ->
+        {[{:read, :host, @idle}], %{http | ws: %{ws | head: buffer}}}
+    end
+  end
+
+  def handle_data(:host, data, %{phase: :answer, ws: %{switched?: true}} = http),
+    do: websocket_down(%{http | fresh?: false}, data)
 
   def handle_data(:host, data, %{phase: :answer, answer: nil} = http) do
     {vm, http} = to_vm(%{http | fresh?: false}, data)
@@ -318,6 +398,8 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # alone never ends for this reader: said at once, instead of waiting for
   # more.
   defp head(http, buffer) do
+    http = %{http | read: buffer}
+
     case :binary.split(buffer, "\r\n\r\n") do
       [head, _rest] when byte_size(head) > @head_limit ->
         too_large(http)
@@ -336,12 +418,18 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   end
 
   defp headed(http, head, rest) do
-    %{name: name, port: port} = http.ctx
+    %{port: port, tls?: tls?} = http.ctx
 
     with {:ok, method, target, version, headers} <- parse_request(head),
+         {:ok, name} <- request_name(headers, http.ctx),
          :ok <- acceptable(method, target, headers, name, port) do
-      # One Host, and it is the name the connection was encrypted for.
-      headers = List.keyreplace(headers, "host", 0, {"host", authority(name, port)})
+      # One Host, and it is the name the connection was encrypted for. As
+      # plain bytes, it is the client's own word, kept as it wrote it.
+      headers =
+        if tls?,
+          do: List.keyreplace(headers, "host", 0, {"host", authority(name, port)}),
+          else: headers
+
       {continue, headers} = continue_if_expected(headers)
       by = within(Keyword.get(http.ctx.options, :body_within, @body_within))
 
@@ -350,6 +438,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
         target: target,
         version: version,
         headers: headers,
+        name: name,
         upgrade?: List.keymember?(headers, "upgrade", 0)
       }
 
@@ -363,7 +452,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
           http,
           421,
           Jason.encode!(%{
-            error: "Host #{host} does not match #{authority(name, port)}.",
+            error: "Host #{host} does not match #{authority(http.ctx.name, port)}.",
             by: "MWT agent sandbox"
           })
         )
@@ -373,6 +462,40 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
       {:error, :bad_request} ->
         unreadable_request(http)
+    end
+  end
+
+  # The host a request is for: inside TLS, the name the connection was
+  # encrypted for; as plain bytes, the one its Host names, a host name or
+  # an address, on the port it connected to. Several Hosts, or none, are
+  # `acceptable/5`'s to refuse.
+  defp request_name(_headers, %{tls?: true, name: name}), do: {:ok, name}
+
+  defp request_name(headers, %{port: port}) do
+    case for {"host", value} <- headers, do: String.downcase(value) do
+      [host] ->
+        {name, given} =
+          case Regex.run(~r/\A(.+?)(?::(\d{1,5}))?\z/, host) do
+            [_, name, port] -> {name, port}
+            [_, name] -> {name, nil}
+            nil -> {host, nil}
+          end
+
+        cond do
+          given && given != "#{port}" ->
+            {:refuse, 400, "mwt_bad_request",
+             "The request's Host names port #{given}, but it connected to #{port}."}
+
+          name =~ ~r/\A[a-z0-9_]([a-z0-9_.-]{0,251}[a-z0-9_])?\z/ ->
+            {:ok, name}
+
+          true ->
+            {:refuse, 400, "mwt_bad_request",
+             "The request's Host must be a host name or an IPv4 address."}
+        end
+
+      _none_or_several ->
+        {:ok, nil}
     end
   end
 
@@ -417,7 +540,9 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     request = %Request{
       id: Exchange.new_id(),
       driver: __MODULE__,
-      name: http.ctx.name,
+      name: http.head.name,
+      ip: http.ctx.ip,
+      plain?: not http.ctx.tls?,
       port: http.ctx.port,
       under: http.ctx.under,
       operation: method,
@@ -441,7 +566,8 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
          record: record,
          framing: framing,
          pending: beyond,
-         body: ""
+         body: "",
+         read: ""
      }}
   end
 
@@ -457,6 +583,15 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
     headers = replace(data.headers, replace.request)
     echo = echo(replace, headers)
+    # A WebSocket MWT reads the messages of, one with no value in it: its
+    # extensions offer goes, so no message comes compressed.
+    websocket? = echo == nil and websocket?(headers)
+
+    headers =
+      if websocket?,
+        do: Enum.reject(headers, fn {name, _} -> name == "sec-websocket-extensions" end),
+        else: headers
+
     keep? = replace.request == [] and keeps?(data.version, headers)
     head = head(method, path, data.version, headers, echo != nil, keep?)
     reuse? = keep? and http.linked?
@@ -480,7 +615,18 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
         resend: if(keep?, do: [head, data.body]),
         retry?: keep? and retryable?(method, http.framing),
         retrying?: false,
-        fresh?: true
+        fresh?: true,
+        ws:
+          if(websocket?,
+            do: %{
+              switched?: false,
+              head: "",
+              vm: WebSocket.new(:vm, http.ctx.limit),
+              host: WebSocket.new(:host, http.ctx.limit),
+              vm_raw?: false,
+              host_raw?: false
+            }
+          )
     }
 
     {connect ++
@@ -488,13 +634,21 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
        body ++ [{:read, :host, waiting(answer)}, {:read, :vm, :infinity}], http}
   end
 
-  # The forms the values put in go by, each to come back as its
-  # placeholder: those the core named, and the one MWT wrote into a
-  # carrier when that isn't the value as it is (a Basic credential's
-  # base64). Nil with nothing put in.
-  defp echo(%{answer: []}, _headers), do: nil
+  @doc """
+  The forms the values a verdict put in go by, each to come back to the VM
+  as its placeholder, as `{secrets, placeholders}` (`placeholders` by
+  label): those the core named (`replace.answer`), and the one MWT wrote
+  into a carrier of `headers` when that isn't the value as it is (a Basic
+  credential's base64). Nil with nothing put in. `Driver.Http2` reads its
+  answers the same way.
+  """
+  @spec echo(%{request: [Driver.replacement()], answer: [Driver.back()]}, [
+          {String.t(), String.t()}
+        ]) ::
+          {Secrets.t(), %{term() => String.t()}} | nil
+  def echo(%{answer: []}, _headers), do: nil
 
-  defp echo(replace, headers) do
+  def echo(replace, headers) do
     written =
       for swap <- replace.request,
           {name, header} <- headers,
@@ -514,6 +668,37 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
       nil -> nil
       secrets -> {secrets, Map.new(replace.answer, &{&1.label, &1.to})}
     end
+  end
+
+  defp websocket?(headers) do
+    Enum.any?(headers, fn {name, value} ->
+      name == "upgrade" and String.downcase(value) =~ "websocket"
+    end)
+  end
+
+  # A WebSocket's VM frames as actions: MWT's headers, the VM's text as the
+  # request's own stream.
+  defp frames_up(parts, stream) do
+    Enum.map(parts, fn
+      {:frame, header} -> {:frame, :host, header}
+      {:payload, text} -> {:send, :host, text, stream}
+    end)
+  end
+
+  # A WebSocket's bytes from the host: to the VM as they came, their
+  # messages read for the log until they stop being frames.
+  defp websocket_down(%{ws: ws} = http, data) do
+    ws =
+      if ws.host_raw?,
+        do: ws,
+        else:
+          (case WebSocket.feed(ws.host, data) do
+             {:ok, _parts, reader} -> %{ws | host: reader}
+             {:broken, _parts, _rest, reader} -> %{ws | host: reader, host_raw?: true}
+           end)
+
+    vm = if data != "", do: [{:send, :vm, data}], else: []
+    {vm ++ [{:read, :host, @idle}], %{http | ws: ws}}
   end
 
   # A request that may share a link with the next: from a client that
@@ -669,7 +854,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
         Jason.encode!(%{
           code: "mwt_unreadable_response",
           error:
-            "MWT could not read #{authority(http.ctx.name, http.ctx.port)}'s answer, " <>
+            "MWT could not read #{authority(name(http), http.ctx.port)}'s answer, " <>
               "so it did not pass it on: #{message}",
           by: "MWT agent sandbox"
         })
@@ -738,7 +923,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
       502,
       Jason.encode!(%{
         error:
-          "Could not reach #{authority(http.ctx.name, http.ctx.port)}: " <>
+          "Could not reach #{authority(name(http), http.ctx.port)}: " <>
             Driver.unreachable(reason),
         by: "MWT agent sandbox"
       })
@@ -751,7 +936,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
       502,
       Jason.encode!(%{
         error:
-          "#{authority(http.ctx.name, http.ctx.port)} closed the connection without answering: " <>
+          "#{authority(name(http), http.ctx.port)} closed the connection without answering: " <>
             Driver.unreachable(reason),
         by: "MWT agent sandbox"
       })
@@ -784,8 +969,12 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     do:
       respond(http, status, Jason.encode!(%{code: code, error: message, by: "MWT agent sandbox"}))
 
-  # Before there is a request to log.
-  defp respond(http, status, json), do: {[{:send, :vm, answer(status, json)}, :close], http}
+  # Before there is a request to log. What the VM sent of it is looked
+  # through first, as it would have been going up.
+  defp respond(http, status, json) do
+    look = if http.read != "", do: [{:look, http.read}], else: []
+    {look ++ [{:send, :vm, answer(status, json)}, :close], %{http | read: ""}}
+  end
 
   defp answer(status, json) do
     [
@@ -800,10 +989,15 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     %{
       outcome: :blocked,
       summary: "An answer MWT could not read, not passed on",
-      host: http.ctx.name,
+      host: name(http),
       port: http.ctx.port
     }
   end
+
+  # The host of the request in flight, as it named it; the connection's
+  # name between requests.
+  defp name(%{request: %Request{name: name}}), do: name
+  defp name(http), do: http.ctx.name
 
   # The request in flight ends, logged with what came back, and so does
   # the connection.
@@ -815,6 +1009,16 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   end
 
   ## The log
+
+  # A WebSocket's: its handshake, and each side's messages as its body.
+  defp exchange(%{ws: %{switched?: true} = ws} = http, response) do
+    %{request: request, response: response} = exchange(%{http | ws: nil}, response)
+
+    %{
+      request: %{request | body: WebSocket.log(ws.vm)},
+      response: response && %{response | body: WebSocket.log(ws.host)}
+    }
+  end
 
   defp exchange(http, response) do
     vm = http.record.sent_up

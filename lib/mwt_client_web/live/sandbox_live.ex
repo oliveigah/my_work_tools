@@ -292,7 +292,7 @@ defmodule MWTClientWeb.SandboxLive do
                     checks={@grant_checks}
                     check_form={@check_form}
                     duration={duration(@durations, @grant.id)}
-                    mode={Map.get(@modes, @grant.id, "ask")}
+                    mode={Map.get(@modes, @grant.id, Grants.default_mode(@grant))}
                     now={@now}
                     grants={@grants}
                   />
@@ -892,7 +892,12 @@ defmodule MWTClientWeb.SandboxLive do
   def handle_event("turn_on", %{"id" => id}, socket) do
     minutes = socket.assigns.durations |> duration(id) |> to_minutes()
 
-    uses = if Map.get(socket.assigns.modes, id) == "all", do: :all, else: :ask
+    uses =
+      case Map.get(socket.assigns.modes, id) do
+        "all" -> :all
+        "ask" -> :ask
+        nil -> socket.assigns.grants |> Enum.find(&(&1.id == id)) |> default_uses()
+      end
 
     socket =
       case Sandbox.turn_on(socket.assigns.username, id, minutes, uses) do
@@ -1444,6 +1449,16 @@ defmodule MWTClientWeb.SandboxLive do
   # busiest destination or a line that failed for being read; one taken
   # off; what the rest do. Only you, from here: nothing the VM does
   # changes it.
+  # A network grant's host list, from its page.
+  def handle_event("host_rule_add", %{"grant" => id, "host_rule" => rule}, socket),
+    do: host_rule_set(socket, id, {:put, rule["host"] || "", host_action(rule["action"])})
+
+  def handle_event("host_rule_put", %{"id" => id, "host" => host, "action" => action}, socket),
+    do: host_rule_set(socket, id, {:put, host, host_action(action)})
+
+  def handle_event("host_rule_remove", %{"id" => id, "host" => host}, socket),
+    do: host_rule_set(socket, id, {:remove, host})
+
   def handle_event("reading_put", %{"host" => host, "read" => read}, socket),
     do: reading_set(socket, {:put, host, read == "true"}, reading_words(host, read == "true"))
 
@@ -2682,6 +2697,20 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
+  defp host_rule_set(socket, id, change) do
+    case Sandbox.host_rule_set(socket.assigns.username, id, change) do
+      {:ok, _grant} -> {:noreply, refresh(socket)}
+      {:error, message} -> {:noreply, put_notice(socket, :error, message)}
+    end
+  end
+
+  # The VM never reaches this; a value that isn't one of the three is no
+  # change at all.
+  defp host_action("ask"), do: :ask
+  defp host_action("auto"), do: :auto
+  defp host_action("block"), do: :block
+  defp host_action(_other), do: nil
+
   defp reading_words(host, true), do: "MWT reads #{host}"
   defp reading_words(host, false), do: "MWT passes #{host} through unread"
 
@@ -3004,4 +3033,7 @@ defmodule MWTClientWeb.SandboxLive do
         )
     end
   end
+
+  defp default_uses(nil), do: :ask
+  defp default_uses(grant), do: Grant.default_uses(grant)
 end

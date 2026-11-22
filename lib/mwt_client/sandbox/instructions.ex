@@ -300,10 +300,11 @@ defmodule MWTClient.Sandbox.Instructions do
       end
   end
 
-  def usage(%Grant{kind: :network, internet: true}),
+  def usage(%Grant{kind: :network, internet: true} = grant),
     do:
       "use: any public address, directly. Off, only what other grants list is reached, and DNS " <>
-        "answers only their names: a connection refused or a name not found may mean this is off."
+        "answers only their names: a connection refused or a name not found may mean this is off." <>
+        host_rules_words(grant)
 
   def usage(%Grant{kind: :network} = grant) do
     names? =
@@ -318,7 +319,7 @@ defmodule MWTClient.Sandbox.Instructions do
         do:
           " It goes only through the user's #{grant.anchor}: while that is down, it opens nothing.",
         else: ""
-      )
+      ) <> host_rules_words(grant)
   end
 
   def usage(%Grant{kind: :command, script: nil} = grant),
@@ -339,6 +340,26 @@ defmodule MWTClient.Sandbox.Instructions do
       params
   end
 
+  # The hosts of a network grant's list, so an agent knows a request there
+  # may wait for the user, or never go, before it sends one.
+  defp host_rules_words(%Grant{host_rules: []}), do: ""
+
+  defp host_rules_words(%Grant{host_rules: rules}) do
+    hosts = Enum.group_by(rules, & &1.action, & &1.host)
+
+    parts =
+      [
+        hosts[:ask] &&
+          "each request to #{Enum.join(hosts.ask, ", ")} waits for the user's approval (it can hang for minutes)",
+        hosts[:block] &&
+          "#{Enum.join(hosts.block, ", ")}: blocked, every request there refused (mwt_host_blocked); asking won't change it",
+        hosts[:auto] && "#{Enum.join(hosts.auto, ", ")}: goes through without asking"
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    " Hosts of its own (a name covers the names under it): " <> Enum.join(parts, "; ") <> "."
+  end
+
   defp approval(%Grant{kind: :token, reach: :subgrants}),
     do: "uses: each subgrant has a switch of its own"
 
@@ -356,9 +377,20 @@ defmodule MWTClient.Sandbox.Instructions do
         _request -> "request"
       end
 
+    # MWT asks about each request it reads on a network grant, and about
+    # a connection it can't read as a whole.
+    what =
+      if grant.kind == :network,
+        do: "request MWT reads, or connection it can't read,",
+        else: what
+
     cond do
       not Grant.on?(grant) ->
         "uses: each #{what} waits for the user's approval once on"
+
+      Enum.any?(grant.allowances, &(&1.pattern == :all)) and grant.kind == :network ->
+        "uses: everything through it goes without asking for now" <>
+          if(grant.host_rules != [], do: ", but as its hosts of its own above say", else: "")
 
       Enum.any?(grant.allowances, &(&1.pattern == :all)) ->
         "uses: every #{what} goes through for now"

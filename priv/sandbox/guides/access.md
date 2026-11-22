@@ -117,6 +117,11 @@ MWT, not from the service. Its `code`:
   user. Wait for them to decide, then try again; don't retry in a loop.
 - `mwt_placeholder_blocked`: the placeholder was sent to a host its grant
   doesn't cover.
+- `mwt_host_blocked`: the user blocked this host on a grant's host list.
+  Every request there is refused; asking for a grant won't change it.
+  Don't work around it; tell the user if you need it.
+- `mwt_plain_http`: the request is plain HTTP and carries a placeholder.
+  MWT puts no real value in plain HTTP: use `https://`.
 - `mwt_no_value`, `mwt_mint_failed`: the grant can't give a value right
   now. Tell the user.
 - `mwt_credential_endpoint`: the request would have sent a grant's value

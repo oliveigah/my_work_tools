@@ -374,6 +374,17 @@ defmodule MWTClient.Sandbox do
   def reading_set(username, change), do: Server.call(username, {:reading_set, change})
 
   @doc """
+  Changes a network grant's host list (`MWTClient.Sandbox.Grant`'s
+  `host_rules`, the Internet's included): `{:put, host, :ask | :auto |
+  :block}` or `{:remove, host}`. `{:ok, grant}`, or `{:error, message}` for
+  a host that can't be an entry, or a grant that isn't a network grant.
+  """
+  @spec host_rule_set(username(), String.t(), tuple()) ::
+          {:ok, MWTClient.Sandbox.Grant.t()} | {:error, String.t()}
+  def host_rule_set(username, grant_id, change),
+    do: Server.call(username, {:host_rule_set, grant_id, change})
+
+  @doc """
   The credential endpoints a grant's value is refused at
   (`MWTClient.Sandbox.Firewall.minting/3`), as the network path sees the
   firewall now; none while it, or its rule, is off. Read without asking

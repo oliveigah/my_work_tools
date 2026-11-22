@@ -502,11 +502,13 @@ defmodule MWTClient.Sandbox.EgressTest do
     {server, port} = local_server(username, :all)
     listening_server(server)
 
+    # Not HTTP (plain HTTP is read, request by request): bytes passed on
+    # as they come.
     {first, second} = String.split_at(grant.placeholder, 20)
     {socket, "HTTP/1.1 200" <> _} = connect(proxy, "127.0.0.1:#{port}")
-    :ok = :gen_tcp.send(socket, "GET / HTTP/1.1\r\nAuthorization: token " <> first)
-    assert_receive {:server_got, "GET / HTTP/1.1" <> _}, 5_000
-    :ok = :gen_tcp.send(socket, second <> "\r\n\r\n")
+    :ok = :gen_tcp.send(socket, "AUTH token " <> first)
+    assert_receive {:server_got, "AUTH token " <> _}, 5_000
+    :ok = :gen_tcp.send(socket, second <> "\r\n")
 
     assert {:error, :closed} = :gen_tcp.recv(socket, 0, 5_000)
     assert_receive {:server_closed, _reason}, 5_000

@@ -280,7 +280,7 @@ defmodule MWTClient.Sandbox.EgressReadTest do
              "refused MWT's certificate"
 
     assert Tcp.handshake_failure({:tls_alert, {:no_application_protocol, ~c"x"}}) =~
-             "HTTP/2 only"
+             "no protocol MWT reads"
 
     assert Tcp.handshake_failure(:closed) =~ "closed the connection"
     assert Tcp.handshake_failure({:tls_alert, {:decode_error, ~c"x"}}) =~ "decode error"

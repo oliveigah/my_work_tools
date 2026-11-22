@@ -12,6 +12,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
 
   alias MWTClient.Sandbox.{
     Approval,
+    Describe,
     Event,
     Grant,
     HostCommand,
@@ -107,13 +108,23 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   end
 
   @doc """
-  A digest of everything MWT read of a request, which is everything its
-  card shows: method, host, full target, every header in order, and the
-  body read so far. Two requests share it only when they are the same
-  request, so a retry joins and nothing else does: not one with the
-  placeholder in another header, nor one with a header more.
+  What a waiting request's card is joined by: a digest of everything MWT
+  read of it, which is everything its card shows (method, host, full
+  target, every header in order, and its body). Two requests share it only
+  when they are the same request, so a retry joins and nothing else does:
+  not one with the placeholder in another header, nor one with a header
+  more.
+
+  A request whose body MWT holds only the start of (it reads at most 64
+  KiB before deciding) joins nothing: two that differ only past that
+  start would share one card, and one decision would let through a body
+  nobody saw. Its card is its own, `id`.
   """
-  def request_digest(request), do: Approval.digest(Map.delete(request, :exchange))
+  def request_join(request, id) do
+    if Describe.whole_body?(request),
+      do: Approval.digest(Map.delete(request, :exchange)),
+      else: {:only_the_start, id}
+  end
 
   @doc """
   Holds one more caller on an approval, to be answered when it is decided.

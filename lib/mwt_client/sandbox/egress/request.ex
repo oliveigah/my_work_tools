@@ -11,8 +11,13 @@ defmodule MWTClient.Sandbox.Egress.Request do
     * `driver` - the driver that read it (`MWTClient.Sandbox.Egress.Driver`),
       the only one that reads `data`, and the one whose `describe/1` makes
       its card;
-    * `name`, `port` - where it goes: the host the client named (TLS's SNI),
-      or its address when it named none (`Driver.host/1`), and the port;
+    * `name`, `port` - where it goes: the host the client named (TLS's SNI;
+      over plain HTTP, its `Host`), or its address when it named none
+      (`Driver.host/1`), and the port;
+    * `ip` - the address it goes to, as the destination check approved;
+    * `plain?` - whether it came as plain bytes, not inside TLS MWT ended:
+      then nothing proves `name` is the host at `ip`, only the client says
+      so, and no real value goes in it;
     * `under` - the grant the connection went under (`Gate.destination/3`),
       or `:read_only` while only a token grant's hosts may be reached;
     * `operation` - what it does, in the protocol's own word: `GET`, `QUERY`,
@@ -24,13 +29,15 @@ defmodule MWTClient.Sandbox.Egress.Request do
   """
 
   @enforce_keys [:id, :driver, :port, :operation]
-  defstruct [:id, :driver, :name, :port, :under, :operation, :resource, :data]
+  defstruct [:id, :driver, :name, :ip, :port, :under, :operation, :resource, :data, plain?: false]
 
   @type t :: %__MODULE__{
           id: String.t(),
           driver: module(),
           name: String.t(),
+          ip: :inet.ip_address() | nil,
           port: :inet.port_number(),
+          plain?: boolean(),
           under: String.t() | :read_only | nil,
           operation: String.t(),
           resource: String.t() | nil,

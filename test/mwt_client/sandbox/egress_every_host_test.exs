@@ -2,9 +2,10 @@ defmodule MWTClient.Sandbox.EgressEveryHostTest do
   @moduledoc """
   MWT reads every connection to the Internet it can, not only a token
   grant's hosts: a host no grant lists is read, its requests logged with
-  what they carried; one on your list, a client offering only HTTP/2, or
-  reading switched off, is passed through as bytes, saying why; what
-  isn't HTTP inside TLS goes on decrypted, looked through.
+  what they carried; one on your list, a client offering only protocols
+  no driver speaks, or reading switched off, is passed through as bytes,
+  saying why; what isn't HTTP inside TLS goes on decrypted, looked
+  through.
   """
   use ExUnit.Case, async: true
 
@@ -175,18 +176,27 @@ defmodule MWTClient.Sandbox.EgressEveryHostTest do
              event(username, &(&1.outcome == :tunnel))
   end
 
-  test "a client offering only HTTP/2 is passed through, saying why", %{
+  test "a client offering only protocols no driver speaks is passed through, saying why", %{
     username: username,
     host_ca: host_ca,
     proxy: proxy
   } do
-    # The host doesn't speak HTTP/2 here, so the handshake is all there is.
-    _ = tls(proxy, [host_ca], ["h2"])
+    # The host doesn't speak it here, so the handshake is all there is.
+    _ = tls(proxy, [host_ca], ["imap"])
     # The address, not the name, as above.
     assert_receive {:tunnel_target, %{ip: {93, 184, 216, 34}, port: 443}}
 
-    assert %{summary: "Not read: the client offered only HTTP/2, which MWT doesn't read yet"} =
+    assert %{summary: "Not read: the client offered imap, which MWT doesn't read"} =
              event(username, &(&1.outcome == :tunnel))
+  end
+
+  test "a client offering only HTTP/2 is read: MWT ends its TLS and speaks HTTP/2 to it", %{
+    ca: ca,
+    proxy: proxy
+  } do
+    {:ok, tls} = tls(proxy, [ca], ["h2"])
+    assert {:ok, "h2"} = :ssl.negotiated_protocol(tls)
+    refute_received {:tunnel_target, _}
   end
 
   test "reading only token grants' hosts passes the rest through, as before", %{

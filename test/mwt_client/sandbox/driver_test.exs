@@ -38,10 +38,14 @@ defmodule MWTClient.Sandbox.DriverTest do
     assert Driver.for_alpn("http/1.1", @drivers) == Http1
     assert Driver.for_alpn("h2", @drivers) == nil
     assert Driver.for_alpn(nil, @drivers) == nil
+
+    # MWT's own: HTTP/1.1 first, so HTTP/2 only for a client offering no
+    # HTTP/1.1.
+    assert Driver.alpn() == ["http/1.1", "h2"]
+    assert Driver.for_alpn("h2", Driver.all()) == MWTClient.Sandbox.Egress.Driver.Http2
   end
 
   test "why, in words for the log, the VM's protocol names only as visible text" do
-    assert Driver.why(:h2_only) =~ "only HTTP/2"
     assert Driver.why(:listed) =~ "set it as Not read"
 
     assert Driver.why({:protocols, ["imap", "x\ny"]}) ==

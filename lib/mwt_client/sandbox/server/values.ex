@@ -718,6 +718,40 @@ defmodule MWTClient.Sandbox.Server.Values do
      )}
   end
 
+  def refusal({:host_blocked, grant, entry}, request) do
+    {request_event(
+       request,
+       grant,
+       :blocked,
+       MWTClient.Sandbox.Gate.blocked_words(grant, entry, request.host)
+     ), nil,
+     deny(
+       403,
+       "mwt_host_blocked",
+       "#{request.host} is blocked on #{grant.name} (#{entry}): the user set it so, and MWT " <>
+         "refuses every request to it. Asking for a grant won't change that; tell the user " <>
+         "if you need it.",
+       grant
+     )}
+  end
+
+  def refusal({:plain_http, grant}, request) do
+    {request_event(
+       request,
+       grant,
+       :refused,
+       "#{grant.name} placeholder over plain HTTP to #{request.host} · refused"
+     ), nil,
+     deny(
+       403,
+       "mwt_plain_http",
+       "This request is plain HTTP, and carries #{grant.name}'s placeholder. Over plain HTTP " <>
+         "nothing proves which host gets the request, so MWT puts no real value in one. " <>
+         "Use https://#{request.host}.",
+       grant
+     )}
+  end
+
   @doc """
   The proxy's answer to a request that would have carried `grant`'s value
   to a credential endpoint on the firewall's list (`entry`).

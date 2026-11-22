@@ -14,9 +14,19 @@ between it and the network.
 
 1. **The host stays safe from what agents install and run.** Packages,
    scripts and tools live in the VM.
-2. **Agents cannot act as you beyond what you allow.** The VM never holds a
-   credential when there is any way to avoid it. You turn access on and off
-   on the spot, and requests that use a credential can wait for your approval.
+2. **You see and decide what the VM does outside it, one request at a
+   time.** Everything the VM sends out goes through MWT, which reads it
+   down to the requests it carries, in each protocol it has a driver for:
+   an HTTP request, a query on a database you shared. Each request is in
+   the log with what came back, and any grant can hold its requests for
+   your approval, each on a card of its own, so sharing a database or an
+   API with an agent doesn't mean sharing everything it could do there.
+   What MWT can't read as requests, it can only let through or stop whole,
+   and says so.
+3. **Agents cannot act as you beyond what you allow.** The VM never holds a
+   credential when there is any way to avoid it: MWT puts the real value
+   into a request only where a grant says, one more thing reading each
+   request makes possible. You turn access on and off on the spot.
 
 <a id="threat-model"></a>
 
@@ -69,10 +79,11 @@ the VM's word ([Channels](#channels)).
 - **A real value the VM got anyway, sent where MWT can't read.** The
   firewall looks for real values wherever MWT reads what the VM sends, and
   MWT reads every Internet connection it can. What it can't (TLS naming no
-  host or offering only HTTP/2, a host you set as *Not read*, a server
-  that speaks first, anything not TLS) and a network grant's connections
-  are tunnelled unread, and a value changed before it is sent (base64, in
-  pieces) isn't recognised anywhere.
+  host or offering only protocols no driver speaks, a host you set as *Not
+  read*, a server that speaks first, plain bytes that aren't HTTP) and a
+  network grant's connections it can't read are tunnelled unread, and a
+  value changed before it is sent (base64, in pieces) isn't recognised
+  anywhere.
 - **A body past its first 64 KiB** goes to the host as it streams, looked
   through for real values but never shown: a card holds the start of the
   body, and says so when that is all it holds
@@ -111,8 +122,9 @@ VM ──all TCP──▶ msb ──HTTP CONNECT ip:port──▶ relay ──pr
                                                ├─ public addresses → the Internet grant; off, only a grant listing them
                                                ├─ TLS to a host a token grant lists → read (with the Internet off too)
                                                │     read request → placeholder? → allowance or approve → swap → forward
-                                               ├─ TLS to any other public host, naming it, offering HTTP/1.1 or nothing,
-                                               │  not set as Not read → read, logged with what it carried
+                                               ├─ TLS to any other public host, naming it, offering HTTP/1.1, HTTP/2 or nothing,
+                                               │  and plain HTTP, not set as Not read → read, each request judged (its host's
+                                               │  entry on the grant's host list: ask, auto, block), logged with what it carried
                                                └─ anything else → blind byte tunnel (log host, bytes, duration, why unread)
 
 VM ──DNS──▶ msb ──▶ relay ──dns.sock──▶ MWT DNS forwarder ──▶ this machine's resolver (every name logged;
@@ -983,6 +995,15 @@ HTTP/3 can't go around the proxy. The bubble has no other network: the VM
 can't opt out as it could ignore `HTTPS_PROXY`, and while MWT isn't
 listening it has no internet and resolves no name.
 
+**What MWT decides is as fine as what it reads.** A connection it reads is
+broken into the requests it carries ([Drivers](#drivers)), and each one is
+judged, logged and, where a grant asks, held for you on its own: the
+finest control there is, since a request is what the agent does. What it
+can't read it decides as a whole connection, by its address, port and TLS
+name. So every protocol MWT learns to read moves its traffic from the
+second kind to the first. Putting a real value into a request, and looking
+for one in what goes out, are uses of that reading, not its reason.
+
 Each lookup, connection and request is decided in its own process, from the
 **view** the server publishes after every change, before it answers
 (`MWTClient.Sandbox.Gate`: grants, the firewall's settings and
@@ -1051,24 +1072,33 @@ MWT receives `CONNECT <ip>:<port>` and decides, in this order:
    grant's check of the TLS name ([Private networks](#private-networks))
    comes first, read or not.
 8. **Every other connection to the Internet MWT can read, it reads**
-   (`Gate.reading/3`, `MWTClient.Sandbox.Egress.Driver`), for you to read
-   in the log what went out: TLS whose ClientHello names a host and offers
-   HTTP/1.1, or no protocol at all, as *What MWT reads* says
-   ([Not read](#not-read)). A client offering no protocol speaks what
-   it speaks: MWT looks at its first bytes once TLS is ended, and what
-   isn't HTTP (or a server that greets first, IMAP over TLS) goes on as it
-   came, to the host over TLS MWT starts again, looked through as a
-   tunnel is: decrypted, a placeholder or a real value in it is found.
+   (`Gate.reading/3`, `MWTClient.Sandbox.Egress.Driver`), for you to see
+   and decide each request that goes out: TLS whose ClientHello names a
+   host and offers HTTP/1.1, HTTP/2 or no protocol at all, and plain HTTP,
+   as *What MWT reads* says ([Not read](#not-read)). A client offering no
+   protocol speaks what it speaks: MWT looks at its first bytes once TLS
+   is ended, and what isn't HTTP (or a server that greets first, IMAP over
+   TLS) goes on as it came, to the host over TLS MWT starts again, looked
+   through as a tunnel is: decrypted, a placeholder or a real value in it
+   is found.
 9. Anything else is **tunnelled**, unread both ways; the log keeps its
    host, bytes and duration, and why it wasn't read ("Not read: the client
-   offered only HTTP/2"), and the firewall hears the bytes as they flow. A
-   network grant's connections are tunnelled as before.
+   offered imap, which MWT doesn't read"), and the firewall hears the bytes
+   as they flow. A network grant's connection MWT can't read is asked
+   about as one ([Private networks](#private-networks)); so is one under
+   any grant whose host list asks about a name it may be for
+   ([Host lists](#host-lists)).
 
 <a id="drivers"></a>
 
-**Drivers.** What MWT reads it reads through a driver, one per protocol
-(`MWTClient.Sandbox.Egress.Driver`): `Driver.Http1`, and `Driver.Raw`
-for what no driver reads, which steps 8 and 9 call tunnelled. A driver
+**Drivers.** A driver turns one protocol's bytes into the requests they
+carry, so that each is seen, judged and kept on its own: an HTTP request,
+a database query. What MWT reads it reads through a driver, one per
+protocol (`MWTClient.Sandbox.Egress.Driver`): `Driver.Http1` (HTTP/1.1,
+inside TLS and as plain bytes, and the messages of a WebSocket it
+upgrades to), `Driver.Http2` (HTTP/2 inside TLS, gRPC's), and
+`Driver.Raw` for what no driver reads, which steps 8 and 9 call
+tunnelled, and which is judged only as a connection. A driver
 runs on a call, whatever carries it; the core carrying the call is the
 same whatever the protocol. For TCP, the only transport msb carries but
 DNS, that is `MWTClient.Sandbox.Egress.Tcp`: it holds the sockets, ends
@@ -1082,7 +1112,11 @@ the look for real values and placeholders, nor the firewall's count.
   it; otherwise each driver is shown the first bytes, decrypted when MWT
   ended TLS, and the first to claim them takes the connection (`Raw`
   claims anything, last). MWT offers inside TLS the protocols its drivers
-  speak, so HTTP/2 is offered once a driver reads it, not before.
+  speak and picks the first, in the drivers' order, that the client
+  offers too: HTTP/1.1 before HTTP/2, so only a client that offers no
+  HTTP/1.1 (gRPC's) speaks HTTP/2 to MWT. One that can speak either is
+  read request by request over HTTP/1.1 all the same, so HTTP/2 for it
+  would add nothing seen or decided.
 - **Each request**, whatever the protocol, is one shape
   (`MWTClient.Sandbox.Egress.Request`: where it goes, the grant it went
   under, what it does and to what), and its driver describes it for its
@@ -1092,12 +1126,27 @@ the look for real values and placeholders, nor the firewall's count.
   placeholder to replace and with what, in which places (an HTTP request's
   carriers), and, for the answer, each form of the value to send back to
   the VM as its placeholder; the driver does the replacing, in its
-  protocol. Only HTTP/1.1 carries a value for now: a placeholder in
-  another driver's request is a string out of place, and the connection's
-  look stops it.
-- **Plain bytes**: a driver may read a connection that isn't TLS. None
-  does yet: plain HTTP isn't read, since nothing proves which host is
-  there ([What MWT doesn't read yet](todo.md)).
+  protocol. Only HTTP (HTTP/1.1 inside TLS, HTTP/2) carries a value: a
+  placeholder in another driver's request is a string out of place, and
+  the connection's look stops it.
+- **What the core looks through**: every byte a driver sends up as the
+  VM's, a stream of text at a time. A driver that frames the VM's text
+  (HTTP/2's streams, a WebSocket's frames) sends each stream's text apart
+  (`{:send, :host, bytes, stream}`), looked through with that request's
+  own list, and its framing as its own (`{:frame, :host, bytes}`), so
+  frame headers or other streams between two pieces never hide a value
+  split across them. HTTP/2's headers go up written again without Huffman
+  coding, and a WebSocket's frames masked with zeros, so what goes up *is*
+  the text looked through. A request a driver refuses is looked through
+  for real values all the same (`{:look, bytes}`): the firewall hears of
+  one as if it had gone.
+- **Plain bytes**: plain HTTP is read (`Driver.Http1`), each request
+  judged and logged as one inside TLS is. Nothing proves which host is
+  there: the host is the one its `Host` names, the client's word, so its
+  card says the address it goes to, *Allow similar* for it covers that
+  address only, a host list holds it by the strictest of its name and
+  those MWT's DNS answered for the address, and no placeholder goes in it
+  (`403` `mwt_plain_http`). What else comes as plain bytes is tunnelled.
 - **UDP**: a core for it would sit beside `Tcp` and run the same drivers,
   each told which transport it is on (`ctx.transport`). None is built,
   since msb carries no UDP but DNS.
@@ -1105,9 +1154,8 @@ the look for real values and placeholders, nor the firewall's count.
   passed on, over TCP. A protocol that doesn't fit it changes it,
   proposed with its driver, keeping the core's guarantees whole. The
   module's docs say what each callback is for, and where the interface is
-  known not to fit yet: several requests in flight on one call, a switch
-  mid-call, refusals in HTTP's terms, values put only into HTTP,
-  datagrams.
+  known not to fit yet: a switch mid-call to another driver (STARTTLS),
+  refusals in HTTP's terms, values put only into HTTP, datagrams.
 
 <a id="not-read"></a>
 
@@ -1284,16 +1332,70 @@ read when MWT can, as an Internet one is ([Each connection](#each-connection)):
   it is on, and nothing opens while its way out is down; `mwt why NAME`
   says whether MWT answered it, or "its network isn't connected".
 
+<a id="host-lists"></a>
+
+### Host lists
+
+Some hosts need finer control than the grant that reaches them: on the
+Internet, which lets everything through, a few hosts whose every request
+you want to see before it goes (an API that can act as you, a service
+holding your data), and a few the agent must never reach (a paste site);
+on a network grant, one host of many that asks while the rest go. A
+network grant's **host list** (`Grant.host_rules`, the Internet's
+included), set on its page, names such hosts, each with what its uses
+get:
+
+- **Ask**: each request MWT reads there waits for you on a card of its
+  own, whatever the grant's mode, Auto-approve included (only *Allow
+  similar*, from such a card, covers its repeats); a connection MWT can't
+  read is asked about as a whole, after its first bytes, before anything
+  is reached. Its card says which entry asked.
+- **Auto**: each goes through, even while the grant asks each time,
+  unless the grant always asks (*Always ask me*).
+- **Block**: each is refused, `403` `mwt_host_blocked`, saying the user set
+  it so; a connection MWT can't read is closed. Logged as blocked.
+
+Hosts no entry names go as the grant's approval mode says. The Internet
+has one like any grant, *Auto-approve* unless you choose *Ask each time*
+(each request it reads waits for you, then; an address alone is never
+asked about). How it works:
+
+- **Entries** are names as clients ask for them, never addresses, the
+  same form as *What MWT reads* (`MWTClient.Sandbox.HostRules`): an entry
+  covers its name and every name under it, on any port, and the one
+  naming a host most exactly speaks (`api.example.com` before
+  `example.com`); `example.com` and `*.example.com` are one entry.
+- **A read request** is held by the entry for its host: inside TLS, the
+  name its certificate proved. Over plain HTTP, the strictest of the
+  entries for its `Host` and for the names MWT's DNS answered for its
+  address, so no name chosen for the purpose gets it past one.
+- **A connection MWT can't read** is held by the strictest entry for any
+  name it may be for: the TLS name it asked for and the names MWT's DNS
+  answered for its address. One whose address has such a name waits for
+  its first bytes before anything is connected to (`Policy`'s
+  `{:connection, _, _}` asks), so a server that greets first is asked
+  about by its silence.
+- **Agents hear it**: `mwt grants` lists each grant's hosts of its own,
+  and `mwt why HOST` says whether a host is blocked or asked about.
+
+What it doesn't hold: an address the agent learned elsewhere (not from
+MWT's DNS), reached with no name or another name, over what MWT can't read
+(not TLS it ends, not plain HTTP), isn't recognised as the host it is: an
+entry is a name. Read connections have no such gap: TLS MWT ends is
+verified for the name it asked for.
+
 <a id="each-intercepted-request"></a>
 
 ### Each intercepted request
 
 1. **Finish the TLS handshake** with a certificate MWT's CA makes for that
-   host name, offering HTTP/1.1 only. A gRPC client fails on a host MWT
-   reads and works tunnelled, so keep gRPC hosts off token grants. A
-   client that gives up (a CA of its own, a pinned certificate, HTTP/2
-   only) is logged under the host with why, as far as TLS said:
-   nothing went out, and the next try fails the same way.
+   host name, offering HTTP/1.1 and HTTP/2, HTTP/1.1 first: a client that
+   offers only HTTP/2 (gRPC's) speaks it, each of its streams a request
+   read as these steps say (`Driver.Http2`), its headers as an HTTP/1.1
+   head's, a value going only in a carrier, its answer read back the same
+   way. A client that gives up (a CA of its own, a pinned certificate) is
+   logged under the host with why, as far as TLS said: nothing went out,
+   and the next try fails the same way.
 2. **Read the request head, strictly.** MWT judges a request by what it
    read, and the host must act on the same thing, so a request two parsers
    could read two ways is refused (`400`, `mwt_bad_request`):
@@ -1417,8 +1519,14 @@ its connection, none at all.
   connection without answering, for the client to decide.
 - **Idle**, the VM's connection waits 30 seconds for its next request,
   then closes.
-`Upgrade` (WebSockets): the handshake goes through these steps, then the
-bytes are tunnelled, still looked through as below.
+`Upgrade` (WebSockets): the handshake goes through these steps. Then a
+WebSocket with no value in it is read message by message
+(`Driver.Http1.WebSocket`): MWT takes the client's extensions offer out of
+the handshake, so no message comes compressed; it sends the VM's frames up
+masked with zeros, so what MWT looks through is their text, a value split
+across two frames included; and the log keeps each side's messages, one a
+line, up to the body limit. One with a value in it, and any other
+protocol, is tunnelled, still looked through as below.
 
 <a id="what-comes-back"></a>
 
@@ -1633,7 +1741,7 @@ four; what they propose waits off for you to review
 | Type      | What the VM gets                                                              | Approval                             | Turning it off                                                                                                                         |
 | --------- | ----------------------------------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `token`   | A placeholder, only for a command run with `mwt exec`                         | Per request                          | Takes effect on the next request; one still open (an upload, an upgraded WebSocket) is cut. Complete, since the VM never had the value. |
-| `network` | Reachability to listed hosts, ranges and ports ([Private networks](#private-networks)) | Per connection                       | New connections refused, open ones closed                                                                                              |
+| `network` | Reachability to listed hosts, ranges and ports ([Private networks](#private-networks)) | Per request read; else connection    | New connections refused, open ones closed                                                                                              |
 | `command` | Nothing. It may ask MWT to run a command on your machine ([Host commands](#host-commands)) | Per run; a subgrant may auto-approve | New asks refused. A command already running goes on until it ends or you stop it.                                                       |
 | `request` | Nothing: a token grant's subgrant ([Request subgrants](#request-subgrants))   | Per call; may auto-approve           | New calls refused                                                                                                                      |
 | `mwt`     | Nothing: MWT carries out each call itself                                     | Per use; may auto-approve            | The next call is refused, naming the grant and how to ask for it                                                                       |
@@ -1654,9 +1762,12 @@ and have no *Edit*; their switch, duration, approval mode and start
 setting work as any grant's.
 
 **The Internet** is a network grant for every public address; private and
-reserved addresses are never its. It is enabled on startup unless you
-choose otherwise, and never asks per connection: a card could show only an
-address. Off, the VM reaches only a token grant's hosts (read by MWT, which
+reserved addresses are never its. It is enabled and auto-approved on
+startup unless you choose otherwise, and never asks about an address
+alone, which is all a card could show: set to ask each time, it asks about
+each request MWT reads, and a connection it can't read by the names it
+may be for. Its host list asks about, lets through or blocks the hosts you
+name ([Host lists](#host-lists)). Off, the VM reaches only a token grant's hosts (read by MWT, which
 connects by name) and network grants' destinations, public ones included,
 and DNS answers only names some grant lists ([DNS](#dns)). Turning it off,
 its time running out or an isolation closes every connection it let
@@ -2160,7 +2271,7 @@ starts or unlocks (`Grant.start`):
 | **Enabled, auto** (`:auto`) | Enabled until turned off, every use through without asking, still logged. For what you fully trust. |
 
 - Where only one is offered it is just **Enabled**: Ask to run commands has
-  nothing to auto-approve, and the Internet never asks. A token grant only
+  nothing to auto-approve. A token grant only
   for its subgrants, and a grant to review, are Disabled only. *Enabled, auto* asks
   you to confirm.
 - Choosing a setting puts the grant in that state at once and at every
@@ -2191,6 +2302,8 @@ purpose:
   goes only in a carrier.
 - **Allow every use:** everything the grant covers, as long; also
   *Auto-approve* ([Ask each time or auto-approve](#ask-each-time-or-auto-approve)).
+  Not a host its host list asks about ([Host lists](#host-lists)): its
+  card offers *Allow similar* only.
 - Past its time an allowance covers nothing: the clock decides, across a
   restart or a suspend too.
 
@@ -2205,7 +2318,8 @@ asks ([Agent channel](#agent-channel)).
 waiting card only when it is the very same: a request as MWT read it,
 every header in order ([Each intercepted request](#each-intercepted-request));
 a command, a subgrant's call or a call of MWT's tools compared whole, by
-SHA-256.
+SHA-256. A request whose body MWT holds only the start of joins none: two
+that differ only past it would share one card.
 
 **Every card is drawn the same way,** each thing once: who asked and for
 which grant, with the time left, on one line; what would happen, as its
@@ -3810,6 +3924,11 @@ history is in git.
 | 2026-11-22 | The log keeps every exchange MWT reads, the Internet's included, as much of each body as your setting says (64 KiB at first), for as long as the activity's retention rule; a request with nothing to judge alone shares a kept connection, so reading every host costs a TLS handshake a connection, not a request ([What the log keeps of a request](#exchanges), [Each intercepted request](#each-intercepted-request)). |
 | 2026-11-22 | The VM and MWT keep six channels, each there because msb offers nothing else for its job; one channel waits for a second backend with no network card ([Channels](#channels)). |
 | 2026-11-22 | The proxy reads each protocol through a driver of its own, pure, and does everything else itself, the same for every protocol: one way out, every byte looked through and counted, each request judged as one shape its driver describes, a real value put in only where the judge says, the driver doing the replacing. A new protocol is one driver; reading through the core costs a kept request about 0.05 ms more than before. The core is TCP's, and a driver is told its transport, so a core for UDP would run the same drivers; the interface is a first draft, changed by the first protocol that doesn't fit it ([Drivers](#drivers)). |
+| 2026-11-22 | The proxy's purpose is that you see and decide what the VM does outside it at the finest grain there is, the request: each one logged with what came back and, where a grant asks, held on a card of its own, in every protocol a driver reads. Keeping credentials out of the VM is one use of that reading, not its reason, so a protocol with no credential to carry (a database you shared, whose queries you want to approve) is worth a driver too ([What it is for](#what-it-is-for), [Network](#network)). |
+| 2026-11-22 | A network grant has a host list, the Internet's included: hosts whose uses go otherwise than the grant's mode says, each Ask (every request MWT reads there waits for you, Auto-approve on the grant included, and a connection it can't read is asked about as one), Auto, or Block (refused, `mwt_host_blocked`). So the Internet can let everything through but a few hosts you check, and refuse some outright. The Internet has an approval mode like any grant, Auto-approve unless you choose otherwise, but never asks about an address alone. A use that may be for several names is held by the strictest entry for any of them ([Host lists](#host-lists)). |
+| 2026-11-22 | Plain HTTP is read, each request judged and logged; its host is the one its `Host` names, the client's word, so no placeholder goes in one, its card names the address it goes to and *Allow similar* covers that address only. HTTP/2 is read too, offered only to a client that offers no HTTP/1.1 (gRPC's): one that speaks either is read over HTTP/1.1 all the same, so HTTP/2 for it would add only risk; each stream is a request of its own, a value going only in a carrier ([Drivers](#drivers), [Each intercepted request](#each-intercepted-request)). |
+| 2026-11-22 | What the core looks through is the VM's text: HTTP/2 headers go up written again without Huffman coding, a WebSocket's frames masked with zeros (its extensions offer taken out, so nothing comes compressed), and each stream's text is looked through apart from the framing and other streams, so a value split across two frames is found. A request MWT refuses is looked through for real values too ([Drivers](#drivers)). |
+| 2026-11-22 | Two requests whose body MWT holds only the start of never share a card: what follows may differ, and one decision would let through a body nobody saw ([Approvals](#approvals)). |
 
 <a id="later"></a>
 
@@ -3824,9 +3943,6 @@ Open: not built, or not tried yet.
 - **Finer allowances,** if asking about every use proves too much: what to
   auto-approve or always ask, by method, path or pattern, or per provider.
 - **Confined ad-hoc commands,** as a choice on their card.
-- **HTTP/2 on hosts MWT reads:** spiked, not built (frames, per-stream
-  decisions, an HTTP/2 answer scan); until then gRPC hosts stay off token
-  grants.
 - **Names beside addresses** in the activity log, from the DNS answers,
   saying when a TLS name and its address never met.
 - **More firewall rules:** a credential of yours used from the VM with no

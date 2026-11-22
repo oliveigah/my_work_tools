@@ -393,7 +393,7 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     assert text =~ "git over HTTPS to api.github.com, github.com"
     assert text =~ "each request waits for the user's approval"
     assert text =~ "connect directly to 10.0.0.0/8:443"
-    assert text =~ "every connection goes through for now"
+    assert text =~ "everything through it goes without asking for now"
     refute text =~ "ghp_placeholder"
     assert Instructions.grants([], ~U[2026-11-12 12:00:00Z]) =~ "No grants yet."
   end

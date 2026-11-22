@@ -78,6 +78,26 @@ defmodule MWTClient.Sandbox.WhyTest do
     assert on =~ "and is on: each connection may wait for the user's approval"
   end
 
+  test "a host on the Internet's host list says it is blocked, or asked about" do
+    rules = [
+      %{host: "paste.test", action: :block},
+      %{host: "api.github.com", action: :ask}
+    ]
+
+    world = world([%{internet() | host_rules: rules}])
+
+    blocked = why("paste.test", world)
+    assert blocked =~ "paste.test:443: not reached now"
+    assert blocked =~ "Internet's host list blocks it (paste.test)"
+    assert blocked =~ "mwt_host_blocked"
+
+    asked = why("https://api.github.com/repos", world)
+    assert asked =~ "Internet's host list asks about it (api.github.com)"
+    assert asked =~ "waits for the user's approval"
+
+    refute why("example.com", world) =~ "host list"
+  end
+
   test "a grant that lists another port says which ports it opens" do
     text = why("10.1.2.3:22", world([lan(:on, ["10.0.0.0/8:5432,6432"])]))
     assert text =~ "not reached now"

@@ -212,36 +212,47 @@ gaps), so a change between your reading and your click would go through.
 
 Built on 2026-11-22: MWT reads every connection it can, the Internet's and
 a network grant's (*Each connection*, *Not read*, *Private networks* and
-the decisions of that day in `docs/agent_sandbox.md`). Left:
+the decisions of that day in `docs/agent_sandbox.md`). Each item below is
+traffic MWT can decide only as a whole connection, or a request it reads
+but can't show, hold or keep whole: a gap in seeing and deciding what the
+VM does request by request, which is what the proxy is for (*What it is
+for*), whether or not a credential rides it. Left:
 
-- **Plain HTTP** passes as "it isn't TLS". Reading it needs the request
-  reader to take a plain socket as well as TLS, and a request carrying a
-  placeholder over it refused: nothing proves which host is there.
-- **HTTP/2**: a client offering only it (gRPC) passes unread, on a network
-  grant as a connection card. Spiked before, not built (frames, a decision
-  per stream, an answer scan of its own).
-- **A driver per protocol** beside HTTP/1.1 (`Egress.Driver`, built on
-  2026-11-22, *Drivers* in `docs/agent_sandbox.md`): one claims a
-  connection by its first bytes (Postgres's `SSLRequest` or startup
-  message, say), plain or inside TLS, and turns it into requests a card
-  can show. None but HTTP/1.1 and `Raw` yet. Left for the first that
-  carries a value: the judge finds placeholders in an HTTP request's
-  headers, path and body itself (`Policy`'s `{:request, _}`); for another
-  protocol it would ask the driver where each text of a request sits, and
-  check those places against the grant's carriers. Also left: a driver
-  that switches the connection to another mid-way (a WebSocket after
-  `101`, STARTTLS), and a scanner per request for a protocol carrying
-  several at once (HTTP/2), where the core keeps one a connection; and
-  a core for UDP beside `Egress.Tcp`, should msb ever carry UDP but DNS,
-  running the same drivers (`ctx.transport`). The interface is a first
-  draft: the driver that doesn't fit it changes it (`Egress.Driver`'s
-  docs list where it is known not to).
+- **Drivers for other protocols** (`Egress.Driver`, *Drivers* in
+  `docs/agent_sandbox.md`): HTTP/1.1 (plain and in TLS, WebSocket
+  messages), HTTP/2 and `Raw` are built (2026-11-22). A database you share
+  on a network grant (Postgres, say: its `SSLRequest` or startup message
+  claims the connection) is still one card for the connection and
+  everything after it unseen; a driver would make each query a card of
+  its own. Set aside until one is needed. The first that carries a value
+  needs the judge to ask the driver where each text of a request sits
+  (the judge finds placeholders in an HTTP request itself, `Policy`'s
+  `{:request, _}`), and Postgres's login (SCRAM) a value used, not put
+  in. Also left: a driver handing the connection to another mid-way
+  (STARTTLS, Postgres's `SSLRequest`), and a core for UDP beside
+  `Egress.Tcp`, should msb ever carry UDP but DNS (`ctx.transport`).
+- **HTTP/2 left over** (`Driver.Http2`): a host that answers MWT's `h2`
+  with HTTP/1.1 only fails the VM's streams (the client offered nothing
+  else); plain HTTP/2 (h2c) isn't read; server push is refused to the
+  host; extended CONNECT (WebSockets over HTTP/2) is refused. None tried
+  against a real gRPC service yet, only Bandit and Mint in tests.
+- **A WebSocket with a value in it** (its handshake carried a token
+  grant's value) is tunnelled after `101`, its messages not kept: its
+  answer is read for the value's forms as bytes (`Http1.Response`), and
+  reading its frames too means the frame reader looking for them.
+- **Plain HTTP and What MWT reads**: a rule is a name, and plain HTTP's
+  name is known only once its head is read, so a host set as Not read is
+  read all the same over plain HTTP (with reading only token grants'
+  hosts, none is).
+- **A host list knows names, not addresses**: an agent that has a blocked
+  host's address from somewhere other than MWT's DNS, and reaches it with
+  another name or none over what MWT can't read, isn't recognised (*Host
+  lists* in `docs/agent_sandbox.md`). Shortcuts are also left: "Ask for
+  this host" from a line of the activity log, "auto-approve this host"
+  on a card.
 - **The answer held for you** before the agent gets it, on a network
   grant, as a command's output can be (`output_to: :review`): the answer
   is read already (`Egress.Driver.Http1.Answer`); holding it means a card for it.
-- **Two requests whose bodies differ only past their first 64 KiB** join
-  one card (`Approvals.hold/3`, by what MWT read), which says it holds
-  only the start.
 - **MWT's own port as a destination**: no check keeps a network grant that
   names `127.0.0.1` and MWT's web port from opening MWT's pages to the VM.
   Not tried.

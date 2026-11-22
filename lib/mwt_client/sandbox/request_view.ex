@@ -56,7 +56,7 @@ defmodule MWTClient.Sandbox.RequestView do
   @doc "The address the request went to."
   @spec url(request()) :: String.t()
   def url(request),
-    do: Shown.text("https://" <> MWTClient.Sandbox.Describe.authority(request) <> request.path)
+    do: Shown.text(MWTClient.Sandbox.Describe.origin(request) <> request.path)
 
   @doc """
   The headers as the page shows them: each value split where a placeholder

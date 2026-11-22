@@ -19,6 +19,8 @@ defmodule MWTClient.Sandbox.Why do
     * a network grant covers it, and is off (how to ask for it), or lists
       another port; a name it lists, which MWT answers only while the
       grant is on; its way out isn't connected (a VPN that is down);
+    * a network grant's host list (the Internet's too) blocks it, asks
+      about each request there, or lets each through;
     * the Internet opens it, or is off; or the address is private or
       reserved, which the Internet never opens;
     * no grant covers it, and how to ask for access.
@@ -146,12 +148,40 @@ defmodule MWTClient.Sandbox.Why do
 
   defp lines(host, port, world) do
     blocked = blocked(host, world.firewall)
+    {listed_blocked?, listed} = host_lists(host, world)
 
     {reached?, lines} =
       if is_binary(host), do: name(host, port, world), else: address(host, port, world)
 
-    {reached? and blocked == [], blocked ++ lines}
+    {reached? and blocked == [] and not listed_blocked?, blocked ++ listed ++ lines}
   end
+
+  # A name on a network grant's host list (the Internet's too): blocked,
+  # asked about, or let through, whatever the grant's mode says.
+  defp host_lists(name, world) when is_binary(name) do
+    found =
+      for %Grant{kind: :network} = grant <- world.snapshot.grants,
+          rule = Policy.strictest_rule(grant, [name]),
+          do: {grant, rule}
+
+    lines =
+      Enum.map(found, fn {grant, rule} ->
+        case rule.action do
+          :block ->
+            "- #{grant.name}'s host list blocks it (#{rule.host}): every request there is refused, mwt_host_blocked. The user set it so: asking for a grant won't change it. Don't work around it; tell the user if you need it."
+
+          :ask ->
+            "- #{grant.name}'s host list asks about it (#{rule.host}): each request MWT reads there waits for the user's approval, which can take minutes; a connection MWT can't read is asked about as one."
+
+          :auto ->
+            "- #{grant.name}'s host list lets it through (#{rule.host}): each request goes without asking."
+        end
+      end)
+
+    {Enum.any?(found, fn {_grant, rule} -> rule.action == :block end), lines}
+  end
+
+  defp host_lists(_address, _world), do: {false, []}
 
   defp blocked(host, firewall) do
     name = show(host)

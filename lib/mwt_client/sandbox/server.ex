@@ -120,6 +120,8 @@ defmodule MWTClient.Sandbox.Server do
   alias MWTClient.Vault.Store
 
   @poll_every 10_000
+  # Entries on one network grant's host list.
+  @host_rules_limit 500
   @sweep_every 30_000
   @mirror_every 2_000
   # How often MWT looks again at its own files for the VM (/mnt/mwt), in
@@ -464,6 +466,54 @@ defmodule MWTClient.Sandbox.Server do
     case result do
       {:ok, changed} ->
         {:reply, :ok, state |> State.change(:reading, fn _ -> changed end) |> State.changed()}
+
+      error ->
+        {:reply, error, state}
+    end
+  end
+
+  # A network grant's host list (`Grant.host_rules`), as you set it on its
+  # page: an entry asking about, letting through or refusing its hosts'
+  # uses. Only you change it: nothing the VM sends reaches this.
+  defp answer({:host_rule_set, grant_id, change}, _from, state) do
+    alias MWTClient.Sandbox.HostRules
+
+    grant = Enum.find(state.grants, &(&1.id == grant_id and &1.kind == :network))
+
+    result =
+      case {grant, change} do
+        {nil, _change} ->
+          {:error, "Only a network grant has a host list."}
+
+        {grant, {:put, host, action}} when is_binary(host) and action in [:ask, :auto, :block] ->
+          with {:ok, rules} <-
+                 HostRules.put(grant.host_rules, %{host: host, action: action}, @host_rules_limit) do
+            entry = rules |> List.last() |> Map.fetch!(:host)
+            {:ok, %{grant | host_rules: rules}, "#{entry} set to #{host_action_words(action)}"}
+          end
+
+        {grant, {:remove, host}} when is_binary(host) ->
+          rules = HostRules.remove(grant.host_rules, host)
+          {:ok, %{grant | host_rules: rules}, "#{String.trim(host)} taken off its host list"}
+
+        _other ->
+          {:error, "That isn't a change to a host list."}
+      end
+
+    case result do
+      {:ok, changed, words} ->
+        state =
+          state
+          |> State.replace_grant(changed)
+          |> State.log(%{
+            outcome: :grant,
+            summary: "#{changed.name}: #{words}",
+            grant_id: changed.id
+          })
+          |> State.write_inbox()
+          |> State.changed()
+
+        {:reply, {:ok, changed}, state}
 
       error ->
         {:reply, error, state}
@@ -1350,7 +1400,7 @@ defmodule MWTClient.Sandbox.Server do
     decision =
       Policy.decide(
         state |> State.policy() |> Map.put(:answered, answered),
-        {:connection, ip, port},
+        {:unread, ip, port, [Map.get(seen, :name)]},
         State.now()
       )
 
@@ -1379,8 +1429,10 @@ defmodule MWTClient.Sandbox.Server do
         {:reply, answer, state}
 
       {:ask, grant, about} ->
+        id = "approval-" <> State.unique()
+
         approval = %Approval{
-          id: "approval-" <> State.unique(),
+          id: id,
           grant_id: grant.id,
           kind: :request,
           title: about.title,
@@ -1388,12 +1440,13 @@ defmodule MWTClient.Sandbox.Server do
           host: request.host,
           path: request.path,
           pattern: about.pattern,
-          join: Approvals.request_digest(request),
+          join: Approvals.request_join(request, id),
           request: request,
           requested_at: State.now(),
           deadline: DateTime.add(State.now(), state.settings.hold_seconds, :second),
-          facts: about.facts ++ [{"Through", grant.name}],
-          claims: about.claims
+          facts: about.facts ++ [{"Through", grant.name}] ++ host_entry_fact(about, grant),
+          claims: about.claims,
+          host_entry: Map.get(about, :host_entry)
         }
 
         {:noreply, Approvals.hold(state, approval, {from, {:network_request, request}})}
@@ -1556,8 +1609,10 @@ defmodule MWTClient.Sandbox.Server do
         {:noreply, Values.let_through(state, grant, request, from)}
 
       {:ask, grant, about} ->
+        id = "approval-" <> State.unique()
+
         approval = %Approval{
-          id: "approval-" <> State.unique(),
+          id: id,
           grant_id: grant.id,
           kind: :request,
           title: about.title,
@@ -1565,7 +1620,7 @@ defmodule MWTClient.Sandbox.Server do
           host: request.host,
           path: request.path,
           pattern: about.pattern,
-          join: Approvals.request_digest(request),
+          join: Approvals.request_join(request, id),
           request: request,
           requested_at: State.now(),
           deadline: DateTime.add(State.now(), state.settings.hold_seconds, :second),
@@ -1921,6 +1976,21 @@ defmodule MWTClient.Sandbox.Server do
       {:refuse, :internet_off} ->
         {:reply, :read_only, state}
 
+      {:refuse, {:host_blocked, grant, entry}} ->
+        host = Map.get(seen, :name) || address
+        summary = Gate.blocked_words(grant, entry, host)
+
+        state =
+          State.log(state, %{
+            outcome: :blocked,
+            summary: summary,
+            host: host,
+            port: port,
+            grant_id: grant.id
+          })
+
+        {:reply, {:deny, summary}, state}
+
       {:refuse, reason} ->
         summary =
           if reason == :reserved,
@@ -1948,7 +2018,8 @@ defmodule MWTClient.Sandbox.Server do
               names -> [{"Answered by MWT for it", Enum.join(names, ", ")}]
             end ++
             if(seen[:why], do: [{"Not read", seen.why}], else: []) ++
-            [{"Listed as", about.listed_as}, {"Grant", grant.name}]
+            [{"Listed as", about.listed_as}, {"Grant", grant.name}] ++
+            host_entry_fact(about, grant)
 
         approval = %Approval{
           id: "approval-" <> State.unique(),
@@ -1960,12 +2031,23 @@ defmodule MWTClient.Sandbox.Server do
           join: about.pattern,
           requested_at: State.now(),
           deadline: DateTime.add(State.now(), state.settings.hold_seconds, :second),
-          facts: facts
+          facts: facts,
+          host_entry: Map.get(about, :host_entry)
         }
 
         {:noreply, Approvals.hold(state, approval, {from, :connection})}
     end
   end
+
+  defp host_action_words(:ask), do: "Ask"
+  defp host_action_words(:auto), do: "Auto-approve"
+  defp host_action_words(:block), do: "Block"
+
+  # Why a use waits for you when its grant's host list asked about it.
+  defp host_entry_fact(%{host_entry: entry}, grant) when is_binary(entry),
+    do: [{"Asks you", "#{entry} is set to Ask on #{grant.name}"}]
+
+  defp host_entry_fact(_about, _grant), do: []
 
   # An ask about to wait for you, shown to the firewall first: the text of a
   # command the agent wrote, and whether you declined the same before.

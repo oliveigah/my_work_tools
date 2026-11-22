@@ -60,19 +60,17 @@ defmodule MWTClientWeb.SandboxMwtToolsLiveTest do
     refute has_element?(view, "#grant-danger")
   end
 
-  test "the Internet is built in, says what it reaches, and has no way to ask each time",
+  test "the Internet is built in, says what it reaches, and asks each time only when set to",
        %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
     assert has_element?(view, "#grant-card-internet", "Built in")
     assert has_element?(view, "#grant-card-internet", "Every public address")
-    refute has_element?(view, "#grant-mode-internet-ask")
-    refute has_element?(view, "#enabled-mode-internet-ask")
+    assert has_element?(view, "#grant-mode-internet-ask")
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/internet")
     assert has_element?(view, "#grant-internet", "Every public address on the internet")
     assert has_element?(view, "#grant-internet-off", "api.anthropic.com:443")
-    refute has_element?(view, "#detail-mode-internet-ask")
-    refute has_element?(view, "#grant-allowances")
+    assert has_element?(view, "#detail-mode-internet-ask")
     refute has_element?(view, "#edit-grant")
     refute has_element?(view, "#grant-danger")
   end

@@ -89,6 +89,7 @@ defmodule MWTClient.Sandbox.Approval do
     :deadline,
     :decided_at,
     :decision,
+    :host_entry,
     stage: :run,
     script_from: :agent,
     values: [],

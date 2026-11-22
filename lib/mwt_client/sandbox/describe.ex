@@ -1,7 +1,9 @@
 defmodule MWTClient.Sandbox.Describe do
   @moduledoc """
-  Turns a request carrying a placeholder into what an approval shows. It
-  decides nothing: every use waits for you unless an allowance covers it.
+  Turns an HTTP request into what its approval shows, whichever grant holds
+  it: a token grant's, for a placeholder in it, or a network grant's, for
+  what it does there (`Driver.Http1.describe/1`). It decides nothing:
+  every use waits for you unless an allowance covers it.
 
     * `title`, `facts` - worked out from the request itself: git's ref
       updates, a GraphQL operation, a REST endpoint.
@@ -62,7 +64,11 @@ defmodule MWTClient.Sandbox.Describe do
   @spec request(request()) :: t()
   def request(%{method: method, path: path} = request) do
     {route, query} = split_query(path)
-    request = %{request | host: authority(request)}
+    plain = plain(request)
+    # Plain HTTP names its scheme wherever its host shows, so a card or an
+    # allowance for it is never one for the host over HTTPS.
+    request =
+      %{request | host: if(plain, do: origin(request), else: authority(request))}
 
     described =
       try do
@@ -78,6 +84,9 @@ defmodule MWTClient.Sandbox.Describe do
 
           route == "/graphql" and method == "POST" ->
             graphql(request)
+
+          method == "POST" and grpc?(request) and route =~ ~r{\A/[^/]+/[^/]+\z} ->
+            grpc(request, route)
 
           true ->
             rest(request, route)
@@ -98,11 +107,25 @@ defmodule MWTClient.Sandbox.Describe do
 
     %{
       title: Shown.text(described.title),
-      facts: Enum.map(described.facts ++ cut(request), &shown/1),
+      facts: Enum.map(described.facts ++ cut(request) ++ plain_facts(plain), &shown/1),
       claims: Enum.map(described.claims, &shown/1),
-      pattern: described.pattern && exact(described.pattern)
+      pattern: described.pattern && exact(described.pattern <> plain_bound(plain))
     }
   end
+
+  # A request over plain HTTP: the address it goes to, the client's
+  # choice, which nothing proves is the host it names. An allowance for it
+  # covers that address only: one named the same elsewhere is another.
+  defp plain(%{plain?: true, ip: ip, host: host}), do: %{ip: ip, host: host}
+  defp plain(_request), do: nil
+
+  defp plain_facts(nil), do: []
+
+  defp plain_facts(%{ip: ip, host: host}),
+    do: [{"Plain HTTP", "to #{ip}: nothing proves it is #{host}, only the client says so"}]
+
+  defp plain_bound(nil), do: ""
+  defp plain_bound(%{ip: ip}), do: " via " <> ip
 
   # What the card says of a body MWT holds only the start of.
   defp cut(request) do
@@ -219,6 +242,24 @@ defmodule MWTClient.Sandbox.Describe do
   # The body as the host reads it: de-chunked, or no further than its
   # length (bytes after it are the next request), and whether MWT holds
   # all of it.
+  @doc """
+  Whether MWT holds a request's whole body: one with none, or all its
+  `Content-Length` or chunked framing says, as read before deciding (at
+  most 64 KiB). False for a body it holds only the start of, or one whose
+  framing it can't read.
+  """
+  @spec whole_body?(request()) :: boolean()
+  def whole_body?(request) do
+    case payload(request) do
+      {:ok, _data, whole?} -> whole?
+      {:error, _why} -> false
+    end
+  end
+
+  # An HTTP/2 stream says whether MWT holds its whole body: it has no
+  # framing of its own to tell.
+  defp payload(%{body_whole?: whole?, body: body}), do: {:ok, body, whole?}
+
   defp payload(request) do
     chunked? = (header(request, "transfer-encoding") || "") =~ ~r/chunked/i
 
@@ -314,6 +355,26 @@ defmodule MWTClient.Sandbox.Describe do
     }
   end
 
+  # A gRPC call: its service and method are its path; its body, protobuf
+  # without a schema, says nothing MWT can read.
+  defp grpc(request, route) do
+    [service, call] = route |> String.trim_leading("/") |> String.split("/", parts: 2)
+
+    %{
+      title: "gRPC #{service}/#{call} on #{request.host}",
+      facts: [{"Call", "#{service}/#{call}"}] ++ client(request),
+      claims: [],
+      pattern: "gRPC #{request.host}/#{service}/#{call}"
+    }
+  end
+
+  defp grpc?(request) do
+    case header(request, "content-type") do
+      nil -> false
+      type -> String.starts_with?(String.downcase(type), "application/grpc")
+    end
+  end
+
   defp rest(request, route) do
     body_claims =
       case Jason.decode(request.body) do
@@ -334,10 +395,23 @@ defmodule MWTClient.Sandbox.Describe do
   `api.example.com`, `api.example.com:8443`.
   """
   @spec authority(%{required(:host) => String.t(), optional(atom()) => term()}) :: String.t()
+  def authority(%{plain?: true, host: host, port: port}) when is_integer(port) and port != 80,
+    do: "#{host}:#{port}"
+
+  def authority(%{plain?: true, host: host}), do: host
+
   def authority(%{host: host, port: port}) when is_integer(port) and port != 443,
     do: "#{host}:#{port}"
 
   def authority(%{host: host}), do: host
+
+  @doc """
+  Where a request goes, as a URL's start: `https://` and its authority, or
+  `http://` for one that came as plain HTTP.
+  """
+  @spec origin(map()) :: String.t()
+  def origin(%{plain?: true} = request), do: "http://" <> authority(request)
+  def origin(request), do: "https://" <> authority(request)
 
   @doc """
   The ref updates at the start of a git-receive-pack body (the body as the

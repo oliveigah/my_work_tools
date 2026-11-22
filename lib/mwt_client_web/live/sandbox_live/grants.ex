@@ -539,7 +539,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           <.ceiling_badge grant={@grant} id={"grant-ceiling-#{@grant.id}"} />
           <.held_badge grant={@grant} id={"grant-held-#{@grant.id}"} />
           <.auto_badge
-            :if={Grant.auto_approved?(@grant, @now) and not Grant.always_auto?(@grant)}
+            :if={Grant.auto_approved?(@grant, @now)}
             id={"grant-auto-#{@grant.id}"}
           />
           <button
@@ -601,7 +601,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           values={%{"id" => @grant.id}}
         />
         <.segmented
-          :if={Grant.auto_approvable?(@grant) and not Grant.always_auto?(@grant)}
+          :if={Grant.auto_approvable?(@grant)}
           id={"grant-mode-#{@grant.id}"}
           options={[{"ask", "Ask"}, {"all", "Auto"}]}
           value={@mode}
@@ -775,9 +775,13 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   defp on_duration(%Grant{minutes: minutes}) when is_integer(minutes), do: minutes
   defp on_duration(%Grant{}), do: nil
 
+  @doc "The approval mode a grant's row offers while it is off and you picked none (`Grant.default_uses/1`)."
+  @spec default_mode(Grant.t()) :: String.t()
+  def default_mode(grant), do: if(Grant.default_uses(grant) == :all, do: "all", else: "ask")
+
   defp row_mode(grant, modes, now) do
     cond do
-      not Grant.on?(grant, now) -> Map.get(modes, grant.id, "ask")
+      not Grant.on?(grant, now) -> Map.get(modes, grant.id, default_mode(grant))
       Grant.auto_approved?(grant, now) -> "all"
       true -> "ask"
     end
@@ -969,7 +973,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         values={@values}
       />
       <.segmented
-        :if={Grant.auto_approvable?(@grant) and not Grant.always_auto?(@grant)}
+        :if={Grant.auto_approvable?(@grant)}
         id={"#{@id}-mode-#{@grant.id}"}
         options={
           if(@short,
@@ -1243,7 +1247,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         <.ceiling_badge grant={@grant} id="detail-ceiling" />
         <.held_badge grant={@grant} id="detail-held" />
         <.auto_badge
-          :if={Grant.auto_approved?(@grant, @now) and not Grant.always_auto?(@grant)}
+          :if={Grant.auto_approved?(@grant, @now)}
           id="detail-auto"
         />
         <.controls
@@ -1428,8 +1432,10 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           </button>
         </div>
 
+        <.host_rules_card :if={@grant.kind == :network} grant={@grant} />
+
         <.card
-          :if={Grant.auto_approvable?(@grant) and not Grant.always_auto?(@grant)}
+          :if={Grant.auto_approvable?(@grant)}
           id="grant-allowances"
           title="Allowed for now"
           body_class=""
@@ -1522,6 +1528,101 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     </div>
     """
   end
+
+  attr :grant, Grant, required: true
+
+  # A network grant's hosts that go otherwise than its approval mode says
+  # (`Grant.host_rules`): each one asked about, let through or refused.
+  # The Internet's is where a few public hosts get finer control.
+  defp host_rules_card(assigns) do
+    assigns =
+      assign(assigns,
+        form: to_form(%{"host" => "", "action" => "ask"}, as: :host_rule),
+        rules: Enum.sort_by(assigns.grant.host_rules, &String.trim_leading(&1.host, "*."))
+      )
+
+    ~H"""
+    <.card id="grant-host-rules" title="Hosts" body_class="">
+      <:help>
+        {host_rules_help(@grant)}
+      </:help>
+      <ul :if={@rules != []} id="grant-host-rules-list" class="divide-y divide-line-soft">
+        <li
+          :for={rule <- @rules}
+          id={"host-rule-#{host_rule_id(rule.host)}"}
+          class="flex items-center gap-3 px-4 py-2"
+        >
+          <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-ink" title={rule.host}>
+            {rule.host}
+          </span>
+          <.segmented
+            id={"host-rule-#{host_rule_id(rule.host)}-action"}
+            options={[{"ask", "Ask"}, {"auto", "Auto"}, {"block", "Block"}]}
+            value={to_string(rule.action)}
+            event="host_rule_put"
+            name="action"
+            values={%{"id" => @grant.id, "host" => rule.host}}
+          />
+          <button
+            type="button"
+            id={"host-rule-#{host_rule_id(rule.host)}-remove"}
+            phx-click="host_rule_remove"
+            phx-value-id={@grant.id}
+            phx-value-host={rule.host}
+            title={"Take #{rule.host} off: its uses go as #{@grant.name}'s mode says"}
+            class="cursor-pointer rounded p-1 text-faint transition-colors hover:bg-hover hover:text-ink"
+          >
+            <.icon name="hero-x-mark-micro" class="size-3.5" />
+          </button>
+        </li>
+      </ul>
+      <p :if={@rules == []} id="grant-host-rules-empty" class="px-4 py-2.5 text-[11px] text-faint">
+        No host of its own: every use goes as {@grant.name}'s approval mode says.
+      </p>
+      <.form
+        for={@form}
+        id="grant-host-rule-form"
+        phx-submit="host_rule_add"
+        class="flex flex-wrap items-center gap-2 border-t border-line-soft bg-deep/30 px-4 py-2"
+      >
+        <input type="hidden" name="grant" value={@grant.id} />
+        <div class="min-w-0 flex-1">
+          <input
+            type="text"
+            name={@form[:host].name}
+            id="grant-host-rule-host"
+            value=""
+            placeholder="api.example.com"
+            title="A host name: it covers every name under it too"
+            spellcheck="false"
+            autocomplete="off"
+            class={[input_classes(), "font-mono"]}
+          />
+        </div>
+        <div class="w-24 shrink-0">
+          <select name={@form[:action].name} id="grant-host-rule-action" class={input_classes()}>
+            <option value="ask">Ask</option>
+            <option value="auto">Auto</option>
+            <option value="block">Block</option>
+          </select>
+        </div>
+        <.button type="submit" id="grant-host-rule-add">Add</.button>
+      </.form>
+    </.card>
+    """
+  end
+
+  defp host_rules_help(%Grant{internet: true}),
+    do:
+      "Public hosts that go otherwise than the Internet's mode says. Ask: each request MWT reads there waits for you, and a connection it can't read is asked about as one. Auto: each goes through. Block: each is refused. An entry covers its name and every name under it, on any port; the most exact one decides. A connection MWT can't read is held by the strictest entry for any name it may be for: the name it asked for, and the names MWT's DNS answered for its address."
+
+  defp host_rules_help(%Grant{}),
+    do:
+      "Hosts under this grant that go otherwise than its mode says. Ask: each request MWT reads there waits for you, and a connection it can't read is asked about as one. Auto: each goes through. Block: each is refused. An entry covers its name and every name under it, on any port; the most exact one decides."
+
+  # A DOM id for a host entry: its letters, digits and dashes, a star as `any`.
+  defp host_rule_id(host),
+    do: host |> String.replace("*", "any") |> String.replace(~r/[^a-z0-9-]/, "-")
 
   attr :grant, Grant, required: true
   attr :grants, :list, required: true

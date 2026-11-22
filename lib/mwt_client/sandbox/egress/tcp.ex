@@ -159,6 +159,8 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
         deadline: %{vm: nil, host: nil},
         out: %{vm: [], host: []},
         scanner: nil,
+        scanners: %{},
+        values: nil,
         meter: nil,
         up: 0,
         down: 0,
@@ -404,7 +406,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   @type first :: {:tls, hello()} | :silent | :other
 
   @typedoc "Why MWT can't end the TLS a connection began with (`readable/2`)."
-  @type unreadable :: :silent | :not_tls | :no_name | :h2_only | {:protocols, [String.t()]}
+  @type unreadable :: :silent | :not_tls | :no_name | {:protocols, [String.t()]}
 
   @doc """
   What a connection's first bytes are: a TLS ClientHello (`{:tls, hello}`),
@@ -456,7 +458,6 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   def readable({:tls, %{alpn: alpn}}, drivers) do
     cond do
       Enum.any?(alpn, &(&1 in Driver.alpn(drivers))) -> :ok
-      alpn == ["h2"] -> {:no, :h2_only}
       true -> {:no, {:protocols, alpn}}
     end
   end
@@ -529,8 +530,10 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
         }
 
         cond do
+          # A token grant's host is an HTTP API: HTTP/2 when the client
+          # settled on it, HTTP/1.1 whatever else came.
           why == :grant ->
-            start(core, Http1, "", "")
+            start(core, Driver.for_alpn(alpn, core.drivers) || Http1, "", "")
 
           driver = Driver.for_alpn(alpn, core.drivers) ->
             start(core, driver, "", "")
@@ -655,14 +658,18 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     end
   end
 
-  defp asked(username, {:asking, _grant}, ip, port, sni, why) do
-    case Gate.ask_connection(username, ip, port, %{name: sni, why: Driver.why(why)}) do
+  # A network grant's that would ask you, or any whose host list asks
+  # about or blocks a name it may be for (the Internet's included).
+  defp asked(username, {open_or_asking, grant}, ip, port, sni, why) do
+    seen = %{name: sni, why: Driver.why(why)}
+
+    case Gate.unread(username, grant, ip, port, seen, open_or_asking == :asking) do
       {:ok, _grant} -> :ok
       denied -> denied
     end
   end
 
-  defp asked(_username, _reach, _ip, _port, _sni, _why), do: :ok
+  defp asked(_username, :read_only, _ip, _port, _sni, _why), do: :ok
 
   # The VM's client gave up on TLS with MWT's certificate, so nothing went
   # out: logged by name, since the next try fails the same way and only
@@ -695,7 +702,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
       do: "the client refused MWT's certificate (a pinned certificate, or a CA of its own)"
 
   def handshake_failure({:tls_alert, {:no_application_protocol, _}}),
-    do: "the client offered no protocol MWT reads (HTTP/2 only, as gRPC does)"
+    do: "the client offered no protocol MWT reads"
 
   def handshake_failure({:tls_alert, {:protocol_version, _}}),
     do: "the client offered no TLS version MWT speaks (1.2 or 1.3)"
@@ -842,8 +849,10 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
      }}
   end
 
-  defp act(%{cut?: true} = core, {tag, :host, _bytes}) when tag in [:send, :write],
+  defp act(%{cut?: true} = core, {tag, :host, _bytes}) when tag in [:send, :write, :frame],
     do: {:ok, core}
+
+  defp act(%{cut?: true} = core, {:send, :host, _bytes, _stream}), do: {:ok, core}
 
   defp act(core, {:send, :host, bytes}) do
     data = IO.iodata_to_binary(bytes)
@@ -854,7 +863,41 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     end
   end
 
+  # The VM's text of one stream (a request's body, a WebSocket's messages,
+  # an HTTP/2 stream), looked through as a stream of its own: what goes
+  # between two of its sends (frame headers, other streams) can't hide a
+  # value split across them. With the list its request's verdict gave, or
+  # the connection's.
+  defp act(core, {:send, :host, bytes, stream}) do
+    data = IO.iodata_to_binary(bytes)
+
+    scanner =
+      Map.get_lazy(core.scanners, stream, fn ->
+        Scanner.new(core.scanner && core.scanner.secrets)
+      end)
+
+    case Scanner.feed(scanner, data) do
+      {:ok, _data, scanner} ->
+        up(%{core | scanners: Map.put(core.scanners, stream, scanner)}, data)
+
+      {:found, label} ->
+        {:cut, {:found, found(core, label)}, core}
+    end
+  end
+
   defp act(core, {:write, :host, bytes}), do: up(core, bytes)
+  defp act(core, {:frame, :host, bytes}), do: up(core, bytes)
+
+  # The VM's bytes a driver refused: never sent, only looked through for
+  # real values, so the firewall hears of one as it would had they gone.
+  # A placeholder in them is no leak: it went nowhere.
+  defp act(core, {:look, bytes}) do
+    case MWTClient.Sandbox.Secrets.find(core.values, IO.iodata_to_binary(bytes)) do
+      nil -> {:ok, core}
+      label -> {:cut, {:found, found(core, label)}, core}
+    end
+  end
+
   defp act(core, {:read, side, timeout}), do: {:ok, arm(core, side, timeout)}
 
   defp act(core, {:connect, %{alpn: alpn}}) do
@@ -891,6 +934,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   # may stop the connection there.
   defp act(core, {:done, request, exchange}) do
     if exchange, do: Server.cast(core.username, {:exchange, request.id, exchange})
+    core = %{core | scanners: Map.delete(core.scanners, request.id)}
 
     case report(core) do
       {:ok, core} -> {:ok, core}
@@ -959,7 +1003,14 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
       {:forward, replace, scan} ->
         case Gate.held_by(core.username, Map.get(scan, :grant)) do
           :ok ->
-            core = %{core | scanner: Scanner.new(scan.out)}
+            scanner = Scanner.new(scan.out)
+
+            core = %{
+              core
+              | scanner: scanner,
+                scanners: Map.put(core.scanners, request.id, scanner)
+            }
+
             told(core, request, {:allow, replace})
 
           {:error, :grant_off} ->
@@ -1165,7 +1216,8 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
           next: watch.report_every,
           sent: {0, 0}
         },
-        scanner: Scanner.new(Map.get(watch, :secrets))
+        scanner: Scanner.new(Map.get(watch, :secrets)),
+        values: Map.get(watch, :values)
     }
   end
 

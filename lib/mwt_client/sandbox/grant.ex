@@ -84,6 +84,16 @@ defmodule MWTClient.Sandbox.Grant do
   opens only the addresses MWT's DNS answered for it
   (`MWTClient.Sandbox.Dns`).
 
+  `host_rules`, for a network grant, the Internet included, are hosts
+  whose uses go otherwise than the grant's own approval mode says
+  (`MWTClient.Sandbox.HostRules`): each entry `:ask` (every request MWT
+  reads there waits for you, and a connection it can't read is asked about
+  as one), `:auto` (each goes through) or `:block` (each is refused). So
+  the Internet can let everything through but a few hosts you check, or
+  ask about everything but a few you let through, and refuse some
+  outright. An entry is a name, never an address, and covers every name
+  under it; the one naming a host most exactly speaks.
+
   `presents`, for a token grant, names the presentations `mwt exec` runs for it (`native/mwt_present`), each with
   its few settings: `%{metadata: %{project: "…", email: "…"}}`, a cloud
   metadata server on loopback for the command's lifetime; `%{login:
@@ -170,6 +180,7 @@ defmodule MWTClient.Sandbox.Grant do
     hosts: [],
     carriers: [],
     destinations: [],
+    host_rules: [],
     allowances: [],
     uses: 0
   ]
@@ -197,6 +208,15 @@ defmodule MWTClient.Sandbox.Grant do
           at: DateTime.t(),
           reviewed_at: DateTime.t() | nil
         }
+
+  @typedoc """
+  What a network grant does with the uses of the hosts an entry covers
+  (`host_rules`): ask you about each, let each through, or refuse each.
+  """
+  @type host_action :: :ask | :auto | :block
+
+  @typedoc "One entry of a network grant's host list (`MWTClient.Sandbox.HostRules`)."
+  @type host_rule :: %{host: String.t(), action: host_action()}
 
   @typedoc "Who may wield a token grant's value: the VM, or only its subgrants."
   @type reach :: :vm | :subgrants
@@ -260,6 +280,7 @@ defmodule MWTClient.Sandbox.Grant do
           hosts: [String.t()],
           carriers: [String.t()],
           destinations: [String.t()],
+          host_rules: [host_rule()],
           allowances: [Allowance.t()],
           uses: non_neg_integer()
         }
@@ -340,7 +361,6 @@ defmodule MWTClient.Sandbox.Grant do
   """
   @spec starts(t()) :: [start()]
   def starts(%__MODULE__{proposal: %{reviewed_at: nil}}), do: [:off]
-  def starts(%__MODULE__{internet: true}), do: [:off, :auto]
   def starts(%__MODULE__{kind: :token, reach: :subgrants}), do: [:off]
 
   def starts(%__MODULE__{} = grant),
@@ -411,7 +431,8 @@ defmodule MWTClient.Sandbox.Grant do
   @ceilings [:ask, :allow]
 
   @doc """
-  The ceilings a grant can take. The Internet never asks: only `:allow`.
+  The ceilings a grant can take. The Internet never always asks: only
+  `:allow` (it can ask each time, and its host list can ask about hosts).
   Ask to run commands always does: `[:ask]`. Every other grant and
   subgrant may always ask, or not.
 
@@ -591,11 +612,14 @@ defmodule MWTClient.Sandbox.Grant do
   def internet?(%__MODULE__{internet: internet}), do: internet == true
 
   @doc """
-  Whether every use goes through while the grant is on, with no way to ask
-  each time: the Internet.
+  How a grant's uses are approved when it is turned on and nobody said:
+  `:ask`, each waits for you; for the Internet `:all`, since everything an
+  agent fetches goes through it and asking about each would stop the agent
+  at once. Its host list asks about the hosts you choose
+  (`host_rules`).
   """
-  @spec always_auto?(t()) :: boolean()
-  def always_auto?(%__MODULE__{} = grant), do: internet?(grant)
+  @spec default_uses(t()) :: :ask | :all
+  def default_uses(%__MODULE__{} = grant), do: if(internet?(grant), do: :all, else: :ask)
 
   @doc "Whether a grant is one of MWT's own tools, built in."
   @spec mwt_tools?(t()) :: boolean()

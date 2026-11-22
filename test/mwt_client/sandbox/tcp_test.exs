@@ -73,13 +73,13 @@ defmodule MWTClient.Sandbox.TcpTest do
     assert Tcp.first(<<0x16, 3, 1, 0, 5, 1, 2>>) == :other
   end
 
-  test "MWT reads TLS that names a host and offers HTTP/1.1 or nothing; else says why not" do
+  test "MWT reads TLS that names a host and offers HTTP/1.1, HTTP/2 or nothing; else says why not" do
     readable = fn extensions -> Tcp.readable(Tcp.first(hello(extensions))) end
 
     assert readable.([sni("example.com")]) == :ok
     assert readable.([sni("example.com"), alpn(["h2", "http/1.1"])]) == :ok
     assert readable.([sni("example.com"), alpn(["http/1.1"])]) == :ok
-    assert readable.([sni("example.com"), alpn(["h2"])]) == {:no, :h2_only}
+    assert readable.([sni("example.com"), alpn(["h2"])]) == :ok
     assert readable.([sni("example.com"), alpn(["imap"])]) == {:no, {:protocols, ["imap"]}}
     assert readable.([alpn(["http/1.1"])]) == {:no, :no_name}
     assert Tcp.readable(:silent) == {:no, :silent}

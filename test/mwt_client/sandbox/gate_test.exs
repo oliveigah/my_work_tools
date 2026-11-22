@@ -125,18 +125,24 @@ defmodule MWTClient.Sandbox.GateTest do
   ## The Internet, a grant
 
   describe "the Internet" do
-    test "is built in, always on as MWT starts, and never asks", %{username: username} do
+    test "is built in, on and auto-approved as MWT starts, and asks only when set to", %{
+      username: username
+    } do
       internet = Enum.find(Sandbox.snapshot(username).grants, &Grant.internet?/1)
       assert %Grant{id: "internet", kind: :network, state: :on, start: :auto} = internet
       assert Grant.built_in?(internet)
-      assert Grant.starts(internet) == [:off, :auto]
+      assert Grant.auto_approved?(internet)
+      assert Grant.starts(internet) == [:off, :on, :auto]
+      assert Grant.default_uses(internet) == :all
 
-      # Turned on to ask each time, it asks nothing all the same.
+      # Asking each time is a mode like any grant's.
       {:ok, _} = Sandbox.turn_off(username, "internet")
       {:ok, internet} = Sandbox.turn_on(username, "internet", 30, :ask)
+      refute Grant.auto_approved?(internet)
+      {:ok, internet} = Sandbox.set_mode(username, "internet", :all)
       assert Grant.auto_approved?(internet)
       {:ok, internet} = Sandbox.set_mode(username, "internet", :ask)
-      assert Grant.auto_approved?(internet)
+      refute Grant.auto_approved?(internet)
     end
 
     test "off, a public address opens only for a network grant listing it", %{
@@ -294,8 +300,11 @@ defmodule MWTClient.Sandbox.GateTest do
       assert :read = Gate.reading(username, "internet", named)
       assert :read = Gate.reading(username, "internet", {:tls, %{name: "example.com", alpn: nil}})
 
-      assert {:pass, :h2_only} =
+      assert :read =
                Gate.reading(username, "internet", {:tls, %{name: "x.example", alpn: ["h2"]}})
+
+      assert {:pass, {:protocols, ["imap"]}} =
+               Gate.reading(username, "internet", {:tls, %{name: "x.example", alpn: ["imap"]}})
 
       assert {:pass, :no_name} =
                Gate.reading(username, "internet", {:tls, %{name: nil, alpn: nil}})
@@ -318,6 +327,31 @@ defmodule MWTClient.Sandbox.GateTest do
 
       assert {:pass, :not_tls} =
                Gate.reading(username, "corp", Tcp.first("SSH-2.0-OpenSSH_9.6\r\n"))
+    end
+  end
+
+  describe "a name a host list holds is known by its addresses" do
+    test "its answer is kept, and a connection to them is held by its entry whatever it names",
+         %{username: username} do
+      ip = {160, 1, 2, 9}
+      {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "paste.example", :block})
+
+      :ok = Gate.remember_listed(username, "paste.example", a_answer("paste.example", ip))
+      assert ["paste.example"] = Map.get(Gate.answered_for(username, ip), ip)
+
+      # Unread, claiming another name: blocked all the same.
+      assert {:deny, words} =
+               Gate.unread(username, "internet", ip, 443, %{name: "harmless.example"}, false)
+
+      assert words =~ "blocked on Internet (paste.example)"
+
+      # A name no entry asks about or blocks is not kept.
+      other = {160, 1, 2, 10}
+
+      :ok =
+        Gate.remember_listed(username, "harmless.example", a_answer("harmless.example", other))
+
+      assert Map.get(Gate.answered_for(username, other), other) in [nil, []]
     end
   end
 

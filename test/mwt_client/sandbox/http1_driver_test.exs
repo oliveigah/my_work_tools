@@ -136,10 +136,17 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
              Enum.find(actions, &match?({:done, _, _}, &1))
   end
 
-  test "it reads only inside TLS MWT ended, on TCP: plain HTTP isn't read yet" do
+  test "it reads TCP: inside TLS MWT ended by a method, as plain bytes by a whole request line" do
     assert Http1.detect("GET / HTTP/1.1\r\n", @ctx) == :yes
-    assert Http1.detect("GET / HTTP/1.1\r\n", %{@ctx | tls?: false}) == :no
     assert Http1.detect("GET / HTTP/1.1\r\n", %{@ctx | transport: :udp}) == :no
     assert Http1.detect(<<0, 1, 2>>, @ctx) == :no
+
+    plain = %{@ctx | tls?: false, first: :vm}
+    assert Http1.detect("GET / HTTP/1.1\r\nhost: example.com\r\n", plain) == :yes
+    assert Http1.detect("GET / HT", plain) == :more
+    # A plain protocol that begins with a word in capitals isn't HTTP.
+    assert Http1.detect("NICK agent\r\nUSER agent 0 * :agent\r\n", plain) == :no
+    # A server that greets first.
+    assert Http1.detect("HELO there\r\n", %{plain | first: :host}) == :no
   end
 end

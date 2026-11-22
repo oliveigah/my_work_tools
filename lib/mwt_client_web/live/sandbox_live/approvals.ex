@@ -338,7 +338,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     </button>
 
     <details
-      :if={(@similar || @grant) && not always_asks?(@grant)}
+      :if={(@similar || (@grant && is_nil(@approval.host_entry))) && not always_asks?(@grant)}
       id={"allow-more-#{@approval.id}"}
       class="group relative"
     >
@@ -361,7 +361,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
           <span class={@similar_pattern && "font-mono text-[10px] text-ink"}>{@similar_detail}</span>
         </.allow_scope>
         <.allow_scope
-          :if={@grant}
+          :if={@grant && is_nil(@approval.host_entry)}
           id={"allow-all-#{@approval.id}"}
           approval={@approval}
           scope="all"
@@ -1398,11 +1398,11 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
                 checked={@approval.minutes}
               />
               <.pills
-                :if={Grant.auto_approvable?(@grant) and not Grant.always_auto?(@grant)}
+                :if={Grant.auto_approvable?(@grant)}
                 id={"activation-uses-#{@approval.id}"}
                 name={@form[:uses].name}
                 options={[{"ask", "Ask each time"}, {"all", "Auto-approve"}]}
-                checked="ask"
+                checked={if(Grant.default_uses(@grant) == :all, do: "all", else: "ask")}
               />
               <span
                 :if={Grant.ask_to_run?(@grant)}
