@@ -1,14 +1,10 @@
 defmodule MWTClientWeb.GitLive.PushTest do
-  use MWTClientWeb.ConnCase, async: false
+  use MWTClientWeb.ConnCase, async: true
 
   import MWTClient.GitHelpers
   import Phoenix.LiveViewTest
 
-  alias MWTClient.VaultHelpers
-
   setup %{conn: conn} do
-    VaultHelpers.reset_data_dir!()
-    on_exit(&VaultHelpers.reset_data_dir!/0)
     %{conn: conn} = sign_in(conn)
     context = initialized_repository(%{})
     {:ok, view, _html} = live(conn, ~p"/tools/git")

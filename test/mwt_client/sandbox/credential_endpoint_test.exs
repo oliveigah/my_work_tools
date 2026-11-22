@@ -82,51 +82,57 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
     end
 
     test "it signs only as an account the grant names, for a host it lists, with no delegation" do
+      # Once: each call reads the clock, and two may fall in different seconds.
+      claims = claims()
+
       check = &CredentialEndpoint.check(@grant, &1, CredentialEndpoint.recognize(@grant, &1))
 
       assert {:ok, %{account: @account, aud_host: "svc.example.com", payload: payload}} =
-               check.(sign_request("p", claims()))
+               check.(sign_request("p", claims))
 
-      assert Jason.decode!(payload) == claims()
+      assert Jason.decode!(payload) == claims
 
       other_account = %{
-        sign_request("p", claims())
+        sign_request("p", claims)
         | path: "/v1/projects/-/serviceAccounts/root@p.iam.gserviceaccount.com:signJwt"
       }
 
       assert {:error, "mwt_not_a_signer", message} = check.(other_account)
       assert message =~ "may sign only as #{@account}"
 
-      unlisted = Map.put(claims(), "aud", "https://elsewhere.example.com/*")
+      unlisted = Map.put(claims, "aud", "https://elsewhere.example.com/*")
       assert {:error, "mwt_placeholder_blocked", _} = check.(sign_request("p", unlisted))
 
       assert {:error, "mwt_bad_request", _} =
-               check.(sign_request("p", Map.delete(claims(), "aud")))
+               check.(sign_request("p", Map.delete(claims, "aud")))
 
       delegated =
-        Jason.encode!(%{payload: Jason.encode!(claims()), delegates: ["projects/-/x"]})
+        Jason.encode!(%{payload: Jason.encode!(claims), delegates: ["projects/-/x"]})
 
       assert {:error, "mwt_bad_request", _} =
                check.(
-                 sign_request("p", claims(), %{
+                 sign_request("p", claims, %{
                    body: delegated,
                    headers: [{"content-length", "#{byte_size(delegated)}"}]
                  })
                )
 
       # Only what MWT read whole is signed.
-      cut = sign_request("p", claims())
+      cut = sign_request("p", claims)
       cut = %{cut | headers: [{"content-length", "999999"}]}
       assert {:error, "mwt_bad_request", _} = check.(cut)
     end
 
     test "Google's signed JWT is kept; the VM gets its header and claims, never its signature" do
+      # Once: each call reads the clock, and two may fall in different seconds.
+      claims = claims()
+
       now = DateTime.utc_now()
 
       {:ok, ask} =
-        CredentialEndpoint.check(@grant, sign_request("p", claims()), {:sign_jwt, @account})
+        CredentialEndpoint.check(@grant, sign_request("p", claims), {:sign_jwt, @account})
 
-      jwt = signed(claims())
+      jwt = signed(claims)
       output = Jason.encode!(%{keyId: "k1", signedJwt: jwt})
 
       assert {:ok, %Made{} = made, json} =
@@ -135,10 +141,10 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
       assert %{"keyId" => "k1", "signedJwt" => placeholder} = Jason.decode!(json)
       assert placeholder == made.placeholder and made.value == jwt
       refute json =~ String.duplicate("S", 342)
-      assert Made.claims(placeholder) == {:ok, claims()}
+      assert Made.claims(placeholder) == {:ok, claims}
       assert Made.jwt_placeholders_in("Bearer " <> placeholder) == [placeholder]
       assert made.hosts == ["svc.example.com"] and made.carriers == ["authorization"]
-      assert DateTime.to_unix(made.until) == claims()["exp"]
+      assert DateTime.to_unix(made.until) == claims["exp"]
 
       # A refusal goes on as Google wrote it; any other answer doesn't.
       denied = ~s({"error": {"code": 403, "status": "PERMISSION_DENIED"}})
@@ -284,8 +290,11 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
 
     test "MWT signs with the grant's value; the real JWT goes in its placeholder's place",
          %{username: username, grant: grant} do
+      # Once: each call reads the clock, and two may fall in different seconds.
+      claims = claims()
+
       test = self()
-      jwt = signed(claims())
+      jwt = signed(claims)
 
       Req.Test.stub(SavedRequest, fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
@@ -298,12 +307,12 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
         Req.Test.json(conn, %{keyId: "k1", signedJwt: jwt})
       end)
 
-      assert {:answer, 200, json} = authorize(username, sign_request(grant.placeholder, claims()))
+      assert {:answer, 200, json} = authorize(username, sign_request(grant.placeholder, claims))
 
       # The very request the tool makes, with the real token.
       assert_receive {:signed, path, ["Bearer " <> @value], body}
       assert path == "/v1/projects/-/serviceAccounts/sa%40p.iam.gserviceaccount.com:signJwt"
-      assert Jason.decode!(Jason.decode!(body)["payload"]) == claims()
+      assert Jason.decode!(Jason.decode!(body)["payload"]) == claims
 
       %{"signedJwt" => placeholder} = Jason.decode!(json)
       refute placeholder == jwt
@@ -344,6 +353,9 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
 
     test "asking each time, the card waits; allowed, MWT signs and answers",
          %{username: username} do
+      # Once: each call reads the clock, and two may fall in different seconds.
+      claims = claims()
+
       {:ok, grant} =
         Sandbox.create_grant(username, %{
           "kind" => "token",
@@ -356,13 +368,13 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
         })
 
       {:ok, grant} = Sandbox.turn_on(username, grant.id, 60, :ask)
-      Req.Test.stub(SavedRequest, &Req.Test.json(&1, %{keyId: "k1", signedJwt: signed(claims())}))
+      Req.Test.stub(SavedRequest, &Req.Test.json(&1, %{keyId: "k1", signedJwt: signed(claims)}))
 
       asking =
         Task.async(fn ->
           Server.call(
             username,
-            {:authorize, sign_request(grant.placeholder, claims())},
+            {:authorize, sign_request(grant.placeholder, claims)},
             :infinity
           )
         end)
@@ -399,6 +411,9 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
 
     test "what can't be signed is refused before anything goes out, and Google's refusal comes back",
          %{username: username, grant: grant} do
+      # Once: each call reads the clock, and two may fall in different seconds.
+      claims = claims()
+
       test = self()
 
       Req.Test.stub(SavedRequest, fn conn ->
@@ -406,14 +421,14 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
         Plug.Conn.send_resp(conn, 403, ~s({"error": {"status": "PERMISSION_DENIED"}}))
       end)
 
-      unlisted = Map.put(claims(), "aud", "https://elsewhere.example.com/*")
+      unlisted = Map.put(claims, "aud", "https://elsewhere.example.com/*")
 
       assert {:deny, 403, json} = authorize(username, sign_request(grant.placeholder, unlisted))
       assert json =~ "mwt_placeholder_blocked"
       refute_received :called
 
       assert {:answer, 403, denied} =
-               authorize(username, sign_request(grant.placeholder, claims()))
+               authorize(username, sign_request(grant.placeholder, claims))
 
       assert denied =~ "PERMISSION_DENIED"
       assert_receive :called

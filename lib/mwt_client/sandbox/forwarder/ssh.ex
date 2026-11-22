@@ -55,7 +55,7 @@ defmodule MWTClient.Sandbox.Forwarder.SSH do
       _ = File.rm(control)
 
       port =
-        Port.open({:spawn_executable, System.find_executable("bash") || "/bin/bash"}, [
+        Port.open({:spawn_executable, MWTClient.Executable.find("bash") || "/bin/bash"}, [
           :binary,
           :exit_status,
           :stderr_to_stdout,
@@ -145,7 +145,7 @@ defmodule MWTClient.Sandbox.Forwarder.SSH do
   defp bracket(target), do: if(String.contains?(target, ":"), do: "[#{target}]", else: target)
 
   defp control(conn, args) do
-    System.cmd(
+    MWTClient.Executable.cmd(
       "timeout",
       ["#{@control_timeout}", conn.ssh, "-S", conn.control, "-F", "/dev/null"] ++
         options(["BatchMode=yes", "LogLevel=ERROR"]) ++ args,
@@ -165,7 +165,7 @@ defmodule MWTClient.Sandbox.Forwarder.SSH do
   end
 
   defp find(name) do
-    case System.find_executable(name) do
+    case MWTClient.Executable.find(name) do
       nil -> {:error, "#{name} isn't installed on this machine"}
       path -> {:ok, path}
     end
@@ -183,7 +183,7 @@ defmodule MWTClient.Sandbox.Forwarder.SSH do
       _ = File.rm(key <> ".pub")
       File.mkdir_p!(Path.dirname(key))
 
-      case System.cmd(
+      case MWTClient.Executable.cmd(
              "ssh-keygen",
              ["-q", "-t", "ed25519", "-N", "", "-C", "MWT port forwarding", "-f", key],
              stderr_to_stdout: true

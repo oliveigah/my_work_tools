@@ -165,7 +165,7 @@ defmodule MWTClient.DBus.Connection do
       {:ok, uid}
     else
       _other ->
-        case System.cmd("id", ["-u"], stderr_to_stdout: true) do
+        case MWTClient.Executable.cmd("id", ["-u"], stderr_to_stdout: true) do
           {uid, 0} -> {:ok, String.trim(uid)}
           _failed -> {:error, :no_uid}
         end

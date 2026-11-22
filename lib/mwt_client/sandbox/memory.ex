@@ -98,7 +98,7 @@ defmodule MWTClient.Sandbox.Memory do
   @spec host_memo() :: Path.t() | nil
   def host_memo do
     path = Path.join(System.user_home!(), ".optmem/memo")
-    if File.regular?(path), do: path
+    if File.regular?(path, [:raw]), do: path
   end
 
   @doc "Your memory's folder."
@@ -178,7 +178,9 @@ defmodule MWTClient.Sandbox.Memory do
       parts =
         for name <- @shared, File.exists?(Path.join(source, name)), do: Path.join(source, name)
 
-      case System.cmd("flock", [Path.join(source, ".lock"), "cp", "-a" | parts] ++ [copy],
+      case MWTClient.Executable.cmd(
+             "flock",
+             [Path.join(source, ".lock"), "cp", "-a" | parts] ++ [copy],
              stderr_to_stdout: true
            ) do
         {_, 0} ->

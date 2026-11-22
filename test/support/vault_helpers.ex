@@ -6,20 +6,57 @@ defmodule MWTClient.VaultHelpers do
   alias MWTClient.Accounts
   alias MWTClient.Vault.Store
 
-  @doc "Unlocks a unique identity and cleans up only its stores and directory on exit."
+  @doc """
+  Unlocks a unique identity and cleans up only its stores and directory on
+  exit, once the sandbox's work for it has ended (`await_sandbox_tasks/1`).
+
+  Cleanups run newest first: a folder the identity's sandbox writes into
+  is removed after the identity closes when its cleanup is registered
+  before this is called.
+  """
   def unlocked_identity(username \\ "tester", password \\ "correct horse") do
     username = unique_username(username)
     directory = Accounts.dir(username)
 
     ExUnit.Callbacks.on_exit(fn ->
+      server = Store.whereis(MWTClient.Sandbox.Server, username)
       Store.close(username)
-      File.rm_rf!(directory)
+      if server, do: await_sandbox_tasks(server)
+      MWTClient.TestFolders.remove!(directory)
     end)
 
     {:ok, profile, key} = Accounts.sign_in(username, password)
     :ok = Store.open(profile.username, key)
 
     %{username: profile.username, password: password, key: key}
+  end
+
+  @doc """
+  Waits for the tasks a sandbox server started to end, as long as 5 s.
+
+  The sandbox runs its work (a share sync, a handoff's git) in tasks under
+  `MWTClient.Sandbox.TaskSupervisor`, not under the identity: closing it
+  doesn't stop them, and one still copying into a test's folder would race
+  that folder's removal. One still running after 5 s fails the test.
+  """
+  def await_sandbox_tasks(server) do
+    tasks =
+      for pid <- Task.Supervisor.children(MWTClient.Sandbox.TaskSupervisor),
+          {:dictionary, dictionary} <- [Process.info(pid, :dictionary)],
+          server in Keyword.get(dictionary, :"$callers", []),
+          do: {pid, Process.monitor(pid)}
+
+    for {pid, ref} <- tasks do
+      receive do
+        {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
+      after
+        5_000 ->
+          raise "a sandbox task still ran 5 s after its identity closed: " <>
+                  inspect(Process.info(pid, :current_stacktrace))
+      end
+    end
+
+    :ok
   end
 
   @doc "Unlocks an extra identity alongside the current one."

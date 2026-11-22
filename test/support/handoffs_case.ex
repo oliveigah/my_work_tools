@@ -33,7 +33,7 @@ defmodule MWTClient.HandoffsCase do
   def git_env, do: @me ++ Guest.git_env()
 
   def git(dir, args) do
-    case System.cmd("git", ["-C", dir | args],
+    case MWTClient.Executable.cmd("git", ["-C", dir | args],
            env: git_env(),
            stderr_to_stdout: true
          ) do
@@ -51,9 +51,10 @@ defmodule MWTClient.HandoffsCase do
   def sha(dir, rev), do: dir |> git(["rev-parse", rev]) |> String.trim()
 
   setup do
-    %{username: username, key: key} = MWTClient.VaultHelpers.unlocked_identity("handoffs")
     base = Path.join(System.tmp_dir!(), "handoffs-#{System.unique_integer([:positive])}")
-    on_exit(fn -> File.rm_rf!(base) end)
+    # Before the identity: removed once its sandbox's work has ended.
+    on_exit(fn -> MWTClient.TestFolders.remove!(base) end)
+    %{username: username, key: key} = MWTClient.VaultHelpers.unlocked_identity("handoffs")
 
     repo = Path.join(base, "host/app")
     File.mkdir_p!(repo)
@@ -98,6 +99,46 @@ defmodule MWTClient.HandoffsCase do
     tree
   end
 
+  @doc """
+  A setup for the tests of worktree slots: your repository ignores the
+  build's output, which a slot keeps warm, and the project has slot-1 to
+  slot-3 beside slot-0, the clone. `worktree/4` fetches from it.
+  """
+  def with_slots(%{username: username, repo: repo, mirror: mirror}) do
+    commit(repo, [{".gitignore", "_build/\n"}], "ignore the build")
+    {:ok, _} = Projects.open(username, repo)
+    {:ok, "slot-1"} = Projects.add_slot(username, "app")
+    {:ok, "slot-2"} = Projects.add_slot(username, "app")
+    {:ok, "slot-3"} = Projects.add_slot(username, "app")
+    Process.put(:fetch, {mirror, repo})
+    :ok
+  end
+
+  @doc "The folder of slot `n` of the clone `mirror`."
+  def slot(mirror, n), do: Path.join(mirror <> ".wt", "slot-#{n}")
+
+  @doc """
+  `mwt worktree ACTION` in `cwd`: a new task from your master unless
+  `fields` names another base. It fetches origin first, as the command does.
+  """
+  def worktree(username, cwd, action, fields \\ %{}) do
+    {mirror, repo} = Process.get(:fetch)
+    git(mirror, ["fetch", "-q", repo, "+refs/heads/*:refs/remotes/origin/*"])
+    base = if action == "new", do: %{"from" => "master"}, else: %{}
+
+    Channel.answer(
+      "worktree",
+      Map.merge(Map.merge(base, %{"cwd" => cwd, "action" => action}), fields),
+      username
+    )
+  end
+
+  @doc "The numbered slots' states, `{name, branch, free?}`; slot-0's apart."
+  def states(username) do
+    {:ok, %{slots: slots}} = Projects.slots(username, "app")
+    for slot <- slots, slot.name != "slot-0", do: {slot.name, slot.branch, slot.free?}
+  end
+
   def ask(cwd, extra \\ %{}),
     do:
       Map.merge(
@@ -130,7 +171,7 @@ defmodule MWTClient.HandoffsCase do
     File.chmod!(Path.join(bin, "git-remote-mwt"), 0o755)
 
     fn args ->
-      System.cmd("bash", [cli | args],
+      MWTClient.Executable.cmd("bash", [cli | args],
         cd: cwd,
         env:
           [

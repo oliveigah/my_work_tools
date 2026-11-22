@@ -140,7 +140,7 @@ defmodule MWTClient.Sandbox.Monitor.Host do
   end
 
   defp getconf(name, default) do
-    with path when is_binary(path) <- System.find_executable("getconf"),
+    with path when is_binary(path) <- MWTClient.Executable.find("getconf"),
          {output, 0} <- System.cmd(path, [name], stderr_to_stdout: true),
          {value, _} when value > 0 <- Integer.parse(String.trim(output)) do
       value

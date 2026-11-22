@@ -69,11 +69,12 @@ defmodule MWTClient.Sandbox.Instructions do
     dir = Path.join([:code.priv_dir(:mwt_client), "sandbox", "guides"])
 
     for file <- File.ls!(dir), Path.extname(file) == ".md", into: %{} do
-      {Path.rootname(file), File.read!(Path.join(dir, file))}
+      {Path.rootname(file), MWTClient.Files.read!(Path.join(dir, file))}
     end
   end
 
-  defp priv(file), do: File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", file]))
+  defp priv(file),
+    do: MWTClient.Files.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", file]))
 
   @doc "The files in Home that carry the block, relative to Home."
   @spec home_files() :: [String.t()]

@@ -58,7 +58,7 @@ defmodule MWTClient.Sandbox.HostGit do
     File.chmod!(scratch, 0o700)
     errors = Path.join(scratch, "stderr")
     input = Path.join(scratch, "stdin")
-    File.write!(input, Keyword.get(opts, :input, ""))
+    MWTClient.Files.write!(input, Keyword.get(opts, :input, ""))
 
     # Each pipe reads one byte past its limit, telling "more" from
     # "exactly that much". FD 3 carries stdout to the outer pipe while
@@ -77,15 +77,19 @@ defmodule MWTClient.Sandbox.HostGit do
         @transport ++ args
 
     try do
-      case System.cmd("timeout", words, env: env) do
+      case MWTClient.Executable.cmd("timeout", words, env: env) do
         {_output, 124} ->
           {:error, "git #{hd(args)} took longer than #{seconds} s"}
 
         {output, status} ->
-          result(output, File.read!(errors), status, args, opts, max)
+          result(output, MWTClient.Files.read!(errors), status, args, opts, max)
       end
     after
-      File.rm_rf(scratch)
+      # The two files it holds, then the folder: three calls where a
+      # recursive removal makes seven, two of them raw.
+      MWTClient.Files.rm(errors)
+      MWTClient.Files.rm(input)
+      File.rmdir(scratch)
     end
   end
 

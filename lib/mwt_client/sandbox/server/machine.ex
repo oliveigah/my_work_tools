@@ -815,7 +815,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
     _ = Msb.write_launcher(state.username)
 
     port =
-      Port.open({:spawn_executable, System.find_executable("bash")}, [
+      Port.open({:spawn_executable, MWTClient.Executable.find("bash")}, [
         :binary,
         :exit_status,
         :stderr_to_stdout,

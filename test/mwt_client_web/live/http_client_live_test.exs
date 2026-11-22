@@ -1,6 +1,7 @@
 defmodule MWTClientWeb.HttpClientLiveTest do
-  # Changes global Req defaults, shared mocks and layout preferences.
-  use MWTClientWeb.ConnCase, async: false
+  # The tests that change app-wide state (Req's defaults, shared mocks, the
+  # layout preference) are in http_client_live_app_wide_test.exs.
+  use MWTClientWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
   import MWTClientWeb.PanelComponents, only: [page_size: 0]
@@ -8,44 +9,8 @@ defmodule MWTClientWeb.HttpClientLiveTest do
   alias MWTClient.HttpClient.HistoryMetadata
   alias MWTClient.HttpClient.Requests
   alias MWTClient.HttpClient.Resources
-  alias MWTClient.VaultHelpers
 
-  setup %{conn: conn} do
-    VaultHelpers.reset_data_dir!()
-    on_exit(&VaultHelpers.reset_data_dir!/0)
-    %{conn: conn, username: username} = sign_in(conn)
-
-    health_request =
-      Req.new(
-        method: :get,
-        url: "https://api.example.test/health",
-        headers: [{"accept", "application/json"}]
-      )
-
-    health_response = %Req.Response{
-      status: 200,
-      headers: %{"content-type" => ["application/json"], "x-ratelimit-remaining" => ["4998"]},
-      body: %{"status" => "ok"}
-    }
-
-    health_id =
-      Resources.record(
-        username,
-        HistoryMetadata.new(%{description: "Health check", tags: ["system", "health"]}),
-        health_request,
-        health_response
-      )
-
-    Resources.record(
-      username,
-      HistoryMetadata.new(%{description: "Create order", tags: ["orders"]}),
-      Req.new(method: :post, url: "https://api.example.test/orders", body: ~s({"sku":"MWT-PRO"})),
-      %Req.Response{status: 201, headers: %{}, body: %{"id" => "ord_1"}}
-    )
-
-    {:ok, view, _html} = live(conn, ~p"/tools/http")
-    %{view: view, health_id: health_id, username: username, conn: conn}
-  end
+  setup {MWTClientWeb.HttpClientLiveHelpers, :with_history}
 
   test "boots with a blank request and persisted history", %{view: view} do
     assert has_element?(view, "#request-form")
@@ -103,6 +68,7 @@ defmodule MWTClientWeb.HttpClientLiveTest do
     health_id: health_id
   } do
     view |> element("#history-#{health_id}") |> render_click()
+    render_async(view)
 
     assert count(view, "[phx-click=select_tab]") == 2
     assert first_attribute(view, "#request-url", "value") == "https://api.example.test/health"
@@ -160,6 +126,7 @@ defmodule MWTClientWeb.HttpClientLiveTest do
     health_id: health_id
   } do
     view |> element("#history-#{health_id}") |> render_click()
+    render_async(view)
     view |> element("[phx-click=new_tab]") |> render_click()
 
     view
@@ -174,6 +141,8 @@ defmodule MWTClientWeb.HttpClientLiveTest do
     assert first_attribute(view, "#request-url", "value") == "https://api.example.test/draft"
 
     view |> element("[phx-click=select_tab][phx-value-id=#{Enum.at(tabs, 1)}]") |> render_click()
+    # Its response body loads as a task.
+    render_async(view)
     assert first_attribute(view, "#request-url", "value") == "https://api.example.test/health"
     assert render(view) =~ "200 OK"
   end
@@ -451,8 +420,11 @@ defmodule MWTClientWeb.HttpClientLiveTest do
   defp picked(view),
     do: attributes(view, "#history-list [role=option][aria-selected=true]", "phx-value-id")
 
+  # A plain click opens the entry in a tab, as a task: waited for, as the
+  # page shows it once it is done.
   defp click_entry(view, id, modifiers \\ %{}) do
     view |> element("#history-#{id}") |> render_click(modifiers)
+    render_async(view)
     view
   end
 
@@ -602,6 +574,7 @@ defmodule MWTClientWeb.HttpClientLiveTest do
     health_id: health_id
   } do
     view |> element("#history-#{health_id}") |> render_click()
+    render_async(view)
 
     assert first_attribute(view, "#request-description-input", "value") == "Health check"
     assert has_element?(view, "[phx-click=remove_tag][phx-value-tag=system]")
@@ -645,105 +618,6 @@ defmodule MWTClientWeb.HttpClientLiveTest do
     assert html =~ "Nothing here yet"
     refute has_element?(view, "#history-selection")
     assert Resources.all(username) == []
-  end
-
-  test "an infinite request exposes a cancel button and can be cancelled", %{
-    view: view,
-    username: username
-  } do
-    test_process = self()
-
-    Req.Test.stub(__MODULE__, fn conn ->
-      send(test_process, {:infinite_request_started, self()})
-
-      receive do
-        :unexpected_finish -> Plug.Conn.send_resp(conn, 200, "too late")
-      end
-    end)
-
-    Req.Test.set_req_test_to_shared()
-    Req.default_options(plug: {Req.Test, __MODULE__})
-
-    on_exit(fn ->
-      Req.default_options([])
-      Req.Test.set_req_test_to_private()
-    end)
-
-    view
-    |> element("#request-form")
-    |> render_change(%{
-      "request" => %{
-        "url" => "https://api.example.test/stream",
-        "timeout_ms" => "infinity"
-      }
-    })
-
-    view |> element("#request-form") |> render_submit(%{})
-    assert_receive {:infinite_request_started, _request_process}
-    assert has_element?(view, "#cancel-request")
-
-    view |> element("#cancel-request") |> render_click()
-
-    refute has_element?(view, "#cancel-request")
-    assert has_element?(view, "#send-request")
-    assert length(Resources.all(username)) == 2
-  end
-
-  test "a running request shows how long it has waited and cancels with Escape", %{view: view} do
-    test_process = self()
-
-    Req.Test.stub(__MODULE__, fn conn ->
-      send(test_process, :slow_request_started)
-
-      receive do
-        :unexpected_finish -> Plug.Conn.send_resp(conn, 200, "too late")
-      end
-    end)
-
-    Req.Test.set_req_test_to_shared()
-    Req.default_options(plug: {Req.Test, __MODULE__})
-
-    on_exit(fn ->
-      Req.default_options([])
-      Req.Test.set_req_test_to_private()
-    end)
-
-    view
-    |> element("#request-form")
-    |> render_change(%{"request" => %{"url" => "https://api.example.test/slow"}})
-
-    view |> element("#request-form") |> render_submit(%{})
-    assert_receive :slow_request_started
-
-    assert has_element?(view, "#response-waiting [data-started-at]")
-    assert has_element?(view, "#cancel-request-waiting")
-    assert view |> element("#response-waiting") |> render() =~ "api.example.test"
-
-    view |> element("#response-waiting") |> render_keydown(%{"key" => "Escape"})
-
-    refute has_element?(view, "#response-waiting")
-    assert has_element?(view, "#response-cancelled")
-    assert has_element?(view, "#send-request")
-  end
-
-  test "the response sits below or beside the request, and the choice is kept", %{
-    view: view,
-    conn: conn
-  } do
-    assert has_element?(view, "#request-workspace[data-layout=vertical]")
-    assert has_element?(view, "#request-resizer[data-axis=y][data-panel=request-editor]")
-
-    view |> element("#toggle-layout") |> render_click()
-
-    assert has_element?(view, "#request-workspace[data-layout=horizontal]")
-    assert has_element?(view, "#request-resizer-x[data-axis=x][data-panel=request-pane]")
-    refute has_element?(view, "#request-resizer")
-
-    {:ok, reopened, _html} = live(conn, ~p"/tools/http")
-    assert has_element?(reopened, "#request-workspace[data-layout=horizontal]")
-
-    reopened |> element("#toggle-layout") |> render_click()
-    assert has_element?(reopened, "#request-workspace[data-layout=vertical]")
   end
 
   test "JSON responses switch between pretty and raw without a new viewer", %{
@@ -811,34 +685,6 @@ defmodule MWTClientWeb.HttpClientLiveTest do
              "The PURGE method is not supported"
   end
 
-  test "sending records the description and tags of the tab", %{view: view, username: username} do
-    Req.Test.stub(__MODULE__, fn conn -> Plug.Conn.send_resp(conn, 200, "ok") end)
-    Req.Test.set_req_test_to_shared()
-    Req.default_options(plug: {Req.Test, __MODULE__})
-
-    on_exit(fn ->
-      Req.default_options([])
-      Req.Test.set_req_test_to_private()
-    end)
-
-    view |> element("#request-description") |> render_change(%{"description" => "Nightly smoke"})
-
-    # typed into the tag box but never submitted with Enter
-    view |> element("#request-tag") |> render_change(%{"tag" => "smoke"})
-    refute has_element?(view, "[phx-click=remove_tag][phx-value-tag=smoke]")
-
-    view
-    |> element("#request-form")
-    |> render_change(%{"request" => %{"url" => "https://api.example.test/ping"}})
-
-    view |> element("#request-form") |> render_submit(%{})
-    await_requests(view, username)
-
-    assert [{_id, metadata, _request, _response} | _older] = Resources.all(username)
-    assert metadata.description == "Nightly smoke"
-    assert metadata.tags == ["smoke"]
-  end
-
   defp entry_action(id, "delete_entries"),
     do: ~s([phx-click=delete_entries][phx-value-id="#{id}"])
 
@@ -857,18 +703,6 @@ defmodule MWTClientWeb.HttpClientLiveTest do
   # LiveView async operation, so `render_async/1` has nothing to wait on and
   # returns immediately. Following the hand-offs instead settles both the
   # recorded history and what is on screen.
-  defp await_requests(view, username) do
-    for pid <- Task.Supervisor.children(MWTClient.HttpClient.TaskSupervisor) do
-      reference = Process.monitor(pid)
-      assert_receive {:DOWN, ^reference, :process, ^pid, _reason}, 2_000
-    end
-
-    assert Requests.running(username) == []
-    _ = :sys.get_state(view.pid)
-
-    view
-  end
-
   defp count(view, selector) do
     view
     |> render()

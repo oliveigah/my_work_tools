@@ -294,7 +294,7 @@ defmodule MWTClient.Sandbox.Workspace do
   def open(root) do
     case Application.get_env(:mwt_client, __MODULE__, [])[:open] do
       nil ->
-        case System.find_executable("xdg-open") do
+        case MWTClient.Executable.find("xdg-open") do
           nil ->
             {:error, "xdg-open isn't installed, so MWT can't open #{root}: open it yourself."}
 

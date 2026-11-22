@@ -526,9 +526,13 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
       assert File.read!(file) == grant.placeholder
       parent = self()
 
+      # Raw reads, in this process: through Erlang's file server, which
+      # MWT's own writes go through too, a read could never land in the
+      # middle of one, and this loop would hold up every other test's
+      # file calls.
       reader =
         spawn_link(fn ->
-          Stream.repeatedly(fn -> File.read(file) end)
+          Stream.repeatedly(fn -> :file.read_file(file, [:raw]) end)
           |> Enum.reduce_while(0, fn result, missing ->
             missing = if result == {:ok, grant.placeholder}, do: missing, else: missing + 1
 

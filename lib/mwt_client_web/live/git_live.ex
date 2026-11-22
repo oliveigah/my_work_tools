@@ -27,7 +27,6 @@ defmodule MWTClientWeb.GitLive do
   alias MWTClient.Git.Files
   alias MWTClient.Git.Worktrees
   alias MWTClient.Places
-  alias MWTClient.Preferences
   alias MWTClient.Tools
   alias MWTClientWeb.GitLive.Session
   alias MWTClientWeb.GitLive.Components
@@ -150,12 +149,12 @@ defmodule MWTClientWeb.GitLive do
   # complaint: it is not something the reader asked for right now.
   defp restore_session(socket) do
     if connected?(socket) do
-      paths = Session.repositories()
+      %{paths: paths, active: active} = Session.tabs(username(socket))
       schedule_refresh()
 
       socket
       |> assign(:restore_order, paths)
-      |> assign(:restore_active, Session.active_repository())
+      |> assign(:restore_active, active)
       |> then(fn socket ->
         Enum.reduce(paths, socket, fn path, socket ->
           start_open(socket, path, :restore, kept_limit(socket.assigns.kept_tabs[path]))
@@ -291,7 +290,7 @@ defmodule MWTClientWeb.GitLive do
 
       true ->
         destination = Path.join(Path.expand(parent), name)
-        keys = saved_ssh_keys()
+        keys = saved_ssh_keys(username(socket))
 
         {:noreply,
          socket
@@ -562,8 +561,12 @@ defmodule MWTClientWeb.GitLive do
 
     case Core.with_ssh_keys(tab.repository, private_key, public_key) do
       {:ok, repository} ->
-        :ok = Preferences.put("git_ssh_private_key", repository.ssh_key.private_key)
-        :ok = Preferences.put("git_ssh_public_key", repository.ssh_key.public_key)
+        :ok =
+          Session.keep_ssh_key(
+            username(socket),
+            repository.ssh_key.private_key,
+            repository.ssh_key.public_key
+          )
 
         {:noreply,
          update_all_tabs(socket, fn current ->
@@ -584,8 +587,7 @@ defmodule MWTClientWeb.GitLive do
 
   @impl true
   def handle_event("clear_ssh", _params, socket) do
-    :ok = Preferences.put("git_ssh_private_key", nil)
-    :ok = Preferences.put("git_ssh_public_key", nil)
+    :ok = Session.forget_ssh_key(username(socket))
 
     {:noreply,
      update_all_tabs(socket, fn tab ->
@@ -1187,7 +1189,11 @@ defmodule MWTClientWeb.GitLive do
         nil ->
           # Only a tab coming back was loaded with the history it kept.
           {kept, kept_tabs} = Map.pop(socket.assigns.kept_tabs, repository.path)
-          tab = repository |> new_tab(state) |> resume(if(kind == :restore, do: kept), state)
+
+          tab =
+            repository
+            |> new_tab(state, Session.ssh_key(username(socket)))
+            |> resume(if(kind == :restore, do: kept), state)
 
           socket
           |> assign(:kept_tabs, kept_tabs)
@@ -1235,12 +1241,17 @@ defmodule MWTClientWeb.GitLive do
   end
 
   defp remember_session(socket) do
-    Session.remember(Enum.map(socket.assigns.tabs, & &1.path), active_path(socket))
+    Session.remember(
+      username(socket),
+      Enum.map(socket.assigns.tabs, & &1.path),
+      active_path(socket)
+    )
+
     socket
   end
 
   defp forget_repository(socket, path) do
-    Session.forget(path)
+    Session.forget(username(socket), path)
     socket
   end
 
@@ -1252,13 +1263,17 @@ defmodule MWTClientWeb.GitLive do
     end
   end
 
-  defp saved_ssh_keys do
-    [
-      private_key: Preferences.get("git_ssh_private_key") || nil,
-      public_key: Preferences.get("git_ssh_public_key") || nil
-    ]
-    |> Enum.reject(fn {_key, value} -> value in [nil, ""] end)
+  defp saved_ssh_keys(username) do
+    case Session.ssh_key(username) do
+      %{private_key: private_key, public_key: public_key} ->
+        [private_key: private_key, public_key: public_key]
+
+      nil ->
+        []
+    end
   end
+
+  defp username(socket), do: socket.assigns.current_scope.user.username
 
   defp clone_failed(socket, message) do
     put_dialog(socket, error: Error.new(:invalid_argument, message), cloning: nil)
@@ -1299,8 +1314,8 @@ defmodule MWTClientWeb.GitLive do
     assign(socket, :open_dialog, Enum.into(attrs, dialog))
   end
 
-  defp new_tab(repository, state) do
-    {repository, private_key, public_key, ssh_error} = apply_saved_ssh_keys(repository)
+  defp new_tab(repository, state, ssh_key) do
+    {repository, private_key, public_key, ssh_error} = apply_saved_ssh_keys(repository, ssh_key)
 
     %{
       id: "tab-#{System.unique_integer([:positive])}",
@@ -1349,17 +1364,12 @@ defmodule MWTClientWeb.GitLive do
     }
   end
 
-  defp apply_saved_ssh_keys(repository) do
-    private_key = Preferences.get("git_ssh_private_key") || ""
-    public_key = Preferences.get("git_ssh_public_key") || ""
+  defp apply_saved_ssh_keys(repository, nil), do: {repository, "", "", nil}
 
-    if private_key == "" and public_key == "" do
-      {repository, private_key, public_key, nil}
-    else
-      case Core.with_ssh_keys(repository, private_key, public_key) do
-        {:ok, repository} -> {repository, private_key, public_key, nil}
-        {:error, error} -> {repository, private_key, public_key, error.message}
-      end
+  defp apply_saved_ssh_keys(repository, %{private_key: private_key, public_key: public_key}) do
+    case Core.with_ssh_keys(repository, private_key, public_key) do
+      {:ok, repository} -> {repository, private_key, public_key, nil}
+      {:error, error} -> {repository, private_key, public_key, error.message}
     end
   end
 

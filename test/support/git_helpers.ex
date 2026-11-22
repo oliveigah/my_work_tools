@@ -16,7 +16,7 @@ defmodule MWTClient.GitHelpers do
         "mwt-git-test-#{System.pid()}-#{System.unique_integer([:positive, :monotonic])}"
       )
 
-    on_exit(fn -> File.rm_rf!(base) end)
+    on_exit(fn -> MWTClient.TestFolders.remove!(base) end)
 
     path = Path.join(base, "worktree")
     File.mkdir_p!(path)
@@ -93,7 +93,7 @@ defmodule MWTClient.GitHelpers do
 
   def ssh_key_pair(base, name \\ "id_ed25519") do
     private_key = Path.join(base, name)
-    executable = System.find_executable("ssh-keygen")
+    executable = MWTClient.Executable.find("ssh-keygen")
     assert executable, "ssh-keygen is required by the Git SSH tests"
 
     {output, status} =
@@ -106,7 +106,9 @@ defmodule MWTClient.GitHelpers do
   end
 
   def git!(path, args) do
-    {output, status} = System.cmd("git", ["-C", path | args], stderr_to_stdout: true)
+    {output, status} =
+      MWTClient.Executable.cmd("git", ["-C", path | args], stderr_to_stdout: true)
+
     assert status == 0, "git #{Enum.join(args, " ")} failed:\n#{output}"
     String.trim_trailing(output)
   end

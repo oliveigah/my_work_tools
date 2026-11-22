@@ -70,7 +70,7 @@ defmodule MWTClient.Git.SSHKey do
   defp different_files(_private_key, _public_key), do: :ok
 
   defp fingerprint(path, kind) do
-    case System.find_executable("ssh-keygen") do
+    case MWTClient.Executable.find("ssh-keygen") do
       nil ->
         {:error,
          Error.new(:command_failed, "OpenSSH ssh-keygen is required to validate SSH keys")}

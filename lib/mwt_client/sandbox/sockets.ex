@@ -55,7 +55,7 @@ defmodule MWTClient.Sandbox.Sockets do
   @spec ensure!(String.t()) :: Path.t()
   def ensure!(username) do
     dir = dir(username)
-    File.mkdir_p!(dir)
+    MWTClient.Files.mkdir_p!(dir)
     File.chmod!(Path.dirname(dir), 0o700)
     File.chmod!(dir, 0o700)
     dir

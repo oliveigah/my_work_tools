@@ -14,14 +14,16 @@ defmodule MWTClient.Sandbox.ShareSyncTest do
   # A shared folder, and a folder of this machine standing in for the VM,
   # which runs.
   setup do
-    context = MWTClient.VaultHelpers.unlocked_identity("share-sync")
     root = Path.join(System.tmp_dir!(), "share-sync-#{System.unique_integer([:positive])}")
+    # Before the identity: removed once it has closed, and the sync that
+    # adding the share starts has stopped writing into the VM's copy.
+    on_exit(fn -> File.rm_rf!(root) end)
+    context = MWTClient.VaultHelpers.unlocked_identity("share-sync")
     folder = Path.join(root, "host/docs")
     vm = Path.join(root, "vm")
     put(folder, "plan.md", "plan\n")
     put(folder, "sub/notes.md", "notes\n")
     File.mkdir_p!(vm)
-    on_exit(fn -> File.rm_rf!(root) end)
 
     StandIns.put_guest(context.username, Guest.local(vm))
     pid = Store.whereis(Server, context.username)

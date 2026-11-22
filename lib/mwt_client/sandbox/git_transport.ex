@@ -255,7 +255,7 @@ defmodule MWTClient.Sandbox.GitTransport do
            HostGit.line(repo, ["config", "--get", "remote.origin.url"]) ||
              {:error, "Your repository has no remote origin."},
          {_, 0} <-
-           System.cmd(
+           MWTClient.Executable.cmd(
              "timeout",
              [
                "--kill-after=5",
@@ -372,7 +372,7 @@ defmodule MWTClient.Sandbox.GitTransport do
   defp upload(number, token, dir, protocol) do
     env = [{"GIT_PROTOCOL", protocol} | Guest.git_env()]
 
-    Port.open({:spawn_executable, System.find_executable("bash")}, [
+    Port.open({:spawn_executable, MWTClient.Executable.find("bash")}, [
       :binary,
       :exit_status,
       :use_stdio,
@@ -434,7 +434,9 @@ defmodule MWTClient.Sandbox.GitTransport do
   defp stop(port) do
     case Port.info(port, :os_pid) do
       {:os_pid, pid} ->
-        System.cmd("kill", ["-KILL", "--", "-#{pid}", "#{pid}"], stderr_to_stdout: true)
+        MWTClient.Executable.cmd("kill", ["-KILL", "--", "-#{pid}", "#{pid}"],
+          stderr_to_stdout: true
+        )
 
         try do
           Port.close(port)

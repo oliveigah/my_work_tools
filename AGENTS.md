@@ -21,9 +21,9 @@ This is a web application written using the Phoenix web framework.
 
 ### Tests in this project
 
-- The whole suite takes about a minute and a half. While you work, run the
-  files you change (`mix test test/x_test.exs`, seconds), `mix test --failed`
-  after a failure, and `mix precommit` once, when you are done.
+- The whole suite takes about a minute. While you work, run the files you
+  change (`mix test test/x_test.exs`, seconds), `mix test --failed` after a
+  failure, and `mix precommit` once, when you are done.
 - A run that passes prints only dots and counts: what the app logs shows
   under the test that failed.
 - Keep test modules `async: true`. Each test signs in as an identity of its
@@ -36,8 +36,21 @@ This is a web application written using the Phoenix web framework.
   message that comes after a write, a git command or D-Bus (the suite's
   `assert_receive` waits up to a second, `test_helper.exs`; don't pass less);
   two git commits with the same content in the same second being one commit;
-  database files read right after a lock (`VaultHelpers.lock_settled/2`).
-- `mix test --slowest 10` shows a test you made slow.
+  database files read right after a lock (`VaultHelpers.lock_settled/2`);
+  the clock read twice for one value, once in each of two seconds; a page's
+  `start_async` after a click, not waited for (`render_async/1`); a sandbox
+  task still writing into a folder a cleanup removes (register that cleanup
+  before signing in: `unlocked_identity/1` waits for the identity's tasks).
+- `mix test test/x_test.exs --slowest 10` shows a test you made slow. On the
+  whole suite it runs every test one at a time (it turns on `--trace`), for
+  minutes.
+- What keeps the suite fast: a module's tests run one after another, so
+  split one that takes over about 10 s alone, with what its parts share in
+  `test/support`. Erlang's file server is one process for the whole BEAM:
+  in code that runs often, use `MWTClient.Files` and
+  `MWTClient.Executable` rather than `File` and a bare name in
+  `System.cmd`; in a test, remove a folder with
+  `MWTClient.TestFolders.remove!/1`, and never read a big file whole.
 - Tests tagged `vm` start real VMs and are left out unless asked for
   (`mix test --only vm`): they need `/dev/kvm` and MWT's runtime in
   `priv/microsandbox`, which `scripts/install-runtime.sh` puts there. Where

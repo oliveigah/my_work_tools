@@ -47,6 +47,7 @@ defmodule MWTClient.Sandbox.Inbox do
   (`MWTClient.Sandbox.FolderSync`, `:mwt`, so nothing is set aside).
   """
 
+  alias MWTClient.Files
   alias MWTClient.Sandbox.{FolderSync, Grant, Guest, Instructions, JavaTrust, Memory, Msb}
 
   @vm "/mnt/mwt"
@@ -106,7 +107,7 @@ defmodule MWTClient.Sandbox.Inbox do
   """
   @spec write(Path.t(), [Grant.t()], String.t(), keyword()) :: :ok
   def write(dir, grants, ca_pem, opts \\ []) do
-    File.mkdir_p!(dir)
+    Files.mkdir_p!(dir)
 
     put_changed(dir, "ca.pem", ca_pem)
     bundle = bundle(ca_pem)
@@ -134,20 +135,20 @@ defmodule MWTClient.Sandbox.Inbox do
     put_changed(dir, "bin/mwt-boot", priv("mwt-boot"), 0o755)
 
     case Memory.host_memo() do
-      nil -> File.rm(Path.join(dir, "bin/memo"))
-      memo -> put_changed(dir, "bin/memo", File.read!(memo), 0o755)
+      nil -> drop(dir, "bin/memo")
+      memo -> put_changed(dir, "bin/memo", Files.read!(memo), 0o755)
     end
 
     # The ACP shell Zed starts for MWT's agents, when this build has it.
     case acp_shell() do
-      nil -> File.rm(Path.join(dir, "bin/mwt-acp"))
-      shell -> put_changed(dir, "bin/mwt-acp", File.read!(shell), 0o755)
+      nil -> drop(dir, "bin/mwt-acp")
+      shell -> put_changed(dir, "bin/mwt-acp", Files.read!(shell), 0o755)
     end
 
     # The presentations `mwt exec` runs for a grant that asks for one.
     case presenter() do
-      nil -> File.rm(Path.join(dir, "bin/mwt-present"))
-      present -> put_changed(dir, "bin/mwt-present", File.read!(present), 0o755)
+      nil -> drop(dir, "bin/mwt-present")
+      present -> put_changed(dir, "bin/mwt-present", Files.read!(present), 0o755)
     end
 
     # A grant only its subgrants use leaves nothing in the VM: no
@@ -200,7 +201,7 @@ defmodule MWTClient.Sandbox.Inbox do
     )
 
     # Where file grants, gone since 2026-11-18, put their real values.
-    File.rm_rf!(Path.join(dir, "files"))
+    if there?(Path.join(dir, "files")), do: File.rm_rf!(Path.join(dir, "files"))
 
     :ok
   end
@@ -211,7 +212,7 @@ defmodule MWTClient.Sandbox.Inbox do
   # the moment a rewrite of the whole folder would take.
   defp hold(dir, sub, wanted) do
     folder = Path.join(dir, sub)
-    File.mkdir_p!(folder)
+    Files.mkdir_p!(folder)
 
     for name <- File.ls!(folder),
         not Map.has_key?(wanted, name),
@@ -328,7 +329,7 @@ defmodule MWTClient.Sandbox.Inbox do
   # Files that rarely change are left untouched when they haven't, so the VM
   # never sees them rewritten for nothing.
   defp put_changed(dir, name, data, mode \\ 0o644) do
-    case File.read(Path.join(dir, name)) do
+    case Files.read(Path.join(dir, name)) do
       {:ok, ^data} -> :ok
       _ -> put(dir, name, data, mode)
     end
@@ -337,10 +338,10 @@ defmodule MWTClient.Sandbox.Inbox do
   # Written aside and renamed, so the VM never reads half a file.
   defp put(dir, name, data, mode \\ 0o644) do
     path = Path.join(dir, name)
-    File.mkdir_p!(Path.dirname(path))
+    Files.mkdir_p!(Path.dirname(path))
     partial = path <> ".part"
-    File.write!(partial, data)
-    File.chmod!(partial, mode)
+    Files.write!(partial, data)
+    Files.chmod!(partial, mode)
     File.rename!(partial, path)
   end
 
@@ -356,19 +357,29 @@ defmodule MWTClient.Sandbox.Inbox do
       "export MWT_WORKSPACE=#{quoted}\n"
   end
 
-  defp priv(name), do: File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", name]))
+  defp priv(name), do: Files.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", name]))
+
+  # A file no longer wanted goes; most often there is none, which one raw
+  # look tells.
+  defp drop(dir, name) do
+    path = Path.join(dir, name)
+    if there?(path), do: File.rm(path)
+  end
+
+  # Whether anything is at `path`, a link included.
+  defp there?(path), do: match?({:ok, _}, :file.read_link_info(path, [:raw]))
 
   @doc "MWT's presentations (`native/mwt_present`), built beside msb, or nil."
   @spec presenter() :: Path.t() | nil
   def presenter do
     path = Path.join(MWTClient.Sandbox.Msb.runtime_dir(), "bin/mwt-present")
-    if File.regular?(path), do: path
+    if File.regular?(path, [:raw]), do: path
   end
 
   @doc "MWT's ACP shell (`native/mwt_acp`), built beside msb, or nil."
   @spec acp_shell() :: Path.t() | nil
   def acp_shell do
     path = Path.join(MWTClient.Sandbox.Msb.runtime_dir(), "bin/mwt-acp")
-    if File.regular?(path), do: path
+    if File.regular?(path, [:raw]), do: path
   end
 end

@@ -657,7 +657,7 @@ defmodule MWTClient.Updates do
   end
 
   defp read_fields(command, args) do
-    with executable when is_binary(executable) <- System.find_executable(command),
+    with executable when is_binary(executable) <- MWTClient.Executable.find(command),
          {output, 0} <- System.cmd(executable, args, stderr_to_stdout: true) do
       package_fields(output)
     else
@@ -668,8 +668,8 @@ defmodule MWTClient.Updates do
   defp install_package(format, path) do
     manager = if format == :deb, do: "apt-get", else: "dnf"
 
-    with executable when is_binary(executable) <- System.find_executable(manager),
-         pkexec when is_binary(pkexec) <- System.find_executable("pkexec"),
+    with executable when is_binary(executable) <- MWTClient.Executable.find(manager),
+         pkexec when is_binary(pkexec) <- MWTClient.Executable.find("pkexec"),
          {_output, 0} <-
            System.cmd(pkexec, [executable, "install", "-y", path], stderr_to_stdout: true) do
       :ok
@@ -748,7 +748,7 @@ defmodule MWTClient.Updates do
   end
 
   defp installed?(command, args, expected) do
-    case System.find_executable(command) do
+    case MWTClient.Executable.find(command) do
       nil ->
         false
 

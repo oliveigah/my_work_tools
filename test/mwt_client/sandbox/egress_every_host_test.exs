@@ -163,7 +163,9 @@ defmodule MWTClient.Sandbox.EgressEveryHostTest do
     assert MWTClient.SandboxProxy.read_answer(tls, :ssl) =~ "/readme"
     :ssl.close(tls)
 
-    assert_receive {:tunnel_target, %{name: "example.com"}}
+    # The address, not the name: a client slower than `@client_first` (a
+    # loaded machine) has MWT connect before its ClientHello names the host.
+    assert_receive {:tunnel_target, %{ip: {93, 184, 216, 34}, port: 443}}
     refute_received {:read_target, _}
 
     assert %{
@@ -180,7 +182,8 @@ defmodule MWTClient.Sandbox.EgressEveryHostTest do
   } do
     # The host doesn't speak HTTP/2 here, so the handshake is all there is.
     _ = tls(proxy, [host_ca], ["h2"])
-    assert_receive {:tunnel_target, %{name: "example.com"}}
+    # The address, not the name, as above.
+    assert_receive {:tunnel_target, %{ip: {93, 184, 216, 34}, port: 443}}
 
     assert %{summary: "Not read: the client offered only HTTP/2, which MWT doesn't read yet"} =
              event(username, &(&1.outcome == :tunnel))

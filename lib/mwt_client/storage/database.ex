@@ -152,7 +152,7 @@ defmodule MWTClient.Storage.Database do
     uri = uri(path, storage)
     secret = secret(Keyword.fetch!(opts, :key))
 
-    with :ok <- File.mkdir_p(Path.dirname(path)),
+    with :ok <- MWTClient.Files.mkdir_p(Path.dirname(path)),
          :ok <- prepare(path, uri, secret, storage["cipher"], username, name),
          {:ok, pid} <- repo.start_link(repo_options(database, uri, secret, username, name)) do
       migrate(repo, pid, name)
@@ -220,6 +220,7 @@ defmodule MWTClient.Storage.Database do
         with :ok <- Sqlite3.execute(db, "PRAGMA busy_timeout = #{@busy_timeout_ms}"),
              :ok <- Sqlite3.execute(db, "PRAGMA key = #{secret}"),
              :ok <- encrypting(db, cipher),
+             :ok <- check_synchronous(db),
              # The first statement that reads the file: a wrong key fails here.
              :ok <- Sqlite3.execute(db, "PRAGMA journal_mode = WAL") do
           Sqlite3.execute(db, "SELECT count(*) FROM sqlite_schema")
@@ -228,6 +229,15 @@ defmodule MWTClient.Storage.Database do
         Sqlite3.close(db)
       end
     end
+  end
+
+  # Making a new file WAL waits for the disk, as the pool's writes do: the
+  # test suite, which waits for none (`@synchronous`), has this connection
+  # not wait either.
+  if @synchronous do
+    defp check_synchronous(db), do: Sqlite3.execute(db, "PRAGMA synchronous = #{@synchronous}")
+  else
+    defp check_synchronous(_db), do: :ok
   end
 
   # Stock SQLite takes `PRAGMA key` and the URI's cipher without a word,

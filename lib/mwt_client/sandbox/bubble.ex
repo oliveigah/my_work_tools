@@ -72,7 +72,7 @@ defmodule MWTClient.Sandbox.Bubble do
   @spec bwrap() :: String.t() | nil
   def bwrap do
     own = Keyword.get(Application.get_env(:mwt_client, __MODULE__, []), :own_bwrap, @own_bwrap)
-    if File.regular?(own), do: own, else: System.find_executable("bwrap")
+    if File.regular?(own), do: own, else: MWTClient.Executable.find("bwrap")
   end
 
   @doc "MWT's relay, or nil when this build has no runtime."
@@ -236,7 +236,7 @@ defmodule MWTClient.Sandbox.Bubble do
           ~s(echo $$ > "$MWT_PIDFILE"; exec "$@" > "$MWT_LOG" 2>&1 < /dev/null 3< "$MWT_SECCOMP")
 
         {_, 0} =
-          System.cmd(
+          MWTClient.Executable.cmd(
             "setsid",
             ["--fork", "sh", "-c", launcher, "mwt-bubble" | words(spec, msb_words)],
             env: [
@@ -362,7 +362,10 @@ defmodule MWTClient.Sandbox.Bubble do
     lock = Sockets.path(username, "relay.lock")
 
     not File.exists?(lock) or
-      match?({_, 0}, System.cmd("flock", ["--nonblock", lock, "true"], stderr_to_stdout: true))
+      match?(
+        {_, 0},
+        MWTClient.Executable.cmd("flock", ["--nonblock", lock, "true"], stderr_to_stdout: true)
+      )
   end
 
   # One line to the relay, and everything it answers.
@@ -397,7 +400,7 @@ defmodule MWTClient.Sandbox.Bubble do
         [program | rest] = String.split(raw, <<0>>),
         String.ends_with?(program, "/mwt-relay"),
         Enum.chunk_every(rest, 2, 1, :discard) |> Enum.member?(["--name", name]) do
-      System.cmd("kill", ["-KILL", entry], stderr_to_stdout: true)
+      MWTClient.Executable.cmd("kill", ["-KILL", entry], stderr_to_stdout: true)
     end
 
     :ok

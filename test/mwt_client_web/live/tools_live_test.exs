@@ -1,5 +1,5 @@
 defmodule MWTClientWeb.ToolsLiveTest do
-  # Exercises the application-wide updater and remembered Git session.
+  # Exercises the application-wide updater.
   use MWTClientWeb.ConnCase, async: false
 
   import Phoenix.LiveViewTest

@@ -45,7 +45,7 @@ defmodule MWTClient.Sandbox.HandoffStore do
     else
       File.mkdir_p!(Path.dirname(store))
 
-      case System.cmd("git", ["init", "--quiet", "--bare", store],
+      case MWTClient.Executable.cmd("git", ["init", "--quiet", "--bare", store],
              env: Guest.git_env(),
              stderr_to_stdout: true
            ) do
@@ -172,7 +172,7 @@ defmodule MWTClient.Sandbox.HandoffStore do
       File.write!(list, Enum.map(ids, &[&1, "\n"]))
 
       port =
-        Port.open({:spawn_executable, System.find_executable("bash")}, [
+        Port.open({:spawn_executable, MWTClient.Executable.find("bash")}, [
           :binary,
           :exit_status,
           :use_stdio,

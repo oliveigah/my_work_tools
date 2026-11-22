@@ -11,9 +11,7 @@ defmodule MWTClient.Preferences do
 
   @defaults %{
     "theme" => "system",
-    "last_username" => nil,
-    "git_ssh_private_key" => nil,
-    "git_ssh_public_key" => nil
+    "last_username" => nil
   }
 
   @doc "Starts the preferences owner."
@@ -33,6 +31,10 @@ defmodule MWTClient.Preferences do
   @spec put(String.t(), term()) :: :ok
   def put(key, value), do: GenServer.call(__MODULE__, {:put, key, value})
 
+  @doc "Removes one preference from the file; it reads as its default again."
+  @spec delete(String.t()) :: :ok
+  def delete(key), do: GenServer.call(__MODULE__, {:delete, key})
+
   @doc "The file backing the preferences."
   @spec path() :: Path.t()
   def path, do: Path.join(MWTClient.Accounts.root(), "preferences.json")
@@ -50,6 +52,15 @@ defmodule MWTClient.Preferences do
     path = path()
     :ok = File.mkdir_p(Path.dirname(path))
     :ok = write(path, Map.put(read(path), key, value))
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:delete, key}, _from, state) do
+    path = path()
+
+    values = read(path)
+    if Map.has_key?(values, key), do: :ok = write(path, Map.delete(values, key))
+
     {:reply, :ok, state}
   end
 

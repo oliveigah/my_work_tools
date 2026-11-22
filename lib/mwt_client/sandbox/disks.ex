@@ -174,7 +174,7 @@ defmodule MWTClient.Sandbox.Disks do
   @doc "How much host space a disk takes now, in bytes: what the VM has written, not its size."
   @spec used(Path.t()) :: non_neg_integer()
   def used(path) do
-    case System.cmd("stat", ["--format=%b %B", path], stderr_to_stdout: true) do
+    case MWTClient.Executable.cmd("stat", ["--format=%b %B", path], stderr_to_stdout: true) do
       {output, 0} ->
         [blocks, block_size] = output |> String.split() |> Enum.map(&String.to_integer/1)
         blocks * block_size
@@ -245,7 +245,7 @@ defmodule MWTClient.Sandbox.Disks do
 
   # The e2fsprogs tools sit in /usr/sbin, which isn't on every user's PATH.
   defp tool(name) do
-    System.find_executable(name) ||
+    MWTClient.Executable.find(name) ||
       Enum.find(["/usr/sbin/#{name}", "/sbin/#{name}"], &File.regular?/1)
   end
 

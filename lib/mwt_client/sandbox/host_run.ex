@@ -141,7 +141,7 @@ defmodule MWTClient.Sandbox.HostRun do
     started_at = System.monotonic_time(:millisecond)
 
     port =
-      Port.open({:spawn_executable, System.find_executable("bash") || "/bin/bash"}, [
+      Port.open({:spawn_executable, MWTClient.Executable.find("bash") || "/bin/bash"}, [
         :binary,
         :exit_status,
         :stderr_to_stdout,
@@ -169,7 +169,7 @@ defmodule MWTClient.Sandbox.HostRun do
   @doc "Sends `signal` (`\"TERM\"` or `\"KILL\"`) to every process of a running command."
   @spec stop(pos_integer(), String.t()) :: :ok
   def stop(group, signal) when signal in ["TERM", "KILL"] do
-    System.cmd("kill", ["-#{signal}", "--", "-#{group}"], stderr_to_stdout: true)
+    MWTClient.Executable.cmd("kill", ["-#{signal}", "--", "-#{group}"], stderr_to_stdout: true)
     :ok
   end
 
@@ -238,7 +238,7 @@ defmodule MWTClient.Sandbox.HostRun do
   """
   @spec login_path() :: String.t()
   def login_path do
-    case System.cmd("timeout", ["10", "bash", "-lc", ~S(printf %s "$PATH")],
+    case MWTClient.Executable.cmd("timeout", ["10", "bash", "-lc", ~S(printf %s "$PATH")],
            env: home_env(),
            stderr_to_stdout: false
          ) do

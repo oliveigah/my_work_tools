@@ -119,7 +119,7 @@ defmodule MWTClient.Sandbox.HostInfo do
 
     script = checks <> "\nwait\n"
 
-    case System.cmd("timeout", ["30", "bash", "-lc", script],
+    case MWTClient.Executable.cmd("timeout", ["30", "bash", "-lc", script],
            stderr_to_stdout: false,
            env: HostRun.home_env()
          ) do

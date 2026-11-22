@@ -68,7 +68,7 @@ defmodule MWTClient.Sandbox.Bounded do
       errors = Path.join(dir, "errors")
 
       port =
-        Port.open({:spawn_executable, System.find_executable("timeout")}, [
+        Port.open({:spawn_executable, MWTClient.Executable.find("timeout")}, [
           :binary,
           :exit_status,
           :use_stdio,
@@ -149,7 +149,9 @@ defmodule MWTClient.Sandbox.Bounded do
   defp stop(port) do
     case Port.info(port, :os_pid) do
       {:os_pid, pid} ->
-        System.cmd("kill", ["-KILL", "--", "-#{pid}", "#{pid}"], stderr_to_stdout: true)
+        MWTClient.Executable.cmd("kill", ["-KILL", "--", "-#{pid}", "#{pid}"],
+          stderr_to_stdout: true
+        )
 
       nil ->
         :ok

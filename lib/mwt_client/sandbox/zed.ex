@@ -74,7 +74,7 @@ defmodule MWTClient.Sandbox.Zed do
     with :ok <- entry(username),
          zed when is_binary(zed) <- executable() || {:error, :no_zed} do
       args = args(folder, opened(guest))
-      {program, args} = command_line(zed, args, System.find_executable("setsid"))
+      {program, args} = command_line(zed, args, MWTClient.Executable.find("setsid"))
       # Zed's command hands the address to Zed and returns; one that starts
       # Zed stays with it, so it is not waited on.
       Task.start(fn -> System.cmd(program, args, stderr_to_stdout: true) end)
@@ -183,7 +183,7 @@ defmodule MWTClient.Sandbox.Zed do
 
   # A desktop app may not have your shell's PATH.
   defp executable do
-    Enum.find_value(["zed", "zeditor", "zed-editor"], &System.find_executable/1) ||
+    Enum.find_value(["zed", "zeditor", "zed-editor"], &MWTClient.Executable.find/1) ||
       Enum.find(
         [
           Path.expand("~/.local/bin/zed"),

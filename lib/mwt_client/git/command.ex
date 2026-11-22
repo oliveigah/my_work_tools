@@ -31,7 +31,7 @@ defmodule MWTClient.Git.Command do
     started = System.monotonic_time(:millisecond)
 
     result =
-      case System.find_executable("git") do
+      case MWTClient.Executable.find("git") do
         nil ->
           {:system_error, Error.new(:git_not_found, "Git is not installed or is not on PATH")}
 

@@ -5,7 +5,7 @@ defmodule MWTClient.DBusDaemon do
   # and removed when the test ends. Tests that need one are tagged :dbus,
   # which test_helper.exs excludes where dbus-daemon isn't installed.
 
-  def available?, do: System.find_executable("dbus-daemon") != nil
+  def available?, do: MWTClient.Executable.find("dbus-daemon") != nil
 
   @doc "Starts a bus and returns its address."
   def start! do
@@ -15,7 +15,7 @@ defmodule MWTClient.DBusDaemon do
     path = Path.join(dir, "bus")
 
     port =
-      Port.open({:spawn_executable, System.find_executable("dbus-daemon")}, [
+      Port.open({:spawn_executable, MWTClient.Executable.find("dbus-daemon")}, [
         :binary,
         :exit_status,
         {:line, 4096},
@@ -23,7 +23,10 @@ defmodule MWTClient.DBusDaemon do
       ])
 
     {:os_pid, os_pid} = Port.info(port, :os_pid)
-    ExUnit.Callbacks.on_exit(fn -> System.cmd("kill", ["#{os_pid}"], stderr_to_stdout: true) end)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      MWTClient.Executable.cmd("kill", ["#{os_pid}"], stderr_to_stdout: true)
+    end)
 
     receive do
       {^port, {:data, {:eol, address}}} -> %{address: String.trim(address), os_pid: os_pid}
@@ -34,5 +37,6 @@ defmodule MWTClient.DBusDaemon do
   end
 
   @doc "Kills the bus now, as a desktop session ending would."
-  def stop(%{os_pid: os_pid}), do: System.cmd("kill", ["#{os_pid}"], stderr_to_stdout: true)
+  def stop(%{os_pid: os_pid}),
+    do: MWTClient.Executable.cmd("kill", ["#{os_pid}"], stderr_to_stdout: true)
 end

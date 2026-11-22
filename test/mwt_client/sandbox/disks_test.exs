@@ -31,6 +31,26 @@ defmodule MWTClient.Sandbox.DisksTest do
     String.to_integer(count) * String.to_integer(size)
   end
 
+  # The image as it is now, to compare with later: a sparse copy, as small
+  # as what the image holds.
+  defp copy_as_it_is(path) do
+    copy = path <> ".as-it-was"
+    {_, 0} = System.cmd("cp", ["--sparse=always", path, copy])
+    copy
+  end
+
+  # Whether two images hold the same bytes, every one of them. cmp reads
+  # them outside the BEAM: File.read! of a gigabyte takes seconds, and
+  # Erlang's file server, the one process every File call of every test
+  # goes through, does nothing else meanwhile. 2 is cmp's trouble: a
+  # failure, not a difference.
+  defp same_bytes?(a, b) do
+    case System.cmd("cmp", ["--silent", a, b]) do
+      {_, 0} -> true
+      {_, 1} -> false
+    end
+  end
+
   test "the tools that make disks are on this machine" do
     assert Disks.missing_tools() == []
   end
@@ -79,13 +99,13 @@ defmodule MWTClient.Sandbox.DisksTest do
 
   test "a disk that exists is left as it is, and grown when its size grew", %{paths: paths} do
     :ok = Disks.ensure!(paths, @sizes)
-    before = File.read!(paths.cache) |> :erlang.md5()
+    before = copy_as_it_is(paths.cache)
 
     :ok = Disks.ensure!(paths, %{@sizes | home: 2})
 
     assert File.stat!(paths.home).size == 2 * @gib
     assert blocks(paths.home) == 2 * @gib
-    assert File.read!(paths.cache) |> :erlang.md5() == before
+    assert same_bytes?(paths.cache, before)
 
     # Never smaller.
     :ok = Disks.ensure!(paths, %{@sizes | home: 1})
@@ -98,7 +118,7 @@ defmodule MWTClient.Sandbox.DisksTest do
     {:ok, file} = :file.open(paths.home, [:read, :write, :binary])
     :ok = :file.pwrite(file, 512 * 1024 * 1024, "the vm was here")
     :ok = :file.close(file)
-    written = File.read!(paths.home) |> :erlang.md5()
+    written = copy_as_it_is(paths.home)
 
     now = ~U[2026-11-13 12:00:00Z]
 
@@ -109,11 +129,11 @@ defmodule MWTClient.Sandbox.DisksTest do
 
     :ok = Disks.empty!(paths.home)
     assert File.stat!(paths.home).size == @gib
-    refute File.read!(paths.home) |> :erlang.md5() == written
+    refute same_bytes?(paths.home, written)
     assert %{"TYPE" => "ext4"} = kind(paths.home)
 
     :ok = Disks.restore!(paths, snapshot)
-    assert File.read!(paths.home) |> :erlang.md5() == written
+    assert same_bytes?(paths.home, written)
 
     :ok = Disks.delete!(paths, snapshot)
     assert_raise RuntimeError, ~r/is gone/, fn -> Disks.restore!(paths, snapshot) end

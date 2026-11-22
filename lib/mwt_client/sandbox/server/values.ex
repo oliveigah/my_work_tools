@@ -477,7 +477,7 @@ defmodule MWTClient.Sandbox.Server.Values do
   # and, when it knows, `expires_in` seconds: kept until a minute before
   # then, or for 10 minutes.
   defp mint(command, variables) do
-    case System.cmd("timeout", ["30", "bash", "-lc", command],
+    case MWTClient.Executable.cmd("timeout", ["30", "bash", "-lc", command],
            stderr_to_stdout: false,
            env: HostRun.home_env() ++ variables
          ) do

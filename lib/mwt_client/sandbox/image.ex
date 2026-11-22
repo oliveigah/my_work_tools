@@ -168,7 +168,7 @@ defmodule MWTClient.Sandbox.Image do
     _ = Msb.run(username, ["image", "remove", ref, "localhost/" <> ref], 60)
 
     if podman?() do
-      System.cmd("podman", ["rmi", "--ignore", ref], stderr_to_stdout: true)
+      MWTClient.Executable.cmd("podman", ["rmi", "--ignore", ref], stderr_to_stdout: true)
     end
 
     :ok
@@ -176,7 +176,7 @@ defmodule MWTClient.Sandbox.Image do
 
   @doc "Whether podman, which builds the image, is installed."
   @spec podman?() :: boolean()
-  def podman?, do: System.find_executable("podman") != nil
+  def podman?, do: MWTClient.Executable.find("podman") != nil
 
   defp shell_quote(text), do: "'" <> String.replace(text, "'", "'\\''") <> "'"
 
