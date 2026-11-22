@@ -547,6 +547,32 @@ defmodule MWTClient.Sandbox do
   def sync_shares(username, which), do: Server.call(username, {:sync_shares, which})
 
   @doc """
+  Syncs the workspace both ways (`MWTClient.Sandbox.Workspace`): your
+  `to-vm/` into the VM, its `from-vm/` onto this machine. Answered at once.
+  """
+  @spec sync_workspace(String.t()) :: :ok
+  def sync_workspace(username), do: Server.call(username, :sync_workspace)
+
+  @doc "Opens the workspace in your file manager."
+  @spec open_workspace(String.t()) :: :ok | {:error, String.t()}
+  def open_workspace(username) do
+    case Server.call(username, :projects) do
+      %{workspace: root} when is_binary(root) ->
+        MWTClient.Sandbox.Workspace.open(root)
+
+      _none ->
+        {:error, "There is no workspace yet: it is made at the first sync with the VM running."}
+    end
+  end
+
+  @doc """
+  Lets a file of the workspace's `to-vm/` that was held back go to the VM
+  as it is now (`path` relative to `to-vm/`).
+  """
+  @spec release_held(String.t(), String.t()) :: :ok
+  def release_held(username, path), do: Server.call(username, {:workspace_release, path})
+
+  @doc """
   The addresses MWT always refuses for the VM: loopback, link-local,
   unspecified and every address of this machine's own interfaces.
   """

@@ -48,7 +48,8 @@ defmodule MWTClient.Sandbox.MwtTools do
             | :git_fetch
             | :git_fetch_remote
             | :git_handoff
-            | :share_sync,
+            | :share_sync
+            | :workspace,
           required(:tool) => String.t(),
           optional(:kind) => :note | :diagram | :card | :http | nil,
           optional(:id) => String.t() | nil,
@@ -195,6 +196,9 @@ defmodule MWTClient.Sandbox.MwtTools do
 
   def about(%{grant: :share_sync} = use),
     do: %{title: "Sync #{use[:title] || "your shared folders"}", pattern: "sync"}
+
+  def about(%{grant: :workspace}),
+    do: %{title: "Copy the workspace's from-vm onto your machine", pattern: "copy back"}
 
   @doc "What a change does, in a line, or nil."
   @spec words(use()) :: String.t() | nil

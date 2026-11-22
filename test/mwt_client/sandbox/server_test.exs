@@ -73,7 +73,8 @@ defmodule MWTClient.Sandbox.ServerTest do
 
     # MWT's own tools, built in: reading and adding always on, changing on
     # and asking; the projects' Git (fetching, fetching remotes on this
-    # machine, handing off) and syncing the shared folders always on.
+    # machine, handing off), syncing the shared folders and copying the
+    # workspace's from-vm onto this machine always on.
     assert [
              %{id: "mwt-read", state: :on, start: :auto},
              %{id: "mwt-create", state: :on, start: :auto},
@@ -81,11 +82,12 @@ defmodule MWTClient.Sandbox.ServerTest do
              %{id: "git-fetch", state: :on, start: :auto},
              %{id: "git-fetch-remote", state: :on, start: :auto},
              %{id: "git-handoff", state: :on, start: :auto},
-             %{id: "share-sync", state: :on, start: :auto}
+             %{id: "share-sync", state: :on, start: :auto},
+             %{id: "workspace", state: :on, start: :auto}
            ] = mwt_tools
 
     assert Enum.map(mwt_tools, &MWTClient.Sandbox.Grant.auto_approved?/1) ==
-             [true, true, false, true, true, true, true]
+             [true, true, false, true, true, true, true, true]
 
     assert snapshot.settings.containerfile =~ "FROM "
     assert snapshot.settings.image_name == "mwt_agent_sdb_image"
@@ -1194,7 +1196,7 @@ defmodule MWTClient.Sandbox.ServerTest do
       {mwt_tools, [internet]} = Enum.split_with(others, &Grant.mwt_tools?/1)
 
       assert Enum.map(mwt_tools, & &1.id) ==
-               ~w(mwt-read mwt-create mwt-change git-fetch git-fetch-remote git-handoff share-sync)
+               ~w(mwt-read mwt-create mwt-change git-fetch git-fetch-remote git-handoff share-sync workspace)
 
       assert %Grant{id: "internet", internet: true, state: :on} = internet
       assert %Grant{id: "commands", name: "Ask to run commands", state: :off} = built_in

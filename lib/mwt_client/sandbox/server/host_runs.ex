@@ -18,7 +18,6 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     Param,
     Policy,
     SavedRequest,
-    Share,
     Shares
   }
 
@@ -359,11 +358,12 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     end
   end
 
-  # A command that ran in a shared folder may have left files there: that
-  # share is synced, so they reach the VM's copy. `mwt sync` waits for it.
+  # A command that ran in a shared folder, or in the workspace's to-vm,
+  # may have left files there: that one is synced, so they reach the VM's
+  # copy. `mwt sync` waits for it.
   defp sync_its_share(state, %Approval{dir: dir}) when is_binary(dir) do
-    case Enum.find(state.settings.shares, &Shares.within?(dir, &1.path)) do
-      %Share{path: path} -> ShareSync.request(state, [path])
+    case Enum.find(ShareSync.shared(state), &Shares.within?(dir, &1)) do
+      path when is_binary(path) -> ShareSync.request(state, [path])
       nil -> state
     end
   end

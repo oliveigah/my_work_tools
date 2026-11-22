@@ -11,6 +11,10 @@ defmodule MWTClient.StandIns do
   An identity with no stand-in reaches its VM as it would outside tests,
   and finds it stopped; Zed never opens, whatever the identity.
   `test_helper.exs` makes the table before any test runs.
+
+  The workspace (`MWTClient.Sandbox.Workspace`) goes in a home folder of
+  the identity's own, inside the test data folder, and opening it opens
+  nothing.
   """
 
   alias MWTClient.Accounts
@@ -44,6 +48,20 @@ defmodule MWTClient.StandIns do
   @doc false
   # Projects' `:guest`: the stand-in for this identity's VM, or nil.
   def guest(username), do: lookup(:guest, username)
+
+  @doc """
+  The home folder `username`'s workspace goes in: one of its own, inside
+  the test data folder, made when first asked for.
+  """
+  def workspace_home(username) do
+    home = Path.join([Accounts.root(), "homes", Accounts.id(username)])
+    File.mkdir_p!(home)
+    home
+  end
+
+  @doc false
+  # The workspace's `:open`: nothing opens.
+  def open_folder(_root), do: :ok
 
   @doc false
   # Zed's `:open`.

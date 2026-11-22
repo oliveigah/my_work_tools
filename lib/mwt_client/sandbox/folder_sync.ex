@@ -103,7 +103,8 @@ defmodule MWTClient.Sandbox.FolderSync do
   What the pages show of a record: the folder as the last sync found it,
   what that sync `sent` and `removed`, and how many of its files were
   `unsettled`: changed in the 2 s before, or while they were sent, so
-  maybe caught half written. Those go again at the next sync.
+  maybe caught half written. Those go again at the next sync. And the
+  files `held` back: not sent, with why (`:hold` in `sync/4`).
   """
   @type status :: %{
           files: non_neg_integer(),
@@ -115,7 +116,8 @@ defmodule MWTClient.Sandbox.FolderSync do
           error: String.t() | nil,
           sent: non_neg_integer(),
           removed: non_neg_integer(),
-          unsettled: non_neg_integer()
+          unsettled: non_neg_integer(),
+          held: [%{path: binary(), why: String.t()}]
         }
 
   @typedoc """
@@ -237,7 +239,8 @@ defmodule MWTClient.Sandbox.FolderSync do
         error: nil,
         sent: 0,
         removed: 0,
-        unsettled: 0
+        unsettled: 0,
+        held: []
       }
     }
   end
@@ -253,7 +256,10 @@ defmodule MWTClient.Sandbox.FolderSync do
       in memory just made at a start): everything is sent with a plain
       `tar -x`, which needs neither bash nor GNU tools there;
     * `:max_bytes` - the most a folder may hold;
-    * `:progress` - called with each `t:phase/0` as the sync goes.
+    * `:progress` - called with each `t:phase/0` as the sync goes;
+    * `:hold` - called with the folder, then each changed file's path in
+      it and where it is here, before it is sent: nil sends it, a reason
+      holds it back, unsent, until a sync finds it changed or let go.
   """
   @spec sync(record(), map(), Path.t(), keyword()) :: record()
   def sync(record, guest, dir, opts \\ []) do
@@ -262,6 +268,7 @@ defmodule MWTClient.Sandbox.FolderSync do
     fresh? = Keyword.get(opts, :fresh, false)
     progress = Keyword.get(opts, :progress, fn _phase -> :ok end)
     max_bytes = Keyword.get(opts, :max_bytes, @max_bytes)
+    hold = Keyword.get(opts, :hold)
     record = with_sent(record, dir)
     progress.(:scanning)
 
@@ -272,7 +279,7 @@ defmodule MWTClient.Sandbox.FolderSync do
 
       {:ok, scan} ->
         record
-        |> bring(scan, guest, dir, clock, fresh?, progress)
+        |> bring(scan, guest, dir, clock, fresh?, progress, hold)
         |> then(fn record ->
           %{
             record
@@ -313,7 +320,7 @@ defmodule MWTClient.Sandbox.FolderSync do
     Path.join([dir, "sync", hash <> ".bin"])
   end
 
-  defp bring(record, scan, guest, dir, clock, fresh?, progress) do
+  defp bring(record, scan, guest, dir, clock, fresh?, progress, hold) do
     place = guest.place.(record.to)
     have = if fresh?, do: {:ok, %{}, clock}, else: have(record, guest, place, clock, progress)
 
@@ -327,6 +334,8 @@ defmodule MWTClient.Sandbox.FolderSync do
         end)
 
       %{send: changed, remove: remove} = plan(scan, record.sent, have, record.stamps)
+      {changed, held} = held(changed, scan, record.path, hold)
+      record = put_in(record.status.held, held)
 
       if changed == [] and remove == [] do
         # A copy just compared whole is what MWT sent from now on.
@@ -363,6 +372,26 @@ defmodule MWTClient.Sandbox.FolderSync do
 
   defp size({:file, size, _mtime}), do: size
   defp size(_other), do: 0
+
+  # The changed files `hold` keeps back, out of what is sent: the VM keeps
+  # what it had of them.
+  defp held(changed, _scan, _share, nil), do: {changed, []}
+
+  defp held(changed, scan, share, hold) do
+    Enum.reduce(changed, {[], []}, fn path, {send, held} ->
+      case scan.entries[path] do
+        {:file, _size, _mtime} ->
+          case hold.(share, path, Path.join(share, path)) do
+            nil -> {[path | send], held}
+            why -> {send, [%{path: path, why: why} | held]}
+          end
+
+        _folder_or_link ->
+          {[path | send], held}
+      end
+    end)
+    |> then(fn {send, held} -> {Enum.reverse(send), Enum.reverse(held)} end)
+  end
 
   # What the VM's copy holds: what was sent, unless it was never compared
   # since the VM started, or the last sync failed.

@@ -344,12 +344,17 @@ defmodule MWTClientWeb.SandboxLiveTest do
     refute has_element?(view, "#grants-all #grants-enabled")
     assert has_element?(view, "#grants-all #grant-search")
     assert has_element?(view, "#grants-all #grant-filters")
-    assert has_element?(view, "#grants-enabled", "9 grants: 7 auto-approved, 2 asking each time.")
+
+    assert has_element?(
+             view,
+             "#grants-enabled",
+             "10 grants: 8 auto-approved, 2 asking each time."
+           )
 
     # The built-in grants are enabled on startup and until off: one row,
     # closed, with how many and how they are approved.
-    assert has_element?(view, "#enabled-startup-count", "8 grants")
-    assert has_element?(view, "#enabled-startup-auto", "7 auto")
+    assert has_element?(view, "#enabled-startup-count", "9 grants")
+    assert has_element?(view, "#enabled-startup-auto", "8 auto")
     assert has_element?(view, "#enabled-startup-ask", "1 ask")
     assert has_element?(view, "#enabled-startup-names", "Internet")
     assert has_element?(view, "#enabled-startup-toggle[aria-expanded=false]")
@@ -377,7 +382,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     view |> element("#enabled-duration-mwt-change-60") |> render_click()
     refute has_element?(view, "#enabled-startup-list #enabled-row-mwt-change")
     assert has_element?(view, "#grants-enabled #enabled-row-mwt-change")
-    assert has_element?(view, "#enabled-startup-count", "7 grants")
+    assert has_element?(view, "#enabled-startup-count", "8 grants")
     assert has_element?(view, "#enabled-startup-ask", "0 ask")
 
     view |> element("#enabled-duration-mwt-change-until_off") |> render_click()
@@ -392,7 +397,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     view |> form("#grant-search", term: "nothing like it") |> render_change()
     assert has_element?(view, "#grants-no-match")
     assert has_element?(view, "#enabled-row-#{grant.id}")
-    assert has_element?(view, "#enabled-startup-count", "8 grants")
+    assert has_element?(view, "#enabled-startup-count", "9 grants")
 
     view |> element("#enabled-startup-toggle") |> render_click()
     refute has_element?(view, "#enabled-startup-list")
@@ -1159,27 +1164,33 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
     # Every grant and subgrant is a card, the one that is on too, six a page.
-    assert has_element?(view, "#grants-all-count", "10 grants, 2 subgrants")
-    assert has_element?(view, "#grants-pages-shown", "1–6 of 12")
+    assert has_element?(view, "#grants-all-count", "11 grants, 2 subgrants")
+    assert has_element?(view, "#grants-pages-shown", "1–6 of 13")
     first = cards(view)
     assert length(first) == 6
     assert has_element?(view, "#grants-page-prev[disabled]")
 
     view |> element("#grants-page-2") |> render_click()
-    assert has_element?(view, "#grants-pages-shown", "7–12 of 12")
+    assert has_element?(view, "#grants-pages-shown", "7–12 of 13")
     second = cards(view)
     assert length(second) == 6
+
+    view |> element("#grants-page-3") |> render_click()
+    assert has_element?(view, "#grants-pages-shown", "13–13 of 13")
+    third = cards(view)
+    assert length(third) == 1
     assert has_element?(view, "#grants-page-next[disabled]")
-    assert MapSet.disjoint?(MapSet.new(first), MapSet.new(second))
-    assert "grant-card-web-pods" in (first ++ second)
-    assert "grant-card-#{grant.id}" in (first ++ second)
+    all = first ++ second ++ third
+    assert length(Enum.uniq(all)) == 13
+    assert "grant-card-web-pods" in all
+    assert "grant-card-#{grant.id}" in all
 
     view |> element("#grants-page-prev") |> render_click()
-    assert cards(view) == first
+    assert cards(view) == second
 
     # A page past the last shows the last.
     render_click(view, "grants_page", %{"page" => "9"})
-    assert cards(view) == second
+    assert cards(view) == third
 
     # Searching starts again from the first page.
     view |> element("#grants-page-2") |> render_click()
@@ -1194,7 +1205,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     refute has_element?(view, "#grants-all-list #grant-card-vpn-status")
     refute has_element?(view, "#grants-all-list #grant-card-commands")
     refute has_element?(view, "#grants-all-list #grant-card-#{grant.id}")
-    assert has_element?(view, "#grants-all-count", "1 of 12 match")
+    assert has_element?(view, "#grants-all-count", "1 of 13 match")
     # What is enabled stays above, whatever the search.
     assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
 
@@ -1208,14 +1219,14 @@ defmodule MWTClientWeb.SandboxLiveTest do
     # The grant that is on is found like any other.
     view |> form("#grant-search", term: "github") |> render_change()
     assert has_element?(view, "#grants-all-list #grant-card-#{grant.id}")
-    assert has_element?(view, "#grants-all-count", "1 of 12 match")
+    assert has_element?(view, "#grants-all-count", "1 of 13 match")
 
     view |> form("#grant-search", term: "nothing like it") |> render_change()
     assert has_element?(view, "#grants-no-match")
     assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
 
     view |> element("#clear-grant-search") |> render_click()
-    assert has_element?(view, "#grants-all-count", "10 grants, 2 subgrants")
+    assert has_element?(view, "#grants-all-count", "11 grants, 2 subgrants")
 
     # Only what is on, then only one type: the search keeps.
     view |> form("#grant-status", status: "on") |> render_change()
@@ -1234,7 +1245,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert cards(view) == ["grant-card-vpn-status", "grant-card-web-pods"]
 
     view |> element("#grant-filters-clear") |> render_click()
-    assert has_element?(view, "#grants-all-count", "10 grants, 2 subgrants")
+    assert has_element?(view, "#grants-all-count", "11 grants, 2 subgrants")
   end
 
   # The cards All grants shows now, by id, in order.

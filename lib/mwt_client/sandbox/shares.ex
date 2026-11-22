@@ -2,7 +2,7 @@ defmodule MWTClient.Sandbox.Shares do
   @moduledoc """
   Decides whether a host folder may be shared with the VM.
 
-  Four rules:
+  Five rules:
 
     * **No credential folders.** Sharing `~/.ssh`, `~/.optmem`, MWT's own data
       folder and the like, or any folder holding one of them, hands the VM
@@ -19,6 +19,9 @@ defmodule MWTClient.Sandbox.Shares do
       repository ignores; share the repository, which is a project. And a
       copy at `/work`, `/cache`, `/root` or `/mnt` would land on the VM's
       own.
+    * **Not the workspace,** nor a folder holding it or inside it: MWT
+      shares its own half of it already (`MWTClient.Sandbox.Workspace`),
+      and the VM's half comes the other way.
 
   Pure apart from reading the filesystem to resolve the path.
   """
@@ -57,6 +60,7 @@ defmodule MWTClient.Sandbox.Shares do
           | :duplicate
           | {:inside_repository, String.t()}
           | {:vm_path, String.t()}
+          | {:workspace, String.t()}
 
   @doc """
   Checks `path` against the folders already shared.
@@ -65,6 +69,7 @@ defmodule MWTClient.Sandbox.Shares do
 
     * `:home` - the home folder, defaults to the user's
     * `:data_dir` - MWT's data folder, defaults to `MWTClient.Accounts.root/0`
+    * `:workspace` - the identity's workspace, or nil
 
   Returns the resolved share, or why it is refused.
   """
@@ -82,6 +87,7 @@ defmodule MWTClient.Sandbox.Shares do
          :ok <- not_refused(real, home, data_dir),
          :ok <- not_vm_path(real),
          :ok <- not_inside_repository(real),
+         :ok <- not_workspace(real, Keyword.get(opts, :workspace)),
          :ok <- no_overlap(real, shares) do
       {:ok, %Share{path: real}}
     end
@@ -105,6 +111,14 @@ defmodule MWTClient.Sandbox.Shares do
       nil -> :ok
       root -> if path == "/", do: :ok, else: {:error, {:inside_repository, root}}
     end
+  end
+
+  defp not_workspace(_path, nil), do: :ok
+
+  defp not_workspace(path, workspace) do
+    if within?(path, workspace) or within?(workspace, path),
+      do: {:error, {:workspace, workspace}},
+      else: :ok
   end
 
   @doc "A sentence explaining a refusal, for the settings page."
@@ -134,6 +148,10 @@ defmodule MWTClient.Sandbox.Shares do
 
   def explain({:vm_path, taken}),
     do: "The VM keeps its own files at #{taken}: a copy there would land on them."
+
+  def explain({:workspace, workspace}),
+    do:
+      "#{workspace} is the workspace, which MWT shares with the VM itself: put files for the VM in its to-vm folder instead."
 
   defp normalize(path, home) do
     case String.trim(path) do

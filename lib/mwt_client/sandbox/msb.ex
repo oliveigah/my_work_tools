@@ -317,11 +317,13 @@ defmodule MWTClient.Sandbox.Msb do
   `max_output/0` bytes of it are taken (`MWTClient.Sandbox.Bounded`); more
   is an error, and the command is stopped. The output is stdout alone: a
   warning on stderr, such as git's, is no part of what callers parse. An
-  error says both, cut to its first `error_limit/0` bytes.
+  error says both, cut to its first `error_limit/0` bytes. Without MWT's
+  msb it makes nothing, not even the home: a task that outlives its
+  server leaves no folder behind.
   """
   @spec run(String.t(), [String.t()], pos_integer()) :: {:ok, String.t()} | {:error, String.t()}
   def run(username, args, seconds \\ 60) do
-    ensure_home!(username)
+    if executable(), do: ensure_home!(username)
 
     with :ok <- written(write_launcher(username)) do
       # Only a pull needs the network; nothing else is read from here.

@@ -80,6 +80,21 @@ defmodule MWTClient.Sandbox.SharesTest do
     assert Shares.explain({:vm_path, "/work"}) =~ "/work"
   end
 
+  test "refuses the workspace, a folder in it, and one holding it", %{home: home, opts: opts} do
+    workspace = Path.join(home, "mwt-vm")
+    File.mkdir_p!(Path.join(workspace, "to-vm"))
+    opts = Keyword.put(opts, :workspace, workspace)
+
+    assert {:error, {:workspace, ^workspace}} = Shares.validate("~/mwt-vm", [], opts)
+    assert {:error, {:workspace, ^workspace}} = Shares.validate("~/mwt-vm/to-vm", [], opts)
+
+    File.mkdir_p!(Path.join(home, "all"))
+    holder = Keyword.put(opts, :workspace, Path.join(home, "all/mwt-vm"))
+    assert {:error, {:workspace, _}} = Shares.validate("~/all", [], holder)
+    assert {:ok, _} = Shares.validate("~/projects/app", [], opts)
+    assert Shares.explain({:workspace, workspace}) =~ "to-vm"
+  end
+
   test "refuses what is not a folder", %{opts: opts} do
     assert {:error, :blank} = Shares.validate("  ", [], opts)
     assert {:error, :not_absolute} = Shares.validate("projects/app", [], opts)

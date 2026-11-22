@@ -38,6 +38,12 @@ config :mwt_client, MWTClient.Sandbox.Msb,
 config :mwt_client, MWTClient.Sandbox.Projects, guest: &MWTClient.StandIns.guest/1
 config :mwt_client, MWTClient.Sandbox.Zed, open: &MWTClient.StandIns.open_zed/2
 
+# The workspace goes in a home folder of each identity's own, under the
+# test data folder, never yours; opening it opens nothing.
+config :mwt_client, MWTClient.Sandbox.Workspace,
+  home: &MWTClient.StandIns.workspace_home/1,
+  open: &MWTClient.StandIns.open_folder/1
+
 # A new identity's password is stretched 600,000 times, about 150ms by
 # design; the suite makes over a thousand of them, so it builds with fewer.
 # An identity keeps the count it was made with, so unlocking still reads it

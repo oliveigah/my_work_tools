@@ -21,7 +21,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     Shown
   }
 
-  alias MWTClient.Sandbox.Server.{Grants, HostRuns, State, Values}
+  alias MWTClient.Sandbox.Server.{Grants, HostRuns, ShareSync, State, Values}
 
   @history_limit 100
   # An agent's ask waits this long for you; the agent itself waits less and
@@ -373,7 +373,8 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       script: approval.script,
       dir: approval.dir,
       timeout: approval.timeout,
-      env: Map.get(approval, :values) || []
+      env: Map.get(approval, :values) || [],
+      workspace: ShareSync.root(state)
     }
 
     state =
@@ -657,7 +658,8 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   # machine has it: a shared folder's path, or your home folder.
   defp place(state, {:under, %Grant{kind: :command}}, ask) do
     asked = ask |> Map.get(:dir) |> State.to_text() |> String.trim()
-    {_where, dir} = HostCommand.place(asked, state.settings.shares, System.user_home!())
+    shares = state.settings.shares ++ HostCommand.halves(ShareSync.root(state))
+    dir = asked |> HostCommand.place(shares, System.user_home!()) |> elem(1)
     Map.put(ask, :dir, dir)
   end
 

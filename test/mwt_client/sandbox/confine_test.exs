@@ -74,6 +74,20 @@ defmodule MWTClient.Sandbox.ConfineTest do
     assert Enum.take(words, -3) == ["--chdir", "/home/me", "--"]
   end
 
+  test "the workspace: from-vm read-only, to-vm writable, before its own folder" do
+    words = Confine.words(Map.put(@spec_, :workspace, "/home/me/mwt-vm"))
+    from = ["--ro-bind-try", "/home/me/mwt-vm/from-vm", "/home/me/mwt-vm/from-vm"]
+    to = ["--bind-try", "/home/me/mwt-vm/to-vm", "/home/me/mwt-vm/to-vm"]
+    assert from in pairs(words)
+    assert to in pairs(words)
+
+    index = fn part -> Enum.find_index(pairs(words), &(&1 == part)) end
+    assert index.(from) > index.(["--tmpfs", "/home/me", "--ro-bind-try"]) - 1
+    assert index.(to) < index.(["--ro-bind", "/home/me/site", "/home/me/site"])
+
+    refute Enum.any?(Confine.words(@spec_), &String.contains?(&1, "mwt-vm"))
+  end
+
   test "no value travels in the arguments, which every account here can read" do
     words = Confine.words(@spec_)
     refute Enum.any?(words, &String.contains?(&1, "="))

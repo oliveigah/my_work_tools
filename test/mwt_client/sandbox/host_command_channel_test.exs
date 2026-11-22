@@ -1160,6 +1160,16 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       assert {:error, :reviewed} = Sandbox.review(context.username, grant.id, :keep_off)
     end
 
+    test "one in a shared folder is saved to run there", context do
+      shared = Path.join(context.project, "docs")
+      File.mkdir_p!(shared)
+      {:ok, share} = Sandbox.add_share(context.username, shared)
+
+      assert {_output, 2} = propose(context, ["--wait", "0", "--dir", shared])
+      ask = waiting(context.username, &(&1.kind == :activation))
+      assert proposed(context.username, ask.grant_id).dir == share.path
+    end
+
     test "proposed again under its name before review, it changes in place", context do
       assert {_output, 2} = propose(context, ["--wait", "0"])
       ask = waiting(context.username, &(&1.kind == :activation))

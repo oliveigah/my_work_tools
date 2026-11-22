@@ -122,4 +122,33 @@ defmodule MWTClient.Sandbox.InboundTest do
     assert Inbound.scrub(text, secrets) == "a=[GitHub's token] b=[Stripe's token] c"
     assert Inbound.scrub(text, nil) == text
   end
+
+  describe "a file" do
+    setup do
+      path = Path.join(System.tmp_dir!(), "inbound-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm(path) end)
+      %{path: path}
+    end
+
+    test "is looked through whole, a window at a time, with lines counted from its start",
+         %{path: path} do
+      # Cut by the end of the first window, on the line after 4095 lines.
+      lines = String.duplicate(String.duplicate("x", 1023) <> "\n", 4 * 1024 - 1)
+      gap = String.duplicate("y", 4 * 1024 * 1024 - 20 - byte_size(lines) - 1) <> " "
+      File.write!(path, lines <> gap <> "ghp_" <> String.duplicate("x", 36) <> "\nlast\n")
+
+      assert {:found, [%{what: {:shape, "a GitHub token"}, line: 4096}]} =
+               Inbound.check_file(path, nil)
+
+      secrets = Secrets.new([{{:value, "GitHub"}, Secrets.forms("tok_real_value_0123456789")}])
+      File.write!(path, "a\nb\nthe tok_real_value_0123456789\n")
+      assert {:found, [%{what: {:value, "GitHub"}, line: 3}]} = Inbound.check_file(path, secrets)
+    end
+
+    test "a clean one, or none", %{path: path} do
+      File.write!(path, "nothing here\n")
+      assert :ok = Inbound.check_file(path, nil)
+      assert {:error, :enoent} = Inbound.check_file(path <> ".gone", nil)
+    end
+  end
 end

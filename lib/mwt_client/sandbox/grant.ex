@@ -226,6 +226,7 @@ defmodule MWTClient.Sandbox.Grant do
             | :git_fetch_remote
             | :git_handoff
             | :share_sync
+            | :workspace
             | nil,
           proposal: proposal() | nil,
           source: source(),
@@ -501,6 +502,16 @@ defmodule MWTClient.Sandbox.Grant do
       purpose:
         "Lets agents bring the VM's read-only copies of your shared folders up to date with mwt sync, as you would with Sync. " <>
           "Only what you shared, from this machine into the VM: nothing goes back."
+    },
+    %{
+      tools: :workspace,
+      id: "workspace",
+      name: "Workspace: write to your machine",
+      start: :auto,
+      purpose:
+        "Lets the workspace's from-vm folder, which agents write in the VM, be copied into ~/mwt-vm/from-vm on this machine, " <>
+          "read-only here, at each sync of your shared folders. Only files and folders, nothing executable, no name starting with a dot, " <>
+          "at most 1 GiB. Off, nothing of the VM comes here; what came already stays."
     }
   ]
 
@@ -511,7 +522,9 @@ defmodule MWTClient.Sandbox.Grant do
   For the projects' Git (`git_tools?/1`): fetching from your repositories,
   fetching from their remotes on this machine, and handing off, all
   auto-approved; landing is never a grant, it is yours. And syncing your
-  shared folders' copies, auto-approved too.
+  shared folders' copies, auto-approved too, and copying the workspace's
+  `from-vm/` onto this machine (`MWTClient.Sandbox.CopyBack`), the one
+  way the VM writes onto your disk without a handoff you land.
   """
   @spec mwt_tools() :: [t()]
   def mwt_tools do

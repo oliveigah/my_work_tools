@@ -45,13 +45,13 @@ defmodule MWTClient.Sandbox.Firewall do
           | {:upload, String.t(), :inet.port_number(), non_neg_integer(), non_neg_integer()}
           | {:leak, String.t(), String.t(), :request | :plaintext}
           | {:value, String.t(), String.t() | nil,
-             :request | :plaintext | :echo | :lookup | :ask | :tool | :handoff}
+             :request | :plaintext | :echo | :lookup | :ask | :tool | :handoff | :workspace}
           | {:command, String.t()}
           | {:declined, term()}
           | {:ask, term(), String.t()}
           | :read
           | {:processes, [%{pid: integer(), name: String.t(), cpu: number() | nil}]}
-          | {:inbound, String.t(), String.t(), :command | :call}
+          | {:inbound, String.t(), String.t(), :command | :call | :workspace}
           | {:mint, String.t(), String.t(), String.t()}
 
   @type finding :: %{
@@ -277,7 +277,7 @@ defmodule MWTClient.Sandbox.Firewall do
       brief: "A grant's real value going out, or coming in.",
       name: "Real credential in traffic",
       text:
-        "A token grant's real value in what the VM sends that MWT reads (a request, a plaintext tunnel, a lookup, an ask, a write through MWT's tools, a handoff), or coming back to it in an answer. It never goes; out, the VM holds it: replace that credential.",
+        "A token grant's real value in what the VM sends that MWT reads (a request, a plaintext tunnel, a lookup, an ask, a write through MWT's tools, a handoff, a file of the workspace's from-vm), or coming back to it in an answer. It never goes; out, the VM holds it: replace that credential.",
       default: :isolate,
       actions: [:isolate, :block, :alert, :off]
     },
@@ -1079,7 +1079,13 @@ defmodule MWTClient.Sandbox.Firewall do
 
   # Never the text it was found in: that holds the credential.
   defp sense(_firewall, watch, {:inbound, title, words, how}, _now) do
-    what = if how == :call, do: "The answer to #{title}", else: "The output of #{title}"
+    what =
+      case how do
+        :call -> "The answer to #{title}"
+        :workspace -> "The workspace's #{title}"
+        :command -> "The output of #{title}"
+      end
+
     {watch, [{:credential_inbound, {title, words}, "#{what} holds #{words}", nil, nil}]}
   end
 
@@ -1099,7 +1105,7 @@ defmodule MWTClient.Sandbox.Firewall do
         :tool ->
           "#{grant}'s real value in a write through MWT's tools: the VM holds it. Replace it at its service"
 
-        :handoff ->
+        how when how in [:handoff, :workspace] ->
           "#{grant}'s real value in #{destination}: the VM holds it. Replace it at its service"
 
         out when out in [:request, :plaintext] ->

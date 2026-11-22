@@ -14,6 +14,10 @@ defmodule MWTClient.Sandbox.Confine do
       with what it links to one level down;
     * the command's folder, read-only unless the subgrant may write there;
       one that runs in your home folder runs in the empty one;
+    * the workspace (`MWTClient.Sandbox.Workspace`): its `from-vm/`
+      read-only, what the VM left there, and its `to-vm/` writable, the
+      one folder outside its own a confined command may write to, for the
+      VM to read;
     * `/mnt/mwt/tokens`, where the token files of the grants it runs with
       are written, as in the VM, so a script reads them the same way on
       both sides;
@@ -27,6 +31,8 @@ defmodule MWTClient.Sandbox.Confine do
   `words/1` is pure: the arguments, up to and including `--`.
   """
 
+  alias MWTClient.Sandbox.Workspace
+
   @system ~w(/opt /nix /snap)
 
   @type spec :: %{
@@ -34,6 +40,7 @@ defmodule MWTClient.Sandbox.Confine do
           required(:writes) => boolean(),
           required(:home) => Path.t(),
           required(:reads) => [Path.t()],
+          optional(:workspace) => Path.t() | nil,
           optional(:bwrap) => String.t(),
           optional(:resolver) => Path.t() | nil,
           optional(:links) => %{Path.t() => Path.t()}
@@ -76,9 +83,19 @@ defmodule MWTClient.Sandbox.Confine do
       resolver(Map.get(spec, :resolver)) ++
       ["--tmpfs", spec.home] ++
       reads ++
+      workspace(Map.get(spec, :workspace)) ++
       ["--dir", "/mnt/mwt/tokens"] ++
       folder(spec) ++
       ["--chdir", spec.dir, "--"]
+  end
+
+  # The command's own folder comes after, so a subgrant that runs in a half
+  # keeps the mode it was given there.
+  defp workspace(nil), do: []
+
+  defp workspace(root) do
+    ["--ro-bind-try", Workspace.from_vm(root), Workspace.from_vm(root)] ++
+      ["--bind-try", Workspace.to_vm(root), Workspace.to_vm(root)]
   end
 
   # Its folder; your home itself is the empty one, never yours.

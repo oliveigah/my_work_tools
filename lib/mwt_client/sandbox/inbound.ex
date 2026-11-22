@@ -100,6 +100,60 @@ defmodule MWTClient.Sandbox.Inbound do
   defp value({:value, name}), do: {:value, name}
   defp value({:placeholder, name}), do: {:value, name}
 
+  @window 4 * 1024 * 1024
+  # What a window keeps of the one before: longer than any form or shape
+  # looked for, so one cut between two is still found whole.
+  @overlap 64 * 1024
+
+  @doc """
+  `check/3` on the file at `path`, read a window at a time, each with the
+  end of the one before: a file of any size is looked through whole, in
+  little memory. Line numbers count from the file's start. `{:error,
+  reason}` when it can't be read.
+  """
+  @spec check_file(Path.t(), Secrets.t() | nil, [binary()]) ::
+          :ok | {:found, [finding()]} | {:error, File.posix()}
+  def check_file(path, secrets, ignore \\ []) do
+    case File.open(path, [:read, :raw, :binary]) do
+      {:ok, io} ->
+        try do
+          windows(io, "", 1, secrets, ignore, [])
+        after
+          File.close(io)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # `line` is the line `carry`, the end of the window before, starts on.
+  defp windows(io, carry, line, secrets, ignore, found) do
+    case :file.read(io, @window) do
+      {:ok, data} ->
+        text = carry <> data
+
+        here =
+          case check(text, secrets, ignore) do
+            :ok -> []
+            {:found, findings} -> Enum.map(findings, &%{&1 | line: &1.line + line - 1})
+          end
+
+        keep = min(@overlap, byte_size(text))
+        done = binary_part(text, 0, byte_size(text) - keep)
+        line = line + length(:binary.matches(done, "\n"))
+        carry = binary_part(text, byte_size(text) - keep, keep)
+        found = (found ++ here) |> Enum.uniq() |> Enum.take(@most)
+        windows(io, carry, line, secrets, ignore, found)
+
+      :eof ->
+        if found == [], do: :ok, else: {:found, found}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   @doc """
   `text` with every real value of `secrets` written out as its grant's
   name, in every form.

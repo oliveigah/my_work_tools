@@ -239,6 +239,10 @@ defmodule MWTClient.Sandbox.Instructions do
     do:
       "use: mwt sync [PATH] brings the read-only copies of the user's shared folders up to date (PATH: only the one holding it), and waits for it. Off, they stay as the user last synced them."
 
+  def usage(%Grant{kind: :mwt, tools: :workspace}),
+    do:
+      "use: mwt sync (or mwt sync $MWT_WORKSPACE/from-vm) copies what you left in $MWT_WORKSPACE/from-vm onto the user's machine, and waits for it. Off, nothing of it goes there."
+
   def usage(%Grant{kind: :mwt, tools: tools}) do
     "use: MWT's MCP server, mwt mcp, already set up for Claude Code and Codex in this VM: the " <>
       case tools do

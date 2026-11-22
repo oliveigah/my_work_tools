@@ -82,7 +82,8 @@ defmodule MWTClient.Sandbox.Server.State do
         state.host.tools,
         state.settings.shares,
         state.settings.host_notes,
-        MWTClient.Sandbox.Server.Forwarding.address(state)
+        MWTClient.Sandbox.Server.Forwarding.address(state),
+        MWTClient.Sandbox.Server.ShareSync.root(state)
       )
 
   @doc """
@@ -284,7 +285,8 @@ defmodule MWTClient.Sandbox.Server.State do
   """
   def write_inbox(state) do
     Inbox.write(inbox_dir(state), live_grants(state), ca_pem(state),
-      way_of_working: state.settings.way_of_working
+      way_of_working: state.settings.way_of_working,
+      workspace: MWTClient.Sandbox.Server.ShareSync.root(state)
     )
 
     write_host(state)
@@ -435,6 +437,14 @@ defmodule MWTClient.Sandbox.Server.State do
       # Shares whose next sync is the follow-up for files that weren't
       # settled: it asks for no other.
       sync_settle: MapSet.new(),
+      # The workspace (`MWTClient.Sandbox.Workspace`): `{:ok, root}`,
+      # `:none` before it is made, or `{:error, reason}`; the last copy
+      # back of its `from-vm/` (`MWTClient.Sandbox.CopyBack`); and the
+      # files of its `to-vm/` you let go though they were held back, as
+      # {path, {size, mtime}}.
+      workspace: :none,
+      copy_back: nil,
+      workspace_released: MapSet.new(),
       # The VM's copy of /mnt/mwt (`MWTClient.Sandbox.Server.Copying`): what
       # MWT knows of it, whether a change is still to be copied, and who
       # waits for that.

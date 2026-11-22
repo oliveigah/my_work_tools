@@ -31,8 +31,9 @@ sync needs a rule for it. What is known:
   nothing of the VM is ever written there but by a handoff you land.
 
 Decided on 2026-11-21: shared folders stay one way, from your machine into
-the VM. What the VM makes comes back by handoff, or through the workspace
-(below), which goes the other way only.
+the VM. What the VM makes comes back by handoff, or through the workspace's
+`from-vm/`, which goes the other way only ("The workspace" in
+`docs/agent_sandbox.md`).
 
 
 ## The bubble's AppArmor profile on Ubuntu
@@ -249,70 +250,6 @@ the VM:
 Item 4 alone, with the metadata server MWT has, is enough for the first
 kind (a client that takes default credentials and calls `signJwt`); the
 second needs all four.
-
-## A workspace for agents, on your machine
-
-Set aside on 2026-11-19. Shared folders go one way, from your machine into
-the VM, read-only there (`MWTClient.Sandbox.ShareMounts`,
-`MWTClient.Sandbox.FolderSync`); nothing of the VM reaches your machine but
-a handoff you land. Work that isn't code has no way back: a file an agent
-writes for a command of yours to read (a config entry a CLI uploads, a
-report, an input a subgrant's script takes) can't get there, so the agent
-passes it in a parameter, or the job can't be done. And a host tool's
-output reaches the VM only if it lands in a shared folder, which you have
-to make and share for it.
-
-The idea: **a workspace for agents, built into MWT**: a folder on your
-machine that MWT makes and shares by itself, at the same path on both
-sides (`~/mwt-vm`, say), the agents' working directory for everything that
-isn't a project's code. Changes come only from the VM: written there,
-read-only on your machine, kept up to date by MWT on its own, so the
-conflicts of "Conflicts in shared folders' copies" can't happen here.
-
-What it would take:
-
-- **Built in, nothing to set up**: made with the identity's VM, shared
-  without being added under Shared folders in Settings, shown on the
-  Overview page with a button to open it. One variable names it on both sides
-  (`MWT_WORKSPACE`, say): in the VM, and in every command and subgrant MWT
-  runs on your machine, so a script writes `"$MWT_WORKSPACE/…"` instead of
-  a path of yours.
-- **Agents are told to use it** (`priv/sandbox/agents.md`, `mwt host`):
-  outputs you asked for (reports, exports, generated files), inputs a
-  command of yours will read, and anything a host tool fetches for the VM
-  go there, never `/tmp` or a project's clone; and a subgrant that makes
-  files points its tool there (a CLI's output folder, say). Then
-  `mwt sync` (or MWT on its own) is the only way a file needs to travel.
-- **A part per task**, `<project>/<task>/`, so threads don't step on each
-  other, and a task's files are found next to its handoff; removed, or
-  kept, when its handoff lands or is closed.
-- **Both directions in one place** is the wish: what your commands write
-  there reaches the VM, what the VM writes reaches you. Both at once
-  brings the conflicts back, unless each side has its own part
-  (`from-vm/` and `to-vm/`, say).
-- **Read-only on your machine** needs a rule for when you change a file
-  anyway: the VM's version put back at the next sync, or the folder's
-  files kept read-only (mode bits, which you can still undo).
-- **It is a way out of the VM onto your machine**, where your own tools may
-  read and run what lands: the firewall's limits for a handoff apply (a
-  size cap, no symlinks or special files, executable bits dropped), and a
-  command or subgrant reading from it should say so on its card.
-- **Synced when it changes** (watched in the VM), and always before a
-  command or subgrant runs on your machine, so it reads what the VM wrote
-  last.
-
-Found when an agent needed a host CLI's output in the VM: the CLI writes
-its files inside your checkout, which isn't copied (projects aren't), so a
-folder was made and shared by hand for the VM (`~/mwt-vm`, read-only there
-as every share is today), and the CLI pointed at it.
-
-Decided on 2026-11-21: one way each. Shared folders go from your machine
-into the VM, the workspace from the VM onto your machine. It is the first
-way the VM writes onto your disk without a handoff you land, so its threat
-model comes before its code. Programs here read new files without a click
-(thumbnailers, desktop indexers; a shell prompt runs `git status` where a
-`.git` is, direnv and mise read their files when you `cd` in). Whether
-writing there is a grant of its own is open.
 
 ## Mints that take another grant's value
 

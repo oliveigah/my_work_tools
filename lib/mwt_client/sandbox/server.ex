@@ -96,7 +96,8 @@ defmodule MWTClient.Sandbox.Server do
     Settings,
     Share,
     Shares,
-    VM
+    VM,
+    Workspace
   }
 
   alias MWTClient.Sandbox.Server.{
@@ -240,6 +241,8 @@ defmodule MWTClient.Sandbox.Server do
           error: nil
         },
         proxy: %{listening?: false, error: nil, path: nil},
+        # The workspace as it is: made at the first sync with the VM up.
+        workspace: Workspace.locate(username),
         flush: nil,
         code: State.code()
       })
@@ -409,6 +412,7 @@ defmodule MWTClient.Sandbox.Server do
        },
        inbox: State.inbox_dir(state),
        sync: ShareSync.view(state),
+       workspace: ShareSync.workspace_view(state),
        host: Map.put(state.host, :text, State.host_text(state)),
        ports: Forwarding.view(state),
        firewall: Firewall.of(state)
@@ -998,7 +1002,13 @@ defmodule MWTClient.Sandbox.Server do
   defp answer({:request_command, ask}, _from, state) do
     with {:ok, grant, ask, opts} <-
            HostRuns.command_grant(state, Grants.former_id(state.grants, ask)),
-         {:ok, checked} <- HostCommand.check(ask, state.settings.shares, state.grants, opts),
+         {:ok, checked} <-
+           HostCommand.check(
+             ask,
+             state.settings.shares,
+             state.grants,
+             opts ++ ShareSync.command_opts(state)
+           ),
          {:ok, approval} <- HostRuns.command_approval(state, checked, grant),
          {:pass, state} <- screen_command(state, approval) do
       {state, held} = HostRuns.hold_command(state, approval)
@@ -1104,7 +1114,8 @@ defmodule MWTClient.Sandbox.Server do
        handoffs: state.handoffs,
        vm: %{name: state.vm.name, status: state.vm.status, started_at: state.vm.started_at},
        dir: Path.dirname(state.folders.optmem),
-       shares: state.settings.shares
+       shares: state.settings.shares,
+       workspace: ShareSync.root(state)
      }, state}
   end
 
@@ -1242,7 +1253,7 @@ defmodule MWTClient.Sandbox.Server do
   end
 
   defp answer({:add_share, path}, _from, state) do
-    case Shares.validate(path, state.settings.shares) do
+    case Shares.validate(path, state.settings.shares, workspace: ShareSync.root(state)) do
       {:ok, share} ->
         settings = %{state.settings | shares: state.settings.shares ++ [share]}
 
@@ -1273,6 +1284,21 @@ defmodule MWTClient.Sandbox.Server do
   # From a page's Sync button: answered at once, the sync goes on.
   defp answer({:sync_shares, which}, _from, state),
     do: {:reply, :ok, ShareSync.request(state, which)}
+
+  defp answer(:sync_workspace, _from, state) do
+    case ShareSync.root(state) do
+      nil ->
+        {:reply, :ok, ShareSync.request(state, :all)}
+
+      root ->
+        {:reply, :ok, ShareSync.request(state, [Workspace.to_vm(root), Workspace.from_vm(root)])}
+    end
+  end
+
+  # From the Overview: a file of the workspace's to-vm you let go to the VM
+  # though it was held back.
+  defp answer({:workspace_release, path}, _from, state) when is_binary(path),
+    do: {:reply, :ok, ShareSync.release(state, path)}
 
   # From `mwt sync`: answered when the sync ends.
   defp answer({:sync_shares_wait, which}, from, state),
@@ -1532,6 +1558,11 @@ defmodule MWTClient.Sandbox.Server do
     do: {:noreply, ShareSync.progress(state, vm, path, phase)}
 
   defp info({:sync_settle, paths}, state), do: {:noreply, ShareSync.settle(state, paths)}
+
+  # A file of the workspace's to-vm went to the VM with something shaped
+  # like a credential, the firewall's rule only alerting.
+  defp info({:workspace_inbound, path, words}, state),
+    do: {:noreply, ShareSync.alert(state, path, words)}
 
   defp info(:poll, state) do
     if state.vm.busy != nil or Enum.any?(Map.values(state.tasks), &(&1 == :check)),

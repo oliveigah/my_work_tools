@@ -346,13 +346,14 @@ defmodule MWTClientWeb.SandboxLive.Components do
   attr :busy?, :boolean, default: false
   attr :running?, :boolean, required: true
   attr :label, :string, default: "Sync"
+  attr :click, :string, default: nil, doc: "the event, when it is neither one share nor all"
 
   def share_sync_button(assigns) do
     ~H"""
     <button
       type="button"
       id={@id}
-      phx-click={if(@path, do: "sync_share", else: "sync_shares")}
+      phx-click={@click || if(@path, do: "sync_share", else: "sync_shares")}
       phx-value-path={@path}
       disabled={not @running? or @busy?}
       title={
@@ -420,6 +421,14 @@ defmodule MWTClientWeb.SandboxLive.Components do
 
   defp phase_words({:sending, files, size}),
     do: "Sending #{files} #{if files == 1, do: "file", else: "files"} (#{bytes(size)})…"
+
+  # A copy back of the workspace's from-vm, onto this machine.
+  defp changes_words(%{written: 0, removed: 0}), do: ", nothing had changed"
+  defp changes_words(%{written: written, removed: 0}), do: ", #{written} copied here"
+  defp changes_words(%{written: 0, removed: removed}), do: ", #{removed} removed"
+
+  defp changes_words(%{written: written, removed: removed}),
+    do: ", #{written} copied here, #{removed} removed"
 
   defp changes_words(%{sent: 0, removed: 0}), do: ", nothing had changed"
   defp changes_words(%{sent: sent, removed: 0}), do: ", #{sent} sent"

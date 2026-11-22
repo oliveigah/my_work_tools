@@ -39,7 +39,7 @@ fetches included).
 | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | The VM never holds a credential                                 | Placeholders, swapped by the proxy                                                                                    |
 | Nothing leaves the VM except through MWT, DNS included          | The process running the VM has no network; its ways out are MWT's sockets                                             |
-| Nothing the VM writes runs on your machine unless you chose it  | The VM's work reaches your repository only as a [handoff](#handoffs) you land, and landing runs no hook; shared folders are copied one way, into the VM; Ask to run commands is off until you turn it on, and then every run it asks for waits for you |
+| Nothing the VM writes runs on your machine unless you chose it  | The VM's work reaches your repository only as a [handoff](#handoffs) you land, and landing runs no hook; shared folders are copied one way, into the VM; the [workspace](#the-workspace)'s `from-vm/` lands only files and folders, read-only, nothing executable, no name a tool acts on by being there; Ask to run commands is off until you turn it on, and then every run it asks for waits for you |
 | A VM escape reaches no home folder and no network               | [The bubble](#the-bubble), and msb confined wherever MWT runs it on this machine                                      |
 | An approval shows what will happen, with nothing hidden in it   | Facts MWT works out itself, the agent's words kept apart, and text that is written out wherever it hides something ([Text the VM chooses](#text-the-vm-chooses)) |
 
@@ -53,6 +53,11 @@ fetches included).
 - **Code you run from a handoff you landed.** Landing runs no hook, but the
   commits are the VM's: building or testing them on your machine runs what
   they hold. Your review is the check.
+- **What your programs do with a file of the workspace's `from-vm/`**
+  once you open or run it (a viewer's parser, `bash` on a script), as with
+  a download; and a command or subgrant that takes it as its input runs on
+  what the VM chose. Its card says when a script names the workspace
+  ([The workspace](#the-workspace)).
 - **Data sent out through DNS** while the Internet is on. Every lookup goes
   through MWT and is in the activity log, and a query aimed at another
   resolver gets no answer. But MWT passes on every name, so query names can
@@ -114,6 +119,7 @@ VM ──vsock:5000──▶ $XDG_RUNTIME_DIR/mwt/<id>/channel.sock ──▶ ag
                                           host.md, the boot script
 /root, /cache, /work, /root/.optmem: the VM's own disks (ext4 images here, which nothing here opens)
 shared folders: copied one way onto /work/.shares, shown read-only at their paths; the repositories in them are clones on /work
+the workspace (~/mwt-vm): to-vm/ yours, copied in as a shared folder; from-vm/ the VM's, on /work/.workspace, copied out under its rules
 
 msb and the relay run in a bubble (bwrap): no home folder of yours, no network but loopback
 ```
@@ -473,7 +479,8 @@ the VM's `~/.config/zed/settings.json`. It starts `mwt ports --watch`.
 **What agents are told** (`priv/sandbox/agents.md`), in short:
 
 - work in `/work`, not in shared folders' read-only copies, and `mwt sync`
-  before relying on what one holds now; a worktree slot
+  before relying on what one holds now; the [workspace](#the-workspace)
+  only to move a file to or from your machine, never as storage; a worktree slot
   per task, work left uncommitted for your review, a handoff only when you
   ask, and the VM kept out of the history
   ([Projects and handoffs](#projects-and-handoffs));
@@ -573,6 +580,133 @@ your folders, and nothing of a copy comes back.
   `/mnt`).
 - **Settings** shows per folder: the VM's file count, when last sent, the
   repositories left to projects, what was set aside, any error.
+
+<a id="the-workspace"></a>
+
+### The workspace
+
+An inbox and outbox between the VM and your machine, for files that
+aren't a project's code (`MWTClient.Sandbox.Workspace`): an agent leaves a
+file a program of yours reads (a config entry a CLI uploads, an input a
+subgrant takes, a report you asked for); a command or subgrant of yours
+leaves its result for the agent. It moves files, nothing more: agents are
+told to work in `/work`, use it only to move a file across, and remove what
+they put there once it served. MWT keeps nothing there for any time, and
+knows nothing of projects or tasks.
+
+- **`~/mwt-vm`**, made by MWT at the first sync with the VM running, at
+  the same path in the VM, named by **`MWT_WORKSPACE`** in every shell
+  there (`profile.sh`) and in every command and subgrant here, confined
+  ones included. A second identity's is `~/mwt-vm-<name>`. MWT uses only a
+  folder it made (`.mwt-workspace` holds the identity's id): one already
+  there, or a symlink, stays as it is, and the Overview says to move it
+  away. It can't be shared, nor a folder holding it (`Shares`).
+- **Two halves, each written by one side only,** so a file never changes
+  on both, and nothing is reconciled:
+
+  | Half       | Written by    | In the VM                                       | Here                                       |
+  | ---------- | ------------- | ----------------------------------------------- | ------------------------------------------ |
+  | `to-vm/`   | your machine  | a read-only copy, exactly as a shared folder    | yours                                      |
+  | `from-vm/` | the VM        | the VM's own, `/work/.workspace/from-vm`, writable | a copy, read-only (files 0444, folders 0555) |
+
+  In the VM, `~/mwt-vm` itself is a read-only frame with each half shown
+  over it, so a file left anywhere else in it fails at once. Beside the
+  halves here, MWT's own: the marker, a `.trackerignore` that keeps GNOME's
+  indexer out, and `.mwt-incoming`, where a copy back stages files.
+- **Synced with the shared folders, both halves each time**
+  (`Server.ShareSync`): at each start of the VM, with **Sync** (Overview,
+  this card's alone or Sync all), after a command you approved ran in a
+  half, and with an agent's `mwt sync`, a path inside a half syncing only
+  that one. Nothing on a timer. So an agent that wrote into `from-vm/`
+  runs `mwt sync` before asking for the command that reads it, and one
+  whose command wrote into `to-vm/` from another folder runs it after.
+- **The Overview** shows where it is, each half's last sync, files held
+  back (below), **Open** (your file manager, `xdg-open`) and **Sync**.
+
+**Grants.** `to-vm/` is a shared folder's copy, under *Shared folders:
+sync* (`share-sync`). `from-vm/` is the one way the VM writes onto your
+disk without a handoff you land, so it has a built-in grant of its own,
+**Workspace: write to your machine** (`workspace`), enabled and
+auto-approved at start, as *Git: hand off* is. Off, nothing of `from-vm/`
+comes, whoever asks, and what came already stays; an agent's `mwt sync`
+with no path syncs the rest and says why `from-vm/` didn't come, and asks
+the grant like any use when it is set to ask. Each copy back that changed
+something is an event in its activity. It never runs while the VM is
+isolated.
+
+**Who writes `from-vm/`:** whatever runs in the VM, as root: any bytes,
+names and kinds of file, as often as it asks to sync. **Programs here read
+a new file without a click**, and the rules keep out what they act on:
+
+| Program                              | Reads                                       | Kept out by                                   |
+| ------------------------------------ | ------------------------------------------- | --------------------------------------------- |
+| A shell prompt showing git's state   | a `.git` folder: `core.fsmonitor` and hooks run as you, and `safe.directory` doesn't stop them, since MWT writes the files as you | no name starting with `.`; the workspace is never inside a working tree |
+| direnv, mise, asdf, as you `cd` in or run a tool there | `.envrc`, `.tool-versions`, `.mise.toml`, `mise.toml` | no name starting with `.`; `mise.toml`, `mise.*.toml` and `mise/config*.toml` refused by name |
+| Zed, VS Code, opening the folder     | `.zed/`, `.vscode/`                         | no name starting with `.`                     |
+| Your scripts globbing `*`            | a file named `--checkpoint-action=exec=…`   | no name starting with `-`                     |
+| Your file manager, on a double-click | an executable file, a `.desktop` launcher   | no executable bit                             |
+| Thumbnailers and indexers            | a file's contents                           | not covered, as with a download; GNOME's indexer reads the home folder's top level only, and `.trackerignore` keeps it out of `~/mwt-vm` |
+| Your disk                            | the bytes                                   | 1 GiB and 20,000 entries in all               |
+
+The rule against names starting with a dot keeps out almost everything a
+tool acts on by location, `.` and `..` included; a list of known names is
+always one short. Its cost: an output that must be named `.something`
+comes under another name, and the command reading it renames it.
+
+**A copy back** (`MWTClient.Sandbox.CopyBack`), so the VM chooses bytes and
+names but never where MWT writes or what runs here:
+
+1. The VM lists `from-vm/` (`find -printf`, as a shared folder's list,
+   bounded), and MWT checks every entry before anything is written:
+   regular files and folders only (a symlink, device, FIFO or socket is
+   refused); each name valid UTF-8, with nothing that doesn't show and no
+   control character, not starting with `.` or `-`, at most 255 bytes;
+   at most 32 levels deep and 1024 bytes; 1 GiB and 20,000 entries in
+   all. One entry breaking a rule lands nothing of that copy back, and
+   `mwt sync` and the Overview name it and say why.
+2. It compares the list with what it brought last (kept per VM in
+   `…/sandbox/sync/copy-back.bin`) and with `from-vm/` here, read with
+   `lstat`: a file comes again when the VM's changed, or when the one here
+   isn't the one MWT wrote (you made it writable and changed it).
+3. The VM's `tar` sends the changed files (`--format=gnu`) into a file
+   here, under `ulimit -f` for what was asked. MWT reads it itself
+   (`MWTClient.Sandbox.TarReader`): only file entries, each one asked for,
+   once; anything else (a link, a pax header, a wrong checksum) stops it.
+   No `tar -x` runs here on the VM's bytes. Each file goes into the
+   staging folder (0700), opened exclusively, so never through a link, and
+   is looked through for every token grant's real value as it is written,
+   a value cut between two chunks included.
+4. Then, with every folder of `from-vm/` writable for as long as it takes:
+   what the VM hasn't is removed (a link removed as a link, never
+   followed, a file of yours included), the folders it has are made, and
+   each file is renamed into place, 0444. Folders go back to 0555. A
+   program reading a file sees it whole, old or new; a set of files changes
+   one file at a time. A file's time here is when it was written here.
+
+A file holding a grant's real value lands nothing: the VM already holds
+it, which no switch takes back, so the firewall hears it (*Real credential
+in traffic*, Isolate by default) and the finding says to replace it.
+
+**What `to-vm/` hands the VM:** a shared folder's rules (copied one way,
+read-only there, a repository in it not copied). Unlike a shared folder,
+each changed file is looked through as a command's output is
+(`MWTClient.Sandbox.Inbound`), since a confined subgrant holding a grant's
+value writes its result there, which would otherwise skip what its output
+goes through: a real value holds the file back, never sent; a credential's
+shape does as the rule *Credential entering the VM* says (Block holds it,
+Alert sends it and tells you). A held file stays out of the VM, what the
+VM had of it staying, until it changes or you choose **Send it to the
+VM** on the Overview, which sends it as it is then; each is in the log,
+and the firewall hears of it.
+
+**Commands and subgrants:** `MWT_WORKSPACE` in their environment, after
+MWT's own variables are removed. Confined, `from-vm/` is bound read-only
+and `to-vm/` writable, the one folder outside its own a confined command
+may write to; its own folder's bind comes after. A command may run in
+either half (`--dir`), as in a shared folder. A script naming
+`MWT_WORKSPACE` or the folder gets a hint on its card: what it reads in
+`from-vm/` the VM wrote, last copied here at the time it gives; what it
+writes in `to-vm/`, the VM reads.
 
 <a id="the-vms-optmem"></a>
 
@@ -730,6 +864,7 @@ The main modules, `MWTClient.Sandbox.*` in `lib/mwt_client/sandbox/`:
 | `Settings`, `Resources`, `MemoryControl`, `NestedVirt`, `Monitor`     | How the VM is built; CPUs and memory; nesting; the monitor   |
 | `Disks`, `Snapshot`, `Image`, `Build`                                 | The disks and Home's copies; the image and its builds        |
 | `Inbox`, `Instructions`, `FolderSync`, `Share`, `Shares`, `Memory`    | `/mnt/mwt`; agents' text; copies in; picks; the VM's OptMem  |
+| `Workspace`, `CopyBack`, `TarReader`                                  | The workspace; its `from-vm/` copied out, and the archive read here |
 | `Guest`, `Forwarder`, `Ports`                                         | Reaching into the VM; its servers on your machine            |
 | `Projects`, `Project`, `Discovery`, `Slots`, `Mirror`, `GitTransport`, `HostGit`, `Zed` | Projects, clones, slots, fetches; opening Zed |
 | `Handoffs`, `Handoff`, `HandoffStore`, `Accept`, `TaskBase`           | Handoffs, their store, landing one                           |
@@ -1167,6 +1302,7 @@ way MWT moves something into the VM. It looks for:
 | A result of MWT's tools         | Every grant's value written out. Shapes aren't looked for: your notes are yours                  |
 | MWT's own files in `/mnt/mwt`   | Nothing: MWT wrote them, and none holds a real value                                             |
 | Shared folders                  | Not looked through (see [Later](#later))                                                         |
+| The workspace's `to-vm/`        | Each changed file, as a command's output. Held, it stays out of the VM until you send it from the Overview ([The workspace](#the-workspace)) |
 
 - **Held, it waits on its card**, with which line and what it looked like,
   never the text: *Send it to the agent* or *Keep it*. Auto-approve never
@@ -1211,9 +1347,11 @@ Expiry and removal end a grant the same way, at once
 **Ask to run commands** (`commands`), the escape hatch, disabled by
 default ([Ask to run commands](#ask-to-run-commands)); MWT's tools,
 `mwt-read`, `mwt-create`, `mwt-change`
-([MWT's tools](#mwt-tools-in-the-vm)); and the projects' Git, `git-fetch`,
-`git-fetch-remote`, `git-handoff` ([Git grants](#git-grants)), the last
-six `kind: :mwt`. They are never removed, hold no value, keep MWT's words
+([MWT's tools](#mwt-tools-in-the-vm)); the projects' Git, `git-fetch`,
+`git-fetch-remote`, `git-handoff` ([Git grants](#git-grants)); syncing
+the shared folders, `share-sync` ([Shared folders](#shared-folders)); and
+the workspace's copy onto this machine, `workspace`
+([The workspace](#the-workspace)), the last eight `kind: :mwt`. They are never removed, hold no value, keep MWT's words
 and have no *Edit*; their switch, duration, approval mode and start
 setting work as any grant's.
 
@@ -2401,7 +2539,10 @@ no Remove, and MWT's words. Each tool belongs to one.
   duration, Ask each time or Auto-approve, and a start setting, changed as
   for any other; the table says only how they start. The projects' Git has
   three more of the same kind, `git-fetch`, `git-fetch-remote` and
-  `git-handoff` ([Git as grants](#git-grants)).
+  `git-handoff` ([Git as grants](#git-grants)), and so do syncing the
+  shared folders, `share-sync` ([Shared folders](#shared-folders)), and the
+  workspace's copy onto this machine, `workspace`
+  ([The workspace](#the-workspace)).
 - Three, not a read grant and a write grant: adding an item can't lose
   anything, and changing one can, so they get different defaults, and each
   behaves as every grant does, with no mode of its own.
@@ -2794,6 +2935,7 @@ It watches every way the VM reaches past itself, not only the network:
 | Agent channel          | asks for grants and commands, and the text of an ad-hoc command; real values in any of it |
 | MWT's tools (MCP)      | reads of your notes, diagrams and flash cards; real values in what is written |
 | Handoffs               | real values in what a handoff brings: its words, commit messages and files |
+| The workspace          | real values in the files of `from-vm/` coming here; credentials in `to-vm/` going in |
 | VM monitor             | the busiest processes, every 5 s                                     |
 | Your decisions         | what you declined, against what the agent asks next                  |
 
@@ -2872,9 +3014,10 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
   stored or minted and still at hand, on or off, wherever MWT reads what
   the VM sends: read requests (every header, Basic decoded, the whole
   body), plaintext tunnels, DNS names, asks on the agent channel, what
-  MWT's tools are asked to write, and handoffs (title, notes, commit
-  messages, every file they add or change). In a request or a tunnel it
-  never goes, whatever the rule's action; an ask, a write or a handoff is
+  MWT's tools are asked to write, handoffs (title, notes, commit
+  messages, every file they add or change), and the files of the
+  workspace's `from-vm/`. In a request or a tunnel it never goes, whatever
+  the rule's action; an ask, a write, a handoff or a copy back is
   refused. It also fires on a value coming back in an answer, which MWT cut
   before it reached the VM ([What comes back](#what-comes-back)). Values
   shorter than 16 characters aren't looked for: too many strings would
@@ -3142,6 +3285,16 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
 29. A hook or `core.fsmonitor` planted in the VM's clone runs in the VM, never
     here, through a handoff, its revision and its landing (a real VM).
 30. No HTTP request saved in MWT is read from the VM (`mwt_tools_test.exs`).
+31. A copy back of the workspace writes only inside its `from-vm/`, and
+    lands no symlink, special file, name starting with `.` or `-`, or
+    executable bit; an entry breaking a rule, or a file holding a real
+    value, lands nothing of it; with its grant off or the VM isolated,
+    nothing lands (`copy_back_test.exs`, `tar_reader_test.exs`,
+    `workspace_sync_test.exs`).
+32. A file of the workspace's `to-vm/` holding a real value, or a
+    credential's shape while the rule blocks, never reaches the VM unless
+    you send it from the Overview (`workspace_sync_test.exs`,
+    `inbound_test.exs`).
 
 <a id="decisions"></a>
 
@@ -3222,6 +3375,7 @@ history is in git.
 | 2026-11-18 | Shared folders are synced when asked, not every 3 s: when added, at each start, with Sync or Sync all, after a command you approved ran in one, and by an agent's `mwt sync` (the built-in grant `share-sync`), since walking a large folder every few seconds cost this machine all the time and capped a share at 4 GiB. Copies live on the work disk, shown read-only at their paths, so nothing the VM changes in one needs setting aside: `/work/.rescued` is gone, and a share holds up to half the work disk ([Shared folders](#shared-folders)). |
 | 2026-11-19 | Agents write every commit message, a handoff's title included, as a Conventional Commit (`type(scope): summary`), taking scopes and length from the project's history even where its older commits don't follow the convention, so every project's history reads the same way ([Handoffs](#handoffs)). |
 | 2026-11-21 | `agents.md` tells agents only how to work in the VM; how you like to work with agents (which decisions to bring you, how to build from building blocks) is your way of working, a text you write in Settings, empty by default, since it is your taste rather than a fact of the VM ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)). |
+| 2026-11-21 | The workspace, `~/mwt-vm`, moves files that aren't code between the VM and your machine in two halves, each written by one side only, so nothing is reconciled: `to-vm/` yours, copied in as a shared folder; `from-vm/` the VM's, copied here read-only under a grant of its own and rules that keep out what your tools act on by being there (no name starting with a dot or a dash, no link, nothing executable), since it is the first way the VM writes onto your disk without a handoff you land ([The workspace](#the-workspace)). |
 
 <a id="later"></a>
 

@@ -258,6 +258,7 @@ defmodule MWTClientWeb.SandboxLive do
                   monitor={@monitor}
                   monitor_by={@monitor_by}
                   sync={@sync}
+                  workspace={@workspace}
                   now={@now}
                 />
               <% :approvals -> %>
@@ -1552,6 +1553,24 @@ defmodule MWTClientWeb.SandboxLive do
 
   def handle_event("sync_shares", _params, socket) do
     :ok = Sandbox.sync_shares(socket.assigns.username, :all)
+    {:noreply, refresh(socket)}
+  end
+
+  # The workspace's two halves, both ways.
+  def handle_event("sync_workspace", _params, socket) do
+    :ok = Sandbox.sync_workspace(socket.assigns.username)
+    {:noreply, refresh(socket)}
+  end
+
+  def handle_event("open_workspace", _params, socket) do
+    case Sandbox.open_workspace(socket.assigns.username) do
+      :ok -> {:noreply, socket}
+      {:error, why} -> {:noreply, put_flash(socket, :error, why)}
+    end
+  end
+
+  def handle_event("release_held", %{"path" => path}, socket) do
+    :ok = Sandbox.release_held(socket.assigns.username, path)
     {:noreply, refresh(socket)}
   end
 

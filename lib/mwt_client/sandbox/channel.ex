@@ -81,12 +81,12 @@ defmodule MWTClient.Sandbox.Channel do
     Projects,
     Routes,
     Server,
-    Share,
     Shares,
     Shown,
     Slots,
     Sockets,
     Why,
+    Workspace,
     Zed
   }
 
@@ -850,22 +850,19 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp reply("ports", _ask, username), do: {0, Server.call(username, :ports_text)}
 
-  # The copies of the shared folders, brought up to date: every one, or the
-  # one holding `path`. It waits for the sync, however long it takes; the
-  # grant Shared folders: sync decides.
+  # The copies of the shared folders, brought up to date, and the
+  # workspace's two halves: every one, or the one holding `path`. It waits
+  # for the sync, however long it takes. The grant Shared folders: sync
+  # decides what goes into the VM; Workspace: write to your machine, what
+  # of from-vm comes out. With no path, a copy back it refuses leaves the
+  # rest to sync, and says why.
   defp reply("sync", ask, username) do
-    %{shares: shares} = Server.call(username, :projects)
+    %{shares: shares, workspace: root} = Server.call(username, :projects)
 
-    with {:ok, which} <- sync_which(shares, ask["path"]),
-         :ok <-
-           MwtTools.authorize(username, %{
-             grant: :share_sync,
-             tool: "mwt sync",
-             title: if(which == :all, do: "your shared folders", else: hd(which)),
-             args: %{"path" => if(which == :all, do: "all", else: hd(which))}
-           }),
+    with {:ok, which, grants} <- sync_which(shares, root, ask["path"]),
+         {:ok, which, notes} <- sync_allowed(username, which, grants, shares, root),
          {:ok, statuses} <- Server.call(username, {:sync_shares_wait, which}, :infinity) do
-      sync_words(statuses)
+      sync_words(statuses, notes)
     else
       {:error, message} -> {1, message}
     end
@@ -1158,37 +1155,99 @@ defmodule MWTClient.Sandbox.Channel do
       {1,
        "MWT knows these commands: grants, host, request, run, call, propose, wait, mcp, project, worktree, handoff, handoffs, sync, vm. Run mwt help."}
 
-  defp sync_which([], _path),
+  # What to sync for `path`, and the grants that decide it.
+  defp sync_which([], nil, _path),
     do: {:error, "The user shares no folder with the VM, so there is nothing to sync."}
 
-  defp sync_which(_shares, path) when path in [nil, ""], do: {:ok, :all}
+  defp sync_which(_shares, root, path) when path in [nil, ""],
+    do: {:ok, :all, if(root, do: [:share_sync, :workspace], else: [:share_sync])}
 
-  defp sync_which(shares, path) do
+  defp sync_which(shares, root, path) do
     path = Path.expand(path, "/")
+    to_vm = root && Workspace.to_vm(root)
+    from_vm = root && Workspace.from_vm(root)
 
-    case Enum.find(shares, &Shares.within?(path, &1.path)) do
-      %Share{path: share} ->
-        {:ok, [share]}
+    cond do
+      Workspace.within?(path, from_vm) ->
+        {:ok, [from_vm], [:workspace]}
 
-      nil ->
+      Workspace.within?(path, to_vm) ->
+        {:ok, [to_vm], [:share_sync]}
+
+      Workspace.within?(path, root) ->
+        {:ok, [to_vm, from_vm], [:share_sync, :workspace]}
+
+      share = Enum.find(shares, &Shares.within?(path, &1.path)) ->
+        {:ok, [share.path], [:share_sync]}
+
+      true ->
+        folders = Enum.map(shares, & &1.path) ++ List.wrap(root && "the workspace, #{root}")
+
         {:error,
-         "#{path} isn't in a shared folder. The shared folders: " <>
-           Enum.map_join(shares, ", ", & &1.path) <> ". Run mwt sync alone to sync them all."}
+         "#{path} isn't in a shared folder or the workspace. They are: " <>
+           Enum.join(folders, ", ") <> ". Run mwt sync alone to sync them all."}
     end
   end
 
-  # A line per share; a share that failed makes the status 1.
-  defp sync_words(statuses) do
+  # Each grant asked in turn. A copy back refused when everything was asked
+  # for leaves the rest: the shared folders and to-vm, named one by one.
+  defp sync_allowed(username, which, grants, shares, root) do
+    Enum.reduce_while(grants, {:ok, which, []}, fn grant, {:ok, which, notes} ->
+      case MwtTools.authorize(username, sync_use(grant, which, root)) do
+        :ok ->
+          {:cont, {:ok, which, notes}}
+
+        {:error, message} when grant == :workspace and which == :all and root != nil ->
+          rest = Enum.map(shares, & &1.path) ++ [Workspace.to_vm(root)]
+          {:cont, {:ok, rest, notes ++ ["#{Workspace.from_vm(root)}: not copied. " <> message]}}
+
+        {:error, message} ->
+          {:halt, {:error, message}}
+      end
+    end)
+  end
+
+  defp sync_use(:share_sync, which, _root),
+    do: %{
+      grant: :share_sync,
+      tool: "mwt sync",
+      title: if(which == :all, do: "your shared folders", else: hd(which)),
+      args: %{"path" => if(which == :all, do: "all", else: hd(which))}
+    }
+
+  defp sync_use(:workspace, _which, root),
+    do: %{
+      grant: :workspace,
+      tool: "mwt sync",
+      title: "the workspace's from-vm",
+      args: %{"path" => root && Workspace.from_vm(root)}
+    }
+
+  # A line per folder, and the notes; one that failed makes the status 1.
+  defp sync_words(statuses, notes) do
     lines =
       statuses
       |> Enum.sort()
       |> Enum.map(fn {path, status} -> "#{path}: " <> sync_line(status) end)
 
-    failed? = Enum.any?(statuses, fn {_path, status} -> status.error != nil end)
-    {if(failed?, do: 1, else: 0), Enum.join(lines, "\n")}
+    failed? = notes != [] or Enum.any?(statuses, fn {_path, status} -> status.error != nil end)
+    {if(failed?, do: 1, else: 0), Enum.join(lines ++ notes, "\n")}
   end
 
   defp sync_line(%{error: error}) when is_binary(error), do: "not synced. " <> error
+
+  # The workspace's from-vm, copied onto the user's machine.
+  defp sync_line(%{written: written, removed: removed, files: files}) do
+    changes =
+      case {written, removed} do
+        {0, 0} -> "nothing had changed"
+        {written, 0} -> "#{written} written"
+        {0, removed} -> "#{removed} removed"
+        {written, removed} -> "#{written} written, #{removed} removed"
+      end
+
+    "copied onto the user's machine, #{changes}; #{files} files there, read-only there."
+  end
 
   defp sync_line(%{project?: true}),
     do: "a git repository, so a project (mwt project): nothing of it is copied."
@@ -1202,7 +1261,17 @@ defmodule MWTClient.Sandbox.Channel do
         {sent, removed} -> "#{sent} sent, #{removed} removed"
       end
 
-    "up to date, #{changes}; #{status.files} files, read-only here."
+    held =
+      case Map.get(status, :held, []) do
+        [] ->
+          ""
+
+        held ->
+          " Held back from the VM, for the user to decide: " <>
+            Enum.map_join(held, "; ", &"#{&1.path} (#{&1.why})") <> "."
+      end
+
+    "up to date, #{changes}; #{status.files} files, read-only here." <> held
   end
 
   defp vm_words(name, record) do

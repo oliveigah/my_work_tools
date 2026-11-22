@@ -27,7 +27,7 @@ defmodule MWTClient.Sandbox.HostCommand do
   Pure apart from reading the filesystem to resolve the directory.
   """
 
-  alias MWTClient.Sandbox.{Approval, Grant, Share, Shares, Shown}
+  alias MWTClient.Sandbox.{Approval, Grant, Share, Shares, Shown, Workspace}
 
   @max_script 16 * 1024
   @default_timeout 120
@@ -99,6 +99,10 @@ defmodule MWTClient.Sandbox.HostCommand do
     * `:values` - the values of a subgrant's parameters, checked
       (`MWTClient.Sandbox.Param.check/2`), which the script reads as
       environment variables
+    * `:workspace` - the workspace's folder (`MWTClient.Sandbox.Workspace`),
+      or nil: a command may run in either half, and one that names it is
+      said to on its card
+    * `:copied_at` - when the workspace's `from-vm/` was last copied here
   """
   @spec check(ask(), [Share.t()], [Grant.t()], keyword()) :: {:ok, checked()} | {:error, error()}
   def check(ask, shares, grants, opts \\ []) do
@@ -111,6 +115,8 @@ defmodule MWTClient.Sandbox.HostCommand do
     timeout = Map.get(ask, :timeout) || @default_timeout
     {suggest_save, save_for} = suggestion(ask)
     values = Keyword.get(opts, :values, [])
+    workspace = Keyword.get(opts, :workspace)
+    shares = shares ++ halves(workspace)
 
     cond do
       reason == "" ->
@@ -162,11 +168,11 @@ defmodule MWTClient.Sandbox.HostCommand do
            facts: [
              {"Runs as", "#{user}, on this machine, outside the VM"},
              {"In", dir},
-             {"Where that is", where(place, asked)},
+             {"Where that is", where(place, asked, workspace)},
              {"Time limit", seconds_words(timeout)}
            ],
            hints:
-             hints(script, grants) ++
+             hints(script, grants, workspace, Keyword.get(opts, :copied_at)) ++
                if(saved,
                  do: [
                    "Same as your subgrant #{saved.name}: the agent can call that one by id."
@@ -238,6 +244,17 @@ defmodule MWTClient.Sandbox.HostCommand do
     end
   end
 
+  @doc """
+  The workspace's halves, as the folders a command may run in: each at the
+  same path on both sides, as a shared folder is. None without a
+  workspace.
+  """
+  @spec halves(Path.t() | nil) :: [Share.t()]
+  def halves(nil), do: []
+
+  def halves(root),
+    do: [%Share{path: Workspace.to_vm(root)}, %Share{path: Workspace.from_vm(root)}]
+
   # The grant's folder, noted as shared when it is, so the hints see it.
   defp fixed(folder, shares) do
     case Enum.find(shares, &Shares.within?(folder, &1.path)) do
@@ -258,8 +275,8 @@ defmodule MWTClient.Sandbox.HostCommand do
   No folder of yours is the VM's to write (shared folders are copied into
   it, `MWTClient.Sandbox.FolderSync`), so where it runs adds nothing here.
   """
-  @spec hints(String.t(), [Grant.t()]) :: [String.t()]
-  def hints(script, grants) do
+  @spec hints(String.t(), [Grant.t()], Path.t() | nil, DateTime.t() | nil) :: [String.t()]
+  def hints(script, grants, workspace \\ nil, copied_at \\ nil) do
     commands = commands(script)
 
     [
@@ -276,7 +293,8 @@ defmodule MWTClient.Sandbox.HostCommand do
       Enum.any?(commands, &rm_rf?/1) && "Deletes files recursively without asking (rm -rf).",
       long?(script) &&
         "Long for a command you check by eye. You can ask for a simpler one: " <>
-          "the agent can bring the raw output back and work on it in the VM."
+          "the agent can bring the raw output back and work on it in the VM.",
+      workspace_hint(script, workspace, copied_at)
     ]
     |> Enum.concat(covered(commands, script, grants))
     |> Enum.filter(&is_binary/1)
@@ -370,14 +388,45 @@ defmodule MWTClient.Sandbox.HostCommand do
   def seconds_words(seconds) when rem(seconds, 60) == 0, do: "#{div(seconds, 60)} min"
   def seconds_words(seconds), do: "#{div(seconds, 60)} min #{rem(seconds, 60)} s"
 
-  defp where({:share, _dir, %Share{path: path}}, _asked),
+  defp where({:share, _dir, %Share{path: path}}, _asked, workspace)
+       when is_binary(workspace) do
+    cond do
+      path == Workspace.to_vm(workspace) ->
+        "Inside the workspace's to-vm, #{path}: yours, which the VM reads, a copy at the next sync."
+
+      path == Workspace.from_vm(workspace) ->
+        "Inside the workspace's from-vm, #{path}: what the VM wrote there, copied here, read-only."
+
+      true ->
+        where({:share, path, %Share{path: path}}, "", nil)
+    end
+  end
+
+  defp where({:share, _dir, %Share{path: path}}, _asked, _workspace),
     do: "Inside #{path}, a shared folder: the VM has a copy, and never writes to it here."
 
-  defp where({:grant, _dir}, _asked), do: "The folder you set on the grant."
-  defp where({:home, _home}, ""), do: "Your home folder: the ask named no directory."
+  defp where({:grant, _dir}, _asked, _workspace), do: "The folder you set on the grant."
+  defp where({:home, _home}, "", _workspace), do: "Your home folder: the ask named no directory."
 
-  defp where({:home, _home}, asked),
+  defp where({:home, _home}, asked, _workspace),
     do: "Your home folder: #{asked} isn't inside a shared folder on this machine."
+
+  # A script that names the workspace reads what the VM chose, or writes
+  # what the VM will read.
+  defp workspace_hint(_script, nil, _copied_at), do: nil
+
+  defp workspace_hint(script, workspace, copied_at) do
+    if String.contains?(script, Workspace.variable()) or String.contains?(script, workspace) do
+      copied =
+        case copied_at do
+          nil -> "not copied here yet"
+          at -> "last copied here at #{Calendar.strftime(at, "%H:%M:%S")} UTC"
+        end
+
+      "Uses the workspace: what it reads in from-vm the VM wrote (#{copied}); " <>
+        "what it writes in to-vm, the VM reads."
+    end
+  end
 
   defp covered(commands, script, grants) do
     for %Grant{kind: :token} = grant <- grants,

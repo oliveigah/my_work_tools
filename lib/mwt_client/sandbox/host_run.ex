@@ -122,6 +122,7 @@ defmodule MWTClient.Sandbox.HostRun do
       dir: job.dir,
       writes: Map.get(confine, :writes, false),
       home: home(),
+      workspace: Map.get(job, :workspace),
       reads: confine.reads,
       resolver: MWTClient.Sandbox.Confine.resolver(),
       links: MWTClient.Sandbox.Confine.links(confine.reads)
@@ -210,11 +211,18 @@ defmodule MWTClient.Sandbox.HostRun do
     unset ++
       given(
         [{"HOME", home()}, {"PATH", confine.path}, {"MWT_CONFINED_SCRIPT", job.script}] ++
-          Map.get(job, :env, []) ++ Map.get(confine, :values, [])
+          workspace(job) ++ Map.get(job, :env, []) ++ Map.get(confine, :values, [])
       )
   end
 
-  defp env(job), do: env() ++ given(Map.get(job, :env, []))
+  defp env(job), do: env() ++ given(workspace(job) ++ Map.get(job, :env, []))
+
+  # The workspace, under the same name as in the VM, so a script writes
+  # `"$MWT_WORKSPACE/to-vm/…"` on either side.
+  defp workspace(%{workspace: root}) when is_binary(root),
+    do: [{MWTClient.Sandbox.Workspace.variable(), root}]
+
+  defp workspace(_job), do: []
 
   defp home do
     case home_env() do

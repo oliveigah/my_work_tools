@@ -63,6 +63,10 @@ mwt - ask MWT, the user's control panel, for access
       start of the VM, after a command run with mwt run in one, and with
       this. Run it before relying on what a shared file holds now. The git
       repositories in them aren't copied: they are projects (mwt project).
+      It syncs the workspace too ($MWT_WORKSPACE, see mwt host): its to-vm
+      comes here as a shared folder does, and what you left in its from-vm
+      is copied onto the user's machine. A PATH inside one half syncs only
+      that one.
 
   mwt ports
       The servers running in this VM and where they open on the user's

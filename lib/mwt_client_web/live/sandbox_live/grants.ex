@@ -1097,6 +1097,9 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   def summary(%Grant{kind: :mwt, tools: :share_sync}),
     do: "mwt sync, your shared folders' copies in the VM"
 
+  def summary(%Grant{kind: :mwt, tools: :workspace}),
+    do: "the workspace's from-vm, copied into ~/mwt-vm/from-vm here"
+
   def summary(%Grant{kind: :command, script: nil} = grant), do: "mwt run #{grant.id} -- COMMAND"
 
   def summary(%Grant{kind: :request} = grant),
@@ -2080,10 +2083,16 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   end
 
   defp delivery(%{grant: %Grant{kind: :mwt, tools: tools}} = assigns)
-       when tools in [:git_fetch, :git_fetch_remote, :git_handoff, :share_sync] do
+       when tools in [:git_fetch, :git_fetch_remote, :git_handoff, :share_sync, :workspace] do
     ~H"""
     <dl class="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
-      <dt class="text-muted">{if @grant.tools == :share_sync, do: "Shared folders", else: "Git"}</dt>
+      <dt class="text-muted">
+        {case @grant.tools do
+          :share_sync -> "Shared folders"
+          :workspace -> "Workspace"
+          _git -> "Git"
+        end}
+      </dt>
       <dd id="grant-git-tools" class="text-[11px] text-ink">
         <%= case @grant.tools do %>
           <% :git_fetch -> %>
@@ -2098,6 +2107,11 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             <code class="font-mono">mwt handoff</code>: an agent's exact commit, into MWT's review store, never into your repository. Landing is never a grant: you decide it on the Handoffs page.
           <% :share_sync -> %>
             <code class="font-mono">mwt sync</code>: the same sync as the Sync button, for every shared folder or the one an agent names. Your files are copied into the VM, where they are read-only; nothing of the VM comes back.
+          <% :workspace -> %>
+            At each sync of your shared folders, what agents left in the workspace's
+            <code class="font-mono">from-vm</code>
+            folder is copied into <code class="font-mono">~/mwt-vm/from-vm</code>
+            here, read-only: regular files and folders only, nothing executable, no name starting with a dot or a dash, at most 1 GiB, and nothing holding a grant's real value. The VM never chooses where it is written, and nothing of it runs here by itself.
         <% end %>
       </dd>
       <dt class="text-muted">Built in</dt>

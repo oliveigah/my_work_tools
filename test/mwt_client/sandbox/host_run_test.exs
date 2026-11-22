@@ -58,6 +58,20 @@ defmodule MWTClient.Sandbox.HostRunTest do
     refute HostRun.scrubbed?("KUBECONFIG")
   end
 
+  test "the workspace is in MWT_WORKSPACE, as in the VM", %{dir: dir} do
+    me = self()
+
+    job = %{
+      script: ~S(printf %s "$MWT_WORKSPACE"),
+      dir: dir,
+      timeout: 10,
+      workspace: "/home/me/mwt-vm"
+    }
+
+    assert %{output: "/home/me/mwt-vm", exit: 0} = HostRun.run(job, &send(me, {:group, &1}))
+    assert %{output: ""} = run(~S(printf %s "$MWT_WORKSPACE"), dir)
+  end
+
   test "a long output keeps its first and last 32 KiB", %{dir: dir} do
     keep = HostRun.keep()
     # 100 KiB of numbered lines.
@@ -187,6 +201,25 @@ defmodule MWTClient.Sandbox.HostRunTest do
 
       assert %{exit: 0} = confined("touch made", dir, %{writes: true})
       assert File.exists?(Path.join(dir, "made"))
+    end
+
+    test "the workspace: what the VM left read-only, to-vm writable", %{dir: dir} do
+      root = dir <> "-workspace/mwt-vm"
+      on_exit(fn -> File.rm_rf!(Path.dirname(root)) end)
+      File.mkdir_p!(Path.join(root, "to-vm"))
+      File.mkdir_p!(Path.join(root, "from-vm"))
+      File.write!(Path.join(root, "from-vm/in.txt"), "from the VM\n")
+
+      script = ~S"""
+      cat "$MWT_WORKSPACE/from-vm/in.txt"
+      touch "$MWT_WORKSPACE/from-vm/planted" 2>&1 | grep -o "Read-only file system"
+      echo result > "$MWT_WORKSPACE/to-vm/out.txt"
+      """
+
+      assert %{output: output, exit: 0} = confined(script, dir, %{}, %{workspace: root})
+      assert output == "from the VM\nRead-only file system\n"
+      assert File.read!(Path.join(root, "to-vm/out.txt")) == "result\n"
+      refute File.exists?(Path.join(root, "from-vm/planted"))
     end
 
     test "names resolve, and the time limit ends everything in it", %{dir: dir} do

@@ -69,6 +69,34 @@ defmodule MWTClient.Sandbox.HostCommandTest do
              check(ask(%{dir: Path.join(context.project, "../elsewhere")}), context)
   end
 
+  test "the workspace's halves are folders a command runs in, and a script naming it says so",
+       context do
+    root = Path.join(context.root, "mwt-vm")
+    File.mkdir_p!(Path.join(root, "to-vm/out"))
+    File.mkdir_p!(Path.join(root, "from-vm"))
+    {:ok, root} = MWTClient.Sandbox.Shares.realpath(root)
+    at = ~U[2026-11-21 10:00:00Z]
+
+    opts = [home: context.home, user: "tester", workspace: root, copied_at: at]
+
+    ask =
+      ask(%{
+        script: ~S(my-cli export --out "$MWT_WORKSPACE/to-vm/out"),
+        dir: Path.join(root, "to-vm/out")
+      })
+
+    assert {:ok, checked} = HostCommand.check(ask, context.shares, [], opts)
+    assert checked.dir == Path.join(root, "to-vm/out")
+    assert {"Where that is", where} = List.keyfind(checked.facts, "Where that is", 0)
+    assert where =~ "the workspace's to-vm"
+    assert Enum.any?(checked.hints, &(&1 =~ "Uses the workspace" and &1 =~ "10:00:00 UTC"))
+
+    # Without a workspace, nothing is said, and the folder is no place.
+    assert {:ok, plain} = check(ask, context)
+    assert plain.dir == context.home
+    refute Enum.any?(plain.hints, &(&1 =~ "workspace"))
+  end
+
   test "the same script, directory and limit make the same pattern", context do
     {:ok, a} = check(ask(%{dir: context.project}), context)
     {:ok, b} = check(ask(%{dir: context.project, reason: "other words"}), context)

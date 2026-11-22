@@ -27,6 +27,7 @@ defmodule MWTClientWeb.SandboxLive.Overview do
   attr :monitor, :any, default: nil
   attr :monitor_by, :atom, default: :cpu
   attr :sync, :map, default: %{}
+  attr :workspace, :map, default: %{root: nil, error: nil, on?: false}
   attr :now, DateTime, required: true
 
   def page(assigns) do
@@ -315,6 +316,8 @@ defmodule MWTClientWeb.SandboxLive.Overview do
 
         <.shares_card shares={@settings.shares} sync={@sync} vm={@vm} now={@now} />
 
+        <.workspace_card workspace={@workspace} vm={@vm} now={@now} />
+
         <.memory_card memory={@memory} vm={@vm} />
       </div>
     </div>
@@ -393,6 +396,158 @@ defmodule MWTClientWeb.SandboxLive.Overview do
           />
         </li>
       </ul>
+    </.card>
+    """
+  end
+
+  attr :workspace, :map, required: true
+  attr :vm, :any, required: true
+  attr :now, DateTime, required: true
+
+  # The workspace: where it is, or why there is none; each half's last
+  # sync, files of yours held back from the VM, and the buttons.
+  defp workspace_card(assigns) do
+    halves = for key <- [:to_vm, :from_vm], half = assigns.workspace[key], half, do: half
+
+    assigns =
+      assign(assigns,
+        running?: assigns.vm.status == :running,
+        busy?: Enum.any?(halves, &(&1.progress != nil)),
+        held: get_in(assigns.workspace, [:to_vm, :status, :held]) || []
+      )
+
+    ~H"""
+    <.card id="overview-workspace" title="Workspace" body_class="">
+      <:help>
+        A folder to move files between the VM and this machine, at the same path on both sides. to-vm is yours: what your commands leave there, the VM reads. from-vm is what agents leave for you, copied here read-only. Both sync with your shared folders.
+      </:help>
+      <:actions>
+        <button
+          :if={@workspace.root}
+          type="button"
+          id="overview-workspace-open"
+          phx-click="open_workspace"
+          title={"Open #{@workspace.root} in your file manager"}
+          class="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-line bg-panel px-2.5 text-[11px] font-medium text-ink transition-all hover:border-accent/50 hover:text-accent active:scale-[0.97]"
+        >
+          <.icon name="hero-folder-open-micro" class="size-3.5" /> Open
+        </button>
+        <.share_sync_button
+          :if={@workspace.root}
+          id="overview-workspace-sync"
+          click="sync_workspace"
+          running?={@running?}
+          busy?={@busy?}
+        />
+      </:actions>
+      <%= cond do %>
+        <% @workspace.error -> %>
+          <p id="overview-workspace-error" class="px-4 py-3 text-xs leading-5 text-bad">
+            {@workspace.error}
+          </p>
+        <% is_nil(@workspace.root) -> %>
+          <.empty icon="hero-arrows-right-left" id="overview-workspace-empty">
+            Made at the first sync with the VM running.
+          </.empty>
+        <% true -> %>
+          <p
+            id="overview-workspace-root"
+            class="truncate px-4 pt-2.5 font-mono text-[11px] text-muted"
+            title={@workspace.root}
+          >
+            {@workspace.root}
+          </p>
+          <ul class="divide-y divide-line-soft">
+            <li
+              id="overview-workspace-to-vm"
+              class="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-hover/30"
+            >
+              <.icon name="hero-arrow-up-tray" class="size-4 shrink-0 text-faint" />
+              <div class="min-w-0 flex-1">
+                <p class="text-xs font-medium text-ink">
+                  to-vm <span class="font-normal text-faint">· yours, the VM reads it</span>
+                </p>
+                <p class="flex min-w-0 text-[10px] leading-4">
+                  <.share_sync_state
+                    id="overview-workspace-to-vm-state"
+                    entry={@workspace.to_vm}
+                    running?={@running?}
+                    now={@now}
+                  />
+                </p>
+                <p
+                  :if={match?(%{status: %{error: error}} when is_binary(error), @workspace.to_vm)}
+                  id="overview-workspace-to-vm-error"
+                  class="text-[10px] leading-4 break-words text-bad"
+                  title={@workspace.to_vm.status.error}
+                >
+                  {@workspace.to_vm.status.error}
+                </p>
+              </div>
+            </li>
+            <li
+              :for={{held, index} <- Enum.with_index(@held)}
+              id={"overview-workspace-held-#{index}"}
+              class="flex items-center gap-3 bg-warn-soft/30 px-4 py-2 pl-11"
+            >
+              <div class="min-w-0 flex-1">
+                <p class="truncate font-mono text-[11px] text-ink" title={held.path}>
+                  {held.path}
+                </p>
+                <p class="text-[10px] leading-4 text-warn-strong">
+                  Held back from the VM: it holds {held.why}.
+                </p>
+              </div>
+              <button
+                type="button"
+                id={"overview-workspace-release-#{index}"}
+                phx-click="release_held"
+                phx-value-path={held.path}
+                data-confirm={"Send #{held.path} to the VM as it is? The agent can then read what it holds."}
+                class="inline-flex h-7 shrink-0 cursor-pointer items-center rounded-md border border-line bg-panel px-2.5 text-[11px] font-medium text-ink transition-all hover:border-warn/60 hover:text-warn-strong active:scale-[0.97]"
+              >
+                Send it to the VM
+              </button>
+            </li>
+            <li
+              id="overview-workspace-from-vm"
+              class="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-hover/30"
+            >
+              <.icon name="hero-arrow-down-tray" class="size-4 shrink-0 text-faint" />
+              <div class="min-w-0 flex-1">
+                <p class="text-xs font-medium text-ink">
+                  from-vm
+                  <span class="font-normal text-faint">· the VM's, copied here read-only</span>
+                </p>
+                <p class="flex min-w-0 text-[10px] leading-4">
+                  <%= if @workspace.on? do %>
+                    <.share_sync_state
+                      id="overview-workspace-from-vm-state"
+                      entry={@workspace.from_vm}
+                      running?={@running?}
+                      now={@now}
+                    />
+                  <% else %>
+                    <span id="overview-workspace-from-vm-state" class="truncate text-faint">
+                      Off: Workspace: write to your machine is off, so nothing comes here.
+                    </span>
+                  <% end %>
+                </p>
+                <p
+                  :if={
+                    @workspace.on? and
+                      match?(%{status: %{error: error}} when is_binary(error), @workspace.from_vm)
+                  }
+                  id="overview-workspace-from-vm-error"
+                  class="text-[10px] leading-4 break-words text-bad"
+                  title={@workspace.from_vm.status.error}
+                >
+                  {@workspace.from_vm.status.error}
+                </p>
+              </div>
+            </li>
+          </ul>
+      <% end %>
     </.card>
     """
   end

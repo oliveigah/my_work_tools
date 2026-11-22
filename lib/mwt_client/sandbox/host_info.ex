@@ -13,7 +13,7 @@ defmodule MWTClient.Sandbox.HostInfo do
   and when you ask from Settings. Agents never probe the host themselves.
   """
 
-  alias MWTClient.Sandbox.{HostRun, Ports, Share}
+  alias MWTClient.Sandbox.{HostRun, Ports, Share, Workspace}
 
   # Name, then the arguments that print its version.
   @tools [
@@ -143,7 +143,7 @@ defmodule MWTClient.Sandbox.HostInfo do
   """
   @spec text(facts(), [tool()] | nil, [Share.t()], String.t() | nil, String.t() | nil) ::
           String.t()
-  def text(facts, tools, shares, notes, address \\ nil) do
+  def text(facts, tools, shares, notes, address \\ nil, workspace \\ nil) do
     """
     # The user's machine
 
@@ -157,6 +157,8 @@ defmodule MWTClient.Sandbox.HostInfo do
     ## Shared folders
 
     #{shares_text(shares)}
+
+    #{workspace_text(workspace)}
 
     ## Command-line tools
 
@@ -179,6 +181,24 @@ defmodule MWTClient.Sandbox.HostInfo do
 
     "The same path on both sides. In the VM each is a read-only copy, synced from here when the VM starts, when the user asks, and with mwt sync, never written back; the git repositories in it aren't copied: they are projects, at /work/NAME. A command whose --dir is inside one runs there, so it can read the files as they are here and leave results, which reach the copy in the VM with the sync MWT starts when it ends (mwt sync PATH waits for it); any other command runs in the home folder.\n\n" <>
       lines
+  end
+
+  defp workspace_text(nil), do: ""
+
+  defp workspace_text(root) do
+    from_vm = Workspace.from_vm(root)
+    to_vm = Workspace.to_vm(root)
+
+    """
+    ## The workspace
+
+    `$MWT_WORKSPACE`, #{root}, at the same path on both sides, and in the environment of every command and subgrant here: an escape hatch to move files between the VM and this machine, not storage or a working directory.
+
+    - #{from_vm}: yours to write in the VM. What a command or subgrant here will read goes there; run `mwt sync` before you ask for it, and it is copied here, read-only. Only files and folders come, no name starting with `.` or `-`, nothing executable, at most 1 GiB, and nothing holding a credential: one entry breaking a rule stops the whole copy.
+    - #{to_vm}: written here, read-only in the VM. A command or subgrant writes its result there for you; it reaches your copy with `mwt sync` (by itself when the command ran with `--dir` inside it).
+
+    Remove what you left there once it served.
+    """
   end
 
   defp servers_text(nil), do: ""

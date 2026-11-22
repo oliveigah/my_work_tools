@@ -92,7 +92,9 @@ defmodule MWTClient.Sandbox.Inbox do
   @doc """
   Rewrites the inbox from the grants and the identity's CA certificate.
   `opts` choose the guides that join the agents' instructions
-  (`Instructions.text/1`).
+  (`Instructions.text/1`), and `:workspace` is the workspace's folder
+  (`MWTClient.Sandbox.Workspace`), which every shell in the VM finds in
+  `MWT_WORKSPACE`.
   """
   @spec write(Path.t(), [Grant.t()], String.t(), keyword()) :: :ok
   def write(dir, grants, ca_pem, opts \\ []) do
@@ -100,7 +102,7 @@ defmodule MWTClient.Sandbox.Inbox do
 
     put_changed(dir, "ca.pem", ca_pem)
     put_changed(dir, "ca-bundle.pem", bundle(ca_pem))
-    put_changed(dir, "profile.sh", priv("mwt-profile.sh"))
+    put_changed(dir, "profile.sh", priv("mwt-profile.sh") <> workspace(opts[:workspace]))
     put_changed(dir, "bashrc.sh", priv("mwt-bashrc.sh"))
     put_changed(dir, "bin/git-credential", priv("mwt-git-credential"), 0o755)
     put_changed(dir, "bin/mwt", priv("mwt-cli"), 0o755)
@@ -284,6 +286,18 @@ defmodule MWTClient.Sandbox.Inbox do
     File.write!(partial, data)
     File.chmod!(partial, mode)
     File.rename!(partial, path)
+  end
+
+  # The workspace's folder, the same path here and in the VM, quoted for
+  # sh. Nothing while there is none.
+  defp workspace(nil), do: ""
+
+  defp workspace(root) do
+    quoted = "'" <> String.replace(root, "'", ~S('\'')) <> "'"
+
+    "\n# The workspace: what you leave in from-vm reaches the user's machine,\n" <>
+      "# what their machine leaves in to-vm reaches you (mwt sync).\n" <>
+      "export MWT_WORKSPACE=#{quoted}\n"
   end
 
   defp priv(name), do: File.read!(Path.join([:code.priv_dir(:mwt_client), "sandbox", name]))
