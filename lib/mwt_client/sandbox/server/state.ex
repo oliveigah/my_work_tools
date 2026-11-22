@@ -27,6 +27,7 @@ defmodule MWTClient.Sandbox.Server.State do
     Event,
     Grant,
     Handoff,
+    HandoffRecords,
     HostInfo,
     Inbox,
     Notices,
@@ -160,7 +161,7 @@ defmodule MWTClient.Sandbox.Server.State do
     state =
       case area do
         :approvals -> sync_notices(state)
-        :handoffs -> sync_handoff_notices(state)
+        :waiting_handoffs -> sync_handoff_notices(state)
         _other -> state
       end
 
@@ -205,7 +206,7 @@ defmodule MWTClient.Sandbox.Server.State do
   not put on the desktop again.
   """
   def sync_handoff_notices(state, opts \\ []) do
-    wanted = for %Handoff{status: :open} = h <- state.handoffs, into: %{}, do: {h.id, h}
+    wanted = for %Handoff{status: :open} = h <- state.waiting_handoffs, into: %{}, do: {h.id, h}
 
     for {id, handoff} <- wanted,
         Map.get(notified_handoffs(state), id) != Notices.handed_off(handoff) do
@@ -360,7 +361,6 @@ defmodule MWTClient.Sandbox.Server.State do
       current: state.image.tag,
       snapshots: state.snapshots,
       projects: state.projects,
-      handoffs: state.handoffs,
       handoff_seq: state.handoff_seq,
       memory: state.memory,
       firewall: Map.get(state, :firewall),
@@ -538,6 +538,7 @@ defmodule MWTClient.Sandbox.Server.State do
     state =
       memory()
       |> Map.merge(state)
+      |> moved_handoffs()
       |> Map.put(:firewall, MWTClient.Sandbox.Firewall.upgrade(Map.get(state, :firewall)))
       |> Map.put(:reading, MWTClient.Sandbox.Reading.upgrade(Map.get(state, :reading)))
 
@@ -559,11 +560,26 @@ defmodule MWTClient.Sandbox.Server.State do
           end),
         builds: Enum.map(state.builds, restruct.(Build)),
         snapshots: Enum.map(state.snapshots, restruct.(Snapshot)),
-        handoffs: Enum.map(state.handoffs, &Handoff.upgrade/1),
+        waiting_handoffs: Enum.map(state.waiting_handoffs, &Handoff.upgrade/1),
         projects: Enum.map(state.projects, &MWTClient.Sandbox.Project.upgrade/1)
     }
     |> Map.delete(:yolo)
   end
+
+  # A server running since before handoffs had rows of their own
+  # (`MWTClient.Sandbox.HandoffRecords`) holds them all: they move there,
+  # and it keeps those waiting for you. Its library opened before the code
+  # that makes their table was loaded, so the table is made first.
+  defp moved_handoffs(%{handoffs: handoffs, username: username} = state) do
+    :ok = MWTClient.Storage.Database.migrate(username, :library)
+    :ok = HandoffRecords.import(username, Enum.map(handoffs, &Handoff.upgrade/1))
+
+    state
+    |> Map.delete(:handoffs)
+    |> Map.put(:waiting_handoffs, HandoffRecords.waiting(username))
+  end
+
+  defp moved_handoffs(state), do: state
 
   # File grants are gone (2026-11-18): each handed the VM a real value no
   # switch could take back. One saved before is dropped with its value;

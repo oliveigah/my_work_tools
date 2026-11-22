@@ -1026,7 +1026,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert handed =~ "Handed off as #1" and handed =~ "open, waiting for the user (this branch)"
 
     assert [%Handoff{id: id, title: "The task", source: %{branch: "serve-hello"}, status: :open}] =
-             Sandbox.snapshot(username).handoffs
+             Sandbox.snapshot(username).waiting_handoffs
 
     # It lands as it is: the commit mwt handoff made in the VM, as you.
     assert {:ok, %Handoff{status: :accepted, head: head, accepted: %{how: :as_is}}} =

@@ -65,7 +65,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     {startup, others} = Enum.split_with(enabled, &standard?/1)
     found = search(grants, term)
     cards = catalog(found, filters, now)
-    {shown, page, pages} = paged(cards, assigns.page)
+    {shown, page, pages} = paged(cards, assigns.page, @per_page)
 
     assigns =
       assign(assigns,
@@ -76,6 +76,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         shown: shown,
         page: page,
         pages: pages,
+        per_page: @per_page,
         to_review: Enum.count(grants, &Grant.to_review?/1),
         statuses: facet(@statuses, by_type(found, filters.type), &status_of(&1, now)),
         types: type_facet(by_status(found, filters.status, now)),
@@ -276,86 +277,20 @@ defmodule MWTClientWeb.SandboxLive.Grants do
               now={@now}
             />
           </ul>
-          <.pages :if={@pages > 1} page={@page} pages={@pages} total={length(@cards)} />
+          <.pages
+            :if={@pages > 1}
+            name="grants"
+            label="Pages of All grants"
+            page={@page}
+            pages={@pages}
+            per_page={@per_page}
+            total={length(@cards)}
+            event="grants_page"
+            class="mt-4"
+          />
         </div>
       </div>
     </section>
-    """
-  end
-
-  @doc """
-  The cards of one page of All grants, #{@per_page} each, with the page
-  shown, kept within the pages there are, and how many pages there are.
-
-      iex> {shown, page, pages} = MWTClientWeb.SandboxLive.Grants.paged(Enum.to_list(1..14), 9)
-      iex> {shown, page, pages}
-      {[13, 14], 3, 3}
-  """
-  def paged(cards, page) do
-    pages = max(div(length(cards) + @per_page - 1, @per_page), 1)
-    page = page |> max(1) |> min(pages)
-    {Enum.slice(cards, (page - 1) * @per_page, @per_page), page, pages}
-  end
-
-  attr :page, :integer, required: true
-  attr :pages, :integer, required: true
-  attr :total, :integer, required: true
-
-  # Which page of All grants shows, and the way to the others.
-  defp pages(assigns) do
-    first = (assigns.page - 1) * @per_page + 1
-    assigns = assign(assigns, first: first, last: min(first + @per_page - 1, assigns.total))
-
-    ~H"""
-    <nav
-      id="grants-pages"
-      aria-label="Pages of All grants"
-      class="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-muted"
-    >
-      <span id="grants-pages-shown" class="tabular-nums">
-        {@first}–{@last} of {@total}
-      </span>
-      <span class="flex-1"></span>
-      <button
-        type="button"
-        id="grants-page-prev"
-        phx-click="grants_page"
-        phx-value-page={@page - 1}
-        disabled={@page == 1}
-        aria-label="Previous page"
-        class="inline-flex size-7 cursor-pointer items-center justify-center rounded-md border border-line bg-panel text-ink transition-colors hover:border-accent/50 hover:text-accent disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink"
-      >
-        <.icon name="hero-chevron-left-micro" class="size-4" />
-      </button>
-      <button
-        :for={number <- 1..@pages}
-        type="button"
-        id={"grants-page-#{number}"}
-        phx-click="grants_page"
-        phx-value-page={number}
-        aria-current={if(number == @page, do: "page")}
-        class={[
-          "inline-flex h-7 min-w-7 cursor-pointer items-center justify-center rounded-md border px-2 font-medium tabular-nums transition-colors",
-          if(number == @page,
-            do: "border-accent/60 bg-accent-soft/50 text-accent-strong",
-            else: "border-line bg-panel text-ink hover:border-accent/50 hover:text-accent"
-          )
-        ]}
-      >
-        {number}
-      </button>
-      <button
-        type="button"
-        id="grants-page-next"
-        phx-click="grants_page"
-        phx-value-page={@page + 1}
-        disabled={@page == @pages}
-        aria-label="Next page"
-        class="inline-flex size-7 cursor-pointer items-center justify-center rounded-md border border-line bg-panel text-ink transition-colors hover:border-accent/50 hover:text-accent disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink"
-      >
-        <.icon name="hero-chevron-right-micro" class="size-4" />
-      </button>
-    </nav>
     """
   end
 

@@ -261,8 +261,8 @@ mwt - ask MWT, the user's control panel, for access
 
   mwt handoffs
       The project's handoffs: open, sent back (with the user's note),
-      withdrawn, landed, closed; and whether each still applies to its
-      branch.
+      withdrawn, and those landed or closed in the last 30 days; and
+      whether each still applies to its branch.
 
   mwt vm
       Which VM this is, and whether it is the one MWT runs. When the network

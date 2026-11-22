@@ -107,7 +107,7 @@ defmodule MWTClient.Sandbox.ProjectsCloneTest do
     refute File.exists?(Path.join(clone <> ".wt", "slot-3"))
     # Its slots as they were: slot-2's task still held by its thread; the
     # clone, staged work and all, is slot-0.
-    assert {:ok, %{slots: slots}} = Slots.look(legacy, Guest.local(vm), [])
+    assert {:ok, %{slots: slots}} = Slots.look(legacy, Guest.local(vm), fn _branch -> nil end)
 
     assert [
              %{name: "slot-0", path: ^clone, state: :dirty, free?: false},

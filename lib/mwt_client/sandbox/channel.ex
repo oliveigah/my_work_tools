@@ -71,6 +71,7 @@ defmodule MWTClient.Sandbox.Channel do
     Grant,
     GitTransport,
     Handoff,
+    HandoffRecords,
     Handoffs,
     HostCommand,
     HostGit,
@@ -979,7 +980,9 @@ defmodule MWTClient.Sandbox.Channel do
   defp reply("handoffs", ask, username) do
     case Handoffs.for_agent(username, ask["cwd"]) do
       {:ok, project, [], _where, _look} ->
-        {0, "No handoffs in #{project.name} yet."}
+        {0,
+         "No handoff in #{project.name} waits for the user, and none landed or closed " <>
+           "in the last #{HandoffRecords.archive_after_days()} days."}
 
       {:ok, _project, handoffs, where, look} ->
         {0, Enum.map_join(handoffs, "\n\n", &handoff_words(&1, where, look))}

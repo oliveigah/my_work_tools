@@ -206,16 +206,42 @@ search index points at. Times are microseconds since 1970, UTC.
   read every column but those two. The session settings are a document
   (see [Small state](#small-state)).
 
+### Handoffs
+
+`MWTClient.Storage.Migrations.LibraryHandoffs` (library version 2) makes
+the tables; `MWTClient.Sandbox.HandoffRecords` reads and writes them.
+Every handoff is kept, with no cap: `handoffs` holds what the list picks
+and orders rows by (whether it waits for you, when it changed last, its
+project and branch), and `handoff_records` the handoff itself, a term,
+with its search text. The sandbox writes one row when that handoff
+changes, durable before it answers, and keeps only those waiting for you
+in memory.
+
+One landed or closed more than 30 days ago is archived: the Handoffs page
+leaves it out unless you include the archived ones, and can then bound
+them by the days they changed in. Nothing moves when one is archived; it
+is a date the queries compare. One waiting for you is never archived.
+
+They were part of the `sandbox` document until then, the latest 100:
+those still there move into the tables the first time MWT starts, or when
+a running MWT loads the code that has them.
+
 ### Search
 
 An FTS5 table per searchable kind (`note_search`, `diagram_search`,
-`flashcard_search`), using the trigram tokenizer over the item's search
-text, which the app normalizes as it always did. The index folds nothing
-itself (`case_sensitive 1`), so it matches exactly what
-`MWTClient.Search.matches?/2` matches. Triggers keep it in step, in the
-transaction that writes the item. A word of 3 or more characters is found
-through the index, anywhere in the text; a shorter one reads the search
-text of every row (`MWTClient.Search.where/4`).
+`flashcard_search`, `handoff_search`), using the trigram tokenizer over
+the item's search text, which the app normalizes as it always did. The
+index folds nothing itself (`case_sensitive 1`), so it matches exactly
+what `MWTClient.Search.matches?/2` matches. Triggers keep it in step, in
+the transaction that writes the item. A word of 3 or more characters is
+found through the index, anywhere in the text; a shorter one is read in
+the search text of each row the rest of the query leaves, which, with
+nothing else to narrow it, is every row (`MWTClient.Search.where/4`).
+
+Measured on 10,000 handoffs of about 2.8 KB each (2026-11-22): a search
+through the index with both halves' counts and one page took 1 to 6 ms;
+a word of 2 letters alone over all of them, 98 ms, and over the last
+month, 13 ms. The file took 151 MB, 81 of them the index.
 
 Trigram indexes are large: 10,000 notes of 3 KB made a 109 MB file, where
 the text was 30 MB. The Storage page shows it as part of each kind's size.
@@ -287,7 +313,7 @@ over 100,000 events: 47 ms. A scan of every row's details: 175 ms.
 
 ### Small state
 
-The sandbox's state (grants, values, CA, projects, handoffs), MCP access,
+The sandbox's state (grants, values, CA, projects), MCP access,
 agent threads and the flash cards' settings are small and are read whole.
 Each stays a term, in a `documents(name, term, updated_at)` row of
 `library.db` (`MWTClient.Storage.Documents`), written as before: the

@@ -9,6 +9,7 @@ defmodule MWTClient.Sandbox.Handoff do
 
   alias MWTClient.Git.{FileDiff, Files}
   alias MWTClient.Sandbox.{Guest, HandoffStore, HostGit, Shown}
+  alias MWTClient.Search
 
   @enforce_keys [:id, :title, :project, :repo, :onto, :source, :head, :opened_at]
   defstruct [
@@ -308,6 +309,56 @@ defmodule MWTClient.Sandbox.Handoff do
         nil -> handoff.mirrored_branch || handoff.onto
         ref -> ref
       end
+  end
+
+  @doc "Whether the handoff waits for you: open, sent back, or taken back by its agent."
+  @spec waiting?(t()) :: boolean()
+  def waiting?(%__MODULE__{status: status}), do: status in [:open, :sent_back, :withdrawn]
+
+  @doc """
+  What a search of the handoffs looks in, normalized
+  (`MWTClient.Search.normalize/1`): the words its page shows of it, its
+  number (`#12`), title, agent and thread, project, branches, the agent's
+  notes, and its history with the notes it carries.
+
+  Its commits and files aren't among them: its record doesn't keep them,
+  and working them out runs git.
+  """
+  @spec search_text(t()) :: String.t()
+  def search_text(%__MODULE__{} = handoff) do
+    handoff |> searched() |> Enum.join("\n") |> Search.normalize()
+  end
+
+  @doc """
+  The words around the first of `terms` in what the list doesn't show of
+  the handoff, its agent's notes then the notes of its history, as
+  `{before, match, after}`. Nil when there are no terms, or when only what
+  the list shows holds them.
+  """
+  @spec snippet(t(), [String.t()]) :: {String.t(), String.t(), String.t()} | nil
+  def snippet(%__MODULE__{} = handoff, terms) do
+    Search.snippet(Stream.concat(String.splitter(handoff.body, "\n"), notes(handoff)), terms)
+  end
+
+  defp searched(handoff) do
+    [
+      "##{handoff.id}",
+      handoff.title,
+      handoff.agent,
+      handoff.thread,
+      handoff.project,
+      handoff.source.branch,
+      base_label(handoff),
+      handoff.onto,
+      handoff.body
+    ] ++
+      Enum.map(handoff.timeline, &Map.get(&1, :text)) ++ Enum.to_list(notes(handoff))
+  end
+
+  defp notes(handoff) do
+    handoff.timeline
+    |> Stream.map(&Map.get(&1, :note))
+    |> Stream.filter(&(is_binary(&1) and &1 != ""))
   end
 
   @doc "The size of a handoff, kept on its record for the list."

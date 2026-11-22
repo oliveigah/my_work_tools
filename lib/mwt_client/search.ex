@@ -71,13 +71,19 @@ defmodule MWTClient.Search do
   `matches?/2` over a database table rather than one text: an SQL
   condition holding for the rows whose `seq` (a column, as `"n.seq"`)
   names the rowid of a row of `texts` whose `search_text` holds every one
-  of `terms`, and the condition's parameters.
+  of `terms`, and the condition's parameters. `seq` names its table
+  (`"flashcards.seq"` when the rows are the texts' own), and no table of
+  the query is called `t`, the name the texts take inside the condition.
 
   `index` is the trigram index of `texts`' `search_text`, by the same
   rowid (`MWTClient.Storage.Migrations.LibraryItems`). Words of three
   characters or more are found through it; a shorter one, which no
-  trigram holds, by reading the text. The meaning is the same either way,
-  and only a search made of such short words reads every row.
+  trigram holds, by reading the text. The meaning is the same either way.
+
+  A short word is looked for row by row, in the text of each row the rest
+  of the query leaves (a longer word, a date), not in every text first: a
+  search made only of short words, with nothing else to narrow it, is the
+  one that reads every row.
   """
   @spec where(String.t(), String.t(), String.t(), [String.t()]) :: {String.t(), [String.t()]}
   def where(_seq, _index, _texts, []), do: {"1", []}
@@ -98,8 +104,10 @@ defmodule MWTClient.Search do
 
     read =
       if short != [] do
-        holds = Enum.map_join(short, " AND ", fn _term -> "instr(search_text, ?) > 0" end)
-        {"#{seq} IN (SELECT rowid FROM #{texts} WHERE #{holds})", short}
+        # Named apart from the query around it, so `seq` names the row
+        # there, even when it searches its texts' own table.
+        holds = Enum.map_join(short, " AND ", fn _term -> "instr(t.search_text, ?) > 0" end)
+        {"EXISTS (SELECT 1 FROM #{texts} AS t WHERE t.rowid = #{seq} AND #{holds})", short}
       end
 
     conditions = Enum.reject([indexed, read], &is_nil/1)

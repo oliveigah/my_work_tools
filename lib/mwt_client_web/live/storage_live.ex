@@ -30,6 +30,7 @@ defmodule MWTClientWeb.StorageLive do
     {"notes", "Notes", "hero-document-text"},
     {"diagrams", "Diagrams", "hero-square-3-stack-3d"},
     {"flashcards", "Flash cards", "hero-rectangle-stack"},
+    {"handoffs", "Handoffs", "hero-inbox-arrow-down"},
     {"documents", "Saved state", "hero-cog-6-tooth"}
   ]
 
@@ -253,8 +254,10 @@ defmodule MWTClientWeb.StorageLive do
 
           <div class="flex flex-col gap-4">
             <.section id="storage-made" icon="hero-sparkles" title="What you made">
-              <:note>No rule ever removes these. Delete them where you made them.</:note>
-              <div class="grid gap-2 sm:grid-cols-4">
+              <:note>
+                No rule ever removes these. Delete them where you made them; handoffs are all kept, archived a month after they land or close.
+              </:note>
+              <div class="grid gap-2 sm:grid-cols-5">
                 <div
                   :for={{key, label, icon} <- @made}
                   id={"made-#{key}"}

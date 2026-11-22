@@ -152,7 +152,12 @@ defmodule MWTClient.HandoffsCase do
         extra
       )
 
-  def handoffs(username), do: Sandbox.snapshot(username).handoffs
+  @doc "Every handoff kept, the newest first."
+  def handoffs(username) do
+    for id <- Enum.reverse(MWTClient.Sandbox.HandoffRecords.ids(username)),
+        {:ok, handoff} <- [MWTClient.Sandbox.HandoffRecords.get(username, id)],
+        do: handoff
+  end
 
   # The mwt command an agent runs in `cwd`, as in the VM: socat carries its
   # ask to the channel's socket and the answer back.

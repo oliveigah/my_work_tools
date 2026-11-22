@@ -23,6 +23,7 @@ defmodule MWTClientWeb.SandboxLive do
     AgentThreads,
     Event,
     Grant,
+    HandoffRecords,
     Handoffs,
     Instructions,
     Leftovers,
@@ -103,7 +104,8 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(:note_form, note_form())
      |> assign(:handoff_id, nil)
      |> assign(:handoff_diff, false)
-     |> assign(:handoff_filter, "open")
+     |> assign(:handoff_place, HandoffsPage.place())
+     |> assign(:handoff_listing, nil)
      |> assign(:handoff_view, nil)
      |> assign(:handoff_decision, "land")
      |> assign(:project_overview, %{open: [], shares?: false})
@@ -178,11 +180,8 @@ defmodule MWTClientWeb.SandboxLive do
           id = handoff_id(params["id"])
 
           socket
-          |> assign(
-            handoff_id: id,
-            handoff_diff: params["diff"] == "1",
-            handoff_filter: params["filter"] || "open"
-          )
+          |> assign(handoff_id: id, handoff_diff: params["diff"] == "1")
+          |> handoff_list_place(id, params["filter"])
           # Another handoff opens on landing it.
           |> then(
             &if(id != socket.assigns.handoff_id,
@@ -229,7 +228,7 @@ defmodule MWTClientWeb.SandboxLive do
           page={@page}
           vm={@vm}
           waiting={length(@waiting)}
-          handoffs_open={Enum.count(@handoffs, &(&1.status == :open))}
+          handoffs_open={Enum.count(@waiting_handoffs, &(&1.status == :open))}
           grants_on={Enum.count(@grants, &(&1.state == :on))}
           isolated={not is_nil(@firewall.isolated)}
           proxy={@proxy}
@@ -359,8 +358,8 @@ defmodule MWTClientWeb.SandboxLive do
                 />
               <% :handoffs -> %>
                 <HandoffsPage.page
-                  handoffs={@handoffs}
-                  filter={@handoff_filter}
+                  place={@handoff_place}
+                  listing={@handoff_listing}
                   view={@handoff_view}
                   diff={@handoff_diff}
                   note_form={@note_form}
@@ -372,7 +371,7 @@ defmodule MWTClientWeb.SandboxLive do
                 <ProjectsPage.page
                   overview={@project_overview}
                   mirror={@mirror}
-                  handoffs={@handoffs}
+                  waiting_handoffs={@waiting_handoffs}
                   editing={@project_editing}
                   dialog={@project_dialog}
                   worktrees={@project_worktrees}
@@ -1127,9 +1126,9 @@ defmodule MWTClientWeb.SandboxLive do
 
   # A page of All grants; the page shows it within the pages there are.
   def handle_event("grants_page", %{"page" => page}, socket) do
-    case Integer.parse(to_string(page)) do
-      {number, ""} -> {:noreply, assign(socket, :grant_page, max(number, 1))}
-      _other -> {:noreply, socket}
+    case page_asked(page) do
+      nil -> {:noreply, socket}
+      number -> {:noreply, assign(socket, :grant_page, number)}
     end
   end
 
@@ -1895,6 +1894,31 @@ defmodule MWTClientWeb.SandboxLive do
 
   ## Handoffs
 
+  # The list searched for every word typed, with the archived ones or
+  # not, between the days given, from its first page.
+  def handle_event("search_handoffs", params, socket) do
+    {:noreply,
+     socket |> update(:handoff_place, &HandoffsPage.searched(&1, params)) |> load_handoff_list()}
+  end
+
+  def handle_event("clear_handoff_search", _params, socket) do
+    {:noreply,
+     socket
+     |> update(:handoff_place, &HandoffsPage.searched(&1, %{"term" => ""}))
+     |> load_handoff_list()}
+  end
+
+  # A page of the list; the list shows it within the pages there are.
+  def handle_event("handoffs_page", %{"page" => page}, socket) do
+    case page_asked(page) do
+      nil ->
+        {:noreply, socket}
+
+      number ->
+        {:noreply, socket |> update(:handoff_place, &%{&1 | page: number}) |> load_handoff_list()}
+    end
+  end
+
   # Which of the three ways to end it the panel shows: nothing happens
   # until its button is pressed.
   def handle_event("handoff_decision", %{"choice" => choice}, socket)
@@ -2298,7 +2322,7 @@ defmodule MWTClientWeb.SandboxLive do
   defp assign_handoff(socket) do
     username = socket.assigns.username
     id = socket.assigns[:handoff_id]
-    handoff = id && Enum.find(socket.assigns.handoffs, &(&1.id == id))
+    handoff = id && kept_handoff(username, id)
 
     view =
       if socket.assigns[:page] == :handoffs and handoff do
@@ -2386,7 +2410,7 @@ defmodule MWTClientWeb.SandboxLive do
   # Between those moments the record itself is kept current: an agent may
   # update the handoff while you look at it.
   defp follow_handoff(%{assigns: %{handoff_view: %{handoff: %{id: id}} = view}} = socket) do
-    case Enum.find(socket.assigns.handoffs, &(&1.id == id)) do
+    case kept_handoff(socket.assigns.username, id) do
       nil ->
         assign(socket, :handoff_view, nil)
 
@@ -2422,6 +2446,13 @@ defmodule MWTClientWeb.SandboxLive do
 
   defp follow_handoff(socket), do: socket
 
+  defp kept_handoff(username, id) do
+    case HandoffRecords.get(username, id) do
+      {:ok, handoff} -> handoff
+      :error -> nil
+    end
+  end
+
   defp handoff_action(socket, result, done) do
     case result do
       {:ok, handoff} ->
@@ -2439,6 +2470,35 @@ defmodule MWTClientWeb.SandboxLive do
          |> put_notice(:warning, "That didn't happen", body: Handoffs.explain(reason))}
     end
   end
+
+  # Where you are in the list: which half, the words searched and the
+  # page. Opening a handoff keeps it, for its Back to return there; the
+  # address names the half, and another half starts from its first page.
+  # The search lasts while the page is open, not after: a search left
+  # from before mustn't hide a handoff that came since.
+  defp handoff_list_place(socket, id, _filter) when is_integer(id), do: socket
+
+  defp handoff_list_place(socket, nil, filter) do
+    filter = if filter == "closed", do: "closed", else: "open"
+
+    if filter == socket.assigns.handoff_place.filter,
+      do: socket,
+      else: update(socket, :handoff_place, &%{&1 | filter: filter, page: 1})
+  end
+
+  # The page of the list where you are, read from the handoffs kept; none
+  # while one is open, which shows instead.
+  defp load_handoff_list(%{assigns: %{handoff_id: nil}} = socket) do
+    %{username: username, handoff_place: place, now: now} = socket.assigns
+
+    assign(
+      socket,
+      :handoff_listing,
+      HandoffRecords.page(username, HandoffsPage.query(place, now))
+    )
+  end
+
+  defp load_handoff_list(socket), do: assign(socket, :handoff_listing, nil)
 
   defp handoff_id(nil), do: nil
 
@@ -2526,6 +2586,9 @@ defmodule MWTClientWeb.SandboxLive do
     username = socket.assigns.username
 
     case socket.assigns[:page] do
+      :handoffs ->
+        load_handoff_list(socket)
+
       :firewall ->
         assign(socket, :firewall_view, Sandbox.firewall(username))
 

@@ -625,4 +625,111 @@ defmodule MWTClientWeb.SandboxLive.Components do
     </div>
     """
   end
+
+  ## Pages of a list
+
+  @doc """
+  One page of `items`, `per_page` each, with the page shown, kept within
+  the pages there are, and how many pages there are. A list with nothing
+  in it has one page, empty.
+
+      iex> {shown, page, pages} = MWTClientWeb.SandboxLive.Components.paged(Enum.to_list(1..14), 9, 6)
+      iex> {shown, page, pages}
+      {[13, 14], 3, 3}
+  """
+  @spec paged([item], integer(), pos_integer()) :: {[item], pos_integer(), pos_integer()}
+        when item: term()
+  def paged(items, page, per_page) when is_integer(page) and per_page > 0 do
+    pages = max(div(length(items) + per_page - 1, per_page), 1)
+    page = page |> max(1) |> min(pages)
+    {Enum.slice(items, (page - 1) * per_page, per_page), page, pages}
+  end
+
+  @doc """
+  Which page of a list cut by `paged/3` shows, and the way to the others:
+  the rows shown out of how many, then a button per page between previous
+  and next. Each pushes `event` with the page it shows as `page`.
+
+  `name` starts its ids: `NAME-pages` for the whole, `NAME-pages-shown`,
+  `NAME-page-prev`, `NAME-page-N` and `NAME-page-next`.
+  """
+  attr :name, :string, required: true
+  attr :label, :string, required: true, doc: "what it is, for a screen reader"
+  attr :page, :integer, required: true
+  attr :pages, :integer, required: true
+  attr :per_page, :integer, required: true
+  attr :total, :integer, required: true
+  attr :event, :string, required: true
+  attr :class, :any, default: nil
+
+  def pages(assigns) do
+    first = (assigns.page - 1) * assigns.per_page + 1
+
+    assigns =
+      assign(assigns, first: first, last: min(first + assigns.per_page - 1, assigns.total))
+
+    ~H"""
+    <nav
+      id={"#{@name}-pages"}
+      aria-label={@label}
+      class={["flex flex-wrap items-center gap-2 text-[11px] text-muted", @class]}
+    >
+      <span id={"#{@name}-pages-shown"} class="tabular-nums">
+        {@first}–{@last} of {@total}
+      </span>
+      <span class="flex-1"></span>
+      <button
+        type="button"
+        id={"#{@name}-page-prev"}
+        phx-click={@event}
+        phx-value-page={@page - 1}
+        disabled={@page == 1}
+        aria-label="Previous page"
+        class="inline-flex size-7 cursor-pointer items-center justify-center rounded-md border border-line bg-panel text-ink transition-colors hover:border-accent/50 hover:text-accent disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink"
+      >
+        <.icon name="hero-chevron-left-micro" class="size-4" />
+      </button>
+      <button
+        :for={number <- 1..@pages}
+        type="button"
+        id={"#{@name}-page-#{number}"}
+        phx-click={@event}
+        phx-value-page={number}
+        aria-current={if(number == @page, do: "page")}
+        class={[
+          "inline-flex h-7 min-w-7 cursor-pointer items-center justify-center rounded-md border px-2 font-medium tabular-nums transition-colors",
+          if(number == @page,
+            do: "border-accent/60 bg-accent-soft/50 text-accent-strong",
+            else: "border-line bg-panel text-ink hover:border-accent/50 hover:text-accent"
+          )
+        ]}
+      >
+        {number}
+      </button>
+      <button
+        type="button"
+        id={"#{@name}-page-next"}
+        phx-click={@event}
+        phx-value-page={@page + 1}
+        disabled={@page == @pages}
+        aria-label="Next page"
+        class="inline-flex size-7 cursor-pointer items-center justify-center rounded-md border border-line bg-panel text-ink transition-colors hover:border-accent/50 hover:text-accent disabled:cursor-default disabled:opacity-40 disabled:hover:border-line disabled:hover:text-ink"
+      >
+        <.icon name="hero-chevron-right-micro" class="size-4" />
+      </button>
+    </nav>
+    """
+  end
+
+  @doc """
+  The page a pager's event asks for, from its `page` value; nil when it
+  isn't a whole number. The page shown keeps it within the pages there are.
+  """
+  @spec page_asked(term()) :: integer() | nil
+  def page_asked(page) do
+    case Integer.parse(to_string(page)) do
+      {number, ""} -> number
+      _other -> nil
+    end
+  end
 end

@@ -313,7 +313,12 @@ defmodule MWTClient.Storage.ImportCheck do
       [
         {:grants, keys(before[:grants], & &1.id) == keys(now[:grants], & &1.id)},
         {:projects, keys(before[:projects], & &1.name) == keys(now[:projects], & &1.name)},
-        {:handoffs, keys(before[:handoffs], & &1.id) == keys(now[:handoffs], & &1.id)},
+        # Kept apart since (`HandoffRecords`), every one of them, from then on.
+        {:handoffs,
+         MapSet.subset?(
+           MapSet.new(before[:handoffs] || [], & &1.id),
+           MapSet.new(MWTClient.Sandbox.HandoffRecords.ids(username))
+         )},
         {:ca, before[:ca] == now[:ca]}
       ]
       |> Enum.reject(&elem(&1, 1))

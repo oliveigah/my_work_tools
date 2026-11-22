@@ -7,7 +7,7 @@ defmodule MWTClient.Sandbox.HandoffsAcceptingTest do
   """
   use MWTClient.HandoffsCase, async: true
 
-  alias MWTClient.Sandbox.{Channel, Handoff, Handoffs, Projects, Server}
+  alias MWTClient.Sandbox.{Channel, Handoff, HandoffRecords, Handoffs, Projects}
 
   describe "accepting" do
     setup context do
@@ -145,9 +145,10 @@ defmodule MWTClient.Sandbox.HandoffsAcceptingTest do
 
     # Its files are on your branch from that moment: MWT stopping right
     # after, with no clean stop to save it, must not show it open again.
-    test "is on disk as accepted when it returns", %{username: username, key: key} do
+    test "is on disk as accepted when it returns", %{username: username} do
       assert {:ok, _} = Handoffs.accept(username, 1, {:commit, "master"})
-      assert [%Handoff{status: :accepted}] = Server.State.restore(username, key).handoffs
+
+      assert {:ok, %Handoff{status: :accepted}} = HandoffRecords.get(username, 1)
     end
 
     # To look at it again, it is opened where it was reviewed: in the VM.

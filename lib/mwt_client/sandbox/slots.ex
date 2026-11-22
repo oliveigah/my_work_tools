@@ -101,8 +101,16 @@ defmodule MWTClient.Sandbox.Slots do
           branch: String.t() | nil,
           head: String.t() | nil,
           locked?: boolean(),
-          missing?: boolean()
+          missing?: boolean(),
+          handoff: Handoff.t() | nil
         }
+
+  @typedoc """
+  The latest handoff from a branch of the project, or nil: how a look
+  finds the handoff of each branch it sees, kept apart from it
+  (`MWTClient.Sandbox.HandoffRecords.latest/3`).
+  """
+  @type latest :: (String.t() -> Handoff.t() | nil)
 
   @type look :: %{
           mirror: Path.t(),
@@ -280,26 +288,26 @@ defmodule MWTClient.Sandbox.Slots do
 
   @doc """
   The project's slots and other worktrees as the VM has them now, each
-  slot with its branch's latest handoff (from `handoffs`, every handoff of
-  the identity) and whether it is free. With `branch`, also whether that
+  with its branch's latest handoff (asked of `latest`), and each slot
+  with whether it is free. With `branch`, also whether that
   branch exists (`:branch`, its commit, or nil).
   """
-  @spec look(Project.t(), map(), [Handoff.t()], String.t() | nil) ::
+  @spec look(Project.t(), map(), latest(), String.t() | nil) ::
           {:ok, look()} | {:error, String.t()}
-  def look(project, guest, handoffs, branch \\ nil) do
+  def look(project, guest, latest, branch \\ nil) when is_function(latest, 1) do
     mirror = Project.mirror_path(project, guest)
     paths = Enum.map(names(project), &path(project, guest, &1))
 
     case guest.exec.(["sh", "-c", @look, "mwt-slots", mirror, branch || "" | paths]) do
       {:ok, output} ->
-        {:ok, read(output, project, guest, handoffs)}
+        {:ok, read(output, project, guest, latest)}
 
       {:error, text} ->
         {:error, "MWT couldn't read the project's worktrees: " <> Shown.text(text)}
     end
   end
 
-  defp read(output, project, guest, handoffs) do
+  defp read(output, project, guest, latest) do
     sections = sections(output)
     mirror = Project.mirror_path(project, guest)
 
@@ -317,6 +325,7 @@ defmodule MWTClient.Sandbox.Slots do
       |> String.split("\n\n", trim: true)
       |> Enum.map(&worktree(&1, states))
       |> Enum.reject(&is_nil(&1.path))
+      |> Enum.map(&Map.put(&1, :handoff, &1.branch && latest.(&1.branch)))
 
     registered = Map.new(worktrees, &{&1.path, &1})
 
@@ -336,7 +345,7 @@ defmodule MWTClient.Sandbox.Slots do
       for name <- names(project) do
         path = path(project, guest, name)
         state = Map.get(states, path, :missing)
-        slot(name, path, registered[path], state, {project, handoffs, threads, bases})
+        slot(name, path, registered[path], state, {threads, bases})
       end
 
     slot_paths = MapSet.new(slots, & &1.path)
@@ -398,7 +407,7 @@ defmodule MWTClient.Sandbox.Slots do
     )
   end
 
-  defp slot(name, path, worktree, state, {project, handoffs, threads, bases}) do
+  defp slot(name, path, worktree, state, {threads, bases}) do
     state =
       case {worktree, state} do
         {nil, :missing} -> :absent
@@ -407,7 +416,7 @@ defmodule MWTClient.Sandbox.Slots do
       end
 
     branch = worktree && worktree.branch
-    handoff = branch && latest_handoff(handoffs, project, branch)
+    handoff = worktree && worktree.handoff
 
     slot = %{
       name: name,
@@ -487,14 +496,6 @@ defmodule MWTClient.Sandbox.Slots do
     )
   end
 
-  @doc "The latest handoff from `branch` of the project, or nil."
-  @spec latest_handoff([Handoff.t()], Project.t(), String.t()) :: Handoff.t() | nil
-  def latest_handoff(handoffs, %Project{name: name}, branch) do
-    handoffs
-    |> Enum.filter(&(&1.project == name and &1.source.branch == branch))
-    |> Enum.max_by(& &1.id, fn -> nil end)
-  end
-
   @doc """
   Who holds `slot`, as the thread `thread` (the asking agent's id, or nil)
   sees it: `:yours`, `:another` thread's, or `:unknown` (none recorded,
@@ -523,7 +524,7 @@ defmodule MWTClient.Sandbox.Slots do
       needs: without it, once the slot is known to be free, nothing starts
       (`:base_needed`);
     * `:here`: the folder the agent is in, the only slot it may take;
-    * `:handoffs`: every handoff of the identity;
+    * `:latest`: the latest handoff of a branch (`t:latest/0`);
     * `:restore`: for `:resume`, the commit to make the branch again at
       when it was deleted: its latest handoff's;
     * `:thread`: the asking agent's thread id, recorded as the branch's
@@ -542,7 +543,7 @@ defmodule MWTClient.Sandbox.Slots do
 
     with true <- ref?(task) or {:error, {:bad_task, Shown.text(task)}},
          true <- how == :resume or not vague?(task) or {:error, {:vague_task, task}},
-         {:ok, look} <- look(project, guest, Keyword.get(opts, :handoffs, []), task),
+         {:ok, look} <- look(project, guest, Keyword.fetch!(opts, :latest), task),
          {:ok, slot, outcome} <- choose(look, how, task, opts),
          true <- how == :resume or Keyword.get(opts, :base) != nil or {:error, :base_needed} do
       mirror = Project.mirror_path(project, guest)
@@ -662,11 +663,11 @@ defmodule MWTClient.Sandbox.Slots do
   branch stays. `slot-0`, the clone, is never removed. The project's
   record is the caller's to change.
   """
-  @spec remove(Project.t(), map(), String.t(), [Handoff.t()]) :: :ok | {:error, error()}
-  def remove(_project, _guest, "slot-0", _handoffs), do: {:error, :the_clone}
+  @spec remove(Project.t(), map(), String.t(), latest()) :: :ok | {:error, error()}
+  def remove(_project, _guest, "slot-0", _latest), do: {:error, :the_clone}
 
-  def remove(project, guest, name, handoffs) do
-    with {:ok, look} <- look(project, guest, handoffs) do
+  def remove(project, guest, name, latest) do
+    with {:ok, look} <- look(project, guest, latest) do
       case Enum.find(look.slots, &(&1.name == name)) do
         nil ->
           {:error, {:no_such_slot, Shown.text(name), names(project)}}
@@ -710,7 +711,7 @@ defmodule MWTClient.Sandbox.Slots do
   @spec free(Project.t(), map(), String.t() | nil, keyword()) ::
           {:ok, slot()} | {:error, error()}
   def free(project, guest, which, opts) do
-    with {:ok, look} <- look(project, guest, Keyword.get(opts, :handoffs, [])),
+    with {:ok, look} <- look(project, guest, Keyword.fetch!(opts, :latest)),
          {:ok, slot} <- named_or_here(look, which, Keyword.get(opts, :here)),
          :ok <- yours(slot, look.slots, opts) do
       case slot do

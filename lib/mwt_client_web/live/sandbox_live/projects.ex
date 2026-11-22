@@ -21,7 +21,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
 
   attr :overview, :map, required: true, doc: "from `MWTClient.Sandbox.Projects.overview/1`"
   attr :mirror, :map, required: true
-  attr :handoffs, :list, required: true
+  attr :waiting_handoffs, :list, required: true, doc: "the handoffs waiting for you"
 
   attr :editing, :any,
     required: true,
@@ -96,7 +96,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
         project={project}
         shared?={share != nil}
         mirror={@mirror[project.name]}
-        handoffs={Enum.filter(@handoffs, &(&1.project == project.name))}
+        waiting_handoffs={Enum.filter(@waiting_handoffs, &(&1.project == project.name))}
         editing={@editing && @editing.name == project.name && @editing}
         worktrees={@worktrees[project.name]}
         ports={@ports}
@@ -117,7 +117,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   attr :project, :map, required: true
   attr :shared?, :boolean, required: true
   attr :mirror, :any, required: true
-  attr :handoffs, :list, required: true
+  attr :waiting_handoffs, :list, required: true
   attr :editing, :any, required: true
   attr :worktrees, :any, required: true
   attr :ports, :map, required: true
@@ -126,10 +126,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   attr :now, DateTime, required: true
 
   defp project_card(assigns) do
-    assigns =
-      assign(assigns,
-        waiting: Enum.count(assigns.handoffs, &(&1.status in [:open, :sent_back, :withdrawn]))
-      )
+    assigns = assign(assigns, waiting: length(assigns.waiting_handoffs))
 
     ~H"""
     <section
@@ -207,7 +204,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
       <.worktree_list
         project={@project}
         worktrees={@worktrees}
-        handoffs={@handoffs}
         ports={@ports}
         threads={@threads}
         vm={@vm}
@@ -399,7 +395,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
     required: true,
     doc: "`Projects.slots/2`'s answer, or `:reading` (or nil) until it comes"
 
-  attr :handoffs, :list, required: true
   attr :ports, :map, required: true
   attr :threads, :map, required: true
   attr :vm, :any, required: true
@@ -608,7 +603,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
                   <p class="truncate text-[11px] text-faint">
                     {wt.branch || "no branch"}
                     <span :if={wt.missing?} class="text-warn-strong">· its folder is gone</span>
-                    <%= case wt.branch && handoff_of(@handoffs, wt.branch) do %>
+                    <%= case wt.handoff do %>
                       <% nil -> %>
                       <% handoff -> %>
                         ·
@@ -1124,14 +1119,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   @spec key(Path.t()) :: String.t()
   def key(path),
     do: :crypto.hash(:sha256, path) |> Base.encode16(case: :lower) |> binary_part(0, 12)
-
-  # The open handoff of a branch, or its latest.
-  defp handoff_of(handoffs, branch) do
-    handoffs
-    |> Enum.filter(&(&1.source.branch == branch))
-    |> Enum.sort_by(&{&1.status in [:open, :sent_back, :withdrawn], &1.id}, :desc)
-    |> List.first()
-  end
 
   defp handoff_label(handoff) do
     conflicts? =

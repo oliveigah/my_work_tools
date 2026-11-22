@@ -81,6 +81,7 @@ defmodule MWTClient.Sandbox.Server do
     Gate,
     Grant,
     Handoff,
+    HandoffRecords,
     HostCommand,
     HostInfo,
     HostRun,
@@ -120,7 +121,6 @@ defmodule MWTClient.Sandbox.Server do
 
   @poll_every 10_000
   @sweep_every 30_000
-  @handoffs_kept 100
   @mirror_every 2_000
   # How often MWT looks again at its own files for the VM (/mnt/mwt), in
   # case a change of theirs went unsent (`Copying`). Your shared folders
@@ -225,8 +225,12 @@ defmodule MWTClient.Sandbox.Server do
         # A copy whose file is gone can't be brought back: it isn't listed.
         snapshots: Enum.filter(saved[:snapshots] || [], &Disks.snapshot?(folders, &1)),
         projects: Enum.map(saved[:projects] || [], &Project.upgrade/1),
-        handoffs: Enum.map(saved[:handoffs] || [], &Handoff.upgrade/1),
-        handoff_seq: saved[:handoff_seq] || 0,
+        # Only those waiting for you: every handoff is kept in
+        # `HandoffRecords`, and read from there.
+        waiting_handoffs: moved_handoffs(username, saved[:handoffs]),
+        # The numbers already given, even one whose saving of this state
+        # didn't happen before MWT stopped: its record is kept apart.
+        handoff_seq: max(saved[:handoff_seq] || 0, HandoffRecords.max_id(username)),
         memory: saved[:memory] || %{seed_count: nil, seeded_at: nil, reviewed: 0},
         folders: folders,
         host: %{facts: HostInfo.facts(), tools: nil, probed_at: nil, probing?: false},
@@ -402,7 +406,7 @@ defmodule MWTClient.Sandbox.Server do
        snapshots: Enum.sort_by(state.snapshots, & &1.taken_at, {:desc, DateTime}),
        projects: Enum.map(state.projects, &Project.upgrade/1),
        mirror: state.mirror,
-       handoffs: state.handoffs,
+       waiting_handoffs: state.waiting_handoffs,
        memory: Map.put(state.memory, :host?, Memory.host_memory?()),
        folders: state.folders,
        proxy: state.proxy,
@@ -1147,7 +1151,7 @@ defmodule MWTClient.Sandbox.Server do
      %{
        projects: Enum.map(state.projects, &Project.upgrade/1),
        mirror: state.mirror,
-       handoffs: state.handoffs,
+       waiting_handoffs: state.waiting_handoffs,
        vm: %{name: state.vm.name, status: state.vm.status, started_at: state.vm.started_at},
        dir: Path.dirname(state.folders.optmem),
        shares: state.settings.shares,
@@ -1245,46 +1249,38 @@ defmodule MWTClient.Sandbox.Server do
     {:reply, id, state |> State.change(:handoff_seq, fn _ -> id end) |> State.changed()}
   end
 
-  # A handoff, new or updated. Returns those too old to keep, for the
-  # caller to let go of what the store holds for them. Saved at once, as
-  # every change of a handoff's record: they are few, and accepting one
-  # puts its files on your branch first, which its record must not lose.
-  defp answer({:put_handoff, %Handoff{id: id} = handoff, summary}, _from, state) do
-    others = Enum.reject(state.handoffs, &(&1.id == id))
-    {kept, dropped} = Enum.split([handoff | others], @handoffs_kept)
-
-    {:reply, {:ok, dropped},
-     state
-     |> State.change(:handoffs, fn _ -> kept end)
-     |> State.log(handoff_event(handoff, summary))
-     |> State.saved()}
+  # A handoff, new or updated, kept at once (`HandoffRecords`), as every
+  # change of one: accepting one puts its files on your branch first,
+  # which its record must not lose.
+  defp answer({:put_handoff, %Handoff{} = handoff, summary}, _from, state) do
+    :ok = HandoffRecords.put(state.username, handoff)
+    {:reply, :ok, state |> hold_waiting(handoff) |> State.log(handoff_event(handoff, summary))}
   end
 
   # What the list shows of one, worked out again: nothing to log.
   defp answer({:handoff_stats, id, stats}, _from, state) do
-    {:reply, :ok,
-     state
-     |> State.change(:handoffs, fn state ->
-       Enum.map(state.handoffs, &if(&1.id == id, do: %{&1 | stats: stats}, else: &1))
-     end)
-     |> State.changed()}
+    case handoff(state, id) do
+      nil ->
+        {:reply, :ok, state}
+
+      handoff ->
+        updated = %{handoff | stats: stats}
+        :ok = HandoffRecords.put(state.username, updated)
+        {:reply, :ok, hold_waiting(state, updated)}
+    end
   end
 
   defp answer({:update_handoff, id, fun, summary}, _from, state) do
-    case Enum.find(state.handoffs, &(&1.id == id)) do
+    case handoff(state, id) do
       nil ->
         {:reply, {:error, :not_found}, state}
 
       handoff ->
         updated = fun.(handoff)
+        :ok = HandoffRecords.put(state.username, updated)
 
         {:reply, {:ok, updated},
-         state
-         |> State.change(:handoffs, fn state ->
-           Enum.map(state.handoffs, &if(&1.id == id, do: updated, else: &1))
-         end)
-         |> State.log(handoff_event(updated, summary))
-         |> State.saved()}
+         state |> hold_waiting(updated) |> State.log(handoff_event(updated, summary))}
     end
   end
 
@@ -1840,6 +1836,39 @@ defmodule MWTClient.Sandbox.Server do
   end
 
   # A handoff's event, signed with the agent and thread that made it.
+  # The handoff numbered `id`: in memory while it waits for you, else as kept.
+  defp handoff(state, id) do
+    Enum.find(state.waiting_handoffs, &(&1.id == id)) ||
+      case HandoffRecords.get(state.username, id) do
+        {:ok, handoff} -> handoff
+        :error -> nil
+      end
+  end
+
+  # The handoffs waiting for you, held in memory, with this one as it is
+  # now: among them while it waits, gone from them once it doesn't. Told
+  # to the pages either way, which show the others too.
+  defp hold_waiting(state, %Handoff{id: id} = handoff) do
+    State.change(state, :waiting_handoffs, fn state ->
+      held = state.waiting_handoffs
+
+      cond do
+        not Handoff.waiting?(handoff) -> Enum.reject(held, &(&1.id == id))
+        Enum.any?(held, &(&1.id == id)) -> Enum.map(held, &if(&1.id == id, do: handoff, else: &1))
+        true -> [handoff | held]
+      end
+    end)
+  end
+
+  # Handoffs were part of the saved state, the latest 100, until each had
+  # a row of its own (`HandoffRecords`): those still there move once, and
+  # the state is saved without them from then on. What waits for you is
+  # read back.
+  defp moved_handoffs(username, saved) do
+    :ok = HandoffRecords.import(username, Enum.map(saved || [], &Handoff.upgrade/1))
+    HandoffRecords.waiting(username)
+  end
+
   defp handoff_event(handoff, summary) do
     thread = %{id: handoff.thread_id, title: handoff.thread}
     Map.merge(Event.asked_by(handoff.agent, thread), %{outcome: :handoff, summary: summary})

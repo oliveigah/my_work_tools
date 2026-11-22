@@ -165,12 +165,14 @@ defmodule MWTClient.Sandbox.ServerNotificationsTest do
     settings = Map.put(saved.settings, :desktop_notifications, false)
 
     MWTClient.VaultHelpers.with_storage(username, key, fn ->
+      # As an older MWT kept handoffs too: in the document. They move
+      # to their own rows as MWT starts.
       :ok =
-        MWTClient.Storage.Documents.put(username, "sandbox", %{
-          saved
-          | handoffs: [handoff],
-            settings: settings
-        })
+        MWTClient.Storage.Documents.put(
+          username,
+          "sandbox",
+          %{saved | settings: settings} |> Map.put(:handoffs, [handoff])
+        )
     end)
 
     :ok = MWTClient.Vault.Store.open(username, key)
@@ -182,6 +184,8 @@ defmodule MWTClient.Sandbox.ServerNotificationsTest do
 
     assert [%{notice: %{desktop: false, quiet: true}}] =
              Enum.filter(Center.list(), &(&1.key == {username, {:sandbox_handoff, 3}}))
+
+    assert {:ok, %{title: "Fix the login"}} = MWTClient.Sandbox.HandoffRecords.get(username, 3)
 
     # The old switch, off, carried over; turning the desktop on again leaves
     # what waited before the restart off it.

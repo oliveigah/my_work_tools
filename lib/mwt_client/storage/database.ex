@@ -68,7 +68,10 @@ defmodule MWTClient.Storage.Database do
   # Each database's migrations, in order: {version, module}. A version,
   # once shipped, never changes; a change to the schema is a new one.
   @migrations %{
-    library: [{1, MWTClient.Storage.Migrations.LibraryItems}],
+    library: [
+      {1, MWTClient.Storage.Migrations.LibraryItems},
+      {2, MWTClient.Storage.Migrations.LibraryHandoffs}
+    ],
     journal: [
       {1, MWTClient.Storage.Migrations.JournalHttpHistory},
       {2, MWTClient.Storage.Migrations.JournalEvents},
@@ -176,6 +179,22 @@ defmodule MWTClient.Storage.Database do
       pool_size: database.pool_size,
       log: false
     ]
+  end
+
+  @doc """
+  Brings the schema of an identity's open database up to date with the
+  code loaded now. It opened with the migrations the code had then: code
+  loaded into a running MWT, as in development, may need one more before
+  the database is opened again. Migrations already made are skipped.
+  """
+  @spec migrate(String.t(), name()) :: :ok
+  def migrate(username, name) do
+    pid =
+      Store.whereis({__MODULE__, name}, username) ||
+        raise "the vault for #{inspect(username)} is locked; sign in before migrating its #{name}"
+
+    migrate(repo(name), pid, name)
+    :ok
   end
 
   defp migrate(repo, pid, name) do

@@ -25,6 +25,7 @@ defmodule MWTClient.Sandbox.Projects do
   alias MWTClient.Sandbox.{
     Discovery,
     Guest,
+    HandoffRecords,
     Handoffs,
     HostGit,
     Mirror,
@@ -307,11 +308,11 @@ defmodule MWTClient.Sandbox.Projects do
     with {:ok, _project, %{vm: vm}} <- find(username, name),
          {:ok, guest} <- guest(username, vm) do
       locked(username, name, fn ->
-        with {:ok, project, %{handoffs: handoffs}} <- find(username, name),
+        with {:ok, project, _found} <- find(username, name),
              n when is_integer(n) <-
                Slots.number(slot) ||
                  {:error, {:no_such_slot, Shown.text(to_string(slot)), Slots.names(project)}},
-             :ok <- Slots.remove(project, guest, "slot-#{n}", handoffs),
+             :ok <- Slots.remove(project, guest, "slot-#{n}", latest(username, project)),
              {:ok, _} <-
                Server.call(
                  username,
@@ -495,12 +496,12 @@ defmodule MWTClient.Sandbox.Projects do
   """
   @spec slots(String.t(), String.t()) :: {:ok, Slots.look()} | {:error, error()}
   def slots(username, name) do
-    with {:ok, project, %{vm: vm, handoffs: handoffs}} <- find(username, name),
+    with {:ok, project, %{vm: vm}} <- find(username, name),
          {:ok, guest} <- guest(username, vm) do
       # Two trips into the VM, side by side: each is mostly msb exec's.
       opened = Task.async(fn -> Zed.opened(guest) end)
 
-      case Slots.look(project, guest, handoffs) do
+      case Slots.look(project, guest, latest(username, project)) do
         {:ok, look} ->
           {:ok, %{look | slots: Slots.mark_zed(look.slots, Task.await(opened, :infinity))}}
 
@@ -570,7 +571,7 @@ defmodule MWTClient.Sandbox.Projects do
   def place(username, cwd) do
     with {:ok, project, where, guest} <- locate(username, cwd) do
       look =
-        case Slots.look(project, guest, handoffs(username)) do
+        case Slots.look(project, guest, latest(username, project)) do
           {:ok, look} -> look
           {:error, _} -> nil
         end
@@ -602,14 +603,14 @@ defmodule MWTClient.Sandbox.Projects do
 
     with {:ok, project, where, guest} <- locate(username, cwd),
          {:ok, base} <- slot_base(project, guest, how, from),
-         handoffs = handoffs(username),
+         latest = latest(username, project),
          {:ok, slot, outcome} <-
            project
            |> Slots.take(guest, how, task,
              base: base,
              here: here(where, project, guest),
-             handoffs: handoffs,
-             restore: if(how == :resume, do: restore(handoffs, project, task)),
+             latest: latest,
+             restore: if(how == :resume, do: restore(latest, task)),
              thread: Keyword.get(opts, :thread)
            )
            |> with_zed(guest)
@@ -641,11 +642,8 @@ defmodule MWTClient.Sandbox.Projects do
 
   # The commit a deleted task branch is made again at when resumed: its
   # latest handoff's, such as one sent back after you accepted it.
-  defp restore(handoffs, project, task) do
-    handoffs
-    |> Enum.filter(&(&1.project == project.name and &1.source.branch == task))
-    |> Enum.max_by(& &1.id, fn -> nil end)
-    |> case do
+  defp restore(latest, task) do
+    case latest.(task) do
       nil -> nil
       handoff -> handoff.head
     end
@@ -664,7 +662,7 @@ defmodule MWTClient.Sandbox.Projects do
          {:ok, slot} <-
            Slots.free(project, guest, which,
              here: here(where, project, guest),
-             handoffs: handoffs(username),
+             latest: latest(username, project),
              thread: thread
            ) do
       {:ok, project, slot}
@@ -683,8 +681,8 @@ defmodule MWTClient.Sandbox.Projects do
     with {:ok, _project, %{vm: vm}} <- find(username, name),
          {:ok, guest} <- guest(username, vm) do
       locked(username, name, fn ->
-        with {:ok, project, %{handoffs: handoffs}} <- find(username, name) do
-          Slots.free(project, guest, slot, handoffs: handoffs)
+        with {:ok, project, _found} <- find(username, name) do
+          Slots.free(project, guest, slot, latest: latest(username, project))
         end
       end)
     end
@@ -694,7 +692,11 @@ defmodule MWTClient.Sandbox.Projects do
 
   defp blank(""), do: nil
   defp blank(value), do: value
-  defp handoffs(username), do: Server.call(username, :projects).handoffs
+
+  # The latest handoff of a branch of the project, read as a look needs it
+  # (`MWTClient.Sandbox.Slots.latest/0`).
+  defp latest(username, %Project{name: name}),
+    do: &HandoffRecords.latest(username, name, &1)
 
   ## Shared
 

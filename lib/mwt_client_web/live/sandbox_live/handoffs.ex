@@ -25,10 +25,102 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
   import MWTClientWeb.SandboxLive.Components
 
   alias MWTClient.Git.FileDiff
-  alias MWTClient.Sandbox.{Handoff, Handoffs}
+  alias MWTClient.Sandbox.{Handoff, HandoffRecords, Handoffs}
+  alias MWTClient.Search
 
-  attr :handoffs, :list, required: true
-  attr :filter, :string, required: true
+  # Rows a page of the list shows: a screenful or two of handoffs to
+  # decide on or look back at.
+  @per_page 20
+
+  @typedoc """
+  Where you are in the list: which half (`filter`: `"open"`, those
+  waiting to land, or `"closed"`), the words searched, the page, whether
+  archived handoffs count, and then between which days (`from` and `to`,
+  each a `YYYY-MM-DD` or empty, on this machine's clock, both included).
+  """
+  @type place :: %{
+          filter: String.t(),
+          term: String.t(),
+          page: pos_integer(),
+          archived?: boolean(),
+          from: String.t(),
+          to: String.t()
+        }
+
+  @doc "The list as it first shows: waiting to land, unsearched, the archived left out."
+  @spec place() :: place()
+  def place, do: %{filter: "open", term: "", page: 1, archived?: false, from: "", to: ""}
+
+  @doc """
+  The list searched as the search form says: its words, whether archived
+  handoffs count and between which days. It starts again from its first
+  page. A field the form doesn't send keeps what it was.
+  """
+  @spec searched(place(), map()) :: place()
+  def searched(place, params) do
+    %{
+      place
+      | term: params |> Map.get("term", place.term) |> to_string() |> String.slice(0, 200),
+        archived?: Map.get(params, "archived", to_string(place.archived?)) == "true",
+        from: day(Map.get(params, "from", place.from)),
+        to: day(Map.get(params, "to", place.to)),
+        page: 1
+    }
+  end
+
+  defp day(text) do
+    case Date.from_iso8601(to_string(text)) do
+      {:ok, date} -> Date.to_iso8601(date)
+      {:error, _} -> ""
+    end
+  end
+
+  @doc """
+  What `HandoffRecords.page/2` is asked for the list at `place`. Its days
+  run from the start of `from` until the start of the day after `to`.
+  """
+  @spec query(place(), DateTime.t()) :: HandoffRecords.query()
+  def query(place, now) do
+    %{
+      half: if(place.filter == "closed", do: :done, else: :waiting),
+      terms: Search.terms(place.term),
+      archived?: place.archived?,
+      from: day_start(place.from, 0),
+      to: day_start(place.to, 1),
+      page: place.page,
+      per_page: @per_page,
+      now: now
+    }
+  end
+
+  # The moment a day of this machine's calendar starts, `later` days after
+  # `text`; nil for no day. A day whose midnight a clock change skips
+  # starts at the hour after.
+  defp day_start(text, later) do
+    case Date.from_iso8601(text) do
+      {:ok, date} ->
+        date = Date.add(date, later)
+
+        Enum.find_value([~T[00:00:00], ~T[01:00:00]], fn time ->
+          case date |> NaiveDateTime.new!(time) |> NaiveDateTime.to_erl() |> local_to_utc() do
+            [utc | _] -> utc |> NaiveDateTime.from_erl!() |> DateTime.from_naive!("Etc/UTC")
+            [] -> nil
+          end
+        end)
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  defp local_to_utc(local), do: :calendar.local_time_to_universal_time_dst(local)
+
+  attr :place, :map, required: true, doc: "where you are in the list (`t:place/0`)"
+
+  attr :listing, :map,
+    required: true,
+    doc: "the page of the list shown (`HandoffRecords.page/2`), nil while one is open"
+
   attr :view, :any, required: true, doc: "the handoff open, with what was worked out, or nil"
   attr :diff, :boolean, required: true, doc: "whether its diff is shown"
   attr :note_form, :any, required: true
@@ -45,6 +137,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
     <%= if @view do %>
       <.detail
         view={@view}
+        filter={@place.filter}
         diff={@diff}
         note_form={@note_form}
         decision={@decision}
@@ -52,37 +145,46 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
         now={@now}
       />
     <% else %>
-      <.handoff_list handoffs={@handoffs} filter={@filter} now={@now} />
+      <.handoff_list :if={@listing} place={@place} listing={@listing} now={@now} />
     <% end %>
     """
   end
 
   ## The list
 
-  attr :handoffs, :list, required: true
-  attr :filter, :string, required: true
+  attr :place, :map, required: true
+  attr :listing, :map, required: true
   attr :now, DateTime, required: true
 
+  # Only the rows of the page shown get the words around the match.
   defp handoff_list(assigns) do
-    {waiting, done} =
-      Enum.split_with(assigns.handoffs, &(&1.status in [:open, :sent_back, :withdrawn]))
+    %{place: place, listing: listing} = assigns
+    terms = Search.terms(place.term)
+    total = if place.filter == "closed", do: listing.done, else: listing.waiting
 
     assigns =
       assign(assigns,
-        waiting: waiting,
-        done: done,
-        shown: if(assigns.filter == "closed", do: done, else: waiting)
+        filter: place.filter,
+        term: place.term,
+        waiting: listing.waiting,
+        done: listing.done,
+        total: total,
+        shown: Enum.map(listing.handoffs, &{&1, Handoff.snippet(&1, terms)}),
+        page: listing.page,
+        pages: listing.pages,
+        per_page: @per_page,
+        archive_after: HandoffRecords.archive_after_days()
       )
 
     ~H"""
     <.page_header id="handoffs-header" title="Handoffs">
       <:help>
-        You review an agent's work in the VM, in Zed, and ask it to hand off once it's done: it commits, as you, catches up with the branch the task started from and runs mwt handoff. Its commits then wait here to land. Landing syncs what you reviewed as one commit: on the task's base, or any branch you choose where its changes apply without conflicts, or on a new mwt/ branch from it. Nothing is written into your repository until you land it.
+        You review an agent's work in the VM, in Zed, and ask it to hand off once it's done: it commits, as you, catches up with the branch the task started from and runs mwt handoff. Its commits then wait here to land. Landing syncs what you reviewed as one commit: on the task's base, or any branch you choose where its changes apply without conflicts, or on a new mwt/ branch from it. Nothing is written into your repository until you land it. Every handoff is kept; one landed or closed more than {@archive_after} days ago is archived, and shows when you include the archived ones.
       </:help>
     </.page_header>
 
     <section id="handoffs" class="overflow-hidden rounded-xl border border-line bg-panel">
-      <header class="flex items-center gap-4 border-b border-line-soft bg-deep/40 px-4 py-2.5">
+      <header class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line-soft bg-deep/40 px-4 py-2.5">
         <.link
           patch={~p"/tools/sandbox/handoffs"}
           id="handoffs-filter-open"
@@ -94,7 +196,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
             )
           ]}
         >
-          <.icon name="hero-arrow-down-on-square" class="size-4" /> {length(@waiting)} Waiting to land
+          <.icon name="hero-arrow-down-on-square" class="size-4" /> {@waiting} Waiting to land
         </.link>
         <.link
           patch={~p"/tools/sandbox/handoffs?filter=closed"}
@@ -107,20 +209,105 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
             )
           ]}
         >
-          <.icon name="hero-check" class="size-4" /> {length(@done)} Landed or closed
+          <.icon name="hero-check" class="size-4" /> {@done} Landed or closed
         </.link>
+        <form
+          id="handoff-search"
+          phx-change="search_handoffs"
+          phx-submit="search_handoffs"
+          class="ml-auto flex flex-wrap items-center justify-end gap-2"
+          autocomplete="off"
+        >
+          <label
+            id="handoff-archived"
+            title={"Handoffs landed or closed more than #{@archive_after} days ago"}
+            class={[
+              "flex cursor-pointer select-none items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition-colors",
+              if(@place.archived?,
+                do: "border-accent/50 bg-accent-soft/40 text-accent-strong",
+                else: "border-line text-muted hover:border-accent/40 hover:text-ink"
+              )
+            ]}
+          >
+            <input type="hidden" name="archived" value="false" />
+            <input
+              type="checkbox"
+              name="archived"
+              value="true"
+              id="handoff-archived-toggle"
+              checked={@place.archived?}
+              class="size-3.5 accent-[var(--color-accent)]"
+            /> Include archived
+          </label>
+          <div
+            :if={@place.archived?}
+            id="handoff-days"
+            class="flex items-center gap-1.5 text-[11px] text-muted"
+          >
+            <span>From</span>
+            <input
+              type="date"
+              name="from"
+              id="handoff-from"
+              value={@place.from}
+              max={@place.to != "" && @place.to}
+              class="rounded-md border border-line bg-panel px-1.5 py-1 text-[11px] text-ink outline-none transition-colors focus:border-accent/60 focus:ring-2 focus:ring-accent/15"
+            />
+            <span>to</span>
+            <input
+              type="date"
+              name="to"
+              id="handoff-to"
+              value={@place.to}
+              min={@place.from != "" && @place.from}
+              class="rounded-md border border-line bg-panel px-1.5 py-1 text-[11px] text-ink outline-none transition-colors focus:border-accent/60 focus:ring-2 focus:ring-accent/15"
+            />
+          </div>
+          <div class="relative w-full sm:w-64">
+            <.icon
+              name="hero-magnifying-glass"
+              class="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-faint"
+            />
+            <input
+              type="text"
+              name="term"
+              id="handoff-search-term"
+              value={@term}
+              placeholder="Search every word in them"
+              phx-debounce="120"
+              class="w-full rounded-md border border-line bg-panel py-1.5 pl-7 pr-7 text-xs text-ink outline-none transition-colors placeholder:text-faint focus:border-accent/60 focus:ring-2 focus:ring-accent/15"
+            />
+            <button
+              :if={@term != ""}
+              type="button"
+              id="handoff-search-clear"
+              phx-click="clear_handoff_search"
+              title="Clear search"
+              class="absolute right-1.5 top-1/2 flex size-5 -translate-y-1/2 cursor-pointer items-center justify-center rounded text-faint transition-colors hover:bg-hover hover:text-ink"
+            >
+              <.icon name="hero-x-mark-micro" class="size-3.5" />
+            </button>
+          </div>
+        </form>
       </header>
       <ul id="handoff-list" class="divide-y divide-line-soft">
         <li :if={@shown == []}>
           <.empty id="handoffs-empty" icon="hero-arrow-down-on-square">
-            <%= if @filter == "closed" do %>
-              Nothing landed or closed yet.
-            <% else %>
-              Nothing waiting to land. Review an agent's work in the VM, then ask it to hand off.
+            <%= cond do %>
+              <% @term != "" and @filter == "closed" -> %>
+                No handoff landed or closed mentions “{@term}”.
+              <% @term != "" -> %>
+                No handoff waiting to land mentions “{@term}”.
+              <% @filter == "closed" and @place.archived? -> %>
+                Nothing landed or closed in these days.
+              <% @filter == "closed" -> %>
+                Nothing landed or closed in the last {@archive_after} days.
+              <% true -> %>
+                Nothing waiting to land. Review an agent's work in the VM, then ask it to hand off.
             <% end %>
           </.empty>
         </li>
-        <li :for={handoff <- @shown} id={"handoff-row-#{handoff.id}"}>
+        <li :for={{handoff, snippet} <- @shown} id={"handoff-row-#{handoff.id}"}>
           <.link
             patch={~p"/tools/sandbox/handoffs?id=#{handoff.id}"}
             class="group flex items-start gap-3 px-4 py-3 transition-colors hover:bg-hover/40"
@@ -145,6 +332,14 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
                 >
                   Taken back
                 </span>
+                <span
+                  :if={HandoffRecords.archived?(handoff, @now)}
+                  id={"handoff-archived-#{handoff.id}"}
+                  class="rounded-full border border-line px-1.5 py-px text-[10px] font-medium text-faint"
+                  title={"Landed or closed more than #{@archive_after} days ago"}
+                >
+                  Archived
+                </span>
               </p>
               <p class="mt-1 truncate text-[11px] text-faint">
                 #{handoff.id} · {Handoffs.who(handoff)}{if handoff.thread,
@@ -157,6 +352,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
                 <% end %>
                 · {verb(handoff)} {ago(handoff.updated_at || handoff.opened_at, @now)}
               </p>
+              <.snippet :if={snippet} id={"handoff-snippet-#{handoff.id}"} parts={snippet} />
             </div>
             <div class="flex shrink-0 items-center gap-3 text-[11px]">
               <span
@@ -188,13 +384,47 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
           </.link>
         </li>
       </ul>
+      <p
+        :if={@filter == "closed" and not @place.archived?}
+        id="handoffs-archived-hint"
+        class="border-t border-line-soft px-4 py-2 text-[11px] text-faint"
+      >
+        Older ones are archived, not gone: include the archived to list and search them.
+      </p>
+      <.pages
+        :if={@pages > 1}
+        name="handoffs"
+        label="Pages of handoffs"
+        page={@page}
+        pages={@pages}
+        per_page={@per_page}
+        total={@total}
+        event="handoffs_page"
+        class="border-t border-line-soft bg-deep/30 px-4 py-2"
+      />
     </section>
+    """
+  end
+
+  # The words around a search match in what the row doesn't show, the
+  # match itself marked.
+  attr :id, :string, required: true
+  attr :parts, :any, required: true, doc: "`{before, match, after}`"
+
+  defp snippet(%{parts: {before, match, rest}} = assigns) do
+    assigns = assign(assigns, before: before, match: match, rest: rest)
+
+    ~H"""
+    <p id={@id} class="mt-1 truncate text-[11px] text-muted">
+      {@before}<mark class="rounded-sm bg-warn-soft px-0.5 text-warn-strong">{@match}</mark>{@rest}
+    </p>
     """
   end
 
   ## One handoff
 
   attr :view, :map, required: true
+  attr :filter, :string, required: true, doc: "the half of the list it goes back to"
   attr :diff, :boolean, required: true
   attr :note_form, :any, required: true
   attr :decision, :string, required: true
@@ -210,7 +440,12 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
     <div id={"handoff-#{@handoff.id}"} class="space-y-5">
       <div>
         <.link
-          patch={~p"/tools/sandbox/handoffs"}
+          patch={
+            if(@filter == "closed",
+              do: ~p"/tools/sandbox/handoffs?filter=closed",
+              else: ~p"/tools/sandbox/handoffs"
+            )
+          }
           id="handoff-back"
           class="inline-flex items-center gap-1 text-[12px] text-muted transition-colors hover:text-ink"
         >

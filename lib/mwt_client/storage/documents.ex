@@ -2,8 +2,8 @@ defmodule MWTClient.Storage.Documents do
   @moduledoc """
   Small state an app keeps whole, as one term under a name, in the
   `documents` table of `library.db` (docs/storage.md): the sandbox's
-  grants, projects and handoffs, MCP access, agent threads, the flash
-  cards' settings. Each is read whole when its app starts and written
+  grants and projects, MCP access, agent threads, the flash cards'
+  settings. Each is read whole when its app starts and written
   whole after a change, as it was in a sealed file of its own.
 
   `load/5` also brings in the file the document was kept in before

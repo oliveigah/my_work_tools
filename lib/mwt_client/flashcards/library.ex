@@ -340,7 +340,7 @@ defmodule MWTClient.Flashcards.Library do
       end
 
     {matching, search_params} =
-      Search.where("seq", "flashcard_search", "flashcards", Search.terms(query))
+      Search.where("flashcards.seq", "flashcard_search", "flashcards", Search.terms(query))
 
     tags = Map.get(scope, :tags, [])
     match = Map.get(scope, :match, :any)

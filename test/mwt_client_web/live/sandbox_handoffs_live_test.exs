@@ -7,8 +7,7 @@ defmodule MWTClientWeb.SandboxHandoffsLiveTest do
   import Phoenix.LiveViewTest
   import MWTClientWeb.HandoffsLiveHelpers
 
-  alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.{Channel, Handoffs}
+  alias MWTClient.Sandbox.{Channel, HandoffRecords, Handoffs}
 
   setup {MWTClientWeb.HandoffsLiveHelpers, :project}
 
@@ -276,7 +275,9 @@ defmodule MWTClientWeb.SandboxHandoffsLiveTest do
     assert git(side, ["log", "-1", "--format=%s"]) == "first\n"
     assert git(repo, ["log", "-1", "--format=%s"]) == "first\n"
     assert git(repo, ["log", "-1", "--format=%s", "mwt/login"]) == "work on fix\n"
-    assert [%{onto: "mwt/login", status: :accepted}] = Sandbox.snapshot(username).handoffs
+
+    assert {:ok, %{onto: "mwt/login", status: :accepted}} =
+             HandoffRecords.get(username, handoff.id)
   end
 
   test "one made to break or mislead the page is shown with all it holds", %{

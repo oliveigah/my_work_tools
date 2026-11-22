@@ -22,6 +22,7 @@ defmodule MWTClient.Storage.Usage do
     {"notes", ["note"]},
     {"diagrams", ["diagram"]},
     {"flashcards", ["flashcard"]},
+    {"handoffs", ["handoff"]},
     {"versions", ["versions"]},
     {"documents", ["documents"]},
     {"http", ["http_"]},
@@ -90,7 +91,7 @@ defmodule MWTClient.Storage.Usage do
   @doc """
   Everything an identity keeps, measured: each database's files and the
   free space inside them, and each kind, by key: `"notes"`, `"diagrams"`,
-  `"flashcards"` and `"documents"`, which no rule removes, and every kind
+  `"flashcards"`, `"handoffs"` and `"documents"`, which no rule removes, and every kind
   with a retention rule but the VM's (`MWTClient.Storage.Retention`).
 
   Versions share one table, so each kind's bytes are its versions'
@@ -129,6 +130,7 @@ defmodule MWTClient.Storage.Usage do
       "notes" => counted(username, :library, "notes", "created_at", library),
       "diagrams" => counted(username, :library, "diagrams", "created_at", library),
       "flashcards" => counted(username, :library, "flashcards", "created_at", library),
+      "handoffs" => counted(username, :library, "handoffs", "opened_at", library),
       "documents" => counted(username, :library, "documents", "updated_at", library),
       "note_versions" => version_kind.("notes"),
       "diagram_versions" => version_kind.("diagrams"),

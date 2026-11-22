@@ -17,6 +17,7 @@ defmodule MWTClient.Sandbox.Handoffs do
     AgentThreads,
     CatchUp,
     Handoff,
+    HandoffRecords,
     HandoffStore,
     HostGit,
     MwtTools,
@@ -60,7 +61,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   end
 
   defp open_revision(username, ask) do
-    %{handoffs: handoffs, vm: vm, dir: dir} = Server.call(username, :projects)
+    %{waiting_handoffs: handoffs, vm: vm, dir: dir} = Server.call(username, :projects)
     words = Handoff.words(ask)
 
     with {:ok, guest} <- Projects.guest(username, vm),
@@ -95,7 +96,7 @@ defmodule MWTClient.Sandbox.Handoffs do
           handoff = %{handoff | base_commit: facts.merge_base, stats: Handoff.stats(facts)}
 
           with :ok <- HandoffStore.keep_revision(store, id, handoff.revision, head) do
-            opened(username, dir, project, existing, handoff)
+            opened(username, project, existing, handoff)
           end
         else
           {:error, {:catch_up, _, _, _}} = refused ->
@@ -222,16 +223,15 @@ defmodule MWTClient.Sandbox.Handoffs do
     end
   end
 
-  defp opened(username, dir, project, existing, handoff) do
+  defp opened(username, project, existing, handoff) do
     verb = if existing, do: "updated", else: "handed off"
 
-    {:ok, dropped} =
+    :ok =
       Server.call(
         username,
         {:put_handoff, handoff, "#{who(handoff)} #{verb} ##{handoff.id}: \"#{handoff.title}\""}
       )
 
-    Enum.each(dropped, &forget(dir, &1))
     Projects.used(username, project.name)
     {:ok, handoff, if(existing, do: :updated, else: :opened)}
   end
@@ -257,7 +257,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   @doc "Preparation selects a comparison base and checks without changing the clone."
   @spec prepare(String.t(), map()) :: {:ok, map()} | {:error, error()}
   def prepare(username, ask) do
-    %{handoffs: handoffs, vm: vm} = Server.call(username, :projects)
+    %{waiting_handoffs: handoffs, vm: vm} = Server.call(username, :projects)
     words = Handoff.words(ask)
 
     with {:ok, guest} <- Projects.guest(username, vm),
@@ -337,7 +337,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   """
   @spec withdraw(String.t(), map()) :: {:ok, Handoff.t()} | {:error, error()}
   def withdraw(username, ask) do
-    %{handoffs: handoffs, vm: vm} = Server.call(username, :projects)
+    %{vm: vm} = Server.call(username, :projects)
     words = Handoff.words(ask)
 
     with {:ok, guest} <- Projects.guest(username, vm),
@@ -346,7 +346,7 @@ defmodule MWTClient.Sandbox.Handoffs do
            Handoff.look(guest, Map.get(ask, :cwd), uncommitted: :allowed),
          :ok <- holding(guest, source, words.thread_id),
          %Handoff{status: :open, id: id} <-
-           Slots.latest_handoff(handoffs, project, source.branch) ||
+           HandoffRecords.latest(username, project.name, source.branch) ||
              {:error, {:not_withdrawable, nil, source.branch}} do
       reason = ask |> Map.get(:reason) |> to_string() |> String.trim() |> String.slice(0, 500)
 
@@ -426,18 +426,20 @@ defmodule MWTClient.Sandbox.Handoffs do
     }
   end
 
-  # One handoff per branch of a repository in the VM while it is open.
+  # One handoff per branch of a repository in the VM while it is open:
+  # among those waiting for you.
   defp open_from(handoffs, source) do
     Enum.find(handoffs, fn handoff ->
-      handoff.status in [:open, :sent_back, :withdrawn] and
+      Handoff.waiting?(handoff) and
         handoff.source.folder == source.folder and
         handoff.source.branch == source.branch
     end)
   end
 
   @doc """
-  The handoffs of the project `cwd` is in, in the VM, newest first, each
-  with what MWT can say of it now; the folder `cwd` is in; and the
+  The handoffs of the project `cwd` is in, in the VM, that aren't archived
+  (`HandoffRecords.current/3`), newest first, each with what MWT can say
+  of it now; the folder `cwd` is in; and the
   project's worktrees as the VM has them now (`Projects.place/2`), to say
   where each handoff's branch is.
   """
@@ -446,13 +448,12 @@ defmodule MWTClient.Sandbox.Handoffs do
            MWTClient.Sandbox.Slots.look() | nil}
           | {:error, error()}
   def for_agent(username, cwd) do
-    %{handoffs: handoffs, dir: dir} = Server.call(username, :projects)
+    %{dir: dir} = Server.call(username, :projects)
 
     with {:ok, project, where, look} <- Projects.place(username, cwd) do
       mine =
-        handoffs
-        |> Enum.filter(&(&1.project == project.name))
-        |> Enum.sort_by(& &1.id, :desc)
+        username
+        |> HandoffRecords.current(project.name, DateTime.utc_now())
         |> Enum.map(fn handoff ->
           facts =
             if handoff.status in [:open, :sent_back, :withdrawn],
@@ -466,10 +467,6 @@ defmodule MWTClient.Sandbox.Handoffs do
   end
 
   ## What you do with one
-
-  @doc "Every handoff, newest first."
-  @spec list(String.t()) :: [Handoff.t()]
-  def list(username), do: Enum.sort_by(Server.call(username, :projects).handoffs, & &1.id, :desc)
 
   @doc """
   What MWT works out about one against your repository as it is now. The
@@ -491,8 +488,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   @doc "Works out again the size and conflicts of a project's open handoffs, as after your branch moved."
   @spec refresh(String.t(), String.t()) :: :ok
   def refresh(username, project) do
-    for %Handoff{project: ^project, status: status, id: id} <- list(username),
-        status in [:open, :sent_back, :withdrawn],
+    for %Handoff{project: ^project, id: id} <- Server.call(username, :projects).waiting_handoffs,
         do: facts(username, id)
 
     :ok
@@ -937,17 +933,13 @@ defmodule MWTClient.Sandbox.Handoffs do
     do: Server.call(username, {:update_handoff, id, fun, summary})
 
   defp find(username, id) do
-    %{handoffs: handoffs, dir: dir} = Server.call(username, :projects)
+    %{dir: dir} = Server.call(username, :projects)
 
-    case Enum.find(handoffs, &(&1.id == id)) do
-      nil -> {:error, :not_found}
-      handoff -> {:ok, handoff, HandoffStore.path(dir, handoff.repo)}
+    case HandoffRecords.get(username, id) do
+      {:ok, handoff} -> {:ok, handoff, HandoffStore.path(dir, handoff.repo)}
+      :error -> {:error, :not_found}
     end
   end
-
-  # What MWT kept of a handoff too old to keep.
-  defp forget(dir, handoff),
-    do: HandoffStore.drop(HandoffStore.path(dir, handoff.repo), handoff.id)
 
   defp event(kind, text, extra \\ %{}), do: Map.merge(%{at: now(), kind: kind, text: text}, extra)
 

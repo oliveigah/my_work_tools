@@ -96,7 +96,6 @@ defmodule MWTClientWeb.HandoffsLiveHelpers do
         username
       )
 
-    [handoff | _] = Sandbox.snapshot(username).handoffs
-    handoff
+    MWTClient.Sandbox.HandoffRecords.latest(username, "app", task)
   end
 end
