@@ -48,6 +48,7 @@ defmodule MWTClient.Sandbox.Gate do
     Destinations,
     Firewall,
     Grant,
+    Made,
     Placeholder,
     Policy,
     Routes,
@@ -96,7 +97,9 @@ defmodule MWTClient.Sandbox.Gate do
       state.values,
       for({id, {value, _at}} <- state.minted || %{}, do: {id, value}),
       state.ca,
-      State.held(state)
+      State.held(state),
+      Map.get(state, :made, %{}),
+      Map.get(state, :id_tokens, %{})
     }
 
     if Map.get(state, :gate) == inputs do
@@ -104,13 +107,16 @@ defmodule MWTClient.Sandbox.Gate do
     else
       version = (Map.get(state, :gate_version) || 0) + 1
       forms = Values.value_forms(state)
-      placeholders = placeholders(state.grants)
+      made = state |> Map.get(:made, %{}) |> Map.values() |> Enum.map(&Made.unvalued/1)
+      placeholders = placeholders(state.grants) ++ for(m <- made, do: {m.name, m.placeholder})
 
       view = %{
         version: version,
         grants: state.grants,
         # The grants a gating check holds off.
         failing: elem(inputs, 5),
+        # The values made from the grants, without them.
+        made: made,
         firewall: Map.get(state, :firewall) || Firewall.new(),
         forms: forms,
         secrets: Secrets.new(forms),
@@ -732,7 +738,9 @@ defmodule MWTClient.Sandbox.Gate do
 
   @doc """
   Whether a request MWT read may go out, and with what: `{:forward,
-  headers, scan}` or `{:deny, status, body}`, as
+  headers, scan}`, `{:deny, status, body}`, or `{:answer, status, body}`
+  for a credential endpoint MWT answered itself
+  (`MWTClient.Sandbox.CredentialEndpoint`), as
   `MWTClient.Sandbox.Server` answers `{:authorize, request}`. Decided
   here unless it needs a real value or you: then the server answers, as
   long as you take.
@@ -759,7 +767,7 @@ defmodule MWTClient.Sandbox.Gate do
       true ->
         decision =
           Policy.decide(
-            Policy.snapshot(view.grants, Map.get(view, :failing, %{})),
+            Policy.snapshot(view.grants, Map.get(view, :failing, %{}), Map.get(view, :made, [])),
             {:request, request},
             State.now()
           )
@@ -802,7 +810,17 @@ defmodule MWTClient.Sandbox.Gate do
           not Policy.host_listed?(host, grant.hosts),
           do: {{:placeholder, grant.name}, [placeholder]}
 
-    %{out: Secrets.new(view.forms ++ elsewhere), echo: nil, placeholder: nil, grant: nil}
+    made_elsewhere =
+      for made <- Map.get(view, :made, []),
+          not Policy.host_listed?(host, made.hosts),
+          do: {{:placeholder, made.name}, [made.placeholder]}
+
+    %{
+      out: Secrets.new(view.forms ++ elsewhere ++ made_elsewhere),
+      echo: nil,
+      placeholders: %{},
+      grant: nil
+    }
   end
 
   defp carried(view, request) do

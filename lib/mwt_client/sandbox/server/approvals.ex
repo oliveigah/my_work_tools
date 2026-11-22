@@ -440,7 +440,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       {from, {:request, request}}, acc ->
         case {outcome, grant} do
           {:allow, %Grant{}} ->
-            Values.forward(acc, grant, request, from)
+            Values.let_through(acc, grant, request, from)
 
           {{:deny, :timed_out}, _} ->
             GenServer.reply(

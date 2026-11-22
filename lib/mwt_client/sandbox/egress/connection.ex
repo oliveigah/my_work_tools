@@ -437,6 +437,13 @@ defmodule MWTClient.Sandbox.Egress.Connection do
         {:deny, status, json} ->
           respond(tls, status, json)
           recorded(record, Exchange.mwt_answer(status, json))
+
+        # A credential endpoint MWT answered itself, with placeholders
+        # (`MWTClient.Sandbox.CredentialEndpoint`): nothing went out from
+        # the VM.
+        {:answer, status, json} ->
+          respond(tls, status, json)
+          recorded(record, Exchange.mwt_answer(status, json))
       end
     else
       {:misdirected, host} ->
@@ -500,7 +507,7 @@ defmodule MWTClient.Sandbox.Egress.Connection do
             :ok = :ssl.send(upstream, [head(request, version, scan.echo), request.body])
 
             response =
-              if scan.echo, do: Response.new(request.method, scan.echo, scan.placeholder)
+              if scan.echo, do: Response.new(request.method, scan.echo, scan.placeholders)
 
             relay(tls, upstream, response, out, Map.put(record, :host, request.host))
 

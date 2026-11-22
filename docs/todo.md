@@ -7,6 +7,14 @@ Port forwarding from the VM, set aside on 2026-11-13, was built on
 2026-11-15: see "Servers in the VM, on your machine" in
 `docs/agent_sandbox.md`.
 
+The metadata server on grants not added from the Google preset, set aside
+on 2026-11-19, was built on 2026-11-21: see "Presentations" in
+`docs/agent_sandbox.md`.
+
+Tools that mint Google credentials themselves, set aside on 2026-11-19,
+were built on 2026-11-22: see "Credential endpoints MWT answers" in
+`docs/agent_sandbox.md`.
+
 ## Conflicts in shared folders' copies
 
 Set aside on 2026-11-18. Shared folders reach the VM one way, read-only
@@ -156,100 +164,6 @@ What is known:
 - **The same on your machine**: MWT's review store keeps a ref per
   handoff revision and only grows (the threat model review of 2026-11-21);
   the refs of landed and closed handoffs could go in the same sweep.
-
-## The metadata server on grants not added from the Google preset
-
-Set aside on 2026-11-19. "Serve it as a cloud metadata server" (a
-presentation, `Grant.presents`) can be turned on only in the add form, with
-the Google Cloud preset picked: the box shows when
-`@adding.preset.id == "google"` or when it is already on
-(`sandbox_live/grants.ex:2680`). Editing a grant opens the same form with
-`Presets.type_or_preset/1` (`sandbox_live.ex:1059`), which gives the
-grant's type, never the preset that made it (`presets.ex:333`), so on a
-grant where it is off the box never shows again. Every proposed grant is
-one: `mwt propose token` can't ask for it (`Proposal.attrs/3` takes name,
-purpose, hosts, env, file_env, carriers, git, mint and reach,
-`proposal.ex:64-86`), and MWT's `google.json` preset doesn't set it.
-
-What is known:
-
-- Found with a proposed Google grant (BigQuery and Cloud Storage, minted
-  with `gcloud config config-helper --force-auth-refresh`): `bq` and
-  `gcloud storage` worked through the token file, Google's Python clients
-  didn't (`google.auth.default()` raised `DefaultCredentialsError`), and
-  its page had no box to turn the server on. The way around: add the grant
-  again from the Google Cloud preset, then remove the proposed one.
-- The grant builder already reads `present_metadata`, `present_project`
-  and `present_email` from the form's fields, whatever filled them
-  (`server/grants.ex:975`), and a proposal copies the fields of the preset
-  it names (`Proposal.preset_fields/1`). So today a preset of yours that
-  sets them is the only way a proposal carries the server.
-- Two changes would close it: show the box when editing any token grant
-  (or any whose hosts are under `googleapis.com`), not only when adding
-  from the Google preset; and let `mwt propose token` ask for it
-  (`--metadata-project PROJECT`, `--metadata-account EMAIL`), shown on the
-  proposal's page with the rest for you to accept. It serves only
-  placeholders ("no trust decision", Presentations in
-  `docs/agent_sandbox.md`), so proposing it needs no new rule.
-
-## Tools that mint Google credentials themselves
-
-Set aside on 2026-11-19. Some tools don't take a token: they make their own
-from a Google login, in process, and those steps can't run in the VM. Two
-seen:
-
-- **A self-signed service-account JWT.** A client of a service behind IAP
-  loads default credentials, then calls IAM Credentials `signJwt` as a
-  service account, with claims it builds (`iss` = `sub` = the account,
-  `aud` = the service's URL with `/*`, one hour), and sends the JWT as
-  its bearer.
-- **The user's ID token beside it.** A CLI sends, on every request, that
-  JWT and the user's Google ID token in a header of its own. It takes the
-  ID token from `credentials.refresh()` of an `authorized_user` login
-  (`credentials.id_token`; a metadata server's credentials have none),
-  reads its claims locally without verifying them (`hd`, `email`), and the
-  service rejects one issued more than 5 minutes before.
-
-In the VM both fail where they start: the refresh
-(`oauth2.googleapis.com/token`) and `signJwt`
-(`iamcredentials.googleapis.com`) are on the firewall's credential endpoints
-(`@mints` in `firewall.ex:188`), and their answers are credentials the VM
-would hold. Nothing in MWT can stand in for them today,
-so such a tool runs only through Ask to run commands, or after a change to
-the tool itself (take the values from variables, and mint them with
-grants).
-
-What MWT would need, so that they run as they are and no real value enters
-the VM:
-
-1. **A Google login file as a presentation**, beside the metadata server
-   (Presentations in `docs/agent_sandbox.md`): under `mwt exec`,
-   `GOOGLE_APPLICATION_CREDENTIALS` names an `authorized_user` file holding
-   the client id and placeholders for its secret and refresh token.
-2. **MWT answering the token endpoint itself** for that refresh token: never
-   forwarded, it mints on this machine
-   (`gcloud config config-helper --force-auth-refresh`) and answers with a
-   placeholder access token and a placeholder ID token. Nothing real goes
-   to a credential endpoint, so `:credential_mint` has nothing to stop; its
-   own answer must not count as `:credential_inbound`.
-3. **Placeholders shaped like a JWT**: the real token's harmless claims
-   (`email`, `hd`, `aud`, `iat`, `exp`) under a header, with a signature
-   that is a placeholder, so a tool reading them locally works. The real
-   ID token goes only in the grant's carrier header, to its hosts. With a
-   5-minute limit on the service's side, it is minted again within that:
-   `expires_in` from the mint (`Values.minted/1`), not the 10-minute
-   default.
-4. **MWT answering `signJwt` itself**: the account must be one the grant
-   names, and `aud` one of its hosts; the answer is a placeholder JWT with
-   the claims the VM sent. On the way out to that host, it becomes a JWT
-   signed on this machine for the same claims
-   (`gcloud iam service-accounts sign-jwt`). The VM chooses the claims, but
-   the signed JWT goes only to the host its `aud` names, which the grant
-   lists.
-
-Item 4 alone, with the metadata server MWT has, is enough for the first
-kind (a client that takes default credentials and calls `signJwt`); the
-second needs all four.
 
 ## Mints that take another grant's value
 

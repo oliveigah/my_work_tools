@@ -1,0 +1,22 @@
+{
+  "id": "google-login",
+  "kind": "token",
+  "name": "Google login, with ID token",
+  "icon": "hero-identification",
+  "blurb": "Your Google login, for tools that refresh it themselves and send your ID token.",
+  "guide": [
+    "Log in on this machine as you normally do: gcloud auth login.",
+    "For tools that refresh a Google login themselves rather than take a token, such as a CLI that sends your ID token beside a token. Within mwt exec GRANT_ID -- COMMAND, GOOGLE_APPLICATION_CREDENTIALS names a login file of placeholders; its refresh never leaves MWT, which answers it from the command below.",
+    "The command prints your access token and your ID token. The ID token's placeholder shows only its issuer, audience, times, email and domain. Add the host of the service the tool calls, and the header it sends the ID token in when it isn't Authorization.",
+    "If the service takes an ID token only while it is young, keep each value at most a few minutes: 4 for one that refuses tokens issued more than 5 minutes before. To sign JWTs as a service account, as a client of a service behind Identity-Aware Proxy does, name it under May sign as."
+  ],
+  "grant": {
+    "purpose": "Google: tools that refresh my login themselves, with my ID token.",
+    "hosts": "*.googleapis.com",
+    "prefix": "ya29.mwt",
+    "source": "minted",
+    "mint": "gcloud config config-helper --force-auth-refresh --format=json",
+    "present_login": "true"
+  },
+  "tools": ["gcloud"]
+}

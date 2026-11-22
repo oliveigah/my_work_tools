@@ -8,9 +8,13 @@ defmodule MWTClient.Sandbox.Proposal do
 
     * a **token grant** (`mwt propose token`): its hosts, the variables and
       headers its placeholder travels in, git, a command that mints a
-      short-lived value, or only for its subgrants; starting from one of
-      the presets, when it names one. Never the value: you paste it as you
-      review it;
+      short-lived value and how long one is kept at most, a cloud
+      metadata server for Google's client libraries (its project and
+      account), a Google login file and the header its ID token travels
+      in, the service accounts MWT signs JWTs as for it, or only for its
+      subgrants;
+      starting from one of the presets, when it names one. Never the value:
+      you paste it as you review it;
     * a **network grant** (`mwt propose network`): its destinations, the
       DNS server for their names and the interface they are reached
       through;
@@ -63,6 +67,11 @@ defmodule MWTClient.Sandbox.Proposal do
   @spec attrs({:new, :token | :network} | {:under, Grant.t()}, map(), map() | nil) :: map()
   def attrs({:new, :token}, ask, preset) do
     minted? = text(ask[:mint]) != ""
+    # Naming either is asking for the server: one with no project is then
+    # refused for it, rather than dropped.
+    metadata? = text(ask[:metadata_project]) != "" or text(ask[:metadata_account]) != ""
+    # A header for the ID token is asking for the login it comes from.
+    login? = ask[:login_file] == true or text(ask[:id_token_header]) != ""
 
     preset_fields(preset)
     |> Map.merge(%{"kind" => "token", "preset" => preset && to_string(preset.id)})
@@ -77,6 +86,13 @@ defmodule MWTClient.Sandbox.Proposal do
         "git" => if(ask[:git] == true, do: "true", else: ""),
         "source" => if(minted?, do: "minted", else: ""),
         "mint" => text(ask[:mint]),
+        "keep_minutes" => text(ask[:keep_minutes]),
+        "signs_as" => joined(ask[:signs_as]),
+        "present_metadata" => if(metadata?, do: "true", else: ""),
+        "present_project" => text(ask[:metadata_project]),
+        "present_email" => text(ask[:metadata_account]),
+        "present_login" => if(login?, do: "true", else: ""),
+        "present_id_header" => text(ask[:id_token_header]),
         "reach" => if(ask[:subgrants_only] == true, do: "subgrants", else: "")
       })
     )
@@ -160,6 +176,12 @@ defmodule MWTClient.Sandbox.Proposal do
     :env,
     :carriers,
     :mint,
+    :keep_minutes,
+    :signs_as,
+    :present_project,
+    :present_email,
+    :present_login,
+    :present_id_header,
     :destinations,
     :resolver,
     :anchor,
@@ -190,6 +212,12 @@ defmodule MWTClient.Sandbox.Proposal do
   defp option(:env), do: "--env: "
   defp option(:carriers), do: "--carrier: "
   defp option(:mint), do: "--mint: "
+  defp option(:keep_minutes), do: "--keep-minutes: "
+  defp option(:signs_as), do: "--sign-as: "
+  defp option(:present_project), do: "--metadata-project: "
+  defp option(:present_email), do: "--metadata-account: "
+  defp option(:present_login), do: "--login-file: "
+  defp option(:present_id_header), do: "--id-token-header: "
   defp option(:destinations), do: "--destination: "
   defp option(:resolver), do: "--resolver: "
   defp option(:anchor), do: "--via: "
@@ -213,5 +241,6 @@ defmodule MWTClient.Sandbox.Proposal do
   defp lines(values), do: values |> Enum.map(&text/1) |> Enum.join("\n")
 
   defp text(value) when is_binary(value), do: String.trim(value)
+  defp text(value) when is_integer(value), do: Integer.to_string(value)
   defp text(_other), do: ""
 end

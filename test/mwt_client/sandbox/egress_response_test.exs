@@ -16,7 +16,7 @@ defmodule MWTClient.Sandbox.EgressResponseTest do
 
   defp response(method \\ "GET") do
     echo = Secrets.new([{{:value, "GitHub"}, Secrets.forms(@value) ++ [@basic]}], 8)
-    Response.new(method, echo, @placeholder)
+    Response.new(method, echo, %{{:value, "GitHub"} => @placeholder})
   end
 
   # Feeds `chunks` in turn: everything that would reach the VM, and how it

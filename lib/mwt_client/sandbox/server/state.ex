@@ -461,7 +461,13 @@ defmodule MWTClient.Sandbox.Server.State do
       notified_handoffs: %{},
       waiters: %{},
       minted: %{},
+      # The ID tokens mints printed beside their values, by the same key,
+      # kept as long (`MWTClient.Sandbox.Server.Values.minted/2`).
+      id_tokens: %{},
       minting: %{},
+      # Values made from the grants' (`MWTClient.Sandbox.Made`), by
+      # placeholder: in memory only, as minted values are.
+      made: %{},
       tasks: %{},
       running: %{},
       # What agents in the VM added with MWT's tools in the last hour, as
@@ -594,8 +600,10 @@ defmodule MWTClient.Sandbox.Server.State do
   What `MWTClient.Sandbox.Policy` decides from, as the state is now: the
   grants, and the grants a gating check holds off.
   """
-  def policy(state),
-    do: MWTClient.Sandbox.Policy.snapshot(state.grants, held(state))
+  def policy(state) do
+    made = state |> Map.get(:made, %{}) |> Map.values()
+    MWTClient.Sandbox.Policy.snapshot(state.grants, held(state), made)
+  end
 
   @doc """
   The grants as the VM should see them: each as its own switch says,

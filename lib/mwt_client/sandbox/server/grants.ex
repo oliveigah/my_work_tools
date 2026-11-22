@@ -10,11 +10,13 @@ defmodule MWTClient.Sandbox.Server.Grants do
   alias MWTClient.Sandbox.{
     Allowance,
     Approval,
+    CredentialEndpoint,
     Destinations,
     Dns,
     Grant,
     HostCommand,
     Param,
+    Policy,
     Presets,
     SavedRequest,
     Shown
@@ -152,6 +154,10 @@ defmodule MWTClient.Sandbox.Server.Grants do
       |> Map.update!(:minted, fn minted ->
         Map.reject(minted, fn {key, _} -> key == id or match?({^id, _host}, key) end)
       end)
+      |> Map.update(:id_tokens, %{}, fn id_tokens ->
+        Map.reject(id_tokens, fn {key, _} -> key == id or match?({^id, _host}, key) end)
+      end)
+      |> Map.update(:made, %{}, &MWTClient.Sandbox.Made.drop_grant(&1, id))
     end)
     |> State.change(:grants, &Enum.reject(&1.grants, fn g -> g.id in gone end))
     |> State.log(%{outcome: :grant, summary: summary})
@@ -636,7 +642,13 @@ defmodule MWTClient.Sandbox.Server.Grants do
         state: :off,
         source: if(minted?, do: {:minted, String.trim(attrs["mint"] || "")}, else: :stored),
         mint_per:
-          if(minted? and attrs["mint_per"] in ["host", "true", "on"], do: :host, else: :grant)
+          if(minted? and attrs["mint_per"] in ["host", "true", "on"], do: :host, else: :grant),
+        keep_minutes: if(minted?, do: keep_minutes(attrs["keep_minutes"])),
+        signs_as:
+          if(kind == :token and not only_subgrants?,
+            do: attrs["signs_as"] |> list() |> Enum.map(&String.downcase/1) |> Enum.uniq(),
+            else: []
+          )
       }
 
       errors = grant_errors(grant, attrs, destination_error, saved?, existing, valueless?)
@@ -690,6 +702,13 @@ defmodule MWTClient.Sandbox.Server.Grants do
       end
     end
   end
+
+  # A login file's refresh placeholder never changes while the file stays:
+  # a tool that read it keeps working.
+  defp kept_login(%{login: login} = presents, %{login: %{refresh: refresh}}),
+    do: %{presents | login: %{login | refresh: refresh}}
+
+  defp kept_login(presents, _before), do: presents
 
   # A parameter named like a variable a grant it runs with sets.
   defp with_clash(%Grant{with: []}, _existing), do: nil
@@ -816,6 +835,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
              | id: grant.id,
                preset: grant.preset,
                placeholder: grant.placeholder,
+               presents: kept_login(built.presents, grant.presents),
                parent: grant.parent,
                start: grant.start,
                ceiling: grant.ceiling,
@@ -864,6 +884,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
   @host ~r/^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
   @prefix ~r/^[A-Za-z0-9_.\-]{0,24}$/
   @header ~r/^[a-z0-9][a-z0-9-]*$/
+  @account ~r/\A[^\s@\/]+@[^\s@\/]+\.[^\s@\/]+\z/
   # A network interface's name: at most 15 bytes, as Linux keeps it.
   @interface ~r/\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}\z/
   # Headers that say how a request is framed or routed, never a credential.
@@ -897,11 +918,33 @@ defmodule MWTClient.Sandbox.Server.Grants do
        "Variable names are letters, digits and underscores, not starting with a digit."},
       {:prefix, token? and not Regex.match?(@prefix, String.trim(attrs["prefix"] || "")),
        "Up to 24 letters, digits, dots, dashes or underscores."},
-      {:presents,
+      {:keep_minutes,
+       match?({:minted, _}, grant.source) and is_nil(grant.keep_minutes) and
+         String.trim(State.to_text(attrs["keep_minutes"])) != "",
+       "A whole number of minutes, from 1 to 1440, or empty to keep it as the mint says."},
+      {:signs_as, not Enum.all?(grant.signs_as, &Regex.match?(@account, &1)),
+       "Name each service account by its email: name@project.iam.gserviceaccount.com."},
+      # MWT sends the grant's value there itself to sign, and a value goes
+      # only where its grant lists.
+      {:signs_as,
+       grant.signs_as != [] and
+         not Policy.host_listed?(CredentialEndpoint.sign_host(), grant.hosts),
+       "Signing sends the grant's value to #{CredentialEndpoint.sign_host()}: list it among the hosts, or *.googleapis.com."},
+      {:present_id_header,
+       Map.has_key?(grant.presents, :login) and grant.presents.login.header != "" and
+         (not Regex.match?(@header, grant.presents.login.header) or
+            grant.presents.login.header in @framing),
+       "A header's name: letters, digits and dashes, like X-Id-Token. Empty sends it as the grant's own value goes."},
+      # MWT answers the refresh there, and the VM's request goes there.
+      {:present_login,
+       Map.has_key?(grant.presents, :login) and
+         not Policy.host_listed?(CredentialEndpoint.token_host(), grant.hosts),
+       "The login file is refreshed at #{CredentialEndpoint.token_host()}: list it among the hosts, or *.googleapis.com."},
+      {:present_project,
        Map.has_key?(grant.presents, :metadata) and
          not Regex.match?(~r/\A[a-z][a-z0-9-]{4,62}\z/, grant.presents.metadata.project),
        "Name the project as the cloud does: lowercase letters, digits and dashes."},
-      {:presents,
+      {:present_email,
        Map.has_key?(grant.presents, :metadata) and
          not Regex.match?(~r/\A([^\s@]+@[^\s@]+)?\z/, grant.presents.metadata.email),
        "The account is an email, or empty for the default one."},
@@ -970,16 +1013,46 @@ defmodule MWTClient.Sandbox.Server.Grants do
     end
   end
 
-  # The presentations a token grant asks for, from its form.
+  # How long a minted value is kept at most, in minutes: nil when the field
+  # is empty or isn't a number from 1 to 1440 (a day), which the form then
+  # says.
+  defp keep_minutes(text) do
+    case Integer.parse(String.trim(State.to_text(text))) do
+      {minutes, ""} when minutes in 1..1440 -> minutes
+      _none -> nil
+    end
+  end
+
+  # The presentations a token grant asks for, from its form. A login file's
+  # refresh token is a placeholder made here, once: editing keeps it
+  # (`edit_grant/3`).
   defp presents(attrs) do
-    if attrs["present_metadata"] in ["true", "on"],
-      do: %{
-        metadata: %{
-          project: attrs |> Map.get("present_project") |> State.to_text() |> String.trim(),
-          email: attrs |> Map.get("present_email") |> State.to_text() |> String.trim()
-        }
-      },
-      else: %{}
+    metadata =
+      if attrs["present_metadata"] in ["true", "on"],
+        do: %{
+          metadata: %{
+            project: attrs |> Map.get("present_project") |> State.to_text() |> String.trim(),
+            email: attrs |> Map.get("present_email") |> State.to_text() |> String.trim()
+          }
+        },
+        else: %{}
+
+    login =
+      if attrs["present_login"] in ["true", "on"],
+        do: %{
+          login: %{
+            refresh: Grant.new_login_placeholder(),
+            header:
+              attrs
+              |> Map.get("present_id_header")
+              |> State.to_text()
+              |> String.trim()
+              |> String.downcase()
+          }
+        },
+        else: %{}
+
+    Map.merge(metadata, login)
   end
 
   # Placeholders look like the real thing where a client checks the format

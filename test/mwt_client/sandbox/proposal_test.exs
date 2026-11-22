@@ -57,6 +57,68 @@ defmodule MWTClient.Sandbox.ProposalTest do
     assert attrs["prefix"] == "mwt_"
   end
 
+  test "a metadata project or account asks for the metadata server; neither leaves the preset's" do
+    asked =
+      Proposal.attrs(
+        {:new, :token},
+        %{name: "G", purpose: "p", metadata_project: " my-project ", metadata_account: ""},
+        nil
+      )
+
+    assert %{"present_metadata" => "true", "present_project" => "my-project"} = asked
+    refute Map.has_key?(asked, "present_email")
+
+    # An account alone still asks, so the missing project is refused, not
+    # dropped.
+    account_only =
+      Proposal.attrs({:new, :token}, %{name: "G", purpose: "p", metadata_account: "a@b.c"}, nil)
+
+    assert %{"present_metadata" => "true", "present_email" => "a@b.c"} = account_only
+
+    preset = %{
+      id: "mine",
+      kind: :token,
+      fields: %{"present_metadata" => "true", "present_project" => "theirs"}
+    }
+
+    kept = Proposal.attrs({:new, :token}, %{name: "G", purpose: "p"}, preset)
+    assert %{"present_metadata" => "true", "present_project" => "theirs"} = kept
+  end
+
+  test "the accounts it signs as, and how long a minted value is kept, come as the form takes them" do
+    attrs =
+      Proposal.attrs(
+        {:new, :token},
+        %{
+          name: "IAP",
+          purpose: "p",
+          mint: "gcloud auth print-access-token",
+          keep_minutes: 4,
+          signs_as: ["a@p.iam.gserviceaccount.com", "b@p.iam.gserviceaccount.com"]
+        },
+        nil
+      )
+
+    assert attrs["keep_minutes"] == "4"
+    assert attrs["signs_as"] == "a@p.iam.gserviceaccount.com, b@p.iam.gserviceaccount.com"
+    assert Proposal.refusal(%{signs_as: "An email."}) == "--sign-as: An email."
+  end
+
+  test "a login file is asked for by name, or by the header its ID token travels in" do
+    asked = Proposal.attrs({:new, :token}, %{name: "G", purpose: "p", login_file: true}, nil)
+    assert asked["present_login"] == "true"
+
+    header =
+      Proposal.attrs({:new, :token}, %{name: "G", purpose: "p", id_token_header: "X-Id"}, nil)
+
+    assert %{"present_login" => "true", "present_id_header" => "X-Id"} = header
+
+    refute Map.has_key?(
+             Proposal.attrs({:new, :token}, %{name: "G", purpose: "p"}, nil),
+             "present_login"
+           )
+  end
+
   test "a network grant lists one destination a line, with its DNS server and way out" do
     attrs =
       Proposal.attrs(
@@ -97,5 +159,8 @@ defmodule MWTClient.Sandbox.ProposalTest do
   test "a refusal names the option each message comes from, in the order the help gives them" do
     assert Proposal.refusal(%{hosts: "List a host.", name: "Name it."}) ==
              "--name: Name it. --host: List a host."
+
+    assert Proposal.refusal(%{present_email: "An email.", present_project: "A project."}) ==
+             "--metadata-project: A project. --metadata-account: An email."
   end
 end

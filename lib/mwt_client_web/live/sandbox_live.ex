@@ -2750,9 +2750,14 @@ defmodule MWTClientWeb.SandboxLive do
       "git" => to_string(grant.git),
       "reach" => Atom.to_string(grant.reach),
       "mint_per" => Atom.to_string(grant.mint_per),
+      "keep_minutes" =>
+        if(grant.keep_minutes, do: Integer.to_string(grant.keep_minutes), else: ""),
+      "signs_as" => Enum.join(grant.signs_as, ", "),
       "present_metadata" => to_string(Map.has_key?(grant.presents, :metadata)),
       "present_project" => get_in(grant.presents, [:metadata, :project]) || "",
       "present_email" => get_in(grant.presents, [:metadata, :email]) || "",
+      "present_login" => to_string(Map.has_key?(grant.presents, :login)),
+      "present_id_header" => get_in(grant.presents, [:login, :header]) || "",
       "source" => if(match?({:minted, _}, grant.source), do: "minted", else: "stored"),
       "mint" =>
         case grant.source do

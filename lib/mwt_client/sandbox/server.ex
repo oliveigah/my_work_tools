@@ -74,6 +74,7 @@ defmodule MWTClient.Sandbox.Server do
     Approval,
     Bubble,
     CertificateAuthority,
+    CredentialEndpoint,
     Disks,
     Event,
     Exchange,
@@ -1367,11 +1368,38 @@ defmodule MWTClient.Sandbox.Server do
         State.now()
       )
 
-    case minting(state, decision, request) do
-      {:pass, state} -> decided(decision, request, from, state)
-      {refused, state} -> {:reply, refused, state}
+    case endpoint(decision, request) do
+      {:ok, ask} ->
+        decided(decision, Map.put(request, :endpoint, ask), from, state)
+
+      {:error, code, message} ->
+        grant = elem(decision, 1)
+        state = State.log(state, Values.request_event(request, grant, :refused, message))
+        {:reply, Values.deny(403, code, message, grant), state}
+
+      nil ->
+        case minting(state, decision, request) do
+          {:pass, state} -> decided(decision, request, from, state)
+          {refused, state} -> {:reply, refused, state}
+        end
     end
   end
+
+  # A credential endpoint the grant takes is answered by MWT
+  # (`MWTClient.Sandbox.CredentialEndpoint`), so the firewall's rule for
+  # credential endpoints has nothing to stop: no value goes there from the
+  # VM, and nothing real comes back to it. Checked before anyone is asked,
+  # so a card never shows a request that can't be answered.
+  defp endpoint(decision, request) when elem(decision, 0) in [:allow, :ask] do
+    grant = elem(decision, 1)
+
+    case CredentialEndpoint.recognize(grant, request) do
+      nil -> nil
+      found -> CredentialEndpoint.check(grant, request, found)
+    end
+  end
+
+  defp endpoint(_decision, _request), do: nil
 
   # A request that would carry a grant's value to a credential endpoint
   # (`MWTClient.Sandbox.Firewall.minting/3`) is refused before its value is
@@ -1444,7 +1472,7 @@ defmodule MWTClient.Sandbox.Server do
             Values.request_event(request, grant, :swapped, "#{about.title} · #{why}")
           )
 
-        {:noreply, Values.forward(state, grant, request, from)}
+        {:noreply, Values.let_through(state, grant, request, from)}
 
       {:ask, grant, about} ->
         approval = %Approval{

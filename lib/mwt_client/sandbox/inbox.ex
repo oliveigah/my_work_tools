@@ -19,6 +19,8 @@ defmodule MWTClient.Sandbox.Inbox do
     * `bin/git-credential`, `git/<id>` - the hosts a selected token grant
       answers git for; ordinary git commands get no MWT credential;
     * `tokens/<grant>` - each token grant's placeholder, as a file;
+    * `logins/<grant>.json` - a Google login file, for a token grant that
+      presents one (`login_file/1`): placeholders only;
     * `AGENTS.md`, `grants.md` - what agents are told, and the grants as they
       are now;
     * `bin/mwt-boot`, `agents-block.md`, `handoff-command.md`, `bin/memo` -
@@ -44,6 +46,8 @@ defmodule MWTClient.Sandbox.Inbox do
   alias MWTClient.Sandbox.{FolderSync, Grant, Guest, Instructions, Memory, Msb}
 
   @vm "/mnt/mwt"
+  # gcloud's OAuth client, public in its source: what a login it made names.
+  @gcloud_client_id "32555940559.apps.googleusercontent.com"
 
   # Run in the VM, as root: makes the folder one in the VM's memory, unless
   # it is already. Over a folder mounted there by a VM made before
@@ -174,6 +178,14 @@ defmodule MWTClient.Sandbox.Inbox do
 
     hold(dir, "tokens", Map.new(tokens, &{&1.id, {&1.placeholder, 0o644}}))
 
+    hold(
+      dir,
+      "logins",
+      for grant <- tokens, Grant.login_placeholder(grant), into: %{} do
+        {grant.id <> ".json", {login_file(grant), 0o644}}
+      end
+    )
+
     # Where file grants, gone since 2026-11-18, put their real values.
     File.rm_rf!(Path.join(dir, "files"))
 
@@ -236,16 +248,47 @@ defmodule MWTClient.Sandbox.Inbox do
   # What `mwt exec` needs to run a grant's presentation (`mwt-present`),
   # which it then runs with the command: placeholders only.
   defp present_script(%Grant{} = grant) do
-    case grant.presents do
-      %{metadata: %{project: project, email: email}} ->
-        "export MWT_PRESENT=metadata\n" <>
-          "export MWT_PRESENT_TOKEN=#{shell_word(grant.placeholder)}\n" <>
-          "export MWT_PRESENT_PROJECT=#{shell_word(project)}\n" <>
-          "export MWT_PRESENT_EMAIL=#{shell_word(email)}\n"
+    metadata =
+      case grant.presents do
+        %{metadata: %{project: project, email: email}} ->
+          "export MWT_PRESENT=metadata\n" <>
+            "export MWT_PRESENT_TOKEN=#{shell_word(grant.placeholder)}\n" <>
+            "export MWT_PRESENT_PROJECT=#{shell_word(project)}\n" <>
+            "export MWT_PRESENT_EMAIL=#{shell_word(email)}\n"
 
-      _none ->
-        ""
-    end
+        _none ->
+          ""
+      end
+
+    # Google's client libraries take a login file before a metadata
+    # server: with both, the file is what they use.
+    login =
+      if Grant.login_placeholder(grant),
+        do: "export GOOGLE_APPLICATION_CREDENTIALS=#{shell_word(Grant.login_file(grant))}\n",
+        else: ""
+
+    metadata <> login
+  end
+
+  @doc """
+  A grant's Google login file (`Grant.login_file/1`): an `authorized_user`
+  login whose refresh token is the grant's login placeholder, which MWT
+  answers for at Google's token endpoint
+  (`MWTClient.Sandbox.CredentialEndpoint`). The client id is gcloud's own,
+  which is public; the secret is no secret, since nothing it signs leaves
+  MWT.
+  """
+  @spec login_file(Grant.t()) :: String.t()
+  def login_file(%Grant{} = grant) do
+    Jason.encode!(
+      %{
+        type: "authorized_user",
+        client_id: @gcloud_client_id,
+        client_secret: "mwt-not-a-secret",
+        refresh_token: Grant.login_placeholder(grant)
+      },
+      pretty: true
+    ) <> "\n"
   end
 
   defp shell_word(text), do: "'" <> String.replace(text, "'", ~S('\'')) <> "'"

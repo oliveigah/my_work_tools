@@ -657,7 +657,9 @@ defmodule MWTClient.Sandbox.Server.Machine do
     do: MWTClient.Sandbox.Server.Checks.finished(state, {grant_id, check_id}, result)
 
   # `key` is the grant's id, or `{id, host}` for one minted per host
-  # (`Values.mint_key/2`). A value is kept until it stops being fresh.
+  # (`Values.mint_key/2`). A value is kept until it stops being fresh, and
+  # the ID token the mint printed beside it, if any, as long: one never
+  # outlives the other.
   def finished(state, {:mint, key}, result) do
     {continuations, minting} = Map.pop(state.minting, key, [])
 
@@ -665,9 +667,22 @@ defmodule MWTClient.Sandbox.Server.Machine do
 
     {state, result} =
       case result do
-        {:ok, value, fresh_ms} ->
+        {:ok, %{value: value, id_token: id_token}, fresh_ms} ->
           until = System.monotonic_time(:millisecond) + fresh_ms
-          {%{state | minted: Map.put(state.minted, key, {value, until})}, {:ok, value}}
+
+          id_tokens = Map.get(state, :id_tokens, %{})
+
+          id_tokens =
+            if id_token,
+              do: Map.put(id_tokens, key, {id_token, until}),
+              else: Map.delete(id_tokens, key)
+
+          state =
+            state
+            |> Map.put(:minted, Map.put(state.minted, key, {value, until}))
+            |> Map.put(:id_tokens, id_tokens)
+
+          {state, {:ok, value}}
 
         other ->
           {state, other}
@@ -675,6 +690,9 @@ defmodule MWTClient.Sandbox.Server.Machine do
 
     Enum.reduce(continuations, state, fn k, acc -> k.(acc, result) end)
   end
+
+  def finished(state, {:endpoint, _from, _grant_id, _request} = purpose, result),
+    do: MWTClient.Sandbox.Server.Values.answered(state, purpose, result)
 
   def finished(state, {:command, approval_id}, %{} = result),
     do: HostRuns.finished_command(state, approval_id, result)

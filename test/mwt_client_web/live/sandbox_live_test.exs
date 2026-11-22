@@ -1043,6 +1043,137 @@ defmodule MWTClientWeb.SandboxLiveTest do
     refute has_element?(view, "#edit-grant")
   end
 
+  test "the metadata server is offered on a grant whose hosts are Google's APIs, however it was made",
+       %{conn: conn, username: username} do
+    github(username)
+
+    # Made without the Google Cloud preset, as a proposed grant is.
+    {:ok, _grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "BigQuery",
+        "purpose" => "Queries from Python",
+        "hosts" => "bigquery.googleapis.com",
+        "source" => "minted",
+        "mint" => "gcloud auth print-access-token",
+        "prefix" => "ya29.mwt"
+      })
+
+    # Not on GitHub's, until its hosts are Google's.
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/github")
+    view |> element("#edit-grant") |> render_click()
+    refute has_element?(view, "#grant-present-metadata-box")
+    view |> form("#add-grant-form", grant: %{hosts: "*.googleapis.com"}) |> render_change()
+    assert has_element?(view, "#grant-present-metadata-box")
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/bigquery")
+    view |> element("#edit-grant") |> render_click()
+    view |> form("#add-grant-form", grant: %{present_metadata: "true"}) |> render_change()
+    # A change keeps it minted, its command still there to edit.
+    assert has_element?(view, "#add-grant-form input[name='grant[mint]']")
+
+    # It needs a project, said under its own field.
+    view |> form("#add-grant-form", grant: %{present_project: ""}) |> render_submit()
+    assert has_element?(view, "#grant-error-present_project")
+
+    view |> form("#add-grant-form", grant: %{present_project: "my-project"}) |> render_submit()
+
+    assert %{
+             presents: %{metadata: %{project: "my-project", email: ""}},
+             source: {:minted, "gcloud auth print-access-token"}
+           } = Enum.find(added(username), &(&1.id == "bigquery"))
+
+    assert has_element?(view, "#grant-present-bigquery", "my-project")
+
+    # Kept on, it is offered again, whatever the hosts say.
+    view |> element("#edit-grant") |> render_click()
+    view |> form("#add-grant-form", grant: %{hosts: "example.com"}) |> render_change()
+    assert has_element?(view, "#grant-present-metadata[checked]")
+  end
+
+  test "a Google grant may sign JWTs as service accounts, and keep minted values a few minutes",
+       %{conn: conn, username: username} do
+    {:ok, _grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "Internal",
+        "purpose" => "The internal service behind IAP",
+        "hosts" => "svc.example.com",
+        "source" => "minted",
+        "mint" => "gcloud auth print-access-token",
+        "prefix" => "ya29.mwt"
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/internal")
+    view |> element("#edit-grant") |> render_click()
+
+    # Offered once its hosts are Google's.
+    refute has_element?(view, "#grant-signs-as-box")
+
+    view
+    |> form("#add-grant-form", grant: %{hosts: "svc.example.com, bigquery.googleapis.com"})
+    |> render_change()
+
+    assert has_element?(view, "#grant-signs-as-box")
+
+    # Signing sends the value to IAM Credentials, which it must list.
+    view
+    |> form("#add-grant-form",
+      grant: %{signs_as: "svc@p.iam.gserviceaccount.com", keep_minutes: "4"}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#grant-error-signs_as", "iamcredentials.googleapis.com")
+
+    view
+    |> form("#add-grant-form", grant: %{hosts: "svc.example.com, *.googleapis.com"})
+    |> render_submit()
+
+    assert %{signs_as: ["svc@p.iam.gserviceaccount.com"], keep_minutes: 4} =
+             Enum.find(added(username), &(&1.id == "internal"))
+
+    assert has_element?(view, "#grant-signs-as-internal", "svc@p.iam.gserviceaccount.com")
+    assert has_element?(view, "#grant-keep-internal", "4 min")
+  end
+
+  test "a Google grant may give a login file, whose placeholder an edit keeps",
+       %{conn: conn, username: username} do
+    {:ok, _grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "CLI",
+        "purpose" => "The internal CLI",
+        "hosts" => "svc.example.com, bigquery.googleapis.com",
+        "source" => "minted",
+        "mint" => "gcloud config config-helper --force-auth-refresh --format=json"
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/cli")
+    view |> element("#edit-grant") |> render_click()
+    assert has_element?(view, "#grant-present-login-box")
+    view |> form("#add-grant-form", grant: %{present_login: "true"}) |> render_change()
+
+    # Refreshed at Google's token endpoint, which it must list.
+    view |> form("#add-grant-form", grant: %{present_id_header: "X-Id-Token"}) |> render_submit()
+    assert has_element?(view, "#grant-error-present_login", "oauth2.googleapis.com")
+
+    view
+    |> form("#add-grant-form", grant: %{hosts: "svc.example.com, *.googleapis.com"})
+    |> render_submit()
+
+    assert %Grant{presents: %{login: %{refresh: "1//mwt" <> _ = refresh, header: "x-id-token"}}} =
+             Enum.find(added(username), &(&1.id == "cli"))
+
+    assert has_element?(view, "#grant-login-cli", "x-id-token")
+
+    # An edit keeps the placeholder a tool read from the file.
+    view |> element("#edit-grant") |> render_click()
+    view |> form("#add-grant-form", grant: %{name: "CLI (work)"}) |> render_submit()
+
+    assert %Grant{presents: %{login: %{refresh: ^refresh}}} =
+             Enum.find(added(username), &(&1.id == "cli"))
+  end
+
   test "Ask to run commands, the escape hatch, is built in, off, and says it only lets agents ask",
        %{conn: conn, username: username} do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")

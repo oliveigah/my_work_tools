@@ -447,10 +447,10 @@ defmodule MWTClient.Sandbox.ServerTest do
     assert approval.request.headers == request(grant).headers
     :ok = Sandbox.decide(username, approval.id, :allow_once)
 
-    assert {:forward, headers, %{echo: echo, placeholder: placeholder}} = Task.await(read)
+    assert {:forward, headers, %{echo: echo, placeholders: placeholders}} = Task.await(read)
     assert {"authorization", "token ghp_real_value_0123456789"} in headers
     assert {"user-agent", "gh"} in headers
-    assert placeholder == grant.placeholder
+    assert placeholders == %{{:value, "GitHub"} => grant.placeholder}
 
     assert MWTClient.Sandbox.Secrets.find(echo, "seen ghp_real_value_0123456789") ==
              {:value, "GitHub"}
@@ -708,6 +708,49 @@ defmodule MWTClient.Sandbox.ServerTest do
     secrets = MWTClient.Sandbox.Server.Values.secrets(:sys.get_state(server))
     assert MWTClient.Sandbox.Secrets.find(secrets, "x minted-for-per-host-a.example.com-1")
     assert MWTClient.Sandbox.Secrets.find(secrets, "x minted-for-per-host-b.example.com-3")
+  end
+
+  test "a grant that keeps minted values at most N minutes mints again sooner than they expire",
+       %{username: username} do
+    {:ok, grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "Young tokens",
+        "purpose" => "A service that takes a token only while it is young",
+        "hosts" => "svc.example.com",
+        "env" => "TOKEN",
+        "source" => "minted",
+        "keep_minutes" => "4",
+        "mint" => ~s(echo '{"value": "minted-young-value", "expires_in": 3600}')
+      })
+
+    assert grant.keep_minutes == 4
+    {:ok, grant} = Sandbox.turn_on(username, grant.id, 60, :all)
+
+    assert {:forward, [{"authorization", "Bearer minted-young-value"}], _} =
+             authorize(username, %{
+               host: "svc.example.com",
+               method: "GET",
+               path: "/",
+               headers: [{"authorization", "Bearer #{grant.placeholder}"}],
+               body: ""
+             })
+
+    # Kept 4 minutes, not the 59 its expiry allows.
+    server = MWTClient.Vault.Store.whereis(Server, username)
+    {_value, until} = :sys.get_state(server).minted[grant.id]
+    assert (until - System.monotonic_time(:millisecond)) in 230_000..240_000
+
+    # Not a number of minutes: said, not dropped.
+    assert {:error, %{keep_minutes: _}} =
+             Sandbox.update_grant(username, grant.id, %{
+               "name" => grant.name,
+               "purpose" => grant.purpose,
+               "hosts" => "svc.example.com",
+               "env" => "TOKEN",
+               "mint" => "echo x",
+               "keep_minutes" => "soon"
+             })
   end
 
   test "a mint printing JSON with no value fails, with why", %{username: username} do

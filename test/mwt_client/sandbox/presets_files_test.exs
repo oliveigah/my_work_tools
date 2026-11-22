@@ -15,7 +15,7 @@ defmodule MWTClient.Sandbox.PresetsFilesTest do
 
   test "every shipped preset loads and builds a valid grant" do
     assert {presets, []} = Presets.load(Presets.own_dir())
-    assert Enum.map(presets, & &1.id) == ~w(github google hex)
+    assert Enum.map(presets, & &1.id) == ~w(github google-login google hex)
 
     for preset <- presets do
       fill = Map.new(preset.fill, &{&1.name, "x-1"})

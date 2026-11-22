@@ -10,7 +10,9 @@ defmodule MWTClient.Sandbox.Egress.Response do
   whole answer:
 
     * **every head**: `1xx` answers (`103 Early Hints`), the final head, a
-      chunked body's trailers. The value is replaced with the placeholder.
+      chunked body's trailers. Each value is replaced with its own
+      placeholder: a request may carry a grant's value and values made
+      from it (`MWTClient.Sandbox.Made`).
     * **the body**, through its framing (`Content-Length`, chunked, or up to
       the close), with gzip and deflate decoded for the look only. Found,
       the answer is cut there, before any byte of the value goes
@@ -38,7 +40,7 @@ defmodule MWTClient.Sandbox.Egress.Response do
   @derive {Inspect, only: [:phase, :sent?]}
   defstruct [
     :echo,
-    :placeholder,
+    :placeholders,
     :head_only?,
     :scanner,
     :inflate,
@@ -56,12 +58,13 @@ defmodule MWTClient.Sandbox.Egress.Response do
           | {:refuse, String.t()}
 
   @doc """
-  The answer to a `method` request whose value goes by the forms in `echo`,
-  to be replaced in heads by `placeholder`.
+  The answer to a `method` request whose values go by the forms in `echo`,
+  each replaced in heads by the placeholder `placeholders` holds for its
+  label.
   """
   @spec new(String.t(), Secrets.t(), String.t()) :: t()
-  def new(method, echo, placeholder),
-    do: %__MODULE__{echo: echo, placeholder: placeholder, head_only?: method == "HEAD"}
+  def new(method, echo, placeholders) when is_map(placeholders),
+    do: %__MODULE__{echo: echo, placeholders: placeholders, head_only?: method == "HEAD"}
 
   @doc "The next bytes from upstream."
   @spec feed(t(), binary()) :: result()
@@ -160,7 +163,7 @@ defmodule MWTClient.Sandbox.Egress.Response do
   # follows it. A final head whose body MWT couldn't read is refused before
   # it goes.
   defp headed(response, head, status, headers, rest, out) do
-    written = [Secrets.replace(response.echo, head, response.placeholder), "\r\n\r\n"]
+    written = [scrub(response, head), "\r\n\r\n"]
 
     cond do
       status == 101 ->
@@ -242,6 +245,10 @@ defmodule MWTClient.Sandbox.Egress.Response do
   defp encoding(["deflate"]), do: {:ok, :deflate}
   defp encoding(_other), do: :error
 
+  # A head with each value in it replaced by its own placeholder.
+  defp scrub(response, head),
+    do: Secrets.replace_each(response.echo, head, &Map.fetch!(response.placeholders, &1))
+
   defp scanner(echo, nil), do: Scanner.new(echo, hold: true)
   defp scanner(echo, _encoded), do: Scanner.new(echo)
 
@@ -312,7 +319,7 @@ defmodule MWTClient.Sandbox.Egress.Response do
            out,
            held,
            "0\r\n",
-           Secrets.replace(response.echo, trailers, response.placeholder),
+           scrub(response, trailers),
            "\r\n\r\n"
          ]}
 

@@ -9,78 +9,275 @@ defmodule MWTClient.Sandbox.Server.Values do
   in the server's process (`MWTClient.Sandbox.Server.State`).
   """
 
-  alias MWTClient.Sandbox.{Describe, Grant, HostRun, Placeholder, Policy, Secrets}
+  alias MWTClient.Sandbox.{
+    CredentialEndpoint,
+    Describe,
+    Gate,
+    Grant,
+    HostRun,
+    Made,
+    Placeholder,
+    Policy,
+    SavedRequest,
+    Secrets
+  }
+
   alias MWTClient.Sandbox.Server.{Firewall, State}
 
   @mint_fresh_ms 10 * 60_000
   # The shortest value looked for in the answer to the request it went in:
   # that one value only, so a shorter one than anywhere else.
   @echo_shortest 8
+  # How long MWT waits for a credential endpoint it sends a request to for
+  # the VM, in seconds.
+  @endpoint_timeout 30
 
   @doc """
-  Fetches the value, then answers the proxy with the headers carrying it,
-  in the grant's carriers only, and what to look for (`scan/5`).
+  What happens to a request once its grant lets it through: one to a
+  credential endpoint the grant takes is answered by MWT (`answer/4`);
+  any other goes out with the real values in it (`forward/4`).
+  """
+  def let_through(state, grant, %{endpoint: _ask} = request, from),
+    do: answer(state, grant, request, from)
+
+  def let_through(state, grant, request, from), do: forward(state, grant, request, from)
+
+  @doc """
+  Puts the real values in the request's headers, then answers the proxy
+  with them and what to look for (`scan/5`): the grant's own value, fetched
+  (minted when it has to be) when its placeholder is there, in its
+  carriers; each value made from it (`MWTClient.Sandbox.Made`) whose
+  placeholder is there, in that value's carriers. A request carrying only
+  made values doesn't fetch the grant's.
   """
   def forward(state, grant, request, from) do
-    with_value(state, grant, request.host, fn state, result ->
-      case {result, still(state, grant, request)} do
-        {_result, :isolated} ->
-          GenServer.reply(from, isolated())
-          state
+    made = carried_made(state, request)
+    own? = Placeholder.in?(request.headers, grant.placeholder)
+    id_token? = Enum.any?(made, &(&1.source == :id_token))
 
-        {_result, :off} ->
+    if made_stale = Enum.find(made, &(not Made.covered?(&1, state.grants, State.now()))) do
+      {event, _observation, answer} = refusal({:made_stale, made_stale}, request)
+      GenServer.reply(from, answer)
+      State.log(state, event)
+    else
+      # The grant's own value when its placeholder is there, and its ID
+      # token when a placeholder for it is: both from its mint, which runs
+      # at most once for the two.
+      with_value_if(state, grant, request.host, own? or id_token?, fn state, result ->
+        id_token = if id_token?, do: id_token(state, grant, request.host)
+
+        if id_token? and match?({:ok, _}, result) and is_nil(id_token) do
           GenServer.reply(
             from,
             deny(
-              403,
-              "mwt_grant_off",
-              "#{grant.name} turned off while its value was fetched. Ask for it with: " <>
-                "mwt request #{grant.id} --reason \"...\"",
+              503,
+              "mwt_no_value",
+              "#{grant.name}'s mint gave no ID token: it must print one beside its value.",
               grant
             )
           )
 
-          State.log(
-            state,
-            request_event(
-              request,
-              grant,
-              :refused,
-              "#{grant.name} turned off while its value was fetched · not sent"
-            )
-          )
+          State.log(state, request_event(request, grant, :refused, "No ID token minted"))
+        else
+          result = if own?, do: result, else: with_result(result, nil)
+          put_values(state, grant, request, from, result, made, id_token)
+        end
+      end)
+    end
+  end
 
-        {{:ok, value}, {:ok, grant}} ->
-          headers =
-            Placeholder.swap(request.headers, grant.placeholder, value, Grant.carriers(grant))
+  defp with_value_if(state, grant, host, true, k), do: with_value(state, grant, host, k)
+  defp with_value_if(state, _grant, _host, false, k), do: k.(state, {:ok, nil})
 
-          GenServer.reply(
-            from,
-            {:forward, headers, scan(state, request.host, grant, value, headers)}
-          )
+  # A fetch that went well stands for `value`; one that failed stays a
+  # failure, said as it is.
+  defp with_result({:ok, _fetched}, value), do: {:ok, value}
+  defp with_result(failed, _value), do: failed
 
-          State.used(state, grant.id)
+  # The ID token the grant's mint printed with the value at hand, or nil.
+  defp id_token(state, grant, host) do
+    case Map.get(state, :id_tokens, %{})[mint_key(grant, host)] do
+      {id_token, _until} -> id_token
+      nil -> nil
+    end
+  end
 
-        {{:error, :no_value}, _live} ->
-          GenServer.reply(
-            from,
-            deny(503, "mwt_no_value", "#{grant.name} has no value yet.", grant)
-          )
+  defp put_values(state, grant, request, from, result, made, id_token) do
+    with_live(state, grant, request, from, result, fn state, grant, value ->
+      own =
+        if value, do: [{grant.name, grant.placeholder, value, Grant.carriers(grant)}], else: []
 
-          State.log(
-            state,
-            request_event(request, grant, :refused, "#{grant.name} has no value set")
-          )
+      made_values =
+        for m <- made do
+          real = if m.source == :id_token, do: id_token, else: m.value
+          {m.name, m.placeholder, real, m.carriers}
+        end
 
-        {{:error, message}, _live} ->
-          GenServer.reply(
-            from,
-            deny(502, "mwt_mint_failed", "Could not mint a token for #{grant.name}.", grant)
-          )
+      values = own ++ made_values
 
-          State.log(state, request_event(request, grant, :refused, "Minting failed: #{message}"))
-      end
+      headers =
+        Enum.reduce(values, request.headers, fn {_name, placeholder, value, carriers}, headers ->
+          Placeholder.swap(headers, placeholder, value, carriers)
+        end)
+
+      GenServer.reply(
+        from,
+        {:forward, headers, scan(state, request.host, grant, values, headers)}
+      )
+
+      State.used(state, grant.id)
     end)
+  end
+
+  # The values made from a grant that the request's headers carry, as MWT
+  # holds them: with their real values.
+  defp carried_made(state, request) do
+    for {placeholder, made} <- Map.get(state, :made, %{}),
+        Placeholder.in?(request.headers, placeholder),
+        do: made
+  end
+
+  @doc """
+  Answers a request to a credential endpoint for its grant
+  (`MWTClient.Sandbox.CredentialEndpoint`): the grant's value fetched, MWT
+  sends the request itself, in a task, and `answered/3` answers the proxy
+  once it is back.
+  """
+  def answer(state, grant, %{endpoint: %{kind: :refresh}} = request, from) do
+    with_value(state, grant, request.host, fn state, result ->
+      with_live(state, grant, request, from, result, fn state, grant, _value ->
+        now = State.now()
+        expires_in = kept_seconds(state, grant, request.host)
+        id_token = id_token(state, grant, request.host)
+        {made, json} = CredentialEndpoint.refreshed(grant, id_token, expires_in, now)
+
+        state =
+          if made,
+            do: Map.update(state, :made, %{made.placeholder => made}, &Made.put(&1, made, now)),
+            else: state
+
+        # Published before the VM hears of it, so a request carrying the
+        # new placeholder at once finds it.
+        state = Gate.publish(state)
+        GenServer.reply(from, {:answer, 200, json})
+
+        summary =
+          if made,
+            do: "#{grant.name}'s login refreshed, with an ID token · answered by MWT",
+            else: "#{grant.name}'s login refreshed · answered by MWT"
+
+        state
+        |> State.used(grant.id)
+        |> State.log(request_event(request, grant, :swapped, summary))
+      end)
+    end)
+  end
+
+  def answer(state, grant, %{endpoint: ask} = request, from) do
+    with_value(state, grant, request.host, fn state, result ->
+      with_live(state, grant, request, from, result, fn state, grant, value ->
+        call = CredentialEndpoint.call(ask)
+
+        state
+        |> State.used(grant.id)
+        |> State.task({:endpoint, from, grant.id, request}, fn ->
+          SavedRequest.send(call, value, grant.name, @endpoint_timeout)
+        end)
+      end)
+    end)
+  end
+
+  @doc """
+  What came back from a credential endpoint MWT sent a request to for the
+  VM (`answer/4`): what it made is kept, the view the proxy decides from
+  is published with it before the VM hears of it (so a request carrying
+  its placeholder at once finds it), and the proxy answers the VM itself.
+  """
+  def answered(state, {:endpoint, from, grant_id, request}, result) do
+    grant = Enum.find(state.grants, &(&1.id == grant_id))
+    now = State.now()
+
+    case grant && CredentialEndpoint.answered(grant, request.endpoint, result, now) do
+      {:ok, made, json} ->
+        state =
+          state
+          |> Map.update(:made, %{made.placeholder => made}, &Made.put(&1, made, now))
+          |> Gate.publish()
+
+        GenServer.reply(from, {:answer, 200, json})
+
+        State.log(
+          state,
+          request_event(request, grant, :swapped, "#{made.name} · answered by MWT")
+        )
+
+      {:error, status, json} ->
+        GenServer.reply(from, {:answer, status, json})
+
+        State.log(
+          state,
+          request_event(request, grant, :refused, "Signing for #{grant.name} failed (#{status})")
+        )
+
+      nil ->
+        GenServer.reply(from, deny(403, "mwt_grant_off", "The grant was removed.", nil))
+        state
+    end
+  end
+
+  # Calls `k` with the grant as it is and the value, once the value is at
+  # hand and the grant still lets the request go; otherwise answers the
+  # proxy with why not, and logs it.
+  defp with_live(state, grant, request, from, result, k) do
+    case {result, still(state, grant, request)} do
+      {_result, :isolated} ->
+        GenServer.reply(from, isolated())
+        state
+
+      {_result, :off} ->
+        GenServer.reply(
+          from,
+          deny(
+            403,
+            "mwt_grant_off",
+            "#{grant.name} turned off while its value was fetched. Ask for it with: " <>
+              "mwt request #{grant.id} --reason \"...\"",
+            grant
+          )
+        )
+
+        State.log(
+          state,
+          request_event(
+            request,
+            grant,
+            :refused,
+            "#{grant.name} turned off while its value was fetched · not sent"
+          )
+        )
+
+      {{:ok, value}, {:ok, grant}} ->
+        k.(state, grant, value)
+
+      {{:error, :no_value}, _live} ->
+        GenServer.reply(
+          from,
+          deny(503, "mwt_no_value", "#{grant.name} has no value yet.", grant)
+        )
+
+        State.log(
+          state,
+          request_event(request, grant, :refused, "#{grant.name} has no value set")
+        )
+
+      {{:error, message}, _live} ->
+        GenServer.reply(
+          from,
+          deny(502, "mwt_mint_failed", "Could not mint a token for #{grant.name}.", grant)
+        )
+
+        State.log(state, request_event(request, grant, :refused, "Minting failed: #{message}"))
+    end
   end
 
   # The grant as it is when its value is at hand, which a mint makes
@@ -104,26 +301,34 @@ defmodule MWTClient.Sandbox.Server.Values do
   What the proxy looks for around a request: `out`, every real value, in
   what the VM sends after the head; `echo`, the forms `value` left in (as
   it is, quoted, and as the carrier MWT wrote, such as a Basic
-  credential's base64), in the answer, where `placeholder` replaces it;
-  and `grant`, the id of the grant whose value it carries, which the
-  connection is held under. With no value in the request, only `out`.
+  credential's base64), in the answer, where `placeholders` says what
+  replaces each; and `grant`, the id of the grant whose values it
+  carries, which the connection is held under. `values` are what went in,
+  each `{name, placeholder, value, carriers}`. With no value in the
+  request, only `out`.
   """
-  def scan(state, host), do: %{out: out(state, host), echo: nil, placeholder: nil, grant: nil}
+  def scan(state, host), do: %{out: out(state, host), echo: nil, placeholders: %{}, grant: nil}
 
-  def scan(state, host, grant, value, headers) do
-    written =
-      for {name, header} <- headers,
-          name in Grant.carriers(grant),
-          not String.contains?(header, value),
-          String.contains?(Placeholder.decoded(header) || "", value),
-          [_scheme, encoded] <- [String.split(header, " ", parts: 2)],
-          do: String.trim(encoded)
+  def scan(state, host, grant, values, headers) do
+    entries =
+      for {name, placeholder, value, carriers} <- values do
+        # The value as MWT wrote it into a carrier, when that isn't the
+        # value as it is: a Basic credential's base64.
+        written =
+          for {header_name, header} <- headers,
+              header_name in carriers,
+              not String.contains?(header, value),
+              String.contains?(Placeholder.decoded(header) || "", value),
+              [_scheme, encoded] <- [String.split(header, " ", parts: 2)],
+              do: String.trim(encoded)
+
+        {{{:value, name}, Secrets.forms(value) ++ written}, {{:value, name}, placeholder}}
+      end
 
     %{
       out: out(state, host),
-      echo:
-        Secrets.new([{{:value, grant.name}, Secrets.forms(value) ++ written}], @echo_shortest),
-      placeholder: grant.placeholder,
+      echo: entries |> Enum.map(&elem(&1, 0)) |> Secrets.new(@echo_shortest),
+      placeholders: Map.new(entries, &elem(&1, 1)),
       grant: grant.id
     }
   end
@@ -137,7 +342,12 @@ defmodule MWTClient.Sandbox.Server.Values do
           not Policy.host_listed?(host, grant.hosts),
           do: {{:placeholder, grant.name}, [placeholder]}
 
-    Secrets.new(value_forms(state) ++ elsewhere)
+    made_elsewhere =
+      for {placeholder, made} <- Map.get(state, :made, %{}),
+          not Policy.host_listed?(host, made.hosts),
+          do: {{:placeholder, made.name}, [placeholder]}
+
+    Secrets.new(value_forms(state) ++ elsewhere ++ made_elsewhere)
   end
 
   @doc """
@@ -151,8 +361,22 @@ defmodule MWTClient.Sandbox.Server.Values do
   Every token grant's real value at hand, as `{{:value, grant_name},
   forms}`, the value as it is first (`Secrets.forms/1`).
   """
-  def value_forms(state),
-    do: for({grant, value} <- values(state), do: {{:value, grant.name}, Secrets.forms(value)})
+  def value_forms(state) do
+    own = for {grant, value} <- values(state), do: {{:value, grant.name}, Secrets.forms(value)}
+
+    made =
+      for {_placeholder, %Made{value: value} = made} <- Map.get(state, :made, %{}),
+          is_binary(value),
+          do: {{:value, made.name}, Secrets.forms(value)}
+
+    id_tokens =
+      for {key, {id_token, _until}} <- Map.get(state, :id_tokens, %{}),
+          id = if(is_tuple(key), do: elem(key, 0), else: key),
+          %Grant{} = grant <- [Enum.find(state.grants, &(&1.id == id))],
+          do: {{:value, "#{grant.name}'s ID token"}, Secrets.forms(id_token)}
+
+    own ++ made ++ id_tokens
+  end
 
   @doc """
   The name of the grant whose real value is in what the VM wrote, or nil:
@@ -232,13 +456,25 @@ defmodule MWTClient.Sandbox.Server.Values do
           [{"MWT_GRANT", grant.id}] ++
             if(grant.mint_per == :host and is_binary(host), do: [{"MWT_HOST", host}], else: [])
 
+        keep_ms = grant.keep_minutes && grant.keep_minutes * 60_000
+
         state
-        |> State.task({:mint, key}, fn -> mint(command, variables) end)
+        |> State.task({:mint, key}, fn -> command |> mint(variables) |> kept_at_most(keep_ms) end)
         |> Map.update!(:minting, &Map.put(&1, key, [k]))
     end
   end
 
   defp with_value(state, _grant, _host, k), do: k.(state, {:error, :no_value})
+
+  # How many seconds MWT keeps the value at hand for `host`: what a client
+  # refreshing a login is told it lasts, so it refreshes before MWT would
+  # mint again. A stored value lasts as long as the hour a refresh says.
+  defp kept_seconds(state, grant, host) do
+    case state.minted[mint_key(grant, host)] do
+      {_value, until} -> max(div(until - System.monotonic_time(:millisecond), 1_000), 1)
+      nil -> 3_600
+    end
+  end
 
   @doc """
   Where a minted value is kept: under the grant's id, or, for a grant
@@ -267,37 +503,79 @@ defmodule MWTClient.Sandbox.Server.Values do
   end
 
   @doc """
-  What a mint command printed, read: `{:ok, value, fresh_ms}`, or why not.
+  A mint's result kept no longer than `keep_ms`, the grant's own limit
+  (`Grant.keep_minutes`), when it has one: a service may refuse a token
+  long before it expires.
+
+      iex> MWTClient.Sandbox.Server.Values.kept_at_most({:ok, %{value: "v"}, 1_740_000}, 240_000)
+      {:ok, %{value: "v"}, 240000}
+      iex> MWTClient.Sandbox.Server.Values.kept_at_most({:ok, %{value: "v"}, 60_000}, 240_000)
+      {:ok, %{value: "v"}, 60000}
+      iex> MWTClient.Sandbox.Server.Values.kept_at_most({:ok, %{value: "v"}, 600_000}, nil)
+      {:ok, %{value: "v"}, 600000}
+  """
+  def kept_at_most({:ok, value, fresh_ms}, keep_ms) when is_integer(keep_ms),
+    do: {:ok, value, min(fresh_ms, keep_ms)}
+
+  def kept_at_most(result, _keep_ms), do: result
+
+  @doc """
+  What a mint command printed, read: `{:ok, minted, fresh_ms}`, where
+  `minted` holds the `value` and, when the command printed one beside it,
+  the `id_token` (`MWTClient.Sandbox.CredentialEndpoint`), both kept as
+  long; or why not. It reads the bare value (kept 10 minutes), MWT's own
+  JSON (`value`, `id_token`, `expires_in` seconds), or what `gcloud config
+  config-helper --format=json` prints (`credential.access_token`,
+  `credential.id_token`, `credential.token_expiry`), so a login's ID token
+  needs no reshaping on your machine. A value with an expiry is kept until
+  a minute before it.
 
       iex> MWTClient.Sandbox.Server.Values.minted("ya29.abc")
-      {:ok, "ya29.abc", 600000}
+      {:ok, %{value: "ya29.abc", id_token: nil}, 600000}
       iex> MWTClient.Sandbox.Server.Values.minted(~s({"value": "ya29.abc", "expires_in": 1800}))
-      {:ok, "ya29.abc", 1740000}
+      {:ok, %{value: "ya29.abc", id_token: nil}, 1740000}
+      iex> MWTClient.Sandbox.Server.Values.minted(~s({"value": "ya29.abc", "id_token": "eyJ.x.y"}))
+      {:ok, %{value: "ya29.abc", id_token: "eyJ.x.y"}, 600000}
+      iex> helper = ~s({"credential": {"access_token": "ya29.abc", "id_token": "eyJ.x.y", "token_expiry": "2026-11-22T01:30:00Z"}})
+      iex> MWTClient.Sandbox.Server.Values.minted(helper, ~U[2026-11-22 01:00:00Z])
+      {:ok, %{value: "ya29.abc", id_token: "eyJ.x.y"}, 1740000}
       iex> MWTClient.Sandbox.Server.Values.minted(~s({"expires_in": 1800}))
       {:error, "the command printed JSON with no \\"value\\""}
   """
-  def minted(""), do: {:error, "the command printed nothing"}
+  def minted(output, now \\ DateTime.utc_now())
 
-  def minted("{" <> _ = output) do
+  def minted("", _now), do: {:error, "the command printed nothing"}
+
+  def minted("{" <> _ = output, now) do
     case Jason.decode(output) do
       {:ok, %{"value" => value} = object} when is_binary(value) and value != "" ->
-        fresh =
-          case object["expires_in"] do
-            seconds when is_integer(seconds) and seconds > 0 -> max(seconds - 60, 0) * 1_000
-            _none -> @mint_fresh_ms
-          end
+        {:ok, %{value: value, id_token: text_or_nil(object["id_token"])},
+         fresh(object["expires_in"])}
 
-        {:ok, value, fresh}
+      {:ok, %{"credential" => %{"access_token" => value} = credential}}
+      when is_binary(value) and value != "" ->
+        seconds =
+          with expiry when is_binary(expiry) <- credential["token_expiry"],
+               {:ok, at, _offset} <- DateTime.from_iso8601(expiry),
+               do: DateTime.diff(at, now)
+
+        {:ok, %{value: value, id_token: text_or_nil(credential["id_token"])}, fresh(seconds)}
 
       {:ok, %{}} ->
         {:error, "the command printed JSON with no \"value\""}
 
       _not_json ->
-        {:ok, output, @mint_fresh_ms}
+        {:ok, %{value: output, id_token: nil}, @mint_fresh_ms}
     end
   end
 
-  def minted(token), do: {:ok, token, @mint_fresh_ms}
+  def minted(token, _now), do: {:ok, %{value: token, id_token: nil}, @mint_fresh_ms}
+
+  defp fresh(seconds) when is_integer(seconds) and seconds > 0, do: max(seconds - 60, 0) * 1_000
+  defp fresh(_none), do: @mint_fresh_ms
+
+  defp text_or_nil(text) when is_binary(text) and text != "", do: text
+  defp text_or_nil(_none), do: nil
 
   @doc """
   The proxy's refusal of a request: a status, and a JSON body with the reason and the grant's name.
@@ -333,7 +611,7 @@ defmodule MWTClient.Sandbox.Server.Values do
   answer}`: what the log says (or nil), what the firewall hears (or nil),
   and the proxy's answer. The same wherever it was decided.
   """
-  def refusal({:not_a_carrier, grant, headers}, request) do
+  def refusal({:not_a_carrier, grant, headers, carriers}, request) do
     summary =
       "#{grant.name} placeholder in #{Enum.join(headers, ", ")}, " <>
         "not a header it travels in · refused"
@@ -343,7 +621,7 @@ defmodule MWTClient.Sandbox.Server.Values do
        403,
        "mwt_not_a_carrier",
        "#{grant.name}'s placeholder is in #{Enum.join(headers, ", ")}. MWT puts its real " <>
-         "value only in #{Enum.join(Grant.carriers(grant), ", ")}, and refuses a request " <>
+         "value only in #{Enum.join(carriers, ", ")}, and refuses a request " <>
          "with the placeholder anywhere else. Send it as the tool normally does, or ask " <>
          "the user to add the header to the grant.",
        grant
@@ -361,6 +639,38 @@ defmodule MWTClient.Sandbox.Server.Values do
     {request_event(request, grant, :violation, summary),
      {:leak, grant.name, request.host, :request},
      deny(403, "mwt_placeholder_blocked", "#{grant.name} may not go to #{request.host}.", grant)}
+  end
+
+  def refusal({:made_elsewhere, made}, request) do
+    summary = "#{made.name} sent to #{request.host} · blocked"
+
+    {request_event(request, %{id: made.grant_id}, :violation, summary),
+     {:leak, made.name, request.host, :request},
+     deny(
+       403,
+       "mwt_placeholder_blocked",
+       "#{made.name} may go only to #{Enum.join(made.hosts, ", ")}.",
+       nil
+     )}
+  end
+
+  def refusal({:made_stale, made}, request) do
+    what = if made, do: made.name, else: "A JWT placeholder MWT wrote"
+
+    {request_event(
+       request,
+       %{id: made && made.grant_id},
+       :refused,
+       "#{what}, no longer held · refused"
+     ), nil,
+     deny(
+       403,
+       "mwt_placeholder_expired",
+       "#{what} is one MWT no longer holds: it expired, its grant no longer signs as its " <>
+         "account or lists its host, or MWT restarted since it was made. Sign again: the " <>
+         "tool's next sign-in does.",
+       nil
+     )}
   end
 
   def refusal({:subgrants_only, grant}, request) do

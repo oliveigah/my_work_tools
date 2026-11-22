@@ -1953,6 +1953,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             <code class="mt-1 block break-all rounded-md border border-line-soft bg-deep px-2 py-1.5 font-mono text-[10px] leading-4 text-muted">
               {command}
             </code>
+            <.kept_line grant={@grant} />
           <% :stored -> %>
             <p class="text-[11px] text-ink">Stored in your vault</p>
         <% end %>
@@ -1999,6 +2000,28 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                                                                                                                                                                do:
                                                                                                                                                                  ", as #{@grant.presents.metadata.email}"}.
           </p>
+          <p
+            :if={@grant.signs_as != []}
+            id={"grant-signs-as-#{@grant.id}"}
+            class="text-[11px] text-faint"
+          >
+            Within that command, MWT answers a request to sign a JWT as {Enum.join(
+              @grant.signs_as,
+              ", "
+            )} itself: it signs with the real value, and the command gets a placeholder JWT that goes only to the host its aud names. The VM may act as these accounts toward the hosts below.
+          </p>
+          <p
+            :if={Grant.login_placeholder(@grant)}
+            id={"grant-login-#{@grant.id}"}
+            class="text-[11px] text-faint"
+          >
+            Within that command, GOOGLE_APPLICATION_CREDENTIALS names a login file of placeholders ({Grant.login_file(
+              @grant
+            )}): MWT answers its refresh from the mint, and an ID token the mint prints goes only to the hosts below, in {Enum.join(
+              Grant.id_token_carriers(@grant),
+              " or "
+            )}.
+          </p>
         </dd>
 
         <dt class="pt-0.5 text-muted">May go to</dt>
@@ -2025,6 +2048,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
               <code class="mt-1 block break-all rounded-md border border-line-soft bg-deep px-2 py-1.5 font-mono text-[10px] leading-4 text-muted">
                 {command}
               </code>
+              <.kept_line grant={@grant} />
             <% :stored -> %>
               <p class="text-[11px] text-ink">Stored in your vault</p>
           <% end %>
@@ -2654,7 +2678,10 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                   @adding.form[:file_env].value not in [nil, ""] or
                     @adding.form[:carriers].value not in [nil, ""] or
                     @adding.form[:present_metadata].value in ["true", true] or
-                    @adding.errors[:presents] != nil or
+                    @adding.errors[:present_project] != nil or @adding.errors[:present_email] != nil or
+                    @adding.form[:signs_as].value not in [nil, ""] or @adding.errors[:signs_as] != nil or
+                    @adding.form[:present_login].value in ["true", true] or
+                    @adding.errors[:present_login] != nil or @adding.errors[:present_id_header] != nil or
                     @adding.form[:git].value == "true" or @adding.errors[:prefix] != nil or
                     @adding.errors[:carriers] != nil
                 }
@@ -2690,10 +2717,8 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                     <.field_error errors={@adding.errors} field={:carriers} />
                   </div>
                   <div
-                    :if={
-                      @adding.preset.id == "google" or
-                        @adding.form[:present_metadata].value in ["true", true]
-                    }
+                    :if={metadata_offered?(@adding)}
+                    id="grant-present-metadata-box"
                     class="sm:col-span-2"
                   >
                     <label class="flex cursor-pointer items-start gap-2">
@@ -2720,20 +2745,76 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                       :if={@adding.form[:present_metadata].value in ["true", true]}
                       class="mt-2 grid gap-3 pl-5 sm:grid-cols-2"
                     >
-                      <.input
-                        field={@adding.form[:present_project]}
-                        label="Project"
-                        placeholder="my-project"
-                        help={field_help(:present_project)}
-                      />
-                      <.input
-                        field={@adding.form[:present_email]}
-                        label="Account"
-                        placeholder="sa@my-project.iam.gserviceaccount.com"
-                        help={field_help(:present_email)}
-                      />
+                      <div>
+                        <.input
+                          field={@adding.form[:present_project]}
+                          label="Project"
+                          placeholder="my-project"
+                          help={field_help(:present_project)}
+                        />
+                        <.field_error errors={@adding.errors} field={:present_project} />
+                      </div>
+                      <div>
+                        <.input
+                          field={@adding.form[:present_email]}
+                          label="Account"
+                          placeholder="sa@my-project.iam.gserviceaccount.com"
+                          help={field_help(:present_email)}
+                        />
+                        <.field_error errors={@adding.errors} field={:present_email} />
+                      </div>
                     </div>
-                    <.field_error errors={@adding.errors} field={:presents} />
+                  </div>
+                  <div :if={signing_offered?(@adding)} id="grant-signs-as-box" class="sm:col-span-2">
+                    <.input
+                      field={@adding.form[:signs_as]}
+                      label="May sign as"
+                      placeholder="svc@my-project.iam.gserviceaccount.com"
+                      help={field_help(:signs_as)}
+                    />
+                    <p class="mt-1 text-[10px] text-faint">
+                      Comma separated service accounts. For clients of a service behind Identity-Aware Proxy that ask Google to sign a JWT: MWT signs with the real value and gives them a placeholder. The VM may then act as these accounts toward the hosts above.
+                    </p>
+                    <.field_error errors={@adding.errors} field={:signs_as} />
+                  </div>
+                  <div
+                    :if={login_offered?(@adding)}
+                    id="grant-present-login-box"
+                    class="sm:col-span-2"
+                  >
+                    <label class="flex cursor-pointer items-start gap-2">
+                      <input type="hidden" name="grant[present_login]" value="false" />
+                      <input
+                        type="checkbox"
+                        name="grant[present_login]"
+                        id="grant-present-login"
+                        value="true"
+                        checked={@adding.form[:present_login].value in ["true", true]}
+                        class="mt-0.5 size-3.5 cursor-pointer accent-accent"
+                      />
+                      <span class="text-xs text-ink">
+                        Give it a Google login file
+                        <.help id="grant-present-login-help" label="About the login file">
+                          {field_help(:present_login)}
+                        </.help>
+                        <span class="block text-[10px] text-faint">
+                          For tools that refresh a Google login themselves, as an ID token needs: within mwt exec, GOOGLE_APPLICATION_CREDENTIALS names a login of placeholders, whose refresh MWT answers from the command that mints it.
+                        </span>
+                      </span>
+                    </label>
+                    <.field_error errors={@adding.errors} field={:present_login} />
+                    <div
+                      :if={@adding.form[:present_login].value in ["true", true]}
+                      class="mt-2 max-w-72 pl-5"
+                    >
+                      <.input
+                        field={@adding.form[:present_id_header]}
+                        label="Header its ID token travels in"
+                        placeholder="As the token goes"
+                        help={field_help(:present_id_header)}
+                      />
+                      <.field_error errors={@adding.errors} field={:present_id_header} />
+                    </div>
                   </div>
                   <div :if={is_nil(@editing)}>
                     <.input
@@ -2770,6 +2851,16 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                 </div>
               </details>
 
+              <%!-- Where the value comes from can't change while editing, so
+                   nothing to choose shows; the form still carries it, or the
+                   first change would forget the grant is minted and drop its
+                   command. --%>
+              <input
+                :if={@editing}
+                type="hidden"
+                name="grant[source]"
+                value={source(@adding.form)}
+              />
               <div :if={@editing && source(@adding.form) == "minted"}>
                 <.input
                   field={@adding.form[:mint]}
@@ -2779,6 +2870,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                 />
                 <.field_error errors={@adding.errors} field={:mint} />
                 <.mint_per_field form={@adding.form} />
+                <.keep_field form={@adding.form} errors={@adding.errors} />
               </div>
 
               <div :if={is_nil(@editing)}>
@@ -2827,6 +2919,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                   </p>
                   <.field_error errors={@adding.errors} field={:mint} />
                   <.mint_per_field form={@adding.form} />
+                  <.keep_field form={@adding.form} errors={@adding.errors} />
                 </div>
                 <div :if={source(@adding.form) == "stored"}>
                   <input
@@ -3407,6 +3500,35 @@ defmodule MWTClientWeb.SandboxLive.Grants do
 
   defp reach(form), do: if(form[:reach].value == "subgrants", do: "subgrants", else: "vm")
 
+  # The metadata server is for Google's client libraries, whose requests go
+  # to Google's APIs: the form offers it on a grant whose hosts are among
+  # them, however the grant was made (added, edited, proposed), or that has
+  # it on. Elsewhere it would be a box that does nothing.
+  defp metadata_offered?(adding),
+    do: adding.form[:present_metadata].value in ["true", true] or google_hosts?(adding.form)
+
+  # Signing a JWT as a service account is Google's IAM Credentials: the
+  # same hosts, or a grant that already signs.
+  defp signing_offered?(adding),
+    do: adding.form[:signs_as].value not in [nil, ""] or google_hosts?(adding.form)
+
+  # A Google login is refreshed at Google's token endpoint: the same hosts,
+  # or a grant that has one.
+  defp login_offered?(adding),
+    do: adding.form[:present_login].value in ["true", true] or google_hosts?(adding.form)
+
+  defp google_hosts?(form) do
+    form[:hosts].value
+    |> to_string()
+    |> String.split([",", "\n"])
+    |> Enum.any?(&google_api?/1)
+  end
+
+  defp google_api?(host) do
+    host = host |> String.trim() |> String.downcase() |> String.trim_leading("*.")
+    host == "googleapis.com" or String.ends_with?(host, ".googleapis.com")
+  end
+
   attr :form, :any, required: true
 
   # One minted value for every host, or one per host, its command told
@@ -3436,6 +3558,33 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     """
   end
 
+  # How long a value it minted is kept at most: for a service that takes
+  # a token only while it is young, whatever its expiry says.
+  defp keep_field(assigns) do
+    ~H"""
+    <div class="mt-3 max-w-56">
+      <.input
+        field={@form[:keep_minutes]}
+        type="number"
+        min="1"
+        max="1440"
+        label="Keep each value at most (minutes)"
+        placeholder="As the command says"
+        help={field_help(:keep_minutes)}
+      />
+      <.field_error errors={@errors} field={:keep_minutes} />
+    </div>
+    """
+  end
+
+  defp kept_line(assigns) do
+    ~H"""
+    <p :if={@grant.keep_minutes} id={"grant-keep-#{@grant.id}"} class="mt-1 text-[11px] text-faint">
+      Each value kept at most {@grant.keep_minutes} min, then minted again.
+    </p>
+    """
+  end
+
   @field_help %{
     name:
       "The grant's name, as it shows on its switch, on every approval card and in Activity. When you add it, MWT makes its id from it (lowercase, with dashes): agents use the id in mwt request, mwt exec and mwt call, and it never changes, even when you rename the grant.",
@@ -3455,6 +3604,14 @@ defmodule MWTClientWeb.SandboxLive.Grants do
       "The HTTP headers the real value may travel in, comma separated; Authorization when empty, Basic credentials included. MWT swaps the value into these headers only: a placeholder found in any other header, in the URL or in the body is refused. Name the header the service reads its key from, such as X-Api-Key.",
     present_metadata:
       "Some Google client libraries don't read a token file: they ask a cloud metadata server for default credentials. With this on, mwt exec runs one on loopback for the command's lifetime (GCE_METADATA_HOST), serving the placeholder as the access token; MWT swaps the real value on the way out. It serves only placeholders, and stops when the command ends.",
+    signs_as:
+      "The service accounts MWT may sign a JWT as for this grant, by email, comma separated. A client of a service behind Identity-Aware Proxy asks Google's IAM Credentials to sign claims it builds (signJwt) and sends the JWT as its bearer; the firewall refuses that request, since its answer is a credential. For these accounts MWT answers it itself: it sends the same request with the real value, keeps the signed JWT, and gives the command a placeholder JWT with the same claims, which goes only to the host its aud names, if the grant lists it. This is a trust decision: the VM may then act as these accounts toward every host the grant lists, through MWT and this grant's approval. Your account needs the Service Account Token Creator role on each.",
+    present_login:
+      "Some Google tools refresh a login themselves rather than take a token: a CLI that needs your ID token beside its token, for one. With this on, within mwt exec, GOOGLE_APPLICATION_CREDENTIALS names a login file (an authorized_user login) whose refresh token is a placeholder. Its refresh at oauth2.googleapis.com never goes out: MWT answers it from the command that mints this grant's value, with the grant's placeholder as the access token and, when the command prints an id_token beside its value, a placeholder ID token carrying only the real one's iss, aud, iat, exp, email and hd. Google's libraries take the file before a metadata server. Only placeholders reach the VM.",
+    present_id_header:
+      "The header the tool sends the ID token in, when it isn't the one the grant's value goes in: a service's own, such as X-Id-Token. MWT puts a fresh ID token there, minted again once the one it keeps is older than the grant keeps its values, and refuses the placeholder in any other header.",
+    keep_minutes:
+      "The longest a value the command minted is kept before MWT mints a new one, in minutes, whatever the command says of its expiry. For a service that accepts a token only while it is young, such as one that refuses an ID token issued more than 5 minutes before: 4 keeps it under that. Empty keeps each value as the command says, or 10 minutes.",
     present_project:
       "The Google Cloud project the metadata server says the credentials belong to: what client libraries take as the default project. Lowercase letters, digits and dashes, as the cloud names it.",
     present_email:

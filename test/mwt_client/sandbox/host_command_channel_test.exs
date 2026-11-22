@@ -1395,6 +1395,114 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       assert String.starts_with?(grant.placeholder, "ghp_")
     end
 
+    test "a Google grant with a metadata server for client libraries", context do
+      google = fn extra ->
+        mwt(
+          context,
+          [
+            "propose",
+            "token",
+            "--name",
+            "BigQuery",
+            "--for",
+            "Queries from Python",
+            "--preset",
+            "google",
+            "--reason",
+            "r",
+            "--wait",
+            "0"
+          ] ++ extra
+        )
+      end
+
+      # The server needs a project: an account alone is refused, naming the
+      # option it lacks, and nothing is saved.
+      assert {output, 1} = google.(["--metadata-account", "sa@p.iam.gserviceaccount.com"])
+      assert output =~ "--metadata-project: Name the project"
+      refute Enum.any?(Sandbox.snapshot(context.username).grants, &(&1.id == "bigquery"))
+
+      assert {_output, 2} =
+               google.([
+                 "--metadata-project",
+                 "my-project",
+                 "--metadata-account",
+                 "sa@my-project.iam.gserviceaccount.com"
+               ])
+
+      grant = Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "bigquery"))
+
+      assert grant.presents == %{
+               metadata: %{project: "my-project", email: "sa@my-project.iam.gserviceaccount.com"}
+             }
+
+      assert grant.hosts == ["*.googleapis.com"]
+      assert Grant.to_review?(grant)
+    end
+
+    test "a grant that signs JWTs as a service account, its tokens kept a few minutes",
+         context do
+      propose = fn extra ->
+        mwt(
+          context,
+          [
+            "propose",
+            "token",
+            "--name",
+            "Internal service",
+            "--for",
+            "The internal service behind IAP",
+            "--host",
+            "svc.example.com",
+            "--mint",
+            "gcloud auth print-access-token",
+            "--keep-minutes",
+            "4",
+            "--sign-as",
+            "svc@p.iam.gserviceaccount.com",
+            "--reason",
+            "r",
+            "--wait",
+            "0"
+          ] ++ extra
+        )
+      end
+
+      # Signing sends the grant's value to IAM Credentials, which it must
+      # list: refused, naming the option.
+      assert {output, 1} = propose.([])
+      assert output =~ "--sign-as: Signing sends the grant's value to iamcredentials"
+
+      assert {_output, 2} = propose.(["--host", "*.googleapis.com"])
+
+      grant =
+        Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "internal-service"))
+
+      assert grant.signs_as == ["svc@p.iam.gserviceaccount.com"]
+      assert grant.keep_minutes == 4
+
+      # mwt grants says what MWT answers for it.
+      {0, listed} = Channel.answer("grants", %{}, context.username)
+      assert listed =~ "signJwt as svc@p.iam.gserviceaccount.com"
+
+      # Proposed again before review, with a login file: it changes in place.
+      assert {_output, 2} =
+               propose.([
+                 "--host",
+                 "*.googleapis.com",
+                 "--login-file",
+                 "--id-token-header",
+                 "X-Id-Token"
+               ])
+
+      grant =
+        Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "internal-service"))
+
+      assert %{login: %{refresh: "1//mwt" <> _, header: "x-id-token"}} = grant.presents
+      {0, listed} = Channel.answer("grants", %{}, context.username)
+      assert listed =~ "GOOGLE_APPLICATION_CREDENTIALS names a Google login file"
+    end
+
     test "a network grant, with its own DNS server and way out", context do
       assert {_output, 2} =
                mwt(context, [

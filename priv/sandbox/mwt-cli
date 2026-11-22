@@ -97,7 +97,7 @@ mwt - ask MWT, the user's control panel, for access
   it for the person approving it: the narrowest access that does the job,
   a name that says what it is, --for in words for any time it is used.
 
-  mwt propose token --name NAME --for "what it is for" --host HOST [--host ...] [--env VAR ...] [--file-env VAR ...] [--carrier HEADER ...] [--git] [--mint 'COMMAND'] [--subgrants-only] [--preset ID] --reason "why you need it"
+  mwt propose token --name NAME --for "what it is for" --host HOST [--host ...] [--env VAR ...] [--file-env VAR ...] [--carrier HEADER ...] [--git] [--mint 'COMMAND' [--keep-minutes N]] [--sign-as ACCOUNT ...] [--login-file [--id-token-header HEADER]] [--metadata-project PROJECT [--metadata-account EMAIL]] [--subgrants-only] [--preset ID] --reason "why you need it"
       Example: mwt propose token --name "GitHub, read-only, klife" --for "gh and git over HTTPS, reading oliveigah/klife" --preset github --reason "..."
       Propose a token grant: a secret MWT keeps and swaps into requests to
       the hosts it lists (*.example.com for its subdomains), in the
@@ -106,10 +106,26 @@ mwt - ask MWT, the user's control panel, for access
       in each --file-env one, only under mwt exec. --git lets git's
       credential helper answer for its hosts. --mint is a command the user's
       machine runs to print a short-lived value (gcloud auth print-access-token),
-      instead of one they paste. --subgrants-only keeps it out of the VM:
-      only its request subgrants use it. --preset starts from one of the
-      user's presets (github, google, hex, or theirs), whose fields you
-      override. Say in --for what the token should be allowed to do: the user
+      instead of one they paste; --keep-minutes mints a new one after at most
+      N minutes, for a service that takes a token only while it is young.
+      --sign-as names a service account MWT may sign a JWT as for it: a
+      client of a service behind Identity-Aware Proxy that calls IAM
+      Credentials' signJwt gets a placeholder JWT, which goes only to the
+      host its aud names (a host the grant lists); the VM may then act as
+      that account there. --login-file gives it a Google login file
+      (GOOGLE_APPLICATION_CREDENTIALS, under mwt exec), for a tool that
+      refreshes a login itself, as one needing an ID token does: MWT answers
+      the refresh from the mint, which then prints {"value": ..., "id_token":
+      ..., "expires_in": ...} or gcloud config config-helper's JSON;
+      --id-token-header names the header the tool sends the ID token in,
+      when not the one the token goes in. --metadata-project runs a cloud metadata
+      server under mwt exec, for Google's client libraries that look for
+      default credentials instead of reading a token file: it serves the
+      placeholder as the access token of PROJECT, and --metadata-account
+      names the service account it reports (empty for the default one).
+      --subgrants-only keeps it out of the VM: only its request subgrants
+      use it. --preset starts from one of the user's presets (github,
+      google, hex, or theirs), whose fields you override. Say in --for what the token should be allowed to do: the user
       creates it, as narrow as the service allows, and pastes it as they
       review it.
 
@@ -767,13 +783,14 @@ wrong=1
 [ "$command" = call ] && wrong=122
 
 grant="" need="" reason="" minutes=60 wait=60 id="" dir="" timeout=120 timeout_given="" title="" body="" onto="" from="" suggest_save="" save_for="" no_checks="" name="" purpose="" method="" url="" data="" watch=0
-preset="" mint="" resolver="" via="" git=false subgrants_only=false
+preset="" mint="" keep_minutes="" metadata_project="" metadata_account="" resolver="" via="" git=false login_file=false id_token_header="" subgrants_only=false
 headers=()
 params=()
 hosts=()
 envs=()
 file_envs=()
 carriers=()
+signs_as=()
 destinations=()
 values=()
 positional=()
@@ -830,6 +847,17 @@ while [ $# -gt 0 ]; do
     --git) git=true; shift ;;
     --mint) mint=${2-}; shift 2 || shift ;;
     --mint=*) mint=${1#*=}; shift ;;
+    --keep-minutes) keep_minutes=${2-}; shift 2 || shift ;;
+    --keep-minutes=*) keep_minutes=${1#*=}; shift ;;
+    --login-file) login_file=true; shift ;;
+    --id-token-header) id_token_header=${2-}; shift 2 || shift ;;
+    --id-token-header=*) id_token_header=${1#*=}; shift ;;
+    --sign-as) signs_as+=("${2-}"); shift 2 || shift ;;
+    --sign-as=*) signs_as+=("${1#*=}"); shift ;;
+    --metadata-project) metadata_project=${2-}; shift 2 || shift ;;
+    --metadata-project=*) metadata_project=${1#*=}; shift ;;
+    --metadata-account) metadata_account=${2-}; shift 2 || shift ;;
+    --metadata-account=*) metadata_account=${1#*=}; shift ;;
     --subgrants-only) subgrants_only=true; shift ;;
     --destination) destinations+=("${2-}"); shift 2 || shift ;;
     --destination=*) destinations+=("${1#*=}"); shift ;;
@@ -1005,7 +1033,7 @@ case $command in
     identify
     [ -z "$dir" ] && dir=$PWD
     dir=$( (cd "$dir" 2>/dev/null && pwd -P) || printf '%s' "$dir")
-    send "{\"command\":\"propose\",\"grant\":$(json "$grant"),\"name\":$(json "$name"),\"for\":$(json "$purpose"),\"script\":$(json "$script"),\"params\":[${listed#,}],\"dir\":$(json "$dir"),\"method\":$(json "$method"),\"url\":$(json "$url"),\"headers\":[${sent#,}],\"data\":$(json "$data"),\"preset\":$(json "$preset"),\"hosts\":$(json_list ${hosts[@]+"${hosts[@]}"}),\"env\":$(json_list ${envs[@]+"${envs[@]}"}),\"file_env\":$(json_list ${file_envs[@]+"${file_envs[@]}"}),\"carriers\":$(json_list ${carriers[@]+"${carriers[@]}"}),\"git\":$git,\"mint\":$(json "$mint"),\"subgrants_only\":$subgrants_only,\"destinations\":$(json_list ${destinations[@]+"${destinations[@]}"}),\"resolver\":$(json "$resolver"),\"via\":$(json "$via"),\"reason\":$(json "$reason"),\"minutes\":$minutes,\"wait\":$wait,$(identity)}"
+    send "{\"command\":\"propose\",\"grant\":$(json "$grant"),\"name\":$(json "$name"),\"for\":$(json "$purpose"),\"script\":$(json "$script"),\"params\":[${listed#,}],\"dir\":$(json "$dir"),\"method\":$(json "$method"),\"url\":$(json "$url"),\"headers\":[${sent#,}],\"data\":$(json "$data"),\"preset\":$(json "$preset"),\"hosts\":$(json_list ${hosts[@]+"${hosts[@]}"}),\"env\":$(json_list ${envs[@]+"${envs[@]}"}),\"file_env\":$(json_list ${file_envs[@]+"${file_envs[@]}"}),\"carriers\":$(json_list ${carriers[@]+"${carriers[@]}"}),\"git\":$git,\"mint\":$(json "$mint"),\"keep_minutes\":$(json "$keep_minutes"),\"signs_as\":$(json_list ${signs_as[@]+"${signs_as[@]}"}),\"login_file\":$login_file,\"id_token_header\":$(json "$id_token_header"),\"metadata_project\":$(json "$metadata_project"),\"metadata_account\":$(json "$metadata_account"),\"subgrants_only\":$subgrants_only,\"destinations\":$(json_list ${destinations[@]+"${destinations[@]}"}),\"resolver\":$(json "$resolver"),\"via\":$(json "$via"),\"reason\":$(json "$reason"),\"minutes\":$minutes,\"wait\":$wait,$(identity)}"
     ;;
   wait)
     if [ -z "$id" ]; then

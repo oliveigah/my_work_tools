@@ -390,8 +390,19 @@ A token grant lists the hosts its value may go to (`--host`, repeated),
 the variables its placeholder is in under `mwt exec` (`--env`,
 `--file-env`), the headers it travels in when not `Authorization`
 (`--carrier`), `--git` for git over HTTPS, or `--mint 'COMMAND'` for a
-short-lived value the user's machine prints. `--preset` starts from one of
-MWT's (`github`, `google`, `hex`). Say in `--for` what the token should be
+short-lived value the user's machine prints. Google's client libraries
+(Python's `google.auth` among them) look for default credentials, not a
+token file: `--metadata-project PROJECT` gives them a metadata server
+under `mwt exec`, and `--metadata-account EMAIL` the service account it
+reports. A client of a service behind Identity-Aware Proxy that has
+Google sign a JWT as a service account (`signJwt`) needs `--sign-as
+ACCOUNT` and the service's host; `--keep-minutes N` mints again after at
+most N minutes, for a service that takes a token only while it is young.
+A tool that refreshes a Google login itself, as one sending an ID token
+does, needs `--login-file` (and `--id-token-header HEADER` when it sends
+the ID token in a header of its own), with a `--mint` that prints the ID
+token too: `gcloud config config-helper --force-auth-refresh --format=json`
+(`--preset google-login`). `--preset` starts from one of MWT's (`github`, `google`, `hex`). Say in `--for` what the token should be
 allowed to do: the user creates it, as narrow as the service allows, and
 pastes it as they review it. A network grant lists its destinations
 (`--destination`, repeated), the DNS server for their names

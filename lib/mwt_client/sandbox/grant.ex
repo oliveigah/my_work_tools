@@ -86,11 +86,27 @@ defmodule MWTClient.Sandbox.Grant do
 
   `presents`, for a token grant, names the presentations `mwt exec` runs for it (`native/mwt_present`), each with
   its few settings: `%{metadata: %{project: "…", email: "…"}}`, a cloud
-  metadata server on loopback for the command's lifetime.
+  metadata server on loopback for the command's lifetime; `%{login:
+  %{refresh: placeholder, header: "…"}}`, a Google login file
+  (`login_file/1`) whose refresh token is a placeholder of its own, made
+  once, which MWT answers for at Google's token endpoint
+  (`MWTClient.Sandbox.CredentialEndpoint`), and the header the ID token it
+  hands out travels in (empty: the grant's carriers).
+
+  `signs_as`, for a token grant, lists the service accounts whose
+  `signJwt` MWT answers itself (`MWTClient.Sandbox.CredentialEndpoint`):
+  it signs with the grant's real value and hands the VM a placeholder for
+  the signed JWT, which goes only to the host its `aud` names. Empty, a
+  request to sign is a credential endpoint like any other, which the
+  firewall refuses.
 
   `mint_per`, for a minted token grant, says whether one value serves all
   its hosts (`:grant`) or each host gets its own (`:host`): the mint
   command is told `MWT_HOST`, and each value is kept apart.
+
+  `keep_minutes`, for a minted token grant, is the longest a value it
+  minted is kept before it is minted again, whatever the mint says of its
+  expiry; nil keeps it as the mint says (`Values.minted/1`).
 
   `reach`, for a token grant, is who may wield its value: `:vm`, through
   `mwt exec` and its placeholder, or `:subgrants`, only the requests MWT
@@ -135,6 +151,8 @@ defmodule MWTClient.Sandbox.Grant do
     with: [],
     writes_dir: false,
     mint_per: :grant,
+    keep_minutes: nil,
+    signs_as: [],
     presents: %{},
     resolver: nil,
     anchor: nil,
@@ -206,7 +224,12 @@ defmodule MWTClient.Sandbox.Grant do
           with: [String.t()],
           writes_dir: boolean(),
           mint_per: :grant | :host,
-          presents: %{optional(:metadata) => %{project: String.t(), email: String.t()}},
+          keep_minutes: pos_integer() | nil,
+          signs_as: [String.t()],
+          presents: %{
+            optional(:metadata) => %{project: String.t(), email: String.t()},
+            optional(:login) => %{refresh: String.t(), header: String.t()}
+          },
           resolver: String.t() | nil,
           anchor: String.t() | nil,
           icon: String.t() | nil,
@@ -593,6 +616,33 @@ defmodule MWTClient.Sandbox.Grant do
   @doc "Where the VM finds a token grant's placeholder as a file."
   @spec token_file(t()) :: String.t()
   def token_file(%__MODULE__{id: id}), do: "/mnt/mwt/tokens/" <> id
+
+  @doc "Where the VM finds a grant's Google login file, under `mwt exec`."
+  @spec login_file(t()) :: String.t()
+  def login_file(%__MODULE__{id: id}), do: "/mnt/mwt/logins/#{id}.json"
+
+  @doc "The placeholder standing for a grant's login in its login file, or nil."
+  @spec login_placeholder(t()) :: String.t() | nil
+  def login_placeholder(%__MODULE__{presents: %{login: %{refresh: refresh}}}), do: refresh
+  def login_placeholder(_grant), do: nil
+
+  @doc """
+  The headers a grant's ID token travels in: the one its login names, or
+  the grant's own carriers.
+  """
+  @spec id_token_carriers(t()) :: [String.t()]
+  def id_token_carriers(%__MODULE__{presents: %{login: %{header: header}}}) when header != "",
+    do: [header]
+
+  def id_token_carriers(grant), do: carriers(grant)
+
+  @doc """
+  A new placeholder for a login's refresh token, shaped as Google's are
+  (`1//`), long and random.
+  """
+  @spec new_login_placeholder() :: String.t()
+  def new_login_placeholder,
+    do: "1//mwt" <> Base.url_encode64(:crypto.strong_rand_bytes(48), padding: false)
 
   @doc "The hosts git's credential helper answers for: the exact ones, when `git` is set."
   @spec git_hosts(t()) :: [String.t()]

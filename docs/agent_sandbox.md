@@ -857,6 +857,7 @@ The main modules, `MWTClient.Sandbox.*` in `lib/mwt_client/sandbox/`:
 | `Grant`, `Param`, `SavedRequest`, `Allowance`, `Approval`, `Check`, `Presets` | Records of access and of what waits for you; grant types |
 | `Egress`, `Egress.*`, `Dns`, `Destinations`, `Routes`                 | The proxy; lookups; where an address may go                  |
 | `Placeholder`, `Secrets`, `CertificateAuthority`, `Roots`             | Swapping values in; finding them; MWT's CA; the system roots |
+| `CredentialEndpoint`, `Made`                                          | Credential endpoints MWT answers; the values it made there   |
 | `Describe`, `GraphQL`, `RequestView`, `Chunked`, `Shown`, `Inbound`   | A request as facts; text the VM chose, made safe to show     |
 | `Channel`, `Why`, `MwtTools`, `AgentThreads`                          | The `mwt` socket; `mwt why`; `mwt mcp`; Zed's agent threads  |
 | `HostCommand`, `HostRun`, `HostInfo`, `Confine`, `Bounded`            | Commands on this machine: checked, run, confined; `host.md`  |
@@ -1095,6 +1096,17 @@ often one using the same ranges.
       header and the carriers); one in the target or the body of a host its
       grant lists goes on as it is. A request carries one grant's
       placeholder at most (`403`, `mwt_multiple_grants`).
+    - A value made from a grant's ([Credential endpoints MWT
+      answers](#credential-endpoints-answered)) is a use of that grant,
+      with hosts and carriers of its own: its placeholder elsewhere is
+      blocked as a grant's is; one MWT no longer holds (expired, from
+      before MWT started, or no longer covered by its grant) is refused,
+      `403` `mwt_placeholder_expired`, never sent as it is.
+    - A login's placeholder, in a grant's login file, makes only the body
+      of a refresh at Google's token endpoint that grant's use; anywhere
+      else it is blocked as any placeholder moved where it doesn't go.
+    - A request to a credential endpoint the grant takes is checked here
+      and, let through, answered by MWT itself, never forwarded.
 5. **No placeholder**: forwarded unchanged, the rest of the body still
    looked through for real values ([What comes back](#what-comes-back)).
 6. **Grant off or expired**: `403` with
@@ -1378,6 +1390,9 @@ A token grant names:
 - whether **git** over HTTPS gets it, from MWT's credential helper, for its
   exact hosts (not its `*.` entries);
 - how the placeholder **starts** (`ghp_`, `sk-`), for clients that check;
+- the **service accounts** MWT signs JWTs as for it, answering Google's
+  `signJwt` itself ([Credential endpoints MWT
+  answers](#credential-endpoints-answered));
 - where its real value comes from, who uses it, and its presentations,
   below.
 
@@ -1452,7 +1467,16 @@ says who wields its value (`Grant.reach`):
     single host, can't name a grant minted per host.
   - It prints the bare value, kept 10 minutes, or
     `{"value": "…", "expires_in": 1800}`, kept until a minute before it
-    expires; JSON with no `value` is an error.
+    expires; JSON with no `value` is an error. Beside its value it may
+    print an `id_token`, kept as long, for a grant with a login file
+    ([Credential endpoints MWT answers](#credential-endpoints-answered));
+    what `gcloud config config-helper --format=json` prints is read as it
+    is (`credential.access_token`, `credential.id_token`,
+    `credential.token_expiry`), so that needs no reshaping here.
+  - A grant may keep each value at most N minutes (`Grant.keep_minutes`),
+    whatever the mint says of its expiry, for a service that takes a token
+    only while it is young: one that refuses an ID token issued more than
+    5 minutes before keeps it 4.
   - The grant is looked at again once the value is at hand: one turned
     off, out of time or no longer listing the host while it ran sends
     nothing (`mwt_grant_off`).
@@ -1474,7 +1498,7 @@ the ones it needs (`Grant.presents`); `mwt exec` runs the command under it,
 so it owns the child, its signals (passed on) and its exit status, and
 nothing of it is left once the command ends.
 
-The one there is: **a cloud metadata server** on a loopback port, with
+Two there are. **A cloud metadata server** on a loopback port, with
 `GCE_METADATA_HOST` and `GCE_METADATA_IP` set (with only the first, a
 client library's detection ping goes elsewhere). Every path but `/` needs
 `Metadata-Flavor: Google`, as the real one does:
@@ -1488,9 +1512,104 @@ client library's detection ping goes elsewhere). Every path but `/` needs
 | `…/universe/universe-domain`                | `googleapis.com`                                                          |
 
 Its settings travel in variables (`MWT_PRESENT…`) that reach the
-presentation, never the command. The add form offers it on Google Cloud
-grants only: gcloud reads the token file, and only Google's client
-libraries look for a metadata server.
+presentation, never the command. The form offers it on a token grant
+whose hosts are Google's APIs (under `googleapis.com`), added or edited,
+or that has it on: gcloud reads the token file, and only Google's client
+libraries look for a metadata server. An agent proposes it with
+`--metadata-project` and `--metadata-account` ([Proposed
+grants](#proposed-grants)).
+
+**A Google login file** (*Give it a Google login file*): within `mwt
+exec`, `GOOGLE_APPLICATION_CREDENTIALS` names
+`/mnt/mwt/logins/<grant>.json`, an `authorized_user` login whose refresh
+token is a placeholder of its own (`1//mwt…`, made once, kept across
+edits), with gcloud's public client id and a secret that is none. It is
+for tools that refresh a login themselves rather than take a token, as
+one that needs an ID token must. That refresh never goes out: MWT answers
+it ([Credential endpoints MWT answers](#credential-endpoints-answered)).
+Google's libraries take the file before a metadata server. An agent
+proposes it with `--login-file` and `--id-token-header`.
+
+<a id="credential-endpoints-answered"></a>
+
+### Credential endpoints MWT answers
+
+Some tools don't send a grant's token to the service: they trade it, in
+process, at a credential endpoint for another credential, and send that.
+The firewall refuses such a request ([Rules](#rules): *Minting a
+credential*), since the answer would be a credential in the VM. For a
+grant that takes the endpoint, MWT answers it itself instead
+(`MWTClient.Sandbox.CredentialEndpoint`): it makes the credential with
+the grant's real value, keeps it as a **value made from the grant**
+(`MWTClient.Sandbox.Made`), and the VM gets a placeholder for it.
+
+A made value belongs to its grant: a request carrying its placeholder is a
+use of that grant, asking or allowed as the grant is, refused while it is
+off. It goes where it was made for, narrower than its grant: its own
+hosts, its own carriers, until its own expiry. It is kept in memory only,
+as minted values are, and is among the values the proxy looks for. Its
+placeholder sent where it doesn't go is blocked as a grant's is; one MWT
+no longer holds is refused (`mwt_placeholder_expired`), so a tool told to
+sign again is told why, rather than getting the service's `401`. A JWT's
+placeholder is the JWT with its signature replaced (`mwt` and 43
+base64url characters): its header and claims say nothing secret, and a
+client that reads them locally still works.
+
+Two there are.
+
+**Google's token endpoint**, for a grant with a login file
+([Presentations](#presentations)):
+
+1. The request: `POST oauth2.googleapis.com/token`, its body carrying the
+   login's placeholder, which makes it the grant's use; that placeholder
+   anywhere else is blocked as any is.
+2. Checked: a refresh (`grant_type=refresh_token`) of that very login,
+   read whole.
+3. Let through as any use of the grant, nothing goes out: MWT fetches the
+   grant's value (minting it when it must) and answers
+   `{"access_token": the grant's placeholder, "expires_in": as long as MWT
+   keeps it, "token_type": "Bearer", "id_token": …}`. The access token is
+   the grant's own placeholder, swapped on the way out as always.
+4. The `id_token`, when the mint printed one, is a placeholder made from
+   the grant that stands for *its current ID token*: on the way out MWT
+   puts in the one the mint gives now, minting again once the kept one is
+   older than the grant keeps its values, so a service that refuses old ID
+   tokens gets a fresh one however long ago the tool refreshed. It goes to
+   the grant's hosts, in the header the login names (*Header its ID token
+   travels in*), or in the grant's carriers. Its claims are the real
+   token's `iss`, `aud`, `iat`, `exp`, `email` and `hd`, no more: the
+   email and domain are that grant's own login's, which needn't be the
+   one your commits use.
+
+**IAM Credentials' `signJwt`**, for a grant that names
+the service accounts it may sign as (*May sign as*, `Grant.signs_as`). A
+client of a service behind Identity-Aware Proxy loads default credentials
+(the [metadata server](#presentations)), asks Google to sign claims it
+builds as a service account, and sends the JWT as its bearer:
+
+1. The request: `POST
+   iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/ACCOUNT:signJwt`,
+   carrying the grant's placeholder.
+2. Checked before anyone is asked: the account is one the grant names
+   (`mwt_not_a_signer`); the claims' `aud` is an `https` URL on a host the
+   grant lists, the only place the signed JWT will go
+   (`mwt_placeholder_blocked`); no `delegates`, which would sign as an
+   account the grant doesn't name; the whole body read.
+3. Let through as any use of the grant, MWT sends the same request itself
+   with the grant's real value: the very request the tool makes on your
+   machine, with the same token. A grant that signs must list
+   `iamcredentials.googleapis.com` (or `*.googleapis.com`), since the
+   value goes there.
+4. Google's answer: the signed JWT is kept, going only to the `aud` host,
+   in `Authorization`, until its `exp` (12 hours at most); the VM gets
+   `{"keyId": …, "signedJwt": placeholder}`. A refusal of Google's goes to
+   the VM as it came; no other answer does.
+
+Naming an account is a trust decision, unlike a presentation: the VM may
+then act as that account, through MWT and the grant's approval, toward
+every host the grant lists, Google's APIs among them where it lists them.
+Your login needs *Service Account Token Creator* on the account; without
+it the agent gets Google's `403`.
 
 <a id="presets"></a>
 
@@ -1522,6 +1641,7 @@ path and why (`Presets.load/1`).
 | GitHub       | `token`, placeholder `ghp_…`                                                | `GITHUB_TOKEN`, `GH_TOKEN`, git's credential helper     | `api.github.com`, `github.com`, `uploads.github.com` |
 | Hex          | `token`                                                                     | `HEX_API_KEY`                                           | `hex.pm`, `repo.hex.pm`                              |
 | Google Cloud | `token`, minted (`gcloud auth print-access-token`), placeholder `ya29.mwt…` | `CLOUDSDK_AUTH_ACCESS_TOKEN_FILE` naming the token file | `*.googleapis.com`                                   |
+| Google login, with ID token | `token`, minted (`gcloud config config-helper --force-auth-refresh --format=json`), placeholder `ya29.mwt…` | a login file (`GOOGLE_APPLICATION_CREDENTIALS`), its refresh answered by MWT | `*.googleapis.com` |
 
 Placeholders look like the real thing where a preset says so, since some
 clients check the format. Each grant's placeholder is made once and never
@@ -1862,8 +1982,10 @@ describing it with `mwt request --need`:
 
 ```
 mwt propose token --name NAME --for "what it is for" --host HOST [--host …] \
-    [--env VAR …] [--file-env VAR …] [--carrier HEADER …] [--git] [--mint 'COMMAND'] \
-    [--subgrants-only] [--preset ID] --reason "why"
+    [--env VAR …] [--file-env VAR …] [--carrier HEADER …] [--git] [--mint 'COMMAND' [--keep-minutes N]] \
+    [--sign-as ACCOUNT …] [--login-file [--id-token-header HEADER]] \
+    [--metadata-project PROJECT [--metadata-account EMAIL]] [--subgrants-only] \
+    [--preset ID] --reason "why"
 mwt propose network --name NAME --for "what it is for" --destination 'HOST_OR_RANGE:PORTS' [--destination …] \
     [--resolver ADDRESS] [--via INTERFACE] --reason "why"
 mwt propose GRANT --name … --for … …        a subgrant (Proposing one, Request subgrants)
@@ -3004,7 +3126,10 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
     says which endpoints those are. So *Minting a credential* refuses a
     request that would carry a grant's value to one, request subgrants'
     calls included, before the value is fetched (`mwt_credential_endpoint`);
-    one with no value in it is the upstream's to answer. The add-grant form
+    one with no value in it is the upstream's to answer. A grant that signs
+    as a service account has `signJwt` answered by MWT instead, with a
+    placeholder ([Credential endpoints MWT
+    answers](#credential-endpoints-answered)). The add-grant form
     says when a grant's hosts, or a subgrant's URL, cover an entry. A
     registry pull that trades a grant's token for the registry's is refused
     too: take the entry off the list, or set the rule to Alert, for that.
@@ -3270,7 +3395,9 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     `egress_test.exs`).
 24. A grant's value never goes to a listed credential endpoint while the rule
     blocks (`egress_test.exs`, `firewall_test.exs`,
-    `host_command_channel_test.exs`).
+    `host_command_channel_test.exs`), but in the one request MWT sends there
+    itself for a grant that signs, whose answer stays with MWT
+    (`credential_endpoint_test.exs`).
 25. For a grant only its subgrants use, nothing holding its placeholder is in
     `/mnt/mwt`, and its placeholder opens nothing
     (`credential_scope_test.exs`, `policy_test.exs`).
@@ -3295,6 +3422,14 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     credential's shape while the rule blocks, never reaches the VM unless
     you send it from the Overview (`workspace_sync_test.exs`,
     `inbound_test.exs`).
+33. A JWT MWT had signed never reaches the VM; its placeholder goes only to
+    the host its `aud` names, and only while its grant still signs as its
+    account and lists that host (`credential_endpoint_test.exs`).
+34. A login's refresh never goes out, and its placeholder makes only a
+    refresh at Google's token endpoint the grant's use; an ID token's
+    placeholder holds only `iss`, `aud`, `iat`, `exp`, `email` and `hd`,
+    and goes only in its header to the grant's hosts
+    (`credential_endpoint_test.exs`, `credential_scope_test.exs`).
 
 <a id="decisions"></a>
 
@@ -3376,6 +3511,10 @@ history is in git.
 | 2026-11-19 | Agents write every commit message, a handoff's title included, as a Conventional Commit (`type(scope): summary`), taking scopes and length from the project's history even where its older commits don't follow the convention, so every project's history reads the same way ([Handoffs](#handoffs)). |
 | 2026-11-21 | `agents.md` tells agents only how to work in the VM; how you like to work with agents (which decisions to bring you, how to build from building blocks) is your way of working, a text you write in Settings, empty by default, since it is your taste rather than a fact of the VM ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)). |
 | 2026-11-21 | The workspace, `~/mwt-vm`, moves files that aren't code between the VM and your machine in two halves, each written by one side only, so nothing is reconciled: `to-vm/` yours, copied in as a shared folder; `from-vm/` the VM's, copied here read-only under a grant of its own and rules that keep out what your tools act on by being there (no name starting with a dot or a dash, no link, nothing executable), since it is the first way the VM writes onto your disk without a handoff you land ([The workspace](#the-workspace)). |
+| 2026-11-21 | The metadata server is offered on every token grant whose hosts are Google's APIs, however the grant was made, and an agent may propose it (`--metadata-project`, `--metadata-account`), since it holds only placeholders and a Google grant proposed, or added without it, left Google's client libraries with no default credentials and no way to turn it on ([Presentations](#presentations)). |
+| 2026-11-22 | A credential endpoint a grant takes is answered by MWT itself rather than refused: it makes the credential with the grant's value, keeps it as a value made from the grant, going only where it was made for, and hands the VM a placeholder. The first is `signJwt`, for the service accounts a grant names, the signed JWT going only to its `aud` host; values made for one tool's request belong to one grant, since a request may carry one grant's placeholders ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
+| 2026-11-22 | A token grant may give a Google login file whose refresh MWT answers from the grant's mint, the access token its own placeholder and the ID token, when the mint prints one, a placeholder standing for the grant's current ID token, minted fresh on the way out, holding only its `iss`, `aud`, `iat`, `exp`, `email` and `hd`; values made for one tool's request belong to one grant ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
+| 2026-11-22 | A minted grant may keep each value at most N minutes, whatever its expiry says, since a service may take a token only while it is young ([Where real values come from](#where-real-values-come-from)). |
 
 <a id="later"></a>
 

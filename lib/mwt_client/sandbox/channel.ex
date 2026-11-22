@@ -316,9 +316,9 @@ defmodule MWTClient.Sandbox.Channel do
   the `values` of a call, a map of texts checked against the subgrant's
   parameters (`MWTClient.Sandbox.Param`); `params`, `headers` and what a
   proposed grant lists (`hosts`, `env`, `file_env`, `carriers`,
-  `destinations`) are lists of texts.
+  `signs_as`, `destinations`) are lists of texts.
   """
-  @lists ~w(params headers hosts env file_env carriers destinations)
+  @lists ~w(params headers hosts env file_env carriers signs_as destinations)
 
   @spec read(binary()) :: map() | :unreadable
   def read(line) do
@@ -1050,6 +1050,12 @@ defmodule MWTClient.Sandbox.Channel do
       carriers: List.wrap(ask["carriers"]),
       git: ask["git"] == true,
       mint: ask["mint"],
+      keep_minutes: ask["keep_minutes"],
+      signs_as: List.wrap(ask["signs_as"]),
+      login_file: ask["login_file"] == true,
+      id_token_header: ask["id_token_header"],
+      metadata_project: ask["metadata_project"],
+      metadata_account: ask["metadata_account"],
       subgrants_only: ask["subgrants_only"] == true,
       destinations: List.wrap(ask["destinations"]),
       resolver: ask["resolver"],

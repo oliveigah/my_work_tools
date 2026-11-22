@@ -215,13 +215,33 @@ defmodule MWTClient.Sandbox.Instructions do
           ""
       end
 
+    login =
+      if Grant.login_placeholder(grant),
+        do:
+          " Within that command GOOGLE_APPLICATION_CREDENTIALS names a Google login file " <>
+            "(#{Grant.login_file(grant)}) whose refresh MWT answers, with an ID token when the " <>
+            "grant's mint gives one, which goes in the " <>
+            "#{Enum.join(Grant.id_token_carriers(grant), " or ")} header.",
+        else: ""
+
+    signs =
+      case grant.signs_as do
+        [] ->
+          ""
+
+        accounts ->
+          " Within that command, signJwt as #{Enum.join(accounts, ", ")} " <>
+            "(iamcredentials.googleapis.com) is answered by MWT with a placeholder JWT, " <>
+            "which goes only to the host its aud names, in the Authorization header."
+      end
+
     "use: run mwt exec #{grant.id} -- COMMAND here in the VM after turning it on. " <>
       "Only that command and its children get #{Enum.join(holders, ", ")}. " <>
       "These hold placeholders. Send it as the tool normally sends " <>
       "this token, only to #{Enum.join(grant.hosts, ", ")}, in the " <>
       "#{Enum.join(Grant.carriers(grant), " or ")} header; MWT swaps in the real value there " <>
       "and refuses it in any other header." <>
-      git <> presents
+      git <> presents <> login <> signs
   end
 
   def usage(%Grant{kind: :mwt, tools: :git_fetch}),

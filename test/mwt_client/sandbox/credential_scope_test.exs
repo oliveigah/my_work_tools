@@ -190,6 +190,42 @@ defmodule MWTClient.Sandbox.CredentialScopeTest do
     refute message =~ "must not run"
   end
 
+  test "a grant's Google login file holds only placeholders, and only its command is told of it",
+       context do
+    login = %{
+      context.github
+      | id: "cli",
+        placeholder: "ya29.mwt_cli_placeholder",
+        env: [],
+        file_env: [],
+        hosts: ["*.googleapis.com"],
+        git: false,
+        presents: %{login: %{refresh: "1//mwt_cli_login", header: ""}}
+    }
+
+    Inbox.write(context.inbox, [login], "")
+
+    assert %{
+             "type" => "authorized_user",
+             "refresh_token" => "1//mwt_cli_login",
+             "client_id" => "32555940559.apps.googleusercontent.com"
+           } = context.inbox |> Path.join("logins/cli.json") |> File.read!() |> Jason.decode!()
+
+    assert {output, 0} =
+             exec(context, ["cli", "--", "bash", "-c", "echo $GOOGLE_APPLICATION_CREDENTIALS"])
+
+    assert String.trim(output) == "/mnt/mwt/logins/cli.json"
+
+    # Outside it, nothing names it; without the presentation, no file.
+    {plain, 0} =
+      System.cmd("bash", ["-c", "echo -n $GOOGLE_APPLICATION_CREDENTIALS"], env: context.env)
+
+    assert plain == ""
+
+    Inbox.write(context.inbox, [%{login | presents: %{}}], "")
+    refute File.exists?(Path.join(context.inbox, "logins/cli.json"))
+  end
+
   @tag :present
   test "a grant's metadata server serves its placeholder for the command's lifetime", context do
     %Grant{} = github = context.github

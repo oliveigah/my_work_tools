@@ -39,7 +39,11 @@ defmodule MWTClient.Sandbox.Policy do
       placeholders in its headers. With one, every header carrying
       it must be one of the grant's carriers (`Grant.carriers/1`), and the
       grant must be on; then an allowance for uses like it, through the
-      same carrier, lets it through, or it asks.
+      same carrier, lets it through, or it asks. A value made from a
+      grant's (`snapshot.made`, `MWTClient.Sandbox.Made`) is that grant's
+      use, with hosts and carriers of its own, narrower than the grant's;
+      one MWT no longer holds, or whose grant no longer covers it, is
+      refused, `{:made_stale, made}`, rather than sent as it is.
     * **A call of a request subgrant** needs that subgrant, named by its
       exact id, on by its own switch, under a token grant that lists the
       host it sends to. It asks unless an allowance for every use covers
@@ -62,9 +66,11 @@ defmodule MWTClient.Sandbox.Policy do
 
   alias MWTClient.Sandbox.{
     Allowance,
+    CredentialEndpoint,
     Describe,
     Destinations,
     Grant,
+    Made,
     MwtTools,
     Placeholder,
     SavedRequest
@@ -80,6 +86,7 @@ defmodule MWTClient.Sandbox.Policy do
           optional(:networks) => [{Destinations.ip(), non_neg_integer()}],
           required(:resolve) => (String.t() -> [Destinations.ip()]),
           optional(:failing) => %{String.t() => String.t()},
+          optional(:made) => [Made.t()],
           optional(:answered) => %{Destinations.ip() => [String.t()]},
           optional(:via) => String.t() | nil
         }
@@ -97,7 +104,9 @@ defmodule MWTClient.Sandbox.Policy do
           | :internet_off
           | :multiple_grants
           | {:wrong_host, Grant.t()}
-          | {:not_a_carrier, Grant.t(), [String.t()]}
+          | {:made_elsewhere, Made.t()}
+          | {:made_stale, Made.t() | nil}
+          | {:not_a_carrier, Grant.t(), [String.t()], [String.t()]}
           | {:grant_off, Grant.t()}
           | {:subgrants_only, Grant.t()}
           | {:check_failing, Grant.t(), String.t()}
@@ -117,12 +126,14 @@ defmodule MWTClient.Sandbox.Policy do
   @doc """
   The snapshot of these grants on this machine, as it is now, with the
   grants a gating check holds off, each with why
-  (`MWTClient.Sandbox.Check.failing/3`).
+  (`MWTClient.Sandbox.Check.failing/3`), and the values made from them
+  (`MWTClient.Sandbox.Made`), without their values.
   """
-  @spec snapshot([Grant.t()], %{String.t() => String.t()}) :: snapshot()
-  def snapshot(grants, failing \\ %{}) do
+  @spec snapshot([Grant.t()], %{String.t() => String.t()}, [Made.t()]) :: snapshot()
+  def snapshot(grants, failing \\ %{}, made \\ []) do
     %{
       grants: grants,
+      made: Enum.map(made, &Made.unvalued/1),
       own: Destinations.host_addresses(),
       networks: MWTClient.Sandbox.Routes.networks(),
       resolve: &Destinations.resolve/1,
@@ -184,37 +195,102 @@ defmodule MWTClient.Sandbox.Policy do
 
   def decide(%{grants: grants} = snapshot, {:request, request}, now) do
     tokens = for %Grant{kind: :token, placeholder: p} = grant <- grants, is_binary(p), do: grant
+    made = Map.get(snapshot, :made, [])
     carried = Enum.filter(tokens, &Placeholder.in?(request.headers, &1.placeholder))
+    made_carried = Enum.filter(made, &Placeholder.in?(request.headers, &1.placeholder))
 
     # Only a header gets a value, but a placeholder anywhere in what MWT
     # read is a string moved where its grant doesn't go (QA L9).
-    elsewhere =
-      Enum.find(tokens, fn grant ->
-        not host_listed?(request.host, grant.hosts) and
-          (grant in carried or String.contains?(request.path, grant.placeholder) or
-             String.contains?(request.body || "", grant.placeholder))
+    moved? = fn placeholder, hosts, in_headers? ->
+      not host_listed?(request.host, hosts) and
+        (in_headers? or String.contains?(request.path, placeholder) or
+           String.contains?(request.body || "", placeholder))
+    end
+
+    elsewhere = Enum.find(tokens, &moved?.(&1.placeholder, &1.hosts, &1 in carried))
+    made_elsewhere = Enum.find(made, &moved?.(&1.placeholder, &1.hosts, &1 in made_carried))
+
+    # A login's placeholder belongs only in the body of a refresh at
+    # Google's token endpoint, which MWT answers
+    # (`MWTClient.Sandbox.CredentialEndpoint`): there it makes the request
+    # its grant's; anywhere else it is moved where it doesn't go.
+    refresh? = CredentialEndpoint.token_request?(request)
+    # A form body carries it percent-encoded (`1%2F%2F…`).
+    body = request.body || ""
+    bodies = [body, form_decoded(body)]
+
+    logins =
+      for %Grant{} = grant <- tokens,
+          login = Grant.login_placeholder(grant),
+          is_binary(login),
+          do: {grant, login}
+
+    in_body? = fn login -> Enum.any?(bodies, &String.contains?(&1, login)) end
+    login_carried = for {grant, login} <- logins, refresh?, in_body?.(login), do: grant
+
+    login_moved =
+      Enum.find_value(logins, fn {grant, login} ->
+        if Placeholder.in?(request.headers, login) or String.contains?(request.path, login) or
+             (not refresh? and in_body?.(login)),
+           do: grant
       end)
 
-    case {carried, elsewhere} do
-      {_, %Grant{} = elsewhere} ->
+    # A JWT placeholder MWT wrote and no longer holds (expired, or from
+    # before MWT started), or one its grant no longer covers: sent as it
+    # is, the service would only say no, and not why.
+    stale =
+      Enum.find(made_carried, &(not Made.covered?(&1, grants, now))) ||
+        if unknown_made?(request.headers, made), do: :unknown
+
+    owners =
+      Enum.uniq_by(
+        carried ++ for(m <- made_carried, g <- tokens, g.id == m.grant_id, do: g) ++ login_carried,
+        & &1.id
+      )
+
+    cond do
+      elsewhere ->
         {:refuse, {:wrong_host, elsewhere}}
 
-      {[], nil} ->
+      login_moved ->
+        {:refuse, {:wrong_host, login_moved}}
+
+      made_elsewhere ->
+        {:refuse, {:made_elsewhere, made_elsewhere}}
+
+      stale ->
+        {:refuse, {:made_stale, if(stale == :unknown, do: nil, else: stale)}}
+
+      owners == [] ->
         :pass
 
-      {[_, _ | _], nil} ->
+      match?([_, _ | _], owners) ->
         {:refuse, :multiple_grants}
 
-      {[grant], nil} ->
+      true ->
+        [grant] = owners
         carriers = Grant.carriers(grant)
+
+        # Each placeholder only in the headers its value goes in: the
+        # grant's own in its carriers, a made one in its own.
+        outside =
+          if(grant in carried,
+            do: [{Placeholder.outside(request.headers, grant.placeholder, carriers), carriers}],
+            else: []
+          ) ++
+            for(
+              m <- made_carried,
+              do: {Placeholder.outside(request.headers, m.placeholder, m.carriers), m.carriers}
+            )
 
         cond do
           # One kept from before: its value is only MWT's to send.
           Grant.subgrants_only?(grant) ->
             {:refuse, {:subgrants_only, grant}}
 
-          (outside = Placeholder.outside(request.headers, grant.placeholder, carriers)) != [] ->
-            {:refuse, {:not_a_carrier, grant, outside}}
+          (wrong = Enum.find(outside, fn {headers, _carriers} -> headers != [] end)) != nil ->
+            {headers, carriers} = wrong
+            {:refuse, {:not_a_carrier, grant, headers, carriers}}
 
           why = failing(snapshot, grant) ->
             {:refuse, {:check_failing, grant, why}}
@@ -223,8 +299,16 @@ defmodule MWTClient.Sandbox.Policy do
             {:refuse, {:grant_off, grant}}
 
           true ->
-            carrier = Placeholder.carrier(request.headers, grant.placeholder, carriers)
-            about = request |> Describe.request() |> Describe.carried_in(carrier)
+            carrier =
+              Placeholder.carrier(request.headers, grant.placeholder, carriers) ||
+                Enum.find_value(
+                  made_carried,
+                  &Placeholder.carrier(request.headers, &1.placeholder, &1.carriers)
+                )
+
+            about = Describe.request(request)
+            # A refresh carries the login in its body, not in a header.
+            about = if carrier, do: Describe.carried_in(about, carrier), else: about
             allow_or_ask(grant, now, about)
         end
     end
@@ -347,6 +431,26 @@ defmodule MWTClient.Sandbox.Policy do
     Enum.any?(hosts, fn
       "*." <> suffix -> host == suffix or String.ends_with?(host, "." <> suffix)
       exact -> host == String.downcase(exact)
+    end)
+  end
+
+  # A form body decoded, or as it is when it isn't one: what the VM sent
+  # needn't be well formed.
+  defp form_decoded(body) do
+    URI.decode_www_form(body)
+  rescue
+    ArgumentError -> body
+  end
+
+  # Whether a header carries a JWT placeholder MWT wrote that isn't among
+  # the made values it holds.
+  defp unknown_made?(headers, made) do
+    known = MapSet.new(made, & &1.placeholder)
+
+    Enum.any?(headers, fn {_name, value} ->
+      value
+      |> Made.jwt_placeholders_in()
+      |> Enum.any?(&(not MapSet.member?(known, &1)))
     end)
   end
 
