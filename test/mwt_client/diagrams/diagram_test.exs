@@ -152,6 +152,67 @@ defmodule MWTClient.Diagrams.DiagramTest do
              by_id["loose"]
   end
 
+  describe "groups" do
+    defp box(id, groups), do: %{"id" => id, "type" => "rectangle", "groups" => groups}
+    defp order(elements), do: Enum.map(elements, & &1["id"])
+    defp groups(elements), do: Enum.map(elements, &Map.get(&1, "groups"))
+
+    test "are kept outermost first, and left out when there are none" do
+      elements = Diagram.elements([box("a", ["g", "h"]), box("b", ["g", "h"]), box("c", [])])
+
+      assert groups(elements) == [["g", "h"], ["g", "h"], nil]
+      refute Map.has_key?(List.last(elements), "groups")
+    end
+
+    test "stop at an id that is not one, or one listed again" do
+      elements =
+        Diagram.elements([
+          box("c", "g"),
+          box("a", ["g", "bad id!", "h"]),
+          box("b", ["g", "g", "h"]),
+          box("d", ["g"])
+        ])
+
+      assert groups(elements) == [nil, ["g"], ["g"], ["g"]]
+    end
+
+    test "gather each group's members where the topmost of them is" do
+      elements =
+        Diagram.elements([
+          box("a", ["g", "h"]),
+          box("b", ["g"]),
+          box("c", ["g", "h"]),
+          box("d", []),
+          box("e", ["g"])
+        ])
+
+      assert order(elements) == ~w(d b a c e)
+    end
+
+    test "nest: a group listed inside other groups than at first is dropped there" do
+      elements =
+        Diagram.elements([
+          box("a", ["g", "h"]),
+          box("b", ["g", "h"]),
+          box("c", ["h"]),
+          box("d", ["x", "h"]),
+          box("e", ["x"])
+        ])
+
+      assert groups(elements) == [["g", "h"], ["g", "h"], nil, ["x"], ["x"]]
+    end
+
+    test "of one member are no groups, nor any inside them" do
+      elements = Diagram.elements([box("a", ["g", "h"]), box("b", ["x"]), box("c", ["x"])])
+      assert groups(elements) == [nil, ["x"], ["x"]]
+    end
+
+    test "that already hold change nothing" do
+      elements = Diagram.elements([box("a", ["g"]), box("b", ["g"]), box("c", [])])
+      assert Diagram.elements(elements) == elements
+    end
+  end
+
   test "a table's title and rows are searched and quoted" do
     diagram =
       Diagram.new(%{

@@ -155,6 +155,34 @@ defmodule MWTClient.MCP.Guides do
     the outside, e.g. start {"x": 0.25, "y": 0} and end {"x": 0.75, "y": 0}
     with points 40 units above each.
 
+    ## Drawing order and groups
+
+    Elements are drawn in the order listed: a later one covers an earlier
+    one, so list a box drawn around others before them. Reordering the list
+    is how something is brought to the front or sent to the back.
+
+    groups puts an element in groups, which the editor picks, moves, resizes
+    and stacks as one: a box and its label, a legend, a lane and what is in
+    it. List the groups an element is in outermost first; leave groups out
+    for an element in none. A box and its label:
+
+        {"id": "cache", "type": "rectangle", ..., "groups": ["cache_note"]}
+        {"id": "cache_label", "type": "text", ..., "groups": ["cache_note"]}
+
+    Groups nest: a group inside another comes after it, as in
+    ["legend", "legend_key"] for a member of legend_key, a group inside
+    legend. Group IDs take the same characters as element IDs. Three rules
+    hold, and a diagram breaking one is rejected with what to fix:
+
+    - every member of a group lists the same groups before it;
+    - a group has two or more members;
+    - a group's members are listed next to each other in elements, its
+      inner groups' members next to each other inside them.
+
+    An arrow joined to a member stays joined when the group moves, and
+    needn't be in the group itself; put it in only when it belongs to what
+    the group shows.
+
     ## Table sizing and row anchors
 
     | size | font | header height | row height |

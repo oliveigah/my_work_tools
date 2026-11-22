@@ -53,15 +53,25 @@ defmodule MWTClient.Versions.Diff do
 
   @doc """
   How a diagram's elements changed, by their ids: `added`, `removed`,
-  `moved` (only where or how big), and `changed` (anything else).
+  `moved` (only where or how big), `changed` (anything else), and
+  `reordered`, the fewest of those in both that had to change places in the
+  drawing order, which decides what covers what.
+
+      iex> a = %{"id" => "a"}
+      iex> b = %{"id" => "b"}
+      iex> MWTClient.Versions.Diff.elements([a, b], [b, a])
+      %{added: 0, removed: 0, moved: 0, changed: 0, reordered: 1}
   """
   @spec elements([map()], [map()]) :: %{
           added: non_neg_integer(),
           removed: non_neg_integer(),
           moved: non_neg_integer(),
-          changed: non_neg_integer()
+          changed: non_neg_integer(),
+          reordered: non_neg_integer()
         }
   def elements(old, new) do
+    old_order = Enum.map(old, & &1["id"])
+    new_order = Enum.map(new, & &1["id"])
     old = Map.new(old, &{&1["id"], &1})
     new = Map.new(new, &{&1["id"], &1})
     both = for {id, element} <- new, Map.has_key?(old, id), do: {old[id], element}
@@ -70,8 +80,38 @@ defmodule MWTClient.Versions.Diff do
       added: Enum.count(Map.keys(new), &(not Map.has_key?(old, &1))),
       removed: Enum.count(Map.keys(old), &(not Map.has_key?(new, &1))),
       moved: Enum.count(both, fn {a, b} -> a != b and same_but_place?(a, b) end),
-      changed: Enum.count(both, fn {a, b} -> a != b and not same_but_place?(a, b) end)
+      changed: Enum.count(both, fn {a, b} -> a != b and not same_but_place?(a, b) end),
+      reordered: reordered(Enum.filter(old_order, &Map.has_key?(new, &1)), new_order)
     }
+  end
+
+  # Those of `kept`, in their old order, not on the longest run that keeps
+  # its order in the new one: each of them moved past something.
+  defp reordered(kept, new_order) do
+    place = new_order |> Enum.with_index() |> Map.new()
+    length(kept) - longest_rising(Enum.map(kept, &place[&1]))
+  end
+
+  # The length of the longest strictly rising subsequence, by patience
+  # sorting: `tops` keeps the smallest last value of a run of each length.
+  defp longest_rising(values) do
+    values
+    |> Enum.reduce(:gb_trees.empty(), fn value, tops ->
+      case first_at_least(tops, value) do
+        nil -> :gb_trees.insert(value, true, tops)
+        top -> :gb_trees.insert(value, true, :gb_trees.delete(top, tops))
+      end
+    end)
+    |> :gb_trees.size()
+  end
+
+  defp first_at_least(tops, value) do
+    iterator = :gb_trees.iterator_from(value, tops)
+
+    case :gb_trees.next(iterator) do
+      {top, _true, _rest} -> top
+      :none -> nil
+    end
   end
 
   @doc "The counts of `elements/2` in words, or nil when nothing differs."
@@ -81,7 +121,8 @@ defmodule MWTClient.Versions.Diff do
       {counts.added, "added"},
       {counts.removed, "removed"},
       {counts.changed, "changed"},
-      {counts.moved, "moved"}
+      {counts.moved, "moved"},
+      {counts.reordered, "reordered"}
     ]
     |> Enum.reject(fn {count, _word} -> count == 0 end)
     |> Enum.map(fn {count, word} ->

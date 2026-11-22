@@ -581,61 +581,6 @@ Either way, a slot an agent works in is shared: the tool shows who holds it
 (`branch.NAME.mwt-thread`) and asks before changing it. Your own working
 tree, above, has no such conflict.
 
-## Diagrams: groups, and bringing to front or sending to back
-
-Set aside on 2026-11-21. In the diagram editor, what is on top is decided
-by the order of the diagram's elements: `renderScene` in
-`assets/js/diagram_editor.js` draws them in that order, so a later element
-covers an earlier one. A new element always lands on top. Nothing in the
-editor changes the order. Today the only way is `update_diagram` through
-the MCP server, which rewrites the whole list. And elements can't be
-grouped: several shapes meant to move together (a box and its label, a
-legend) have to be selected again each time, with shift-click or a
-marquee.
-
-What it would take:
-
-- **A menu on the right click.** Where these actions, and the others
-  that act on what is selected, live.
-  - Today the editor turns the browser's menu off (`contextmenu`, in
-    `mounted`), and a press of the right button starts moving around the
-    canvas (`pointerDown`).
-  - Both stay, but a right click that doesn't move (released within a
-    few pixels of where it was pressed) opens MWT's menu at the pointer.
-  - On an element that isn't selected, the right click selects it first.
-    On empty canvas, the menu offers what applies there (paste, select
-    all).
-  - It lists:
-    - the order and group actions below;
-    - duplicate, copy, paste and delete;
-    - each action's shortcut beside it.
-  - Actions that don't apply are greyed out, not hidden: ungroup on
-    elements in no group, bring to front on what is already on top.
-  - `Escape` or a click elsewhere closes it, and the arrow keys move
-    through it.
-- **Order.**
-  - Bring forward, send backward, bring to front, send to back, on the
-    selection, from the right-click menu.
-  - Shortcuts: `Ctrl+]` and `Ctrl+[`, with `Shift` for all the way.
-  - Several selected elements keep their order among themselves.
-  - It is saved as the elements' order, so versions, the diff and the MCP
-    tools see it with no new field.
-- **Groups.**
-  - Group the selection from the right-click menu or with `Ctrl+G`;
-    ungroup the same way, or with `Ctrl+Shift+G`.
-  - Clicking a member selects the whole group, and a double-click goes
-    inside it to pick one.
-  - Moving, resizing, deleting, duplicating and restyling act on all its
-    members.
-  - It moves in the stacking order as one block (its members kept next to
-    each other).
-  - Groups can be nested. Arrows bound to a member stay bound.
-- **Stored where agents see it.** A `group` id on each member (a list, for
-  nested groups), in the element schema the MCP tools check
-  (`lib/mwt_client/mcp/catalogue.ex`, whose elements allow no other
-  fields). `mwt://guides/diagrams` explains it, so an agent drawing a
-  diagram can group what belongs together.
-
 ## From the threat model review of 2026-11-21
 
 Its findings that no section above covers. The review

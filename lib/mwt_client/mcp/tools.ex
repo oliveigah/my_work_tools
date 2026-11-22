@@ -564,10 +564,104 @@ defmodule MWTClient.MCP.Tools do
       error ->
         {:error, error}
 
+      problem = group_error(elements) ->
+        {:error, problem}
+
       true ->
         :ok
     end
   end
+
+  # The premises of groups the editor builds on (see `Diagram`), which the
+  # canvas sanitizer would otherwise restore by changing what was written.
+  defp group_error(elements) do
+    members =
+      for {element, index} <- Enum.with_index(elements),
+          group <- Map.get(element, "groups", []),
+          reduce: %{} do
+        members -> Map.update(members, group, [index], &[index | &1])
+      end
+      |> Map.new(fn {group, indexes} -> {group, Enum.reverse(indexes)} end)
+
+    repeated_group(elements) || nesting_error(elements) || size_error(elements, members) ||
+      split_error(elements, members)
+  end
+
+  defp repeated_group(elements) do
+    elements
+    |> Enum.with_index()
+    |> Enum.find_value(fn {element, index} ->
+      groups = Map.get(element, "groups", [])
+
+      if repeated = Enum.find(groups, &(Enum.count(groups, fn other -> other == &1 end) > 1)) do
+        "#{element_path(elements, index)}.groups lists #{inspect(repeated)} twice; list each group once, outermost first."
+      end
+    end)
+  end
+
+  defp nesting_error(elements) do
+    elements
+    |> Enum.with_index()
+    |> Enum.reduce_while(%{}, fn {element, index}, seen ->
+      groups = Map.get(element, "groups", [])
+
+      groups
+      |> Enum.with_index()
+      |> Enum.reduce_while(seen, fn {group, position}, seen ->
+        before = Enum.take(groups, position)
+
+        case Map.fetch(seen, group) do
+          {:ok, {^before, _first}} ->
+            {:cont, seen}
+
+          {:ok, {other, first}} ->
+            {:halt,
+             {:error,
+              "#{element_path(elements, index)}.groups lists #{inspect(group)} inside #{inspect(before)}, " <>
+                "but #{element_path(elements, first)} lists it inside #{inspect(other)}; every member of a group " <>
+                "lists the same groups before it, outermost first."}}
+
+          :error ->
+            {:cont, Map.put(seen, group, {before, index})}
+        end
+      end)
+      |> case do
+        {:error, message} -> {:halt, message}
+        seen -> {:cont, seen}
+      end
+    end)
+    |> case do
+      message when is_binary(message) -> message
+      _seen -> nil
+    end
+  end
+
+  defp size_error(elements, members) do
+    Enum.find_value(members, fn
+      {group, [index]} ->
+        "group #{inspect(group)} has one member, #{element_path(elements, index)}; a group needs two or more."
+
+      _group ->
+        nil
+    end)
+  end
+
+  defp split_error(elements, members) do
+    Enum.find_value(members, fn {group, indexes} ->
+      {first, last} = {List.first(indexes), List.last(indexes)}
+
+      if length(indexes) != last - first + 1 do
+        inside = MapSet.new(indexes)
+        apart = Enum.find(first..last, &(not MapSet.member?(inside, &1)))
+
+        "group #{inspect(group)} is split by #{element_path(elements, apart)}, which lies between its members " <>
+          "in drawing order; list a group's members next to each other."
+      end
+    end)
+  end
+
+  defp element_path(elements, index),
+    do: "arguments.elements[#{index}] (#{Enum.at(elements, index)["id"]})"
 
   defp invalid_rows?(rows) do
     Enum.any?(rows, &(not Diagram.id?(&1["id"]))) or

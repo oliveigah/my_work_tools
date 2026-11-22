@@ -652,11 +652,12 @@ defmodule MWTClientWeb.PanelComponents do
     """
   end
 
-  @doc "One entry of a `context_menu/1`."
+  @doc "One entry of a `context_menu/1`, with the keys that do the same beside it, if any."
   attr :id, :string, default: nil
   attr :icon, :string, required: true
   attr :danger, :boolean, default: false
   attr :disabled, :boolean, default: false
+  attr :shortcut, :string, default: nil
   attr :rest, :global
   slot :inner_block, required: true
 
@@ -678,7 +679,8 @@ defmodule MWTClientWeb.PanelComponents do
       {@rest}
     >
       <.icon name={@icon} class="size-3.5 shrink-0 opacity-70" />
-      <span class="min-w-0 truncate">{render_slot(@inner_block)}</span>
+      <span class="min-w-0 flex-1 truncate">{render_slot(@inner_block)}</span>
+      <kbd :if={@shortcut} class="shrink-0 pl-4 font-mono text-[10px] text-faint">{@shortcut}</kbd>
     </button>
     """
   end

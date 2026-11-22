@@ -10,7 +10,9 @@
 // Elements are plain objects in the shape `MWTClient.Diagrams.Diagram`
 // describes, drawn in order, so the last one is on top. Undo keeps whole
 // snapshots of them, which for diagrams this size is simpler than diffing and
-// still cheap.
+// still cheap. Groups, and moving things in the drawing order, follow the
+// rules in `diagram_groups.js`: a click picks a member's whole group, and a
+// double click goes inside it, which `scope` remembers.
 //
 // Nothing drawn takes pointer events: every press lands on the svg, and what
 // is under it is worked out here, buttons drawn on the canvas included. In
@@ -59,6 +61,7 @@ import {
   rowBox,
   rowIndex,
   rowStub,
+  scaleElement,
   snapAnchor,
   tableFont,
   tableHeaderHeight,
@@ -68,6 +71,26 @@ import {
   unionBounds,
   wrapText,
 } from "./diagram_geometry"
+import {
+  canGroup,
+  canRestack,
+  canUngroup,
+  commonPath,
+  existingPath,
+  group,
+  groupsOf,
+  membersOf,
+  restack,
+  selectionLevel,
+  selectionUnits,
+  setGroups,
+  startsWith,
+  tidyGroups,
+  ungroup,
+  unitAt,
+  unitsAt,
+  wholeGroups,
+} from "./diagram_groups"
 import {forgetHistory} from "./text_history"
 
 const SVG = "http://www.w3.org/2000/svg"
@@ -120,6 +143,9 @@ const PIN_SNAP = 8
 const BEND_SNAP = 6
 const STRAIGHT = 4
 const BEND_MIN = 24
+// How far, in screen pixels, a right press may move and still be a click,
+// which opens the menu, rather than a drag around the canvas.
+const MENU_SLOP = 4
 
 // The fields an arrow keeps for each end: the element, the row on it and
 // the anchor it is pinned to.
@@ -182,6 +208,7 @@ export const DiagramEditor = {
     this.emptyHint = role("empty-hint")
     this.matchButton = role("matches")
     this.matchCount = role("match-count")
+    this.menu = role("menu")
     this.toolButtons = Array.from(this.el.querySelectorAll("[data-tool]"))
     this.styleButtons = Array.from(this.el.querySelectorAll("[data-style]"))
     this.rows = Object.fromEntries(
@@ -189,6 +216,7 @@ export const DiagramEditor = {
     )
     this.undoButton = this.el.querySelector("[data-action=undo]")
     this.redoButton = this.el.querySelector("[data-action=redo]")
+    this.panelActions = Array.from(this.stylePanel.querySelectorAll("[data-action]"))
 
     this.font = getComputedStyle(this.el).fontFamily
     this.mono = getComputedStyle(this.el).getPropertyValue("--font-mono").trim() || "monospace"
@@ -197,6 +225,9 @@ export const DiagramEditor = {
     this.docId = null
     this.elements = []
     this.selected = new Set()
+    // The groups a double click went inside, outermost first: a click there
+    // picks what is just inside them rather than the whole of them.
+    this.scope = []
     this.tool = "select"
     this.style = {color: "ink", fill: "none", stroke: "solid", size: "m", head: "end"}
     this.view = {x: 0, y: 0, zoom: 1}
@@ -238,6 +269,16 @@ export const DiagramEditor = {
     this.on(this.svg, "pointerleave", () => this.hover(null))
     this.on(this.svg, "dblclick", (event) => this.doubleClick(event))
     this.on(this.el, "wheel", (event) => this.wheel(event), {passive: false})
+    this.on(this.menu, "keydown", (event) => this.menuKeyDown(event))
+    // The entry under the pointer is the one the keys go on from.
+    this.on(this.menu, "pointermove", (event) => {
+      const item = event.target.closest("[data-action]")
+      if (item && !item.disabled && document.activeElement !== item) item.focus({preventScroll: true})
+    })
+    this.on(this.menu, "pointerleave", () => this.menu.contains(document.activeElement) && this.menu.focus())
+    // A press on the canvas closes the menu itself, in pointerDown.
+    this.on(document, "pointerdown", (event) =>
+      !this.menu.contains(event.target) && !this.svg.contains(event.target) && this.closeMenu(), true)
     this.on(this.el, "keydown", (event) => this.keyDown(event))
     this.on(this.el, "keyup", (event) => event.key === " " && this.holdSpace(false))
     // Undo and redo answer anywhere on the page, not only on the canvas.
@@ -263,6 +304,7 @@ export const DiagramEditor = {
     this.on(document, "pointerdown", (event) => !this.el.contains(event.target) && this.flushSave(), true)
     this.on(window, "blur", () => {
       this.holdSpace(false)
+      this.closeMenu()
       this.flushSave()
     })
     this.on(window, "pagehide", () => this.flushSave())
@@ -310,13 +352,15 @@ export const DiagramEditor = {
     this.settleNudge()
     this.flushSave()
     this.cancelGesture()
+    this.closeMenu()
 
     this.docId = id
-    this.elements = (elements || []).map((element) => ({...element}))
+    this.elements = tidyGroups((elements || []).map((element) => ({...element})))
     // Measured again here, since the fonts may not be the ones it was drawn with.
     this.elements.forEach((element) => (isText(element) || isTable(element)) && this.layout(element))
     this.resolveArrows()
     this.selected = new Set()
+    this.scope = []
     this.undoStack = []
     this.redoStack = []
     this.forgetHover()
@@ -356,8 +400,10 @@ export const DiagramEditor = {
   },
 
   // Records the change made since `snapshot` as one undo step. Nothing is
-  // recorded, or saved, when there was no change.
+  // recorded, or saved, when there was no change. Whatever changed, groups
+  // still nest and keep their members together.
   commit(snapshot) {
+    this.elements = tidyGroups(this.elements)
     if (snapshot === this.snapshot()) return false
 
     this.undoStack.push(snapshot)
@@ -368,6 +414,7 @@ export const DiagramEditor = {
   },
 
   changed() {
+    this.scope = existingPath(this.elements, this.scope)
     this.matches = matchingIds(this.elements, this.terms)
     if (this.matchIndex >= this.matches.length) this.matchIndex = this.matches.length ? 0 : -1
     this.scheduleSave()
@@ -401,6 +448,7 @@ export const DiagramEditor = {
 
   // Finishes whatever is under way, so it becomes a step of its own.
   settle() {
+    this.closeMenu()
     this.cancelGesture()
     this.stopEditing()
     this.settleNudge()
@@ -435,11 +483,25 @@ export const DiagramEditor = {
     return this.selectedElements()
   },
 
+  // A new element is in no group, so the editor leaves the ones it is in.
   add(attributes) {
     const {head, ...style} = this.style
     const element = {id: newId(), text: "", ...style, ...(attributes.type === "arrow" && {head}), ...attributes}
     this.elements.push(element)
+    this.scope = []
     return element
+  },
+
+  // What a click on `element` picks, without changing anything: its group
+  // just inside the groups the editor is in and it is too, or itself.
+  unitOf(element) {
+    return unitAt(this.elements, element, commonPath(this.scope, groupsOf(element)))
+  },
+
+  // The same, leaving the groups `element` is not in.
+  pick(element) {
+    this.scope = commonPath(this.scope, groupsOf(element))
+    return this.unitOf(element)
   },
 
   // Moves elements together. An arrow moved without what it is attached to
@@ -654,9 +716,17 @@ export const DiagramEditor = {
   },
 
   handleAt(point) {
+    if (this.editing) return null
     const element = this.singleSelected()
-    if (!element || this.editing) return null
     const reach = 7 / this.view.zoom
+
+    // Several picked together resize as one, from the frame around them.
+    if (!element) {
+      if (this.selected.size < 2) return null
+      const spots = Object.entries(handlePoints(this.selectionFrame()))
+      const [handle] = spots.find(([, spot]) => Math.hypot(point.x - spot.x, point.y - spot.y) <= reach) ?? []
+      return handle ? {handle, many: true} : null
+    }
 
     if (isArrow(element)) {
       const close = (spot) => !!spot && Math.hypot(point.x - spot.x, point.y - spot.y) <= reach
@@ -689,6 +759,12 @@ export const DiagramEditor = {
     return inflate(bounds(element), 4 / this.view.zoom)
   },
 
+  // The frame around several elements picked together, which their handles
+  // sit on.
+  selectionFrame() {
+    return inflate(unionBounds(this.selectedElements()), 8 / this.view.zoom)
+  },
+
   // Coordinates
 
   // The pointer relative to the canvas, in CSS pixels. The ratio undoes the
@@ -706,10 +782,15 @@ export const DiagramEditor = {
   // Pointer gestures
 
   pointerDown(event) {
+    // The press that closes the menu does nothing else, unless it is one
+    // that opens another or moves around.
+    if (this.closeMenu() && event.button === 0) return
+
     // Dragging with the right or the middle button moves around the canvas,
-    // whatever the tool, and leaves anything being written open.
+    // whatever the tool, and leaves anything being written open. A right
+    // click that doesn't drag opens the menu instead, on release.
     if (event.button === 1 || event.button === 2) {
-      this.gesture = this.panGesture(event)
+      this.gesture = {...this.panGesture(event), button: event.button}
       this.svg.setPointerCapture(event.pointerId)
       this.updateCursor()
       this.renderOverlay()
@@ -767,6 +848,16 @@ export const DiagramEditor = {
 
   selectGesture(event, point) {
     const grip = this.handleAt(point)
+    if (grip?.many) {
+      const picked = this.selectedElements()
+      const box = unionBounds(picked)
+      const spot = handlePoints(box)[grip.handle]
+      return {
+        kind: "scale", handle: grip.handle, box,
+        originals: new Map(picked.map((element) => [element.id, structuredClone(element)])),
+        offset: {x: point.x - spot.x, y: point.y - spot.y},
+      }
+    }
     if (grip?.handle) {
       // Measured from the shape's own corner, so the drag starts where it is.
       const spot = handlePoints(bounds(grip.element))[grip.handle]
@@ -791,22 +882,32 @@ export const DiagramEditor = {
     const port = this.portAt(point)
     if (port) return this.arrowGesture(point, port)
 
+    // A member of a group picks the whole group; Shift adds it or takes it
+    // away whole.
     const element = this.elementAt(point)
     if (element) {
-      if (event.shiftKey && this.selected.has(element.id)) {
-        this.selected.delete(element.id)
+      const unit = this.pick(element).map((member) => member.id)
+      const picked = unit.every((id) => this.selected.has(id))
+      if (event.shiftKey && picked) {
+        unit.forEach((id) => this.selected.delete(id))
         return null
       }
       if (event.shiftKey) {
-        this.selected.add(element.id)
-      } else if (!this.selected.has(element.id)) {
-        this.selected = new Set([element.id])
+        unit.forEach((id) => this.selected.add(id))
+      } else if (!picked) {
+        this.selected = new Set(unit)
       }
       return {kind: "move", last: point}
     }
 
+    // The empty canvas is outside every group, and a marquee picks whole
+    // groups, once all of their members are inside it.
     if (!event.shiftKey) this.selected = new Set()
-    return {kind: "marquee", origin: point, current: point, base: new Set(this.selected)}
+    this.scope = []
+    return {
+      kind: "marquee", origin: point, current: point, base: new Set(this.selected),
+      units: unitsAt(this.elements, 0),
+    }
   },
 
   panGesture(event) {
@@ -850,6 +951,7 @@ export const DiagramEditor = {
       case "pan":
         // A release the page never heard of, such as one over a menu, ends it.
         if (event.buttons === 0) return this.pointerUp(event)
+        if (Math.hypot(local.x - gesture.from.x, local.y - gesture.from.y) > MENU_SLOP) gesture.dragged = true
         this.view = {
           ...gesture.view,
           x: gesture.view.x + local.x - gesture.from.x,
@@ -872,6 +974,20 @@ export const DiagramEditor = {
         // A table is never narrower than what is written in it.
         const minimum = isTable(element) ? this.tableNeeds(element).width : 8
         Object.assign(element, resizeBox(gesture.box, gesture.handle, target, minimum))
+        break
+      }
+
+      // Each element is placed again from where it was when the drag began,
+      // so stretching and shrinking back leaves it as it was.
+      case "scale": {
+        const target = {x: point.x - gesture.offset.x, y: point.y - gesture.offset.y}
+        const box = resizeBox(gesture.box, gesture.handle, target)
+        for (const [id, original] of gesture.originals) {
+          const element = this.find(id)
+          if (!element) continue
+          Object.assign(element, scaleElement(original, gesture.box, box))
+          if (isShape(element) || isTable(element)) this.layout(element)
+        }
         break
       }
 
@@ -939,8 +1055,9 @@ export const DiagramEditor = {
         gesture.current = point
         const area = normalizeRect(gesture.origin, point)
         this.selected = new Set(gesture.base)
-        for (const element of this.elements) {
-          if (containsRect(area, bounds(element))) this.selected.add(element.id)
+        for (const {members} of gesture.units) {
+          if (!members.every((member) => containsRect(area, bounds(member)))) continue
+          members.forEach((member) => this.selected.add(member.id))
         }
         break
       }
@@ -1017,7 +1134,12 @@ export const DiagramEditor = {
 
       case "move":
       case "resize":
+      case "scale":
         this.commit(gesture.snapshot)
+        break
+
+      case "pan":
+        if (gesture.button === 2 && !gesture.dragged) this.contextMenu(event)
         break
     }
 
@@ -1050,7 +1172,17 @@ export const DiagramEditor = {
     // Two clicks on a port only draw nothing twice.
     if (this.portAt(point)) return
 
+    // On a member of a group picked whole, it goes one group further in and
+    // picks what is there; on what is picked alone, it writes.
     const element = this.elementAt(point)
+    const groups = element ? groupsOf(element) : []
+    const path = commonPath(this.scope, groups)
+    if (groups.length > path.length) {
+      this.scope = groups.slice(0, path.length + 1)
+      this.selected = new Set(this.unitOf(element).map((member) => member.id))
+      return this.render()
+    }
+
     if (element && isTable(element)) {
       this.startEditing(element.id, undefined, this.cellAt(element, point))
     } else if (element) {
@@ -1220,6 +1352,8 @@ export const DiagramEditor = {
   wheel(event) {
     event.preventDefault()
     event.stopPropagation()
+    // What the menu was opened on would slide out from under it.
+    this.closeMenu()
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? this.el.clientHeight : 1
 
     if (event.ctrlKey || event.metaKey) {
@@ -1651,6 +1785,10 @@ export const DiagramEditor = {
       if (key === "d") this.duplicate()
       else if (key === "a") this.selectAll()
       else if (key === "x") this.cut()
+      else if (key === "g") this.run(event.shiftKey ? "ungroup" : "group")
+      // Shift turns some layouts' brackets into braces.
+      else if (key === "]" || key === "}") this.run(event.shiftKey ? "front" : "forward")
+      else if (key === "[" || key === "{") this.run(event.shiftKey ? "back" : "backward")
       // Copying and pasting also go through the clipboard events, which carry
       // the system clipboard; these keep them working where the webview does
       // not fire those events outside text fields.
@@ -1660,6 +1798,12 @@ export const DiagramEditor = {
       return event.preventDefault()
     }
     if (event.altKey) return
+    // The menu key, or Shift+F10, opens the menu as a right click would on
+    // what is picked.
+    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+      this.menuFromKeys()
+      return event.preventDefault()
+    }
 
     const nudge = event.shiftKey ? 10 : 1
     switch (event.key) {
@@ -1707,9 +1851,15 @@ export const DiagramEditor = {
     return true
   },
 
+  // Inside a group, Escape picks the whole of it and leaves it; elsewhere it
+  // lets go of what is picked, and then of the tool.
   escape() {
     if (this.gesture) return this.cancelGesture()
-    if (this.selected.size) {
+    if (this.scope.length) {
+      const around = this.scope[this.scope.length - 1]
+      this.scope = this.scope.slice(0, -1)
+      this.selected = new Set(membersOf(this.elements, around).map((element) => element.id))
+    } else if (this.selected.size) {
       this.selected = new Set()
     } else if (this.tool !== "select") {
       this.setTool("select")
@@ -1735,7 +1885,10 @@ export const DiagramEditor = {
   setTool(tool) {
     this.stopEditing()
     this.tool = tool
-    if (tool !== "select") this.selected = new Set()
+    if (tool !== "select") {
+      this.selected = new Set()
+      this.scope = []
+    }
     this.forgetHover()
     this.updateCursor()
     this.render()
@@ -1743,6 +1896,7 @@ export const DiagramEditor = {
 
   selectAll() {
     this.selected = new Set(this.elements.map((element) => element.id))
+    this.scope = []
     this.render()
   },
 
@@ -1756,13 +1910,67 @@ export const DiagramEditor = {
     this.commit(snapshot)
   },
 
-  arrange(toFront) {
-    if (this.selected.size === 0) return
+  // What the menu, the style panel's buttons and the keys do, by the name
+  // their `data-action` gives, and whether each would do anything now.
+  can(action) {
+    const picked = this.selected.size > 0
+    switch (action) {
+      case "front":
+      case "forward":
+      case "backward":
+      case "back":
+        return picked && canRestack(this.elements, this.selected, action)
+      case "group": return canGroup(this.elements, this.selected)
+      case "ungroup": return canUngroup(this.elements, this.selected)
+      case "duplicate":
+      case "copy":
+      case "delete":
+        return picked
+      case "select-all": return this.elements.length > 0
+      case "undo": return this.undoStack.length > 0
+      case "redo": return this.redoStack.length > 0
+      // What the system clipboard holds can't be known before reading it.
+      default: return true
+    }
+  },
+
+  run(action) {
+    this.closeMenu()
+    switch (action) {
+      case "undo": return this.undo()
+      case "redo": return this.redo()
+      case "front":
+      case "forward":
+      case "backward":
+      case "back":
+        return this.moveInOrder(action)
+      case "group": return this.regroup((elements) => group(elements, this.selected, newId()), action)
+      case "ungroup": return this.regroup((elements) => ungroup(elements, this.selected), action)
+      case "duplicate": return this.duplicate()
+      case "copy": return this.copyToClipboard()
+      case "paste": return this.pasteFromMenu()
+      case "delete": return this.deleteSelected()
+      case "select-all": return this.selectAll()
+    }
+  },
+
+  moveInOrder(how) {
+    this.settleNudge()
+    if (!this.can(how)) return
 
     const snapshot = this.snapshot()
-    const picked = this.selectedElements()
-    const rest = this.elements.filter((element) => !this.selected.has(element.id))
-    this.elements = toFront ? [...rest, ...picked] : [...picked, ...rest]
+    this.elements = restack(this.elements, this.selected, how)
+    this.commit(snapshot)
+  },
+
+  // Grouping keeps what is picked picked, as the group it now makes, or as
+  // the units it was made of.
+  regroup(change, action) {
+    this.settleNudge()
+    if (!this.can(action)) return
+
+    const snapshot = this.snapshot()
+    this.elements = change(this.elements)
     this.commit(snapshot)
   },
 
@@ -1786,19 +1994,33 @@ export const DiagramEditor = {
     }
   },
 
+  // Copies made inside a group stay in it.
   duplicate() {
-    this.insertCopies(this.selectedElements(), 16, 16)
+    this.insertCopies(this.selectedElements(), 16, 16, {
+      whole: wholeGroups(this.elements, this.selected),
+      level: selectionLevel(this.elements, this.selected),
+    })
   },
 
   // Adds copies of `elements` moved by (dx, dy), and selects them. Arrows
-  // stay attached to whatever was copied along with them.
-  insertCopies(elements, dx, dy) {
+  // stay attached to whatever was copied along with them. The copies are
+  // put in the groups of `level`, on top of what else is in them, and in
+  // copies of the groups `whole`, those copied with all of their members;
+  // they leave the rest.
+  insertCopies(elements, dx, dy, {whole = new Set(), level = []} = {}) {
     if (elements.length === 0) return
 
     const snapshot = this.snapshot()
     const ids = new Map(elements.map((element) => [element.id, newId()]))
+    const groups = new Map()
+    const regroup = (group) => groups.get(group) ?? groups.set(group, newId()).get(group)
     // Deep copies: a table's rows must not be shared with the original.
-    const copies = elements.map((element) => ({...structuredClone(element), id: ids.get(element.id)}))
+    const copies = elements.map((element) => {
+      const copy = {...structuredClone(element), id: ids.get(element.id)}
+      const inside = groupsOf(element).slice(level.length).filter((group) => whole.has(group))
+      setGroups(copy, [...level, ...inside.map(regroup)])
+      return copy
+    })
 
     for (const copy of copies) {
       if (isArrow(copy)) {
@@ -1810,7 +2032,10 @@ export const DiagramEditor = {
     }
     this.translate(copies, dx, dy)
 
-    this.elements.push(...copies)
+    const at = level.length
+      ? this.elements.findLastIndex((element) => startsWith(groupsOf(element), level)) + 1
+      : this.elements.length
+    this.elements.splice(at, 0, ...copies)
     this.selected = new Set(copies.map((copy) => copy.id))
     this.resolveArrows()
     this.commit(snapshot)
@@ -1819,8 +2044,15 @@ export const DiagramEditor = {
   // Clipboard. Copied elements are kept here as well as on the system
   // clipboard, which the webview may refuse to write.
 
+  // What is copied keeps only the groups copied whole: the others are
+  // still here, and need not be wherever it is pasted.
   copySelection() {
-    const picked = this.selectedElements()
+    const whole = wholeGroups(this.elements, this.selected)
+    const picked = this.selectedElements().map((element) => {
+      const copy = structuredClone(element)
+      setGroups(copy, groupsOf(element).filter((group) => whole.has(group)))
+      return copy
+    })
     if (picked.length === 0) return null
 
     clipboard = JSON.stringify({type: CLIPBOARD_TYPE, elements: picked})
@@ -1861,9 +2093,20 @@ export const DiagramEditor = {
     this.paste(event.clipboardData?.getData("text/plain") || clipboard)
   },
 
+  // The menu has no paste event to bring the system clipboard, so it asks
+  // for it, and falls back on what was copied here. It pastes where the
+  // menu was opened.
+  pasteFromMenu() {
+    const spot = this.menuSpot
+    const reading = navigator.clipboard?.readText?.()
+    if (!reading) return this.paste(clipboard, spot)
+    reading.then((text) => this.paste(text || clipboard, spot), () => this.paste(clipboard, spot))
+  },
+
   // Elements copied from a diagram come back as they were, around the
-  // pointer; any other text becomes a text element there.
-  paste(text) {
+  // pointer, in their own groups; any other text becomes a text element
+  // there.
+  paste(text, spot = this.pointer || this.world({x: this.el.clientWidth / 2, y: this.el.clientHeight / 2})) {
     if (!text?.trim()) return
 
     let elements = null
@@ -1874,12 +2117,11 @@ export const DiagramEditor = {
       elements = null
     }
 
-    const spot = this.pointer || this.world({x: this.el.clientWidth / 2, y: this.el.clientHeight / 2})
-
     if (elements) {
       const box = unionBounds(elements)
       if (!box) return
-      this.insertCopies(elements, spot.x - (box.x + box.width / 2), spot.y - (box.y + box.height / 2))
+      const whole = wholeGroups(elements, new Set(elements.map((element) => element.id)))
+      this.insertCopies(elements, spot.x - (box.x + box.width / 2), spot.y - (box.y + box.height / 2), {whole})
       return
     }
 
@@ -1900,12 +2142,107 @@ export const DiagramEditor = {
     else if (style) this.applyStyle(style, value)
     else if (zoom) this.zoomControl(zoom)
     else if (button === this.matchButton) this.nextMatch()
-    else if (action === "undo") this.undo()
-    else if (action === "redo") this.redo()
-    else if (action === "duplicate") this.duplicate()
-    else if (action === "delete") this.deleteSelected()
-    else if (action === "front") this.arrange(true)
-    else if (action === "back") this.arrange(false)
+    else if (action) this.run(action)
+  },
+
+  // The menu
+
+  // Opens the menu on what is under the pointer: picked first, as a click
+  // would pick it, unless it already is; or on the empty canvas, letting go
+  // of what was picked.
+  contextMenu(event) {
+    const local = this.local(event)
+    const point = this.world(local)
+    this.stopEditing()
+    this.settleNudge()
+
+    const element = this.elementAt(point)
+    if (element) {
+      if (DRAWING_TOOLS.includes(this.tool)) this.setTool("select")
+      const unit = this.pick(element).map((member) => member.id)
+      if (!unit.every((id) => this.selected.has(id))) this.selected = new Set(unit)
+    } else {
+      this.selected = new Set()
+      this.scope = []
+    }
+    this.render()
+    this.openMenu(local, element ? "selection" : "canvas", point)
+  },
+
+  // At the middle of what is picked, or of the canvas, with the first
+  // entry focused, for the keys to go on from there.
+  menuFromKeys() {
+    this.stopEditing()
+    this.settleNudge()
+    const picked = this.selectedElements()
+    const box = unionBounds(picked)
+    const {x, y, zoom} = this.view
+    const local = box
+      ? {x: (box.x + box.width / 2) * zoom + x, y: (box.y + box.height / 2) * zoom + y}
+      : {x: this.el.clientWidth / 2, y: this.el.clientHeight / 2}
+
+    this.openMenu(local, picked.length ? "selection" : "canvas", this.world(local))
+    this.menuChoices()[0]?.focus({preventScroll: true})
+  },
+
+  // Shows the entries for `target`, greying out those that would do nothing,
+  // at `local`, or the other side of it where the canvas has no room.
+  openMenu(local, target, point) {
+    this.menuSpot = point
+    for (const node of this.menu.querySelectorAll("[data-for]")) {
+      node.hidden = !node.dataset.for.split(" ").includes(target)
+    }
+    for (const item of this.menu.querySelectorAll("[data-action]")) item.disabled = !this.can(item.dataset.action)
+
+    // What the pointer offered before is not on offer under the menu.
+    this.forgetHover()
+    this.renderOverlay()
+
+    this.menu.hidden = false
+    const margin = 8
+    const {offsetWidth: width, offsetHeight: height} = this.menu
+    const left = local.x + width > this.el.clientWidth - margin ? Math.max(margin, local.x - width) : local.x
+    const top = local.y + height > this.el.clientHeight - margin ? Math.max(margin, local.y - height) : local.y
+    Object.assign(this.menu.style, {left: `${left}px`, top: `${top}px`})
+    this.menu.focus({preventScroll: true})
+  },
+
+  // The entries shown that would do something, in order.
+  menuChoices() {
+    return Array.from(this.menu.querySelectorAll("[data-action]")).filter((item) => !item.hidden && !item.disabled)
+  },
+
+  // Says whether it was open.
+  closeMenu() {
+    if (this.menu.hidden) return false
+
+    const focused = this.menu.contains(document.activeElement)
+    this.menu.hidden = true
+    if (focused) this.el.focus({preventScroll: true})
+    return true
+  },
+
+  // The arrows go through what can be chosen, Enter or Space choose it, as
+  // on any button, and Escape or Tab close the menu.
+  menuKeyDown(event) {
+    const items = this.menuChoices()
+    const current = items.indexOf(document.activeElement)
+    const step = {ArrowDown: 1, ArrowUp: -1}[event.key]
+
+    if (step) {
+      const next = current < 0 ? (step > 0 ? 0 : items.length - 1) : (current + step + items.length) % items.length
+      items[next]?.focus({preventScroll: true})
+    } else if (event.key === "Home") {
+      items[0]?.focus({preventScroll: true})
+    } else if (event.key === "End") {
+      items[items.length - 1]?.focus({preventScroll: true})
+    } else if (event.key === "Escape" || event.key === "Tab") {
+      this.closeMenu()
+    } else {
+      return
+    }
+    event.preventDefault()
+    event.stopPropagation()
   },
 
   // Rendering
@@ -2156,6 +2493,11 @@ export const DiagramEditor = {
       }))
     }
 
+    // The group a double click went inside, faintly, so it shows where a
+    // click picks from.
+    const inside = this.scope.length ? membersOf(this.elements, this.scope[this.scope.length - 1]) : []
+    if (inside.length) frame(inflate(unionBounds(inside), 12 / zoom), "fill-none stroke-accent/30", {"stroke-dasharray": "2 4"})
+
     // On a table the match is marked on the rows that hold it.
     this.matches.forEach((id, index) => {
       const element = this.find(id)
@@ -2168,8 +2510,12 @@ export const DiagramEditor = {
       for (const row of found.rows) frame(inflate(rowBox(element, row), 2 / zoom), tone)
     })
 
-    const hovered = this.hovered && !this.selected.has(this.hovered) && !this.gesture && this.find(this.hovered)
-    if (hovered) frame(inflate(bounds(hovered), 4 / zoom), "fill-none stroke-accent/40")
+    // What a click there would pick: the whole group, for a member of one.
+    const hovered = this.hovered && !this.gesture && this.find(this.hovered)
+    const unit = hovered ? this.unitOf(hovered) : []
+    if (unit.some((member) => !this.selected.has(member.id))) {
+      frame(inflate(unionBounds(unit), 4 / zoom), "fill-none stroke-accent/40")
+    }
 
     // An end about to float lights up what it attaches to; one about to be
     // pinned marks the spot, on a fainter outline.
@@ -2190,19 +2536,23 @@ export const DiagramEditor = {
       }
     }
 
+    // Several picked are framed one by one, a group as a whole, inside the
+    // frame around all of them, whose handles resize them together.
     const selected = this.selectedElements()
     if (selected.length === 1 && isArrow(selected[0])) {
       parts.push(...this.arrowHandles(selected[0]))
     } else if (selected.length > 0) {
-      if (selected.length > 1) {
-        for (const element of selected) frame(inflate(bounds(element), 3 / zoom), "fill-none stroke-accent/50")
+      const {units} = selected.length > 1 ? selectionUnits(this.elements, this.selected) : {units: []}
+      if (units.length > 1) {
+        for (const {members} of units) frame(inflate(unionBounds(members), 3 / zoom), "fill-none stroke-accent/50")
       }
-      const box = selected.length === 1 ? this.handleBox(selected[0]) : inflate(unionBounds(selected), 8 / zoom)
+      const box = selected.length === 1 ? this.handleBox(selected[0]) : this.selectionFrame()
       frame(box, "fill-none stroke-accent", {"stroke-dasharray": "4 3"})
 
-      if (selected.length === 1 && !this.editing) {
+      if (!this.editing) {
         const side = 8 / zoom
-        for (const spot of Object.values(this.handles(selected[0]))) {
+        const spots = selected.length === 1 ? this.handles(selected[0]) : handlePoints(box)
+        for (const spot of Object.values(spots)) {
           parts.push(svg("rect", {
             x: spot.x - side / 2, y: spot.y - side / 2, width: side, height: side, rx: 2 / zoom,
             class: "fill-deep stroke-accent stroke-[1.5]", "vector-effect": "non-scaling-stroke",
@@ -2229,7 +2579,7 @@ export const DiagramEditor = {
   arrowHandles(arrow) {
     const zoom = this.view.zoom
     const unscaled = {"vector-effect": "non-scaling-stroke"}
-    const grip = this.hoverHandle?.element.id === arrow.id ? this.hoverHandle : {}
+    const grip = this.hoverHandle?.element?.id === arrow.id ? this.hoverHandle : {}
     const parts = []
 
     this.bendSpots(arrow).forEach((spot, index) => {
@@ -2370,6 +2720,11 @@ export const DiagramEditor = {
         button.toggleAttribute("data-active", active)
         button.setAttribute("aria-pressed", String(active))
       }
+    }
+
+    // Left as they are while dragging, which would work them out each frame.
+    if (!this.gesture) {
+      for (const button of this.panelActions) button.disabled = !this.can(button.dataset.action)
     }
 
     this.emptyHint.hidden = this.elements.length > 0

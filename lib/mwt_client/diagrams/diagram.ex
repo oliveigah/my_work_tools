@@ -30,10 +30,27 @@ defmodule MWTClient.Diagrams.Diagram do
       table, `"type"` and `"name"`
     * `"split"` - where a table's name column starts, from its left edge
     * `"color"`, `"fill"`, `"stroke"`, `"size"` - the style
+    * `"groups"` - the groups the element is in, outermost first, each an id
+      of the same shape as an element's; left out when it is in none
 
   An attached arrow end still carries its coordinates, as last drawn, and a
   table its size, so the diagram reads the same without laying it out again.
   An anchor without an element to be on is dropped with the attachment.
+
+  The elements are kept in drawing order: a later one covers an earlier one.
+  A group is a set of elements the editor picks, moves and stacks as one,
+  and two premises hold of them, which the editor builds on:
+
+    * groups nest: every member of a group lists the same groups before it,
+      so two groups are either one inside the other or apart;
+    * a group's members are next to each other in the drawing order, so a
+      group moves up or down as one block, and the order reads as a tree.
+
+  `elements/1` restores both on whatever comes in, the way
+  `assets/js/diagram_groups.js` does in the editor: a group a member lists
+  after other groups than the first member did is dropped from it, with any
+  after it; a group left with one member is no group; and each group's
+  members are gathered where the topmost of them is.
 
   `search_text` is every piece of text in the diagram, title included,
   normalized once when it changes so searching does not walk the elements.
@@ -59,6 +76,7 @@ defmodule MWTClient.Diagrams.Diagram do
   @max_rows 500
   @max_cell 200
   @max_points 200
+  @max_groups 32
   @max_id 64
   @coordinate_limit 10_000_000
 
@@ -164,6 +182,7 @@ defmodule MWTClient.Diagrams.Diagram do
       |> Enum.take(@max_elements)
       |> Enum.flat_map(&element/1)
       |> Enum.uniq_by(& &1["id"])
+      |> tidy_groups()
 
     # Every element an arrow can attach to, with the rows it can attach to.
     attachable =
@@ -285,15 +304,85 @@ defmodule MWTClient.Diagrams.Diagram do
   end
 
   defp common(attrs, id, type) do
-    %{
-      "id" => id,
-      "type" => type,
-      "text" => text(attrs["text"]),
-      "color" => one_of(attrs["color"], @colors),
-      "fill" => one_of(attrs["fill"], @fills),
-      "stroke" => one_of(attrs["stroke"], @strokes),
-      "size" => one_of(attrs["size"], @sizes, "m")
-    }
+    put_groups(
+      %{
+        "id" => id,
+        "type" => type,
+        "text" => text(attrs["text"]),
+        "color" => one_of(attrs["color"], @colors),
+        "fill" => one_of(attrs["fill"], @fills),
+        "stroke" => one_of(attrs["stroke"], @strokes),
+        "size" => one_of(attrs["size"], @sizes, "m")
+      },
+      groups(attrs["groups"])
+    )
+  end
+
+  # Up to the first that is no id or is listed again: what comes after it
+  # would be inside something that isn't there.
+  defp groups(groups) when is_list(groups) do
+    groups
+    |> Enum.take(@max_groups)
+    |> Enum.reduce_while([], fn group, kept ->
+      if id?(group) and group not in kept, do: {:cont, [group | kept]}, else: {:halt, kept}
+    end)
+    |> Enum.reverse()
+  end
+
+  defp groups(_groups), do: []
+
+  # Left out when empty, so a diagram drawn before there were groups is
+  # saved as it was, and its versions do not all differ by one field.
+  defp put_groups(element, []), do: Map.delete(element, "groups")
+  defp put_groups(element, groups), do: Map.put(element, "groups", groups)
+
+  defp groups_of(element), do: Map.get(element, "groups", [])
+
+  defp tidy_groups(elements) do
+    {elements, _paths} = Enum.map_reduce(elements, %{}, &nest/2)
+    counts = elements |> Enum.flat_map(&groups_of/1) |> Enum.frequencies()
+
+    # The groups inside a group of one have one member at most too, so what
+    # is left of each list is a start of it, and still nests.
+    elements
+    |> Enum.map(&put_groups(&1, Enum.filter(groups_of(&1), fn group -> counts[group] > 1 end)))
+    |> gather(0)
+  end
+
+  # Keeps the groups of `element` up to the first that `paths`, the groups
+  # each one was first seen inside, puts inside others.
+  defp nest(element, paths) do
+    {kept, paths} =
+      Enum.reduce_while(groups_of(element), {[], paths}, fn group, {kept, paths} ->
+        before = Enum.reverse(kept)
+
+        case Map.fetch(paths, group) do
+          {:ok, ^before} -> {:cont, {[group | kept], paths}}
+          {:ok, _elsewhere} -> {:halt, {kept, paths}}
+          :error -> {:cont, {[group | kept], Map.put(paths, group, before)}}
+        end
+      end)
+
+    {put_groups(element, Enum.reverse(kept)), paths}
+  end
+
+  # The units side by side at `depth`, each a group or an element alone,
+  # put where the topmost of their members is, and their members the same
+  # way one level in.
+  defp gather(elements, depth) do
+    elements
+    |> Enum.with_index()
+    |> Enum.group_by(fn {element, index} ->
+      case Enum.at(groups_of(element), depth) do
+        nil -> {:element, index}
+        group -> {:group, group}
+      end
+    end)
+    |> Enum.sort_by(fn {_unit, members} -> members |> List.last() |> elem(1) end)
+    |> Enum.flat_map(fn
+      {{:element, _index}, [{element, _same}]} -> [element]
+      {{:group, _group}, members} -> members |> Enum.map(&elem(&1, 0)) |> gather(depth + 1)
+    end)
   end
 
   defp attached(id, row, attachable) do

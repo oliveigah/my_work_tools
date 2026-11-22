@@ -594,6 +594,32 @@ export function resizeBox(box, handle, point, minimum = 8) {
   return {x: left, y: top, width: right - left, height: bottom - top}
 }
 
+// Where `element`, as it was inside `from`, goes once `from` is stretched
+// to `to`, as the fields to change. A shape stretches along, and an arrow's
+// ends and bends move with it. Text, sized by what is written, keeps its
+// size, and a table its height, which its rows set: their middle moves, so
+// a label centered on a shape stays centered on it.
+export function scaleElement(element, from, to) {
+  const scaleX = from.width > 0 ? to.width / from.width : 1
+  const scaleY = from.height > 0 ? to.height / from.height : 1
+  const mapX = (x) => to.x + (x - from.x) * scaleX
+  const mapY = (y) => to.y + (y - from.y) * scaleY
+
+  if (isArrow(element)) {
+    return {
+      x1: mapX(element.x1), y1: mapY(element.y1), x2: mapX(element.x2), y2: mapY(element.y2),
+      points: bends(element).map((point) => ({x: mapX(point.x), y: mapY(point.y)})),
+    }
+  }
+  if (isShape(element)) {
+    return {x: mapX(element.x), y: mapY(element.y), width: element.width * scaleX, height: element.height * scaleY}
+  }
+
+  const middle = center(element)
+  const width = isTable(element) ? element.width * scaleX : element.width
+  return {x: mapX(middle.x) - width / 2, y: mapY(middle.y) - element.height / 2, width}
+}
+
 // Where each resize handle of a box sits.
 export function handlePoints(box) {
   const {x, y, width, height} = box

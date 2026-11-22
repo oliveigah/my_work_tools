@@ -174,6 +174,50 @@ defmodule MWTClient.MCP.ToolsTest do
     assert Diagrams.list(username) == []
   end
 
+  test "keeps groups as written, and rejects the ones the editor could not keep", %{
+    username: username
+  } do
+    box = fn id, groups ->
+      %{
+        "id" => id,
+        "type" => "rectangle",
+        "x" => 0,
+        "y" => 0,
+        "width" => 100,
+        "height" => 60,
+        "groups" => groups
+      }
+    end
+
+    elements = [box.("a", ["legend", "key"]), box.("b", ["legend", "key"]), box.("c", ["legend"])]
+    diagram = call("create_diagram", %{"title" => "Legend", "elements" => elements}, username)
+
+    assert Enum.map(diagram["elements"], & &1["groups"]) == [
+             ["legend", "key"],
+             ["legend", "key"],
+             ["legend"]
+           ]
+
+    for {broken, message} <- [
+          {[box.("a", ["g", "g"]), box.("b", ["g"])], ~s(lists "g" twice)},
+          {[box.("a", ["g", "h"]), box.("b", ["h"])], ~s(lists "h" inside [])},
+          {[box.("a", ["g"]), box.("b", [])], ~s(group "g" has one member)},
+          {[box.("a", ["g"]), box.("b", []), box.("c", ["g"])], ~s(group "g" is split by)},
+          {[box.("a", ["bad id!"]), box.("b", ["bad id!"])], "invalid format"}
+        ] do
+      {:ok, result} =
+        Tools.call(
+          "create_diagram",
+          %{"title" => "Broken", "elements" => broken},
+          username,
+          "http://127.0.0.1:12995"
+        )
+
+      assert result["isError"]
+      assert hd(result["content"])["text"] =~ message
+    end
+  end
+
   test "stores HTTP samples without a response, and keeps them through encryption and export", %{
     username: username,
     key: key

@@ -638,7 +638,7 @@ defmodule MWTClientWeb.DiagramsLive do
             <button
               type="button"
               data-action="front"
-              title="Bring to front"
+              title="Bring to front (Ctrl+Shift+])"
               aria-label="Bring to front"
               class={control_class()}
             >
@@ -647,7 +647,7 @@ defmodule MWTClientWeb.DiagramsLive do
             <button
               type="button"
               data-action="back"
-              title="Send to back"
+              title="Send to back (Ctrl+Shift+[)"
               aria-label="Send to back"
               class={control_class()}
             >
@@ -675,6 +675,104 @@ defmodule MWTClientWeb.DiagramsLive do
           </div>
         </div>
       </details>
+
+      <%!-- Opened by a right click that doesn't move, on what is picked or on
+            the empty canvas: each entry says which with data-for, and the
+            hook hides the others and greys out what doesn't apply. --%>
+      <div
+        id="diagram-canvas-menu"
+        data-role="menu"
+        role="menu"
+        aria-label="Canvas actions"
+        tabindex="-1"
+        hidden
+        class="absolute z-30 flex w-64 flex-col rounded-lg border border-line bg-panel p-1 shadow-xl shadow-black/20 outline-none dark:shadow-black/50"
+      >
+        <.menu_item
+          :for={
+            {action, icon, label, keys} <- [
+              {"front", "hero-bars-arrow-up", "Bring to front", "Ctrl+Shift+]"},
+              {"forward", "hero-arrow-up", "Bring forward", "Ctrl+]"},
+              {"backward", "hero-arrow-down", "Send backward", "Ctrl+["},
+              {"back", "hero-bars-arrow-down", "Send to back", "Ctrl+Shift+["}
+            ]
+          }
+          id={"diagram-canvas-menu-#{action}"}
+          icon={icon}
+          shortcut={keys}
+          data-action={action}
+          data-for="selection"
+        >
+          {label}
+        </.menu_item>
+        <div data-for="selection" class="my-1 h-px bg-line-soft" role="separator"></div>
+        <.menu_item
+          id="diagram-canvas-menu-group"
+          icon="hero-rectangle-group"
+          shortcut="Ctrl+G"
+          data-action="group"
+          data-for="selection"
+        >
+          Group
+        </.menu_item>
+        <.menu_item
+          id="diagram-canvas-menu-ungroup"
+          icon="hero-squares-2x2"
+          shortcut="Ctrl+Shift+G"
+          data-action="ungroup"
+          data-for="selection"
+        >
+          Ungroup
+        </.menu_item>
+        <div data-for="selection" class="my-1 h-px bg-line-soft" role="separator"></div>
+        <.menu_item
+          id="diagram-canvas-menu-duplicate"
+          icon="hero-document-duplicate"
+          shortcut="Ctrl+D"
+          data-action="duplicate"
+          data-for="selection"
+        >
+          Duplicate
+        </.menu_item>
+        <.menu_item
+          id="diagram-canvas-menu-copy"
+          icon="hero-square-2-stack"
+          shortcut="Ctrl+C"
+          data-action="copy"
+          data-for="selection"
+        >
+          Copy
+        </.menu_item>
+        <.menu_item
+          id="diagram-canvas-menu-paste"
+          icon="hero-clipboard"
+          shortcut="Ctrl+V"
+          data-action="paste"
+          data-for="selection canvas"
+        >
+          Paste
+        </.menu_item>
+        <.menu_item
+          id="diagram-canvas-menu-select-all"
+          icon="hero-viewfinder-circle"
+          shortcut="Ctrl+A"
+          data-action="select-all"
+          data-for="canvas"
+        >
+          Select all
+        </.menu_item>
+        <div data-for="selection" class="my-1 h-px bg-line-soft" role="separator"></div>
+        <.menu_item
+          id="diagram-canvas-menu-delete"
+          icon="hero-trash"
+          danger
+          shortcut="Del"
+          data-action="delete"
+          data-for="selection"
+        >
+          Delete
+        </.menu_item>
+      </div>
 
       <button
         type="button"
@@ -755,7 +853,7 @@ defmodule MWTClientWeb.DiagramsLive do
       </div>
 
       <p class="pointer-events-none absolute bottom-4 right-4 z-10 hidden text-[11px] text-faint lg:block">
-        Scroll or right drag to pan · Ctrl + scroll to zoom · Double click to write
+        Scroll or right drag to pan · Right click for actions · Ctrl + scroll to zoom · Double click to write
       </p>
     </div>
     """

@@ -539,7 +539,7 @@ defmodule MWTClient.MCP.Catalogue do
         "elements" =>
           describe(
             array(element(), 5_000),
-            "Complete native editable canvas in drawing order. Empty means a blank canvas; include shapes before their arrows for readability."
+            "Complete native editable canvas in drawing order: a later element covers an earlier one. Empty means a blank canvas; include shapes before their arrows for readability."
           )
       },
       ["title", "elements"]
@@ -734,6 +734,15 @@ defmodule MWTClient.MCP.Catalogue do
           "Text size preset. Table font/header/row sizes in canvas units: s=12/31/24, m=14/36/28, l=17/44/34. Table height = header + row count × row height."
         )
         |> default("m"),
+      "groups" =>
+        array(identifier(), 32)
+        |> describe(
+          "Groups this element is in, outermost first, so the editor picks, moves and stacks them as one: " <>
+            "[\"legend\"] for a member of legend, [\"legend\", \"key\"] for one of key, a group inside legend. " <>
+            "Group IDs take the same characters as element IDs. Every member of a group lists the same groups before it; " <>
+            "a group has two or more members, listed next to each other in elements. Omit or [] for none."
+        )
+        |> default([]),
       "rows" =>
         array(row(), 500)
         |> describe(
