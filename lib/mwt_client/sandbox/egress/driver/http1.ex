@@ -880,41 +880,11 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
   ## What MWT answers itself
 
-  # TLS with the host failed as MWT started it again: a certificate this
-  # machine's roots don't vouch for (an internal CA, one expired), or a host
-  # that wants a client certificate. It fails for being read, as a client
-  # refusing MWT's does, so its line is `read_failed`: the host can be set
-  # as Not read, and then the VM's client judges it.
+  # TLS with the host failed as MWT started it again (`Driver.tls_refused/2`).
   defp host_refused(http, reason) do
-    %{name: name, port: port} = http.ctx
-    words = Driver.unreachable(reason)
-
-    failed =
-      {:log,
-       %{
-         outcome: :read_failed,
-         summary:
-           "#{name}: MWT's TLS with the host failed (#{words}), checking it against " <>
-             "this machine's roots · nothing went out",
-         host: name,
-         port: port
-       }}
-
-    {answer, http} =
-      answer_self(
-        http,
-        502,
-        Jason.encode!(%{
-          code: "mwt_upstream_tls",
-          error:
-            "MWT could not make TLS with #{authority(name, port)}: #{words}. " <>
-              "Tell the user: if this host's certificate is one they trust, they can have MWT pass " <>
-              "it through unread (Don't read, on its line in MWT's activity log).",
-          by: "MWT agent sandbox"
-        })
-      )
-
-    {[failed | answer], http}
+    {line, json} = Driver.tls_refused(http.ctx, reason)
+    {answer, http} = answer_self(http, 502, json)
+    {[{:log, line} | answer], http}
   end
 
   defp could_not_reach(http, reason) do

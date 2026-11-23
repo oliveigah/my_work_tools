@@ -222,6 +222,13 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   @impl true
   def handle_closed(:vm, _ended, h2), do: close_all(h2, nil)
 
+  # TLS with the host failed as MWT started it again (`Driver.tls_refused/2`).
+  def handle_closed(:host, {:unreachable, {:tls_alert, _} = reason}, h2) do
+    {line, json} = Driver.tls_refused(h2.ctx, reason)
+    {actions, h2} = lost(%{h2 | linked?: false}, line.summary, json)
+    {[{:log, line} | actions], h2}
+  end
+
   def handle_closed(:host, {:unreachable, reason}, h2) do
     words = Driver.unreachable(reason)
     host_lost(%{h2 | linked?: false}, "Could not reach #{authority(h2)}: #{words}")
@@ -1048,9 +1055,12 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
 
   # The link to the host is gone: streams that went on it end, an answer
   # of MWT's for those that had none yet.
-  defp host_lost(h2, message) do
-    json = Jason.encode!(%{error: message, by: "MWT agent sandbox"})
+  defp host_lost(h2, message),
+    do: lost(h2, message, Jason.encode!(%{error: message, by: "MWT agent sandbox"}))
 
+  # Each stream sent to the host: one with no answer yet gets `json`, one
+  # whose answer had begun is reset, its exchange ending with `note`.
+  defp lost(h2, note, json) do
     {actions, h2} =
       h2.streams
       |> Map.values()
@@ -1059,7 +1069,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
         if is_nil(stream.answer) do
           answer_self(h2, stream, 502, json)
         else
-          {done, h2} = finish(h2, stream, message)
+          {done, h2} = finish(h2, stream, note)
           {[{:send, :vm, rst(stream.id, @cancel)} | done], h2}
         end
       end)

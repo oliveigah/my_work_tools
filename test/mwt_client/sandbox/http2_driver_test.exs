@@ -131,6 +131,25 @@ defmodule MWTClient.Sandbox.Http2DriverTest do
              Enum.find(actions, &match?({:done, _, _}, &1))
   end
 
+  test "TLS MWT can't make with the host is logged as a read that failed, and says what to do" do
+    {actions, h2} = opened(@grpc, <<0, 0, 0, 0, 0>>)
+    {:judge, request} = Enum.find(actions, &match?({:judge, _}, &1))
+    {_actions, h2} = Http2.handle_verdict(request.id, {:allow, %{request: [], answer: []}}, h2)
+
+    {actions, _h2} =
+      Http2.handle_closed(:host, {:unreachable, {:tls_alert, {:unknown_ca, ~c"unknown ca"}}}, h2)
+
+    # Its line is the one Don't read is offered on, as HTTP/1.1's is.
+    assert {:log, %{outcome: :read_failed, host: "example.com", port: 443}} =
+             Enum.find(actions, &match?({:log, _}, &1))
+
+    [answer] = headers_of(sent(actions, :vm), 1)
+    assert {"grpc-status", "14"} in answer
+    {_, message} = List.keyfind(answer, "grpc-message", 0)
+    assert URI.decode(message) =~ "a CA this machine doesn't trust"
+    assert URI.decode(message) =~ "Don't read"
+  end
+
   test "a request for another host than the connection's is refused on its stream" do
     headers = List.keyreplace(@grpc, ":authority", 0, {":authority", "elsewhere.test"})
     {actions, _h2} = opened(headers)

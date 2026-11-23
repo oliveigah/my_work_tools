@@ -16,8 +16,12 @@ defmodule MWTClient.SandboxH2Host do
 
   alias MWTClient.Sandbox.CertificateAuthority, as: CA
 
-  @doc "Starts it for `name`, its certificate from a CA of its own; `{pid, port}`."
-  def start(name \\ "example.com") do
+  @doc """
+  Starts it for `name`, its certificate from a CA of its own; `{pid, port}`.
+  `http_2?: false` has it speak HTTP/1.1 alone, as a host that never took
+  up HTTP/2 does.
+  """
+  def start(name \\ "example.com", options \\ []) do
     leaf = CA.leaf(CA.new("#{name}'s CA"), name)
 
     {:ok, pid} =
@@ -27,6 +31,7 @@ defmodule MWTClient.SandboxH2Host do
         ip: {127, 0, 0, 1},
         port: 0,
         startup_log: false,
+        http_2_options: [enabled: Keyword.get(options, :http_2?, true)],
         thousand_island_options: [transport_options: CA.ssl_options(leaf)]
       )
 

@@ -186,11 +186,14 @@ for*), whether or not a credential rides it. Left:
   in. Also left: a driver handing the connection to another mid-way
   (STARTTLS, Postgres's `SSLRequest`), and a core for UDP beside
   `Egress.Tcp`, should msb ever carry UDP but DNS (`ctx.transport`).
-- **HTTP/2 left over** (`Driver.Http2`): a host that answers MWT's `h2`
-  with HTTP/1.1 only fails the VM's streams (the client offered nothing
-  else); plain HTTP/2 (h2c) isn't read; server push is refused to the
-  host; extended CONNECT (WebSockets over HTTP/2) is refused. None tried
-  against a real gRPC service yet, only Bandit and Mint in tests.
+- **HTTP/2 left over** (`Driver.Http2`): a host that speaks only HTTP/1.1
+  fails the streams of a client that offered only `h2`, saying the host
+  doesn't speak HTTP/2 (it would without MWT too; translating them into
+  HTTP/1.1 requests would make them work); plain HTTP/2 (h2c) isn't read;
+  server push is refused to the host; extended CONNECT (WebSockets over
+  HTTP/2) is refused. Tried live on 2026-11-22: gRPC unary, server and
+  bidirectional streams and reflection (`demo.connectrpc.com`, grpcurl),
+  and HTTP/2 on about fifteen hosts.
 - **A WebSocket with a value in it** (its handshake carried a token
   grant's value) is tunnelled after `101`, its messages not kept: its
   answer is read for the value's forms as bytes (`Http1.Response`), and

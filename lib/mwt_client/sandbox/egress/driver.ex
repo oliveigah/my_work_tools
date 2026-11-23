@@ -142,8 +142,12 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   `detect/2` is shown the server's (`ctx.first` is `:host`).
   """
 
+  alias MWTClient.Sandbox.Describe
   alias MWTClient.Sandbox.Egress.Driver.{Http1, Http2, Raw}
   alias MWTClient.Sandbox.Egress.Request
+
+  # What a protocol a driver offers (`alpn/1`) is called, for words.
+  @protocol_names %{"h2" => "HTTP/2", "http/1.1" => "HTTP/1.1"}
 
   # HTTP/1.1 before HTTP/2: inside TLS MWT ends, it picks the first of
   # these a client offers, so only a client offering no HTTP/1.1 speaks
@@ -605,6 +609,11 @@ defmodule MWTClient.Sandbox.Egress.Driver do
       else: "its TLS failed (#{String.replace(to_string(alert), "_", " ")})"
   end
 
+  def unreachable({:protocol, offered}) do
+    names = Enum.map_join(offered, " or ", &Map.get(@protocol_names, &1, &1))
+    "it doesn't speak #{names}, and the client offered nothing else"
+  end
+
   def unreachable({:options, _} = reason), do: inspect(reason)
 
   def unreachable(reason) when is_atom(reason) do
@@ -615,4 +624,39 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   end
 
   def unreachable(reason), do: inspect(reason)
+
+  @doc """
+  TLS with the host failed as MWT started it again
+  (`{:unreachable, {:tls_alert, _}}`): a certificate this machine's roots
+  don't vouch for (an internal CA, one expired), or a host that wants a
+  client certificate. It fails for being read, as a client refusing MWT's
+  certificate does, so its line is `read_failed`: the host can be set as
+  Not read, and then the VM's client judges it. The line for the log, and
+  MWT's answer (JSON) for each request that was to go.
+  """
+  @spec tls_refused(ctx(), term()) :: {map(), String.t()}
+  def tls_refused(%{name: name, port: port}, reason) do
+    words = unreachable(reason)
+
+    line = %{
+      outcome: :read_failed,
+      summary:
+        "#{name}: MWT's TLS with the host failed (#{words}), checking it against " <>
+          "this machine's roots · nothing went out",
+      host: name,
+      port: port
+    }
+
+    answer =
+      Jason.encode!(%{
+        code: "mwt_upstream_tls",
+        error:
+          "MWT could not make TLS with #{Describe.authority(%{host: name, port: port})}: " <>
+            "#{words}. Tell the user: if this host's certificate is one they trust, they can " <>
+            "have MWT pass it through unread (Don't read, on its line in MWT's activity log).",
+        by: "MWT agent sandbox"
+      })
+
+    {line, answer}
+  end
 end

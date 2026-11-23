@@ -8,6 +8,7 @@ defmodule MWTClient.Sandbox.EgressHttp2Test do
   use ExUnit.Case, async: true
 
   alias MWTClient.Sandbox
+  alias MWTClient.Sandbox.CertificateAuthority, as: CA
   alias MWTClient.Sandbox.Egress.Tcp
   alias MWTClient.SandboxH2Host
 
@@ -157,6 +158,49 @@ defmodule MWTClient.Sandbox.EgressHttp2Test do
              event(username, &(&1.outcome == :read))
 
     assert is_binary(id)
+  end
+
+  # A host that never took up HTTP/2 and ignores ALPN, as many do: it
+  # picks no protocol and answers whatever comes as HTTP/1.1 would.
+  defp ignoring_alpn do
+    leaf = CA.leaf(CA.new("example.com's CA"), "example.com")
+
+    {:ok, listen} =
+      :ssl.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}] ++ CA.ssl_options(leaf))
+
+    {:ok, {_ip, port}} = :ssl.sockname(listen)
+
+    spawn_link(fn ->
+      {:ok, socket} = :ssl.transport_accept(listen)
+      {:ok, socket} = :ssl.handshake(socket)
+
+      # MWT closes the link once it sees no protocol was picked, before
+      # its first bytes; a link kept would get this.
+      with {:ok, _preface} <- :ssl.recv(socket, 0),
+           do: :ssl.send(socket, "HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n")
+
+      Process.sleep(:infinity)
+    end)
+
+    port
+  end
+
+  test "a host that doesn't speak HTTP/2 fails the client's requests, saying so", %{
+    username: username,
+    ca: ca
+  } do
+    # One refuses the client's offer in TLS; one takes none of it, and
+    # answers HTTP/2's first bytes as HTTP/1.1.
+    {_pid, refusing} = SandboxH2Host.start("example.com", http_2?: false)
+
+    for host <- [refusing, ignoring_alpn()] do
+      conn = client(proxy(username, host), ca)
+      {conn, ref} = request(conn, "GET", "/hello")
+      {_conn, answer} = response(conn, ref)
+
+      assert answer.status == 502
+      assert answer.body =~ "doesn't speak HTTP/2, and the client offered nothing else"
+    end
   end
 
   test "a client offering HTTP/1.1 too speaks HTTP/1.1 to MWT", %{ca: ca, proxy: proxy} do

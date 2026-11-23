@@ -1133,15 +1133,41 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
 
   ## The one way out
 
-  # A link to the target: TLS when MWT ended the VM's, offering `alpn`.
+  # A link to the target: TLS when MWT ended the VM's, offering `alpn`, and
+  # speaking one of them.
   defp courier(core, alpn) do
     target = Map.put(core.target, :alpn, alpn)
 
     if core.ctx.tls? do
-      with {:ok, socket} <- Keyword.get(core.options, :upstream, &connect_tls/1).(target),
-           do: {:ok, socket, :ssl}
+      case Keyword.get(core.options, :upstream, &connect_tls/1).(target) do
+        {:ok, socket} -> agreed(socket, alpn)
+        {:error, {:tls_alert, {:no_application_protocol, _}}} -> {:error, {:protocol, alpn}}
+        {:error, reason} -> {:error, reason}
+      end
     else
       with {:ok, socket} <- upstream_tcp(core.options).(target), do: {:ok, socket, :gen_tcp}
+    end
+  end
+
+  # The host speaks what the driver offered: one it picked from them, or
+  # none picked when HTTP/1.1 is among them, as TLS without ALPN is
+  # HTTP/1.1. Else the driver's first bytes would be read as another
+  # protocol's (an HTTP/1.1 host answering HTTP/2's preface with a 400),
+  # and fail as that protocol broken, not as what it is.
+  defp agreed(socket, []), do: {:ok, socket, :ssl}
+
+  defp agreed(socket, alpn) do
+    speaks? =
+      case :ssl.negotiated_protocol(socket) do
+        {:ok, protocol} -> protocol in alpn
+        {:error, :protocol_not_negotiated} -> "http/1.1" in alpn
+      end
+
+    if speaks? do
+      {:ok, socket, :ssl}
+    else
+      :ssl.close(socket)
+      {:error, {:protocol, alpn}}
     end
   end
 
