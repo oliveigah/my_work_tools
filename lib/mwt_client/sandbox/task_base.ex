@@ -3,7 +3,8 @@ defmodule MWTClient.Sandbox.TaskBase do
   Resolves a handoff's comparison branch or commit without changing the
   VM's history. The branch's tracked `host-origin` branch is preferred,
   then the project's default host branch. An explicit --onto overrides
-  that choice. Bases recorded before the remotes were renamed
+  that choice. For a branch you made yourself, `came_from/3` finds the
+  base it came from, to make it a task. Bases recorded before the remotes were renamed
   (`refs/remotes/origin/*`, `refs/remotes/host/*`) stay readable: handoff
   records keep them, and so does a closed project's clone until it is
   opened again.
@@ -101,6 +102,114 @@ defmodule MWTClient.Sandbox.TaskBase do
       blank(override) || previous || blank(configured) || upstream || project.mirrored_branch
 
     resolve_at(project, guest, source.top, value)
+  end
+
+  @doc """
+  The base a branch that `mwt worktree new` didn't start came from, as git
+  recorded it when it was made, for making it a task: the start point in
+  the branch's own reflog (`branch: Created from X`), else, for a branch
+  made from where you were (`git switch -c NAME`, which records only
+  `HEAD`), the oldest switch onto it in the HEAD reflog of its worktree
+  (`checkout: moving from X to NAME`). `X` becomes a base the way a person
+  means it: `host-origin/main` and `remote-origin/main` your `main`; a
+  local branch the VM task it is (`refs/heads/X`, work stacked on it), else
+  the branch of yours it tracks, else itself.
+
+  Returns the base and what git said `X` was, or `:unknown`: made from no
+  branch (a slot is on none until a task takes it), its reflog expired or
+  turned off, or `X` no longer a base. Reads only the most recent
+  1000 moves of HEAD.
+  """
+  @spec came_from(Project.t(), map(), %{top: Path.t(), branch: String.t()}) ::
+          {:ok, map(), String.t()} | :unknown
+  def came_from(project, guest, %{top: top, branch: branch}) do
+    with from when is_binary(from) <-
+           created_from(guest, top, branch) || switched_from(guest, top, branch),
+         true <- from != branch and branch_name?(from),
+         {:ok, base} <- resolve_at(project, guest, top, as_base(guest, top, from)) do
+      {:ok, base, from}
+    else
+      _ -> :unknown
+    end
+  end
+
+  defp created_from(guest, top, branch) do
+    case git_lines(guest, top, ["reflog", "show", "--format=%gs", "refs/heads/" <> branch]) do
+      [_ | _] = lines ->
+        case List.last(lines) do
+          "branch: Created from HEAD" -> nil
+          "branch: Created from " <> from -> from
+          _ -> nil
+        end
+
+      [] ->
+        nil
+    end
+  end
+
+  defp switched_from(guest, top, branch) do
+    suffix = " to " <> branch
+
+    guest
+    |> git_lines(top, ["reflog", "show", "-n", "1000", "--format=%gs", "HEAD"])
+    |> Enum.flat_map(fn
+      "checkout: moving from " <> rest ->
+        if String.ends_with?(rest, suffix),
+          do: [String.replace_suffix(rest, suffix, "")],
+          else: []
+
+      _ ->
+        []
+    end)
+    |> List.last()
+  end
+
+  # Whether $2 is a branch of the repository at $1 (`branch`), then
+  # `task` when a task's base is recorded for it, else the branch it
+  # tracks, if any.
+  @local_branch """
+  top=$1 b=$2
+  git -C "$top" rev-parse -q --verify "refs/heads/$b" >/dev/null || exit 0
+  echo branch
+  if git -C "$top" config --get "branch.$b.mwt-base" >/dev/null; then echo task; exit 0; fi
+  git -C "$top" rev-parse -q --symbolic-full-name "$b@{upstream}" 2>/dev/null || true
+  """
+
+  # A name git recorded, as a branch's: no commit ID (a worktree on no
+  # branch), nothing a command would read as an option.
+  defp branch_name?(from) do
+    from =~ ~r"\A[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\z" and not commit_id?(from)
+  end
+
+  defp commit_id?(text), do: text =~ ~r/\A[0-9a-f]{7,64}\z/
+
+  # What a branch was made from, as a base `resolve_at/4` reads.
+  defp as_base(_guest, _top, "refs/remotes/host-origin/" <> name), do: "host-origin/" <> name
+  defp as_base(_guest, _top, "host-origin/" <> _ = from), do: from
+  defp as_base(_guest, _top, "refs/remotes/remote-origin/" <> name), do: "host-origin/" <> name
+  defp as_base(_guest, _top, "remote-origin/" <> name), do: "host-origin/" <> name
+
+  defp as_base(guest, top, from) do
+    name = String.replace_prefix(from, "refs/heads/", "")
+
+    case guest.exec.(["sh", "-c", @local_branch, "mwt-base", top, name]) do
+      {:ok, text} ->
+        case String.split(text, "\n", trim: true) do
+          ["branch", "task" | _] -> "refs/heads/" <> name
+          ["branch", "refs/remotes/host-origin/" <> yours | _] -> "host-origin/" <> yours
+          _ -> name
+        end
+
+      {:error, _} ->
+        name
+    end
+  end
+
+  defp git_lines(guest, top, args) do
+    case guest.exec.(["git", "-C", top | args]) do
+      {:ok, text} -> String.split(text, "\n", trim: true)
+      _ -> []
+    end
   end
 
   # Kept for legacy callers; ordinary clones need no task reservation.

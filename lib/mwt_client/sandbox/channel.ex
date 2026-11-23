@@ -86,6 +86,7 @@ defmodule MWTClient.Sandbox.Channel do
     Shown,
     Slots,
     Sockets,
+    TaskBase,
     Why,
     Workspace,
     Zed
@@ -459,6 +460,14 @@ defmodule MWTClient.Sandbox.Channel do
   # its trailing newlines; the mwt command takes the dot off.
   defp encode({{:ran, status}, note, output}), do: "ran #{status}\n#{note}\n#{output}."
   defp encode({status, text}), do: "#{status}\n#{String.trim_trailing(text)}\n"
+
+  # An answer `mwt` reads a line at a time (its `plan_value`): `key=value`,
+  # each value on one line.
+  defp key_lines(pairs) do
+    Enum.map_join(pairs, "\n", fn {key, value} ->
+      "#{key}=#{String.replace(value, ~r/[\r\n]+/, " ")}"
+    end)
+  end
 
   defp handed_words(handoff, how) do
     first =
@@ -933,14 +942,43 @@ defmodule MWTClient.Sandbox.Channel do
         amend = if plan.amend, do: [amend: plan.amend], else: []
 
         {0,
-         Enum.map_join(
+         key_lines(
            [onto: plan.onto, ref: plan.ref, title: plan.title, checks: plan.checks] ++
-             landed ++ amend,
-           "\n",
-           fn
-             {key, value} -> "#{key}=#{String.replace(value, ~r/[\r\n]+/, " ")}"
-           end
+             landed ++ amend
          )}
+
+      {:error, reason} ->
+        {1, Handoffs.explain(reason)}
+    end
+  end
+
+  # What `mwt handoff` asks you at a terminal: `key=value` lines, then,
+  # for an open handoff, a line `--` and its notes as they are, for your
+  # editor to start from.
+  defp reply("handoff", %{"stage" => "branch"} = ask, username) do
+    case Handoffs.about_branch(username, %{cwd: ask["cwd"]}) do
+      {:ok, %{task?: true, open: nil}} ->
+        {0, "task=yes"}
+
+      {:ok, %{task?: true, open: handoff}} ->
+        {0,
+         key_lines(task: "yes", handoff: to_string(handoff.id), title: handoff.title) <>
+           "\n--\n" <> (handoff.body || "")}
+
+      {:ok, %{task?: false, base: base, from: from}} ->
+        {0, key_lines(task: "no", onto: TaskBase.label(base), from: from || "")}
+
+      {:error, reason} ->
+        {1, Handoffs.explain(reason)}
+    end
+  end
+
+  # You made the branch you are on a task, at a terminal, to hand it off.
+  defp reply("handoff", %{"stage" => "task"} = ask, username) do
+    case Handoffs.make_task(username, %{cwd: ask["cwd"], onto: ask["onto"]}) do
+      {:ok, branch, base} ->
+        {0,
+         "Made #{branch} a task based on #{TaskBase.label(base)}: its handoff lands there unless you choose another branch."}
 
       {:error, reason} ->
         {1, Handoffs.explain(reason)}

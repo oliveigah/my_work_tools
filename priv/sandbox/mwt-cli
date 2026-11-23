@@ -254,6 +254,10 @@ mwt - ask MWT, the user's control panel, for access
       the user says so. Run it again on the same branch, when they ask
       again, to update it with a new revision. A git push to host-origin is
       refused: work goes back this way.
+      Run by the user at a terminal in the VM, never by an agent, it asks
+      for what it wasn't given: on a branch that isn't a task, whether to
+      make it one, based on the branch it came from; the title; and, once
+      every step went through, the notes, in git's editor.
 
   mwt handoff withdraw --reason "what the user asked now"
       Take your open handoff back, so the user can't land it until you
@@ -439,6 +443,129 @@ exchange() {
   fi
 }
 
+# You, at a terminal in the VM, rather than an agent: every standard
+# stream a terminal, no agent's thread, and nothing found above this
+# command but Zed's own server, under which Zed's terminals run. Only then
+# does mwt handoff ask what it wasn't given. Agents' shells have no
+# terminal; Zed's own agent, which runs commands in one, would be asked.
+at_terminal() {
+  [ -t 0 ] && [ -t 1 ] && [ -t 2 ] || return 1
+  [ -z "$thread_id" ] || return 1
+  case $agent in
+    "an agent" | zed*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Reads a line you type, or stops when there is none (Ctrl-D).
+answer() {
+  printf '%s' "$1" >&2
+  if ! IFS= read -r reply_line; then
+    printf '\nmwt: nothing was handed off.\n' >&2
+    exit 1
+  fi
+}
+
+# What mwt handoff asks you at a terminal, before anything changes: to
+# make a branch that isn't a task one, based on the branch it came from
+# (MWT says which), and the title, starting from the open handoff's or the
+# one you typed last time a run stopped. The open handoff's notes are kept
+# for your editor (edit_notes).
+ask_the_person() {
+  local reply status about task offered from open_title draft branch where
+  exchange "{\"command\":\"handoff\",\"stage\":\"branch\",\"cwd\":$(json "$(pwd -P)"),$(identity)}" 4
+  status=$(first_line "$reply")
+  about=$(after_first "$reply")
+  if [ "$status" != 0 ]; then
+    printf '%s\n' "$about" >&2
+    exit 1
+  fi
+  case $about in
+    *$'\n'--$'\n'*)
+      open_notes=${about#*$'\n'--$'\n'}
+      about=${about%%$'\n'--$'\n'*}
+      ;;
+  esac
+  task=$(plan_value task "$about")
+  open_title=$(plan_value title "$about")
+  branch=$(git symbolic-ref --quiet --short HEAD)
+  # What you typed for this branch's handoff, kept until it is sent: a slot
+  # may hold another task by the next run.
+  drafts=$gitdir/mwt-handoff/$branch
+
+  if [ "$task" = no ]; then
+    offered=${onto:-$(plan_value onto "$about")}
+    from=$(plan_value from "$about")
+    if [ -n "$onto" ]; then
+      where="based on $onto"
+    elif [ -n "$from" ]; then
+      where="based on $offered (it came from $from)"
+    else
+      where="based on $offered, your default branch (where it came from isn't known)"
+    fi
+    answer "$branch isn't a task yet, and only a task hands off. Make it one, $where? [Y/n, or a branch to base it on] "
+    case $reply_line in
+      '' | y | Y | yes) ;;
+      n | N | no)
+        echo "mwt: nothing was handed off." >&2
+        exit 1
+        ;;
+      *) onto=$reply_line ;;
+    esac
+    exchange "{\"command\":\"handoff\",\"stage\":\"task\",\"cwd\":$(json "$(pwd -P)"),\"onto\":$(json "$onto"),$(identity)}" 4
+    status=$(first_line "$reply")
+    printf '%s\n' "$(after_first "$reply")"
+    [ "$status" = 0 ] || exit 1
+  fi
+
+  if [ -z "$title" ]; then
+    draft=$(cat "$drafts/title" 2>/dev/null)
+    draft=${open_title:-$draft}
+    while [ -z "$title" ]; do
+      if [ -n "$draft" ]; then
+        answer "Title of the handoff [$draft]: "
+        title=${reply_line:-$draft}
+      else
+        answer "Title of the handoff: "
+        title=$reply_line
+      fi
+    done
+    mkdir -p "$drafts" && printf '%s\n' "$title" >"$drafts/title"
+  fi
+}
+
+# The handoff's notes, written in git's editor (GIT_EDITOR, core.editor,
+# VISUAL, EDITOR, else vi) once every step went through: a file in the git
+# folder, starting from the open handoff's notes, kept until the handoff
+# is sent, so a run that stops leaves what you wrote for the next. What
+# is above the scissors line goes, as Markdown: a # line stays.
+scissors='# ------------------------ >8 ------------------------'
+edit_notes() {
+  local file=$drafts/notes editor kept
+  mkdir -p "$drafts" || exit 1
+  if [ ! -f "$file" ]; then
+    kept="Left empty, it goes with no notes."
+    [ -n "$open_notes" ] && kept="Left empty, it keeps the notes it has."
+    {
+      [ -n "$open_notes" ] && printf '%s\n' "$open_notes"
+      printf '\n%s\n' "$scissors"
+      printf '# The notes of the handoff "%s".\n' "$title"
+      printf '# In Markdown: what the work is, and what to look at when you review\n'
+      printf '# it. Everything from the line above down is left out.\n'
+      printf '# %s\n' "$kept"
+    } >"$file"
+  fi
+  editor=$(git var GIT_EDITOR) || {
+    echo "mwt: git names no editor for the notes (git's words are above). Set EDITOR, or give them with --body FILE. Nothing was handed off." >&2
+    exit 1
+  }
+  if ! sh -c "$editor \"\$@\"" "$editor" "$file"; then
+    echo "mwt: the editor stopped with an error, so nothing was handed off. What you wrote is kept for the next mwt handoff." >&2
+    exit 1
+  fi
+  text=$(sed -e "/^$scissors\$/,\$d" "$file" | sed -e '/[^[:space:]]/,$!d')
+}
+
 # What a handoff needs that no agent has to do, here in the agent's own
 # slot: MWT names the selected base, the title, the project's checks and,
 # for a new revision, the commit to fold it into (its "prepare" answer);
@@ -450,7 +577,7 @@ exchange() {
 # the work is the agent's to say), conflicts, failing checks. Nothing is
 # sent until all of it went through.
 handoff_steps() {
-  local reply status plan top gitdir subject checks conflicts fresh head log branch base_ref base_name landed landed_from landed_branch upstream amend onto="$onto"
+  local reply status plan top subject checks conflicts fresh head log branch base_ref base_name landed landed_from landed_branch upstream amend onto="$onto"
   top=$(git rev-parse --show-toplevel 2>/dev/null) || {
     echo "mwt: this folder is in no git repository. Hand off from your slot." >&2
     exit 1
@@ -476,6 +603,8 @@ handoff_steps() {
       exit 1
     fi
   fi
+
+  [ -n "$person" ] && ask_the_person
 
   exchange "{\"command\":\"handoff\",\"stage\":\"prepare\",\"cwd\":$(json "$(pwd -P)"),\"title\":$(json "$title"),\"onto\":$(json "$onto"),$(identity)}" 4
   status=$(first_line "$reply")
@@ -1141,8 +1270,19 @@ case $command in
       text=$(cat -- "$body") || exit 1
     fi
     identify
+    person="" open_notes="" gitdir="" drafts=""
+    at_terminal && person=1
     handoff_steps
-    send "{\"command\":\"handoff\",\"cwd\":$(json "$(pwd -P)"),\"head\":$(json "$submitted_head"),\"title\":$(json "$title"),\"body\":$(json "$text"),\"onto\":$(json "$onto"),$(identity)}"
+    [ -n "$person" ] && [ -z "$body" ] && edit_notes
+    exchange "{\"command\":\"handoff\",\"cwd\":$(json "$(pwd -P)"),\"head\":$(json "$submitted_head"),\"title\":$(json "$title"),\"body\":$(json "$text"),\"onto\":$(json "$onto"),$(identity)}" 4
+    status=$(first_line "$reply")
+    printf '%s\n' "$(after_first "$reply")"
+    # Handed off: what you typed for it is done with.
+    [ "$status" = 0 ] && [ -n "$drafts" ] && rm -rf -- "$drafts"
+    case $status in
+      0 | 1 | 2 | 3 | 4) exit "$status" ;;
+      *) exit 1 ;;
+    esac
     ;;
   handoffs)
     send "{\"command\":\"handoffs\",\"cwd\":$(json "$(pwd -P)")}"

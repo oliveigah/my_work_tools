@@ -402,11 +402,15 @@ The pieces are there, but not put together for a person:
   `origin/main`. But it has nowhere to live: every working tree is a slot,
   and a slot holds a thread's task. So `git pull` on your own `main` means
   switching a slot out from under its task.
-- **A handoff by hand.** `mwt handoff` from a terminal gets past
-  `Handoffs.holding/3`, since an ask with no thread id is let through.
-  But it only goes from a task branch that `mwt worktree new` made
-  (`:not_a_task` otherwise), and it takes its body from a file. A branch
-  you made with `git switch -c` can't be handed off.
+- **A handoff by hand.** Done on 2026-11-23: at a terminal, `mwt handoff`
+  asks for what it wasn't given. On a branch that isn't a task, it offers
+  to make it one, based on the branch it came from
+  (`TaskBase.came_from/3`); then it asks the title, and opens git's editor
+  for the notes. It goes from any worktree of the clone, and finishes an
+  agent's task, since an ask with no thread id gets past
+  `Handoffs.holding/3`. A branch named like one of yours (your `main`) is
+  refused: a landed task's branch is deleted. The handoff still says an
+  agent made it (who asks, above).
 - **Git, by hand.** MWT's Git tool runs git on your machine only
   (`MWTClient.Git.Command.capture_path/3`, `git -C PATH`). In the VM there
   is the git CLI, Zed's git panel, which runs git in the VM over Zed's
@@ -439,11 +443,6 @@ What it would take:
   Projects page and `mwt project` then say "2 behind main", or that the
   clone hasn't fetched your latest, and MWT can tell the thread holding
   the slot that its base moved.
-- **`mwt handoff` for a person.** Run from your own tree or any branch:
-  - with no `--title`, it asks for one;
-  - with no `--body`, it opens `$EDITOR`;
-  - on a branch that isn't a task, it offers to make it one, based on the
-    branch it came from.
 - **A guide for doing it by hand.** `mwt help` gets a section for a person
   (start, catch up, hand off, see what happened, as four commands), and
   MWT's docs get a page on working in the VM yourself.

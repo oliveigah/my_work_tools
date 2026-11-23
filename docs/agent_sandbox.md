@@ -3412,6 +3412,16 @@ mwt project                         where you are, the slots, the rules
 - **A handoff that came too soon:** you close it and say so in its
   thread; it undoes its commits and keeps the work uncommitted
   (`git reset $(git merge-base HEAD host-origin/<base>)`).
+- **Handing off yourself,** at a terminal in the VM (Zed's, or
+  `msb ssh`): `mwt handoff` asks for what it wasn't given, and only
+  there, where every standard stream is a terminal and no agent is above
+  it but Zed's server. On a branch you made (`git switch -c`), it offers to
+  make it a task, based on the branch it came from as git's reflog has it,
+  or your default branch when that isn't known; then it asks the title,
+  and once every step went through opens git's editor for the notes. It
+  goes from any worktree of the clone, and finishes a task an agent left,
+  out of quota say. A branch named like one of yours is refused: a landed
+  task's branch is deleted.
 
 <a id="landing"></a>
 
@@ -4027,6 +4037,7 @@ history is in git.
 | 2026-11-22 | Every event of the activity log keeps what MWT knew when it happened, since the log is where you watch what the VM does: details written as labelled words when it is logged, stored beside it in the journal like a request's exchange, and read when its line opens. Words rather than the records they came from, so the log says what was true then and a later MWT draws a months-old event; the cost is that a detail is searched as words, not filtered as a field. An event naming a grant keeps that grant as it was. The agent's own words are kept, shown apart as claims ([Pages](#pages), [docs/storage.md](storage.md)). |
 | 2026-11-22 | The VM's clone names each remote for the level it reaches, `host-origin` (your repository on your machine) and `remote-origin` (its own remote `origin`, as your machine fetches it), and has no `origin`, since `origin/main` meant your `main` in the VM and GitHub's on your machine, and agents, messages and you mixed them up; clones made before are renamed in place ([The VM's clone](#the-vms-clone)). |
 | 2026-11-22 | Landing a handoff deletes its task's branch in the VM when nothing was done on it since, taking its slot off the branch at the same commit, so task branches don't pile up; a branch with anything on it stays, and the handoff's timeline says why. Nothing sweeps the clone periodically ([After landing](#after-landing)). |
+| 2026-11-23 | You hand off work you did yourself in the VM: at a terminal, `mwt handoff` offers to make a branch of yours a task, based on the branch it came from, asks the title and opens git's editor for the notes, and finishes a task an agent left ([Handoffs](#handoffs)). |
 
 <a id="later"></a>
 

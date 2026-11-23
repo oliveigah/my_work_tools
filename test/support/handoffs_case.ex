@@ -152,6 +152,10 @@ defmodule MWTClient.HandoffsCase do
         extra
       )
 
+  @doc "What MWT says of the branch in `cwd`, as `mwt handoff` asks it at a terminal."
+  def about_branch(username, cwd),
+    do: Channel.answer("handoff", %{"stage" => "branch", "cwd" => cwd}, username)
+
   @doc "Every handoff kept, the newest first."
   def handoffs(username) do
     for id <- Enum.reverse(MWTClient.Sandbox.HandoffRecords.ids(username)),
@@ -161,7 +165,78 @@ defmodule MWTClient.HandoffsCase do
 
   # The mwt command an agent runs in `cwd`, as in the VM: socat carries its
   # ask to the channel's socket and the answer back.
-  def cli(%{base: base, username: username}, cwd) do
+  def cli(context, cwd) do
+    run = mwt(context, cwd)
+    fn args -> run.(args, "bash", []) end
+  end
+
+  @doc """
+  The mwt command as you run it at a terminal in the VM, in `cwd`: in a
+  pseudo-terminal of its own, under Zed's server (as its terminals are),
+  with no agent's thread. Each line of `typed` is what you type, in order;
+  git's editor puts `notes` above what the file held, which
+  `editor_saw/1` reads. Returns what the terminal showed and the exit
+  status.
+  """
+  def at_terminal(%{base: base} = context, cwd) do
+    run = mwt(context, cwd)
+    terminal = Path.join(base, "bin/terminal")
+    editor = Path.join(base, "bin/editor")
+
+    File.write!(terminal, """
+    #!/usr/bin/env python3
+    # Runs the command in a new pseudo-terminal: types $TYPED into it, and
+    # writes what it shows to stdout. Gives up after 60 s.
+    import os, pty, select, signal, sys, time
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvp(sys.argv[1], sys.argv[1:])
+    os.write(fd, os.environ.get("TYPED", "").encode())
+    shown, deadline = b"", time.monotonic() + 60
+    while True:
+        ready, _, _ = select.select([fd], [], [], max(0, deadline - time.monotonic()))
+        if not ready:
+            os.kill(pid, signal.SIGKILL)
+            shown += b"\\n[terminal: gave up after 60 s]"
+            break
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        shown += chunk
+    _, status = os.waitpid(pid, 0)
+    sys.stdout.buffer.write(shown.replace(b"\\r\\n", b"\\n"))
+    sys.exit(os.waitstatus_to_exitcode(status))
+    """)
+
+    File.write!(editor, """
+    #!/bin/sh
+    cp "$1" "$EDITOR_SAW"
+    { printf '%s\\n' "$NOTES"; cat "$EDITOR_SAW"; } > "$1"
+    """)
+
+    File.chmod!(terminal, 0o755)
+    File.chmod!(editor, 0o755)
+
+    fn args, typed, notes ->
+      run.(args, terminal, [
+        {"MWT_AGENT", "zed-remote-serv"},
+        {"TYPED", typed},
+        {"GIT_EDITOR", editor},
+        {"EDITOR_SAW", Path.join(base, "editor-saw")},
+        {"NOTES", notes}
+      ])
+    end
+  end
+
+  @doc "What git's editor was given to start from, in the last `at_terminal/2` run."
+  def editor_saw(%{base: base}), do: File.read!(Path.join(base, "editor-saw"))
+
+  # mwt-cli in `cwd`, run by `program` (bash, or a terminal running bash),
+  # with `env` over an agent's environment.
+  defp mwt(%{base: base, username: username}, cwd) do
     cli = Path.expand("../../priv/sandbox/mwt-cli", __DIR__)
     bin = Path.join(base, "bin")
     File.mkdir_p!(bin)
@@ -175,8 +250,10 @@ defmodule MWTClient.HandoffsCase do
 
     File.chmod!(Path.join(bin, "git-remote-mwt"), 0o755)
 
-    fn args ->
-      MWTClient.Executable.cmd("bash", [cli | args],
+    fn args, program, env ->
+      command = if program == "bash", do: [cli | args], else: ["bash", cli | args]
+
+      MWTClient.Executable.cmd(program, command,
         cd: cwd,
         env:
           [
@@ -187,7 +264,11 @@ defmodule MWTClient.HandoffsCase do
             {"CLAUDE_CODE_SESSION_ID", nil},
             {"CLAUDE_PID", nil},
             {"CODEX_THREAD_ID", nil}
-          ] ++ git_env(),
+          ]
+          |> Kernel.++(git_env())
+          |> Map.new()
+          |> Map.merge(Map.new(env))
+          |> Enum.to_list(),
         stderr_to_stdout: true
       )
     end

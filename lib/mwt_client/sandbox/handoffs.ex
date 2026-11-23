@@ -38,6 +38,8 @@ defmodule MWTClient.Sandbox.Handoffs do
           | :withdrawn
           | {:not_your_task, String.t()}
           | {:not_a_task, String.t()}
+          | {:named_like_yours, String.t()}
+          | {:a_task_already, String.t()}
           | {:not_withdrawable, Handoff.t() | nil, String.t()}
           | :not_accepted
           | :not_closed
@@ -137,7 +139,10 @@ defmodule MWTClient.Sandbox.Handoffs do
 
   # Only the thread holding a task's branch hands it off or takes its
   # handoff back, and only from a task branch (`mwt worktree new` made it,
-  # in a slot): another thread opened in the same slot only reads there.
+  # in a slot, or you made one yours a task, `make_task/2`): another
+  # thread opened in the same slot only reads there. An ask with no thread
+  # is yours, from a terminal, and goes through: as when an agent ran out
+  # of quota and you finish its task by hand.
   defp holding(guest, source, thread_id) do
     holder = Slots.thread_of(guest, source.folder, source.branch)
 
@@ -145,13 +150,18 @@ defmodule MWTClient.Sandbox.Handoffs do
       holder != nil and thread_id not in [nil, ""] and holder != thread_id ->
         {:error, {:not_your_task, source.branch}}
 
-      holder == nil and not Slots.task?(guest, source.folder, source.branch) ->
+      not task?(holder, guest, source) ->
         {:error, {:not_a_task, source.branch}}
 
       true ->
         :ok
     end
   end
+
+  # A task's branch: a thread holds it (`holder`, as `Slots.thread_of/3`
+  # read it), or its base is recorded.
+  defp task?(holder, guest, source),
+    do: holder != nil or Slots.task?(guest, source.folder, source.branch)
 
   defp submission_project(username, cwd) do
     with {:ok, %{project: project} = info} <- Projects.inspect(username, cwd) do
@@ -326,6 +336,105 @@ defmodule MWTClient.Sandbox.Handoffs do
     override = Map.get(ask, :onto)
     override = if override in [nil, ""], do: continuation, else: override
     TaskBase.read(project, guest, source, override, existing)
+  end
+
+  ## What you are asked, at a terminal in the VM
+
+  @doc """
+  What `mwt handoff` asks you when you run it yourself, at a terminal in
+  the VM, in the folder `ask.cwd`: from your own branch, or to finish a
+  task an agent left (out of quota, say). An agent is never asked: it
+  gives the title and notes, and hands off only from its task.
+
+  For a task's branch: the handoff it has open, if any, whose title and
+  notes are what you start from. For any other branch: the base it would
+  have as a task (`make_task/2`), from the branch it came from
+  (`TaskBase.came_from/3`), and what git said that was, or nil when that
+  isn't known and the base is your default branch. Refused for a branch
+  named like one of yours (`:named_like_yours`): see `make_task/2`.
+  Nothing changes.
+  """
+  @spec about_branch(String.t(), map()) ::
+          {:ok, %{task?: true, open: Handoff.t() | nil}}
+          | {:ok, %{task?: false, base: map(), from: String.t() | nil}}
+          | {:error, error()}
+  def about_branch(username, ask) do
+    %{waiting_handoffs: handoffs, vm: vm} = Server.call(username, :projects)
+    cwd = Map.get(ask, :cwd)
+
+    with {:ok, guest} <- Projects.guest(username, vm),
+         {:ok, %{project: project}} <- submission_project(username, cwd),
+         {:ok, %{source: source}} <- Handoff.look(guest, cwd, uncommitted: :allowed) do
+      if task?(Slots.thread_of(guest, source.folder, source.branch), guest, source) do
+        {:ok, %{task?: true, open: open_from(handoffs, source)}}
+      else
+        with :ok <- not_named_like_yours(project, source.branch),
+             {:ok, base, from} <- offered_base(project, guest, source) do
+          {:ok, %{task?: false, base: base, from: from}}
+        end
+      end
+    end
+  end
+
+  @doc """
+  Makes the branch you are on, in the folder `ask.cwd` in the VM, a task,
+  so it hands off: its base recorded as `mwt worktree new` records one
+  (`TaskBase.remember/3`), `ask.onto` or else the one `about_branch/2`
+  offers. No thread holds it, so you hand it off from any terminal, and a
+  thread opened in its slot only reads there, as in one another thread
+  holds.
+
+  Refused for a branch that is a task already, and for one named like a
+  branch of yours (your `main`, in the VM): once its handoff lands, MWT
+  deletes a task's branch.
+  """
+  @spec make_task(String.t(), map()) :: {:ok, String.t(), map()} | {:error, error()}
+  def make_task(username, ask) do
+    %{vm: vm} = Server.call(username, :projects)
+    cwd = Map.get(ask, :cwd)
+
+    with {:ok, guest} <- Projects.guest(username, vm),
+         {:ok, %{project: project}} <- submission_project(username, cwd),
+         {:ok, %{source: source}} <- Handoff.look(guest, cwd, uncommitted: :allowed),
+         false <-
+           task?(Slots.thread_of(guest, source.folder, source.branch), guest, source) &&
+             {:error, {:a_task_already, source.branch}},
+         :ok <- not_named_like_yours(project, source.branch),
+         {:ok, base} <- chosen_base(project, guest, source, Map.get(ask, :onto)),
+         :ok <- TaskBase.remember(guest, source, base) do
+      {:ok, source.branch, base}
+    end
+  end
+
+  defp chosen_base(project, guest, source, onto) when onto in [nil, ""] do
+    with {:ok, base, _from} <- offered_base(project, guest, source), do: {:ok, base}
+  end
+
+  defp chosen_base(project, guest, source, onto), do: TaskBase.read(project, guest, source, onto)
+
+  # The branch it came from, else your default branch.
+  defp offered_base(project, guest, source) do
+    case TaskBase.came_from(project, guest, source) do
+      {:ok, base, from} ->
+        {:ok, base, from}
+
+      :unknown ->
+        with {:ok, base} <- TaskBase.resolve(project, guest), do: {:ok, base, nil}
+    end
+  end
+
+  # A task's branch is deleted once its handoff lands: one named like a
+  # branch of yours would take the VM's copy of it (its `main`) along.
+  defp not_named_like_yours(project, branch) do
+    if HostGit.line(project.path, [
+         "rev-parse",
+         "--verify",
+         "--quiet",
+         "--end-of-options",
+         "refs/heads/#{branch}^{commit}"
+       ]),
+       do: {:error, {:named_like_yours, branch}},
+       else: :ok
   end
 
   @doc """
@@ -1052,6 +1161,13 @@ defmodule MWTClient.Sandbox.Handoffs do
   def explain({:not_a_task, branch}),
     do:
       "#{branch} isn't a task's branch: a handoff goes from the branch mwt worktree new started for the task, in its slot. If this work belongs to a task, ask the user how to carry it there."
+
+  def explain({:named_like_yours, branch}),
+    do:
+      "#{branch} is also the name of one of your branches (host-origin/#{branch}), so it can't be made a task: once a task's handoff lands, MWT deletes its branch, and this one is the VM's #{branch}. Put the work on a branch of its own (git switch -c NAME) and run mwt handoff again. Nothing was handed off."
+
+  def explain({:a_task_already, branch}),
+    do: "#{branch} is a task already: mwt handoff hands it off as it is."
 
   def explain({:not_your_task, branch}),
     do:
