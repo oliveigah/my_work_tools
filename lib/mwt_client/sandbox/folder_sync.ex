@@ -39,6 +39,12 @@ defmodule MWTClient.Sandbox.FolderSync do
        renamed into place. A program in the VM sees a file whole, the old
        one or the new, never half written.
 
+  A file that can't be sent stays out of that one sync, never the whole of
+  it: one gone or replaced since the scan (an editor's swap file, an office
+  suite's lock file) counts as changed, and one that can't be read here
+  (`unread` in the status, by name) is tried again at the next sync. Both
+  are unknown in what was sent; everything else that went counts as sent.
+
   `copy/3` is steps 1 and 4 alone, for a folder sent once into an empty
   place (your memory, `MWTClient.Sandbox.Memory`).
 
@@ -67,6 +73,9 @@ defmodule MWTClient.Sandbox.FolderSync do
   # large share above all.
   @seconds 600
   @send_seconds 3_600
+  # What `@send` exits with when the host's tar couldn't read some file it
+  # was given (its own exit 2), the VM having taken all the rest.
+  @unread_status 3
   @max_list 192 * 1024 * 1024
   # The VM's copy may hold more than the folder (what it added itself),
   # but not without end: its list is parsed into memory.
@@ -103,8 +112,10 @@ defmodule MWTClient.Sandbox.FolderSync do
   What the pages show of a record: the folder as the last sync found it,
   what that sync `sent` and `removed`, and how many of its files were
   `unsettled`: changed in the 2 s before, or while they were sent, so
-  maybe caught half written. Those go again at the next sync. And the
-  files `held` back: not sent, with why (`:hold` in `sync/4`).
+  maybe caught half written. Those go again at the next sync. The files
+  `held` back: not sent, with why (`:hold` in `sync/4`). And the files
+  `unread`: still there, but this machine wouldn't let MWT read them (a
+  file only root may read), with why; tried again at each sync.
   """
   @type status :: %{
           files: non_neg_integer(),
@@ -117,7 +128,8 @@ defmodule MWTClient.Sandbox.FolderSync do
           sent: non_neg_integer(),
           removed: non_neg_integer(),
           unsettled: non_neg_integer(),
-          held: [%{path: binary(), why: String.t()}]
+          held: [%{path: binary(), why: String.t()}],
+          unread: [%{path: binary(), why: String.t()}]
         }
 
   @typedoc """
@@ -203,7 +215,10 @@ defmodule MWTClient.Sandbox.FolderSync do
 
   # This machine's side, step 4: the files named in a list, sent as a tar
   # stream into the command that follows. tar ends with 1 when a file
-  # changed while it read it: what it sent shows as changed next time.
+  # changed while it read it: what it sent shows as changed next time. It
+  # ends with 2 when it couldn't read one at all (gone since the scan), and
+  # goes on with the rest: with the VM's side done, that is exit 3
+  # (`@unread_status`), for `arrived/6` to tell which file it was.
   @send ~S"""
   set -u
   share=$1 list=$2
@@ -211,7 +226,12 @@ defmodule MWTClient.Sandbox.FolderSync do
   tar -C "$share" --null --verbatim-files-from --no-recursion --hard-dereference \
     --format=gnu -c -f - -T "$list" 2>"$MWT_ERRORS" | "$@"
   status=("${PIPESTATUS[@]}")
-  [ "${status[0]}" -le 1 ] && [ "${status[1]}" -eq 0 ]
+  [ "${status[1]}" -eq 0 ] || exit 1
+  case ${status[0]} in
+    0 | 1) exit 0 ;;
+    2) exit 3 ;;
+    *) exit 1 ;;
+  esac
   """
 
   @doc """
@@ -240,7 +260,8 @@ defmodule MWTClient.Sandbox.FolderSync do
         sent: 0,
         removed: 0,
         unsettled: 0,
-        held: []
+        held: [],
+        unread: []
       }
     }
   end
@@ -259,7 +280,10 @@ defmodule MWTClient.Sandbox.FolderSync do
     * `:progress` - called with each `t:phase/0` as the sync goes;
     * `:hold` - called with the folder, then each changed file's path in
       it and where it is here, before it is sent: nil sends it, a reason
-      holds it back, unsent, until a sync finds it changed or let go.
+      holds it back, unsent, until a sync finds it changed or let go;
+    * `:open` - how a changed file is tried before it is sent, given where
+      it is here: `:ok` when it can be read, else `{:error, reason}`. Opens
+      it for reading unless a test says otherwise.
   """
   @spec sync(record(), map(), Path.t(), keyword()) :: record()
   def sync(record, guest, dir, opts \\ []) do
@@ -269,6 +293,7 @@ defmodule MWTClient.Sandbox.FolderSync do
     progress = Keyword.get(opts, :progress, fn _phase -> :ok end)
     max_bytes = Keyword.get(opts, :max_bytes, @max_bytes)
     hold = Keyword.get(opts, :hold)
+    open = Keyword.get(opts, :open, &open_to_read/1)
     record = with_sent(record, dir)
     progress.(:scanning)
 
@@ -279,7 +304,7 @@ defmodule MWTClient.Sandbox.FolderSync do
 
       {:ok, scan} ->
         record
-        |> bring(scan, guest, dir, clock, fresh?, progress, hold)
+        |> bring(scan, guest, dir, clock, fresh?, progress, {hold, open})
         |> then(fn record ->
           %{
             record
@@ -320,7 +345,7 @@ defmodule MWTClient.Sandbox.FolderSync do
     Path.join([dir, "sync", hash <> ".bin"])
   end
 
-  defp bring(record, scan, guest, dir, clock, fresh?, progress, hold) do
+  defp bring(record, scan, guest, dir, clock, fresh?, progress, {hold, open}) do
     place = guest.place.(record.to)
     have = if fresh?, do: {:ok, %{}, clock}, else: have(record, guest, place, clock, progress)
 
@@ -335,12 +360,18 @@ defmodule MWTClient.Sandbox.FolderSync do
 
       %{send: changed, remove: remove} = plan(scan, record.sent, have, record.stamps)
       {changed, held} = held(changed, scan, record.path, hold)
-      record = put_in(record.status.held, held)
+      {changed, unread, gone} = readable(changed, scan, record.path, open)
+      # Not sent this time, and unknown in what was: the next sync tries
+      # each again, or takes one gone for removed. One gone that the VM
+      # never had is simply not sent.
+      skipped = Enum.filter(gone, &Map.has_key?(have, &1)) ++ Enum.map(unread, & &1.path)
+      record = %{record | status: Map.merge(record.status, %{held: held, unread: unread})}
 
       if changed == [] and remove == [] do
         # A copy just compared whole is what MWT sent from now on.
-        if have != record.sent, do: write_sent(dir, record, have)
-        done(record, scan, have, checked_at, 0, 0)
+        sent = unknown(have, skipped)
+        if sent != record.sent, do: write_sent(dir, record, sent)
+        done(record, scan, sent, checked_at, 0, 0)
       else
         expect = record.sent
         bytes = Enum.sum_by(changed, &size(scan.entries[&1]))
@@ -352,15 +383,16 @@ defmodule MWTClient.Sandbox.FolderSync do
             else: prepare(guest, place, changed, remove, scan, expect)
 
         with :ok <- prepared,
-             :ok <- transfer(guest, record.path, place, changed, fresh?) do
-          sent = after_send(record.path, scan, changed, remove, have)
+             outcome = transfer(guest, record.path, place, changed, fresh?),
+             {:ok, sent, count} <- arrived(outcome, record.path, scan, changed, remove, have) do
+          sent = unknown(sent, skipped)
           write_sent(dir, record, sent)
-          done(record, scan, sent, checked_at, length(changed), length(remove))
+          done(record, scan, sent, checked_at, count, length(remove))
         else
           {:error, message} ->
             # What the VM holds is unsure now: compared whole next time,
             # and nothing being sent is taken for the VM's own change.
-            sent = Enum.reduce(changed, record.sent, &Map.put(&2, &1, :unknown))
+            sent = Enum.reduce(changed ++ skipped, record.sent, &Map.put(&2, &1, :unknown))
             %{record | sent: sent, checked_at: nil, status: %{record.status | error: message}}
         end
       end
@@ -369,6 +401,32 @@ defmodule MWTClient.Sandbox.FolderSync do
         %{record | checked_at: nil, status: %{record.status | error: message}}
     end
   end
+
+  # What the VM's copy holds after a send, and how many files went: the
+  # folder as scanned, but a path that changed while it was sent, which is
+  # unknown. When the host's tar couldn't read a file it was given
+  # (`{:partial, text}`), that file is one MWT finds changed now (gone, or
+  # replaced, since `readable/4` opened it): the VM took every other. One
+  # still as the scan saw it can't be told apart from those that arrived,
+  # so a failure no changed file explains is the whole send's, as any
+  # other: compared whole next time. Its cost: a file tar couldn't read for
+  # a reason of the moment (a read error), in the same send as one that
+  # went, counts as sent until it changes again.
+  defp arrived(:ok, share, scan, changed, remove, have) do
+    {sent, _moved} = after_send(share, scan, changed, remove, have)
+    {:ok, sent, length(changed)}
+  end
+
+  defp arrived({:partial, text}, share, scan, changed, remove, have) do
+    case after_send(share, scan, changed, remove, have) do
+      {_sent, []} -> {:error, "The files couldn't be sent: " <> text}
+      {sent, moved} -> {:ok, sent, length(changed) - length(moved)}
+    end
+  end
+
+  defp arrived({:error, _message} = error, _share, _scan, _changed, _remove, _have), do: error
+
+  defp unknown(sent, paths), do: Enum.reduce(paths, sent, &Map.put(&2, &1, :unknown))
 
   defp size({:file, size, _mtime}), do: size
   defp size(_other), do: 0
@@ -392,6 +450,50 @@ defmodule MWTClient.Sandbox.FolderSync do
     end)
     |> then(fn {send, held} -> {Enum.reverse(send), Enum.reverse(held)} end)
   end
+
+  # The changed files that can go: each still the file the scan found,
+  # opened for reading here before the send. One gone or replaced since
+  # (`gone`) changed again; one this machine won't let MWT read (`unread`,
+  # with why) would make the host's tar fail on it, and tar's exit says
+  # only that some file failed, never which. So the list is checked here,
+  # by name, rather than read from tar's own words: opening each file
+  # costs a moment per file, a few seconds for the first copy of a large
+  # folder. A file that fails between this and tar's read is told apart
+  # after the send (`arrived/6`).
+  defp readable(changed, scan, share, open) do
+    Enum.reduce(changed, {[], [], []}, fn path, {send, unread, gone} ->
+      case scan.entries[path] do
+        {:file, _size, _mtime} ->
+          if as_scanned?(share, path, scan) do
+            case open.(Path.join(share, path)) do
+              :ok -> {[path | send], unread, gone}
+              {:error, reason} -> {send, [%{path: path, why: why_unread(reason)} | unread], gone}
+            end
+          else
+            {send, unread, [path | gone]}
+          end
+
+        _folder_or_link ->
+          {[path | send], unread, gone}
+      end
+    end)
+    |> then(fn {send, unread, gone} ->
+      {Enum.reverse(send), Enum.reverse(unread), Enum.reverse(gone)}
+    end)
+  end
+
+  # Opened raw, past Erlang's file server, and closed at once. The file is
+  # known to be a regular one (`as_scanned?/3`), so opening it can't wait
+  # on a writer as a FIFO's would.
+  defp open_to_read(path) do
+    case :file.open(path, [:read, :raw, :binary]) do
+      {:ok, io} -> :file.close(io)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp why_unread(reason) when is_atom(reason), do: to_string(:file.format_error(reason))
+  defp why_unread(reason) when is_binary(reason), do: reason
 
   # What the VM's copy holds: what was sent, unless it was never compared
   # since the VM started, or the last sync failed.
@@ -496,7 +598,7 @@ defmodule MWTClient.Sandbox.FolderSync do
       errors = file <> ".errors"
       words = guest.stream.(words)
 
-      case run(
+      case run_status(
              ["-c", @send, "mwt-sync", share, file | words],
              [{"MWT_ERRORS", errors}],
              guest,
@@ -505,7 +607,10 @@ defmodule MWTClient.Sandbox.FolderSync do
         {:ok, _output} ->
           :ok
 
-        {:error, text} ->
+        {:error, @unread_status, _text} ->
+          {:partial, errors |> head_of() |> String.trim() |> error_text()}
+
+        {:error, _status, text} ->
           detail = errors |> head_of() |> String.trim() |> error_text()
           {:error, "The files couldn't be sent: " <> Enum.join([detail, text], " ")}
       end
@@ -538,8 +643,13 @@ defmodule MWTClient.Sandbox.FolderSync do
   """
   @spec copy(Path.t(), map(), Path.t()) :: :ok | {:error, String.t()}
   def copy(source, guest, to) do
-    case scan(source, System.os_time(:second), :mwt) do
-      {:ok, scan} -> transfer(guest, source, guest.place.(to), Enum.sort(Map.keys(scan.entries)))
+    with {:ok, scan} <- scan(source, System.os_time(:second), :mwt) do
+      # Sent once, so it must arrive whole: a file tar couldn't read fails it.
+      case transfer(guest, source, guest.place.(to), Enum.sort(Map.keys(scan.entries))) do
+        {:partial, text} -> {:error, "The files couldn't be sent: " <> text}
+        sent -> sent
+      end
+    else
       {:error, reason} -> {:error, explain(reason)}
     end
   end
@@ -548,18 +658,27 @@ defmodule MWTClient.Sandbox.FolderSync do
   # are taken. Its errors are apart, so a warning in the VM doesn't spoil
   # the count.
   defp run(args, env, guest, seconds \\ @seconds) do
+    case run_status(args, env, guest, seconds) do
+      {:ok, output} -> {:ok, output}
+      {:error, _status, text} -> {:error, text}
+    end
+  end
+
+  # The same, with how it ended when it failed: its exit status, or
+  # `:too_long` or `:timeout`.
+  defp run_status(args, env, guest, seconds) do
     case Bounded.cmd("bash", args, max: @error_bytes, seconds: seconds, env: env ++ guest.env) do
       {:ok, output, _errors, 0} ->
         {:ok, output}
 
-      {:ok, output, errors, _status} ->
-        {:error, output |> Bounded.failure(errors, @error_bytes) |> error_text()}
+      {:ok, output, errors, status} ->
+        {:error, status, output |> Bounded.failure(errors, @error_bytes) |> error_text()}
 
       {:error, {:too_long, head}} ->
-        {:error, "it printed more than 64 KiB: " <> error_text(head)}
+        {:error, :too_long, "it printed more than 64 KiB: " <> error_text(head)}
 
       {:error, :timeout} ->
-        {:error, "it took longer than #{seconds} s"}
+        {:error, :timeout, "it took longer than #{seconds} s"}
     end
   end
 
@@ -596,16 +715,13 @@ defmodule MWTClient.Sandbox.FolderSync do
     end)
   end
 
-  # What the copy holds after a send: the folder as scanned, except a file
-  # that changed again while it was sent, which counts as unknown.
+  # What the copy holds after a send: the folder as scanned, except a path
+  # that changed while it was sent, which counts as unknown; and those
+  # paths.
   defp after_send(share, scan, send, remove, have) do
     sent = Map.drop(have, remove) |> Map.merge(Map.take(scan.entries, send))
-
-    Enum.reduce(send, sent, fn path, sent ->
-      if entry(Path.join(share, path)) == scan.entries[path],
-        do: sent,
-        else: Map.put(sent, path, :unknown)
-    end)
+    moved = Enum.reject(send, &as_scanned?(share, &1, scan))
+    {unknown(sent, moved), moved}
   end
 
   defp write_sent(dir, record, sent) do
@@ -624,6 +740,7 @@ defmodule MWTClient.Sandbox.FolderSync do
   defp done(record, scan, sent, checked_at, sent_count, removed) do
     now = DateTime.utc_now()
     changed? = sent_count + removed > 0
+    unread = record.status |> Map.get(:unread, []) |> MapSet.new(& &1.path)
 
     status = %{
       record.status
@@ -634,7 +751,11 @@ defmodule MWTClient.Sandbox.FolderSync do
         error: nil,
         sent: sent_count,
         removed: removed,
-        unsettled: MapSet.size(scan.unsettled) + Enum.count(sent, &(elem(&1, 1) == :unknown))
+        # A file that can't be read is unknown too, but not being written:
+        # it is tried at each sync, never one sync more.
+        unsettled:
+          MapSet.size(scan.unsettled) +
+            Enum.count(sent, fn {path, entry} -> entry == :unknown and path not in unread end)
     }
 
     %{record | sent: sent, checked_at: checked_at, status: status}
@@ -824,14 +945,36 @@ defmodule MWTClient.Sandbox.FolderSync do
     end
   end
 
-  # What a path is now, as `scan/2` records it.
+  # What a path is now, as `scan/4` records it, and a file's change time
+  # and inode: read raw, past Erlang's file server, since a send asks it of
+  # every file it sent.
   defp entry(path) do
-    case File.lstat(path, time: :posix) do
-      {:ok, %File.Stat{type: :regular, size: size, mtime: mtime}} -> {:file, size, mtime}
-      {:ok, %File.Stat{type: :directory}} -> :dir
-      {:ok, %File.Stat{type: :symlink}} -> link(path)
-      _ -> :unknown
+    case :file.read_link_info(path, [:raw, {:time, :posix}]) do
+      {:ok, info} ->
+        case File.Stat.from_record(info) do
+          %File.Stat{type: :regular} = stat ->
+            {{:file, stat.size, stat.mtime}, {stat.ctime, stat.inode}}
+
+          %File.Stat{type: :directory} ->
+            {:dir, nil}
+
+          %File.Stat{type: :symlink} ->
+            {link(path), nil}
+
+          _other ->
+            {:unknown, nil}
+        end
+
+      {:error, _} ->
+        {:unknown, nil}
     end
+  end
+
+  # Whether the path `path` of `share` is still what the scan found there:
+  # a file of the same size and time, its change time and inode unmoved.
+  defp as_scanned?(share, path, scan) do
+    {entry, stamp} = entry(Path.join(share, path))
+    entry == scan.entries[path] and (stamp == nil or stamp == scan.stamps[path])
   end
 
   defp link(path) do

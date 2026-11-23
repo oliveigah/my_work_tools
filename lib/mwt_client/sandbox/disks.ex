@@ -203,17 +203,21 @@ defmodule MWTClient.Sandbox.Disks do
     :ok
   end
 
-  # The file first, then the file system into the new room. `resize2fs`
-  # wants the file system checked first.
+  # `resize2fs` wants the file system checked first, and the check comes
+  # before the file grows: `ensure!/2` tells a disk to grow by its file's
+  # size, so a check that fails leaves the file as it was, and the next
+  # start tries again, failing with why, rather than finding the file big
+  # enough and the file system never grown. Then the file, then the file
+  # system into the new room. A `resize2fs` that fails, or MWT stopping
+  # between the two, still leaves a file bigger than its file system.
   defp grow!(path, bytes) do
-    run!("truncate", ["--size=#{bytes}", path])
-
     case System.cmd(tool!("e2fsck"), ["-f", "-p", path], stderr_to_stdout: true) do
       # 0 is clean, 1 is "errors corrected": both leave a sound file system.
       {_, status} when status in [0, 1] -> :ok
       {output, status} -> raise "checking #{path} failed (#{status}): #{String.trim(output)}"
     end
 
+    run!("truncate", ["--size=#{bytes}", path])
     run!(tool!("resize2fs"), [path])
     :ok
   end

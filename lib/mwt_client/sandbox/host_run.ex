@@ -13,10 +13,15 @@ defmodule MWTClient.Sandbox.HostRun do
       swapped for a link to another one since you looked; then nothing runs
       (exit 126);
     * under `timeout`: TERM at the limit, KILL 5 seconds later (exit 124,
-      or 137 when it had to be killed). `timeout`
-      puts the command in a process group of its own, whose id is the
-      operating system pid `run/2` reports, so `stop/2` reaches every
-      process the command started;
+      or 137 when it had to be killed). The program the port runs leads a
+      process group of its own, whose id is the operating system pid
+      `run/2` reports, so `stop/2` reaches every process the command
+      started that stayed in it;
+    * it ends when its shell does, at its limit, or when it is stopped,
+      whatever it started: once the program is gone, what is left of its
+      group is killed and the output closes (`collect/3`). A process that
+      left the group (`setsid`, `ssh -f`) is out of reach: it goes on, and
+      loses its output;
     * in MWT's environment without MWT's and the BEAM's own variables
       (`scrubbed?/1`), which a command such as `env` would otherwise print,
       nor `BASH_ENV`, and with the job's `env` added: the values of a
@@ -33,18 +38,42 @@ defmodule MWTClient.Sandbox.HostRun do
   @keep 32 * 1024
   @kill_after 5
 
+  # How a run sees its program gone: it looks this often, then gives the
+  # output this long to end by itself (the shell's last words reaching MWT)
+  # before what is left of the group is killed; after that kill, the output
+  # may stay open this long before MWT stops reading it. And past the
+  # limit and `timeout`'s own KILL, this long before MWT kills the group
+  # itself, should `timeout` not have.
+  @look_ms 200
+  @drain_ms 500
+  @close_ms 5_000
+  @slack_ms 1_000
+
   # The BEAM ignores SIGPIPE and its children inherit that, so `seq | head`
   # would end with "write error: Broken pipe" instead of quietly, as in a
   # terminal. Bash can't undo an ignored signal; `env --default-signal`
   # (coreutils 8.31 and later) can, and is skipped where it's missing.
   # `env` and then `timeout` run in place of the outer shell, so the port's
-  # pid is timeout's, which leads the command's process group.
+  # pid is timeout's, which leads the command's process group: the port
+  # starts each program in a session of its own.
+  #
+  # The command writes into a pipe of its own, which `cat` copies onto the
+  # port's. A process that leaves the group (`setsid`, `ssh -f` does) keeps
+  # that pipe open, and nothing in the group can reach it; the port's own
+  # pipe is held by `cat` alone, which is in the group, so killing what is
+  # left of the group always ends the output, and the port reports the
+  # shell's status. `cat` ignores TERM, so what the command prints as it
+  # stops still reaches MWT; KILL ends it with the rest. The cost: a process
+  # more per run, and a process that left the group finds its output closed
+  # once the run ends (its next write fails, and with SIGPIPE back to its
+  # default, ends it). Anything more of such a process would take a cgroup.
   # The command comes after the folder: `bash -lc SCRIPT` as you, or a
   # confined one (`MWTClient.Sandbox.Confine`).
   @wrapper "cd -P -- \"$2\" 2>/dev/null && [ \"$(pwd -P)\" = \"$2\" ] || " <>
              "{ echo \"MWT: $2 is no longer the folder you approved, so nothing ran.\"; exit 126; }; " <>
              "t=$1; shift 2; d=; env --default-signal=PIPE true 2>/dev/null && d=--default-signal=PIPE; " <>
-             ~s(exec env $d timeout --kill-after=#{@kill_after}s "$t" "$@" </dev/null)
+             ~s(exec env $d timeout --kill-after=#{@kill_after}s "$t" "$@" </dev/null ) <>
+             ~s[> >(trap '' TERM; exec cat) 2>&1]
 
   # In a confined run, the token files of the grants it runs with are
   # written from variables named here, which are then unset, before the
@@ -151,12 +180,25 @@ defmodule MWTClient.Sandbox.HostRun do
         args: ["-c", @wrapper, "mwt-host-command", "#{timeout}s", dir | command]
       ])
 
-    case Port.info(port, :os_pid) do
-      {:os_pid, pid} -> started.(pid)
-      nil -> :ok
-    end
+    program =
+      case Port.info(port, :os_pid) do
+        {:os_pid, pid} ->
+          program = %{pid: pid, since: since(pid)}
+          started.(pid)
+          program
 
-    result = collect(port, %{head: "", tail: "", bytes: 0})
+        nil ->
+          nil
+      end
+
+    watch = %{
+      program: program,
+      phase: :running,
+      next: started_at + @look_ms,
+      deadline: started_at + (timeout + @kill_after) * 1_000 + @slack_ms
+    }
+
+    result = collect(port, %{head: "", tail: "", bytes: 0}, watch)
 
     # `timeout` exits 124 when it is itself stopped too, so only a run that
     # lasted its whole limit timed out.
@@ -261,30 +303,140 @@ defmodule MWTClient.Sandbox.HostRun do
       [{~c"BASH_ENV", false} | scrubbed]
   end
 
-  defp collect(port, acc) do
+  # The output until the port reports the program's status, which it does
+  # only once nothing holds the output open any more. So the run also looks
+  # after its program (`look/3`): gone, it is over, whatever it started.
+  defp collect(port, acc, watch) do
     receive do
       {^port, {:data, data}} ->
-        collect(port, add(acc, data))
+        acc = add(acc, data)
+
+        # Output that never pauses still lets the run look.
+        if now() >= watch.next, do: look(port, acc, watch), else: collect(port, acc, watch)
 
       {^port, {:exit_status, status}} ->
-        tail = last(acc.tail, @keep)
-        cut = acc.bytes - byte_size(acc.head) - byte_size(tail)
-
-        output =
-          if cut > 0,
-            do: text(acc.head) <> "\n[… #{cut} bytes cut …]\n" <> text(tail),
-            else: text(acc.head <> tail)
-
-        %{
-          exit: status,
-          output: output,
-          bytes: acc.bytes,
-          cut: cut,
-          timed_out: false,
-          error: nil
-        }
+        finished(acc, status)
+    after
+      max(watch.next - now(), 0) -> look(port, acc, watch)
     end
   end
+
+  # Running: the program gone (the shell ended, the limit or a Stop ended
+  # it), or still there past the limit and `timeout`'s KILL. Then the output
+  # gets `@drain_ms` to end by itself, which it does unless something the
+  # command started still holds it: what is left of the group is killed,
+  # which ends it, since the relay is in the group. Only a process that
+  # opened the relay's own output (`/proc/PID/fd/1`, as you can) could keep
+  # it open after that: then MWT stops reading, and the run ends with its
+  # status unknown (`exit: nil`) rather than never.
+  defp look(port, acc, %{phase: :running} = watch) do
+    cond do
+      not alive?(watch.program) ->
+        collect(port, acc, %{watch | phase: {:ended, now()}, next: now() + @look_ms})
+
+      now() >= watch.deadline ->
+        kill_group(watch.program)
+        collect(port, acc, %{watch | phase: {:killed, now()}, next: now() + @look_ms})
+
+      true ->
+        collect(port, acc, %{watch | next: now() + @look_ms})
+    end
+  end
+
+  defp look(port, acc, %{phase: {:ended, at}} = watch) do
+    if now() - at >= @drain_ms do
+      kill_group(watch.program)
+      collect(port, acc, %{watch | phase: {:killed, now()}, next: now() + @look_ms})
+    else
+      collect(port, acc, %{watch | next: now() + @look_ms})
+    end
+  end
+
+  defp look(port, acc, %{phase: {:killed, at}} = watch) do
+    if now() - at >= @close_ms do
+      close(port)
+      finished(acc, nil)
+    else
+      collect(port, acc, %{watch | next: now() + @look_ms})
+    end
+  end
+
+  defp finished(acc, status) do
+    tail = last(acc.tail, @keep)
+    cut = acc.bytes - byte_size(acc.head) - byte_size(tail)
+
+    output =
+      if cut > 0,
+        do: text(acc.head) <> "\n[… #{cut} bytes cut …]\n" <> text(tail),
+        else: text(acc.head <> tail)
+
+    %{
+      exit: status,
+      output: output,
+      bytes: acc.bytes,
+      cut: cut,
+      timed_out: false,
+      error: nil
+    }
+  end
+
+  # The port closed from this side: no status comes any more, and what it
+  # had sent meanwhile goes unread.
+  defp close(port) do
+    Port.close(port)
+    flush(port)
+  rescue
+    ArgumentError -> flush(port)
+  end
+
+  defp flush(port) do
+    receive do
+      {^port, _late} -> flush(port)
+    after
+      0 -> :ok
+    end
+  end
+
+  defp kill_group(%{pid: pid}), do: stop(pid, "KILL")
+  defp kill_group(nil), do: :ok
+
+  # Whether the program is still the process the port started: by its start
+  # time in `/proc`, since a pid is given again once it ends. `since` is
+  # `:ended` when the program was gone before the run first looked, and nil
+  # where `/proc` can't tell: then only the deadline ends a run that holds
+  # its output open.
+  defp alive?(%{pid: pid, since: since}) when is_integer(since) do
+    case stat(pid) do
+      {state, ^since} -> state != "Z"
+      _ended -> false
+    end
+  end
+
+  defp alive?(%{since: :ended}), do: false
+  defp alive?(%{since: nil}), do: true
+  defp alive?(nil), do: true
+
+  defp since(pid) do
+    case stat(pid) do
+      {_state, since} -> since
+      nil -> if stat("self"), do: :ended, else: nil
+    end
+  end
+
+  # The state and start time in `/proc/PID/stat`, after the name in
+  # parentheses, which may hold anything.
+  defp stat(pid) do
+    with {:ok, stat} <- MWTClient.Files.read("/proc/#{pid}/stat"),
+         [_, state, rest] <- Regex.run(~r/\A.*\) (\S+) (.*)\z/s, stat),
+         # From the parent's pid, field 4, to the start time, field 22.
+         {since, ""} <- rest |> String.split(" ") |> Enum.at(18, "") |> Integer.parse() do
+      {state, since}
+    else
+      _ -> nil
+    end
+  end
+
+  defp now, do: System.monotonic_time(:millisecond)
 
   # The head fills up to `@keep`; the rest goes to the tail, trimmed to its
   # last `@keep` bytes whenever it holds twice that.

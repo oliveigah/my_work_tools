@@ -31,9 +31,11 @@ defmodule MWTClient.Sandbox.Accept do
   and change nothing. Landing works it out again in your repository,
   checks the branch is still where the preview saw it, and moves it with
   a compare-and-swap: a branch checked out in a worktree of yours by a
-  fast-forward there, which needs no uncommitted changes to tracked files;
-  any other by `update-ref`. No hook runs. Undo puts the branch back (or
-  deletes a new one) while it still has the landed commit.
+  fast-forward there, which needs no uncommitted changes to tracked files
+  and no file git doesn't track, ignored ones included, where it writes
+  (`clear/4`); any other by `update-ref`. No hook runs (`HostGit`).
+  Undo puts the branch back (or deletes a new one) while it still has the
+  landed commit, never over a file git doesn't track either.
   """
 
   alias MWTClient.Sandbox.{Handoff, HandoffStore, HostGit, Shown}
@@ -48,6 +50,7 @@ defmodule MWTClient.Sandbox.Accept do
           | {:branch_exists, String.t()}
           | {:branch_gone, String.t()}
           | {:pending, String.t(), Path.t(), [String.t()]}
+          | {:untracked, String.t(), Path.t(), [String.t()]}
           | :bad_destination
           | :up_to_date
           | {:changed, String.t()}
@@ -212,22 +215,134 @@ defmodule MWTClient.Sandbox.Accept do
         target.tip != head and ancestor?(repo, target.tip, head, env) and
           ancestor?(repo, base, target.tip, env)
 
-      {:ok,
-       Map.merge(target, %{
-         base: base,
-         tree: tree,
-         conflicts: Enum.map(conflicts, &Shown.text/1),
-         up_to_date?:
-           conflicts == [] and tree == git_line(repo, ["rev-parse", target.tip <> "^{tree}"], env),
-         behind: count(repo, ["rev-list", "--count", "#{head}..#{target.tip}"], env),
-         fast_forward?: fast_forward?,
-         commits: count(repo, ["rev-list", "--count", "#{target.tip}..#{head}"], env),
-         as:
-           if(fast_forward? and not Keyword.get(opts, :one_commit, false),
-             do: :as_is,
-             else: :one_commit
-           )
-       })}
+      as =
+        if fast_forward? and not Keyword.get(opts, :one_commit, false),
+          do: :as_is,
+          else: :one_commit
+
+      plan =
+        Map.merge(target, %{
+          base: base,
+          tree: tree,
+          conflicts: Enum.map(conflicts, &Shown.text/1),
+          up_to_date?:
+            conflicts == [] and
+              tree == git_line(repo, ["rev-parse", target.tip <> "^{tree}"], env),
+          behind: count(repo, ["rev-list", "--count", "#{head}..#{target.tip}"], env),
+          fast_forward?: fast_forward?,
+          commits: count(repo, ["rev-list", "--count", "#{target.tip}..#{head}"], env),
+          as: as
+        })
+
+      # What the branch's files become: the handoff's own commit as it is,
+      # else the merged tree.
+      with :ok <- clear(repo, plan, if(as == :as_is, do: head, else: tree), env),
+           do: {:ok, plan}
+    end
+  end
+
+  # Landing into a worktree of yours writes its files there, and git's
+  # fast-forward overwrites a file it doesn't track that it finds in the
+  # way when that file is one it ignores: your `.env`, a build's output.
+  # So a landing that would write where such a file is, or where an
+  # untracked one is, is refused, naming them, as pending changes to
+  # tracked files are; a conflict, or nothing to land, says so first.
+  # The cost: a file you would gladly lose (a stale build) stops it too,
+  # until you move it, or land on a new branch.
+  defp clear(repo, %{worktree: path, conflicts: [], up_to_date?: false} = plan, landed, env)
+       when is_binary(path) do
+    case in_the_way(repo, path, plan.tip, landed, env) do
+      {:ok, []} -> :ok
+      {:ok, files} -> {:error, {:untracked, plan.branch, path, files}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp clear(_repo, _plan, _landed, _env), do: :ok
+
+  # The files of the worktree `path` that git doesn't track there, ignored
+  # ones included, where moving its checkout from `from` to `to` (commits
+  # or trees `repo` has, with `env`) would write: a path `to` adds that is
+  # there already, or a folder of it that is a file there, or what git
+  # doesn't track in a folder `to` puts a file in place of. At most 20, as
+  # pending changes are named. Only the paths `to` adds are looked at, one
+  # lstat each, so a landing of a few files reads a few.
+  defp in_the_way(repo, path, from, to, env \\ []) do
+    case HostGit.run(
+           repo,
+           ["diff-tree", "-r", "-z", "--no-renames", "--name-status", from, to],
+           env: env
+         ) do
+      {:ok, output} ->
+        changes =
+          output |> String.split(<<0>>, trim: true) |> Enum.chunk_every(2, 2, :discard)
+
+        # A file of yours that goes, so its place is free for a folder.
+        gone = for ["D", file] <- changes, into: MapSet.new(), do: file
+
+        files =
+          for(["A", file] <- changes, do: file)
+          |> Stream.flat_map(&blocking(path, &1, gone))
+          |> Stream.uniq()
+          |> Enum.take(20)
+          |> Enum.map(&Shown.text/1)
+
+        {:ok, files}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # What stands where `file` would go: a folder of it that is something
+  # other than a folder there (and not a file of yours that goes), or the
+  # file itself, or what git doesn't track in a folder at its place. The
+  # folders are looked at from the top down, never through a link.
+  defp blocking(root, file, gone) do
+    parts = String.split(file, "/")
+
+    folders =
+      for n <- 1..(length(parts) - 1)//1, do: parts |> Enum.take(n) |> Enum.join("/")
+
+    walked =
+      Enum.reduce_while(folders, :there, fn folder, :there ->
+        case kind(Path.join(root, folder)) do
+          :directory -> {:cont, :there}
+          :none -> {:halt, :absent}
+          _other -> if folder in gone, do: {:halt, :absent}, else: {:halt, {:blocked, folder}}
+        end
+      end)
+
+    case walked do
+      :absent ->
+        []
+
+      {:blocked, folder} ->
+        [folder]
+
+      :there ->
+        case kind(Path.join(root, file)) do
+          :none -> []
+          :directory -> untracked_in(root, file)
+          _other -> [file]
+        end
+    end
+  end
+
+  # One lstat, raw: a path from the handoff, never followed through a link.
+  defp kind(path) do
+    case :file.read_link_info(path, [:raw]) do
+      {:ok, info} -> File.Stat.from_record(info).type
+      {:error, reason} when reason in [:enoent, :enotdir] -> :none
+      {:error, _unreadable} -> :other
+    end
+  end
+
+  # With no exclude patterns, `--others` lists ignored files too.
+  defp untracked_in(root, folder) do
+    case HostGit.run(root, ["--literal-pathspecs", "ls-files", "--others", "-z", "--", folder]) do
+      {:ok, output} -> output |> String.split(<<0>>, trim: true) |> Enum.take(20)
+      {:error, _reason} -> [folder]
     end
   end
 
@@ -333,8 +448,10 @@ defmodule MWTClient.Sandbox.Accept do
     with true <- HostGit.branch(path) == branch or {:error, {:changed, branch}},
          true <- tip(path, branch) == before or {:error, {:changed, branch}},
          [] <- pending(path),
+         # Never over an ignored file, should one appear since the plan
+         # looked: git refuses then, as it does for an untracked one.
          {:ok, _} <-
-           HostGit.run(path, ["-c", "core.hooksPath=/dev/null", "merge", "--ff-only", commit],
+           HostGit.run(path, ["merge", "--ff-only", "--no-overwrite-ignore", commit],
              seconds: 300
            ) do
       {:ok, %{kind: :merge, before: before, after: commit}}
@@ -363,13 +480,20 @@ defmodule MWTClient.Sandbox.Accept do
         undo: %{kind: :merge, before: before, after: after_},
         worktree: path
       }) do
-    if HostGit.branch(path) == branch and tip(path, branch) == after_ do
-      case HostGit.run(path, ["-c", "core.hooksPath=/dev/null", "reset", "--keep", before]) do
+    # The files it puts back go where landing took tracked ones away; one
+    # you made there since, git would overwrite when it ignores it. What it
+    # removes, landing added where nothing of yours was (`clear/4`), and
+    # `--keep` refuses to remove one you changed since.
+    with true <-
+           (HostGit.branch(path) == branch and tip(path, branch) == after_) or {:error, :moved},
+         {:ok, []} <- in_the_way(path, path, after_, before) do
+      case HostGit.run(path, ["reset", "--keep", before]) do
         {:ok, _} -> :ok
         {:error, reason} -> {:error, reason}
       end
     else
-      {:error, :moved}
+      {:ok, files} -> {:error, {:untracked, branch, path, files}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -405,6 +529,12 @@ defmodule MWTClient.Sandbox.Accept do
     do:
       "Your #{onto} at #{path} has work you haven't committed: " <>
         Enum.join(files, ", ") <> ". Commit or stash it first, or land it on a new branch."
+
+  def explain({:untracked, onto, path, files}),
+    do:
+      "Your #{onto} at #{path} has files git doesn't track, ignored ones included, where it would write: " <>
+        Enum.join(files, ", ") <>
+        ". Move them away first, or land it on a new branch."
 
   def explain({:branch_exists, branch}),
     do: "The branch #{branch} exists already. Choose another name, or land a new commit on it."

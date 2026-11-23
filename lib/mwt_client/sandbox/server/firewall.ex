@@ -18,13 +18,16 @@ defmodule MWTClient.Sandbox.Server.Firewall do
 
   Releasing turns back on the grants that were on when it was isolated,
   as they were, for the time they have left (`restore_grants/2`): the
-  incident keeps them, so a release after MWT restarted does too.
+  incident keeps them, so a release after MWT restarted does too. It
+  also starts over what the incident was counted on, in the watch and
+  here, so the next connection or lookup isn't isolated again on bytes
+  or names from before it.
   """
 
   require Logger
 
   alias MWTClient.Notifications
-  alias MWTClient.Sandbox.{Activity, Allowance, Approval, EventDetails, Firewall, Gate, Grant}
+  alias MWTClient.Sandbox.{Allowance, Approval, EventDetails, Firewall, Gate, Grant, Watch}
   alias MWTClient.Sandbox.Server.{Approvals, Forwarding, HostRuns, State}
 
   @connections MWTClient.Sandbox.Connections
@@ -74,31 +77,21 @@ defmodule MWTClient.Sandbox.Server.Firewall do
     end
   end
 
-  @doc "What the Firewall page shows."
+  @doc """
+  What the Firewall page shows of the server's state: the firewall, how
+  much it refused while isolated, and what releasing turns back on. Its
+  findings are events of the journal, which the page reads itself
+  (`MWTClient.Sandbox.Activity`): a journal held by a long write (a
+  retention delete, a Clear) then keeps the page waiting, never this
+  server and every decision behind it.
+  """
   def view(state) do
     %{
       firewall: of(state),
       refused: Map.get(state, :firewall_refused, 0) + Gate.refused_count(state.username),
-      findings: findings(state),
       # What releasing turns back on, by name.
       restorable: restorable(state)
     }
-  end
-
-  # From the journal. A page can do without them; the server can't do
-  # without itself, so a journal that can't be read now shows none.
-  defp findings(state) do
-    Activity.logged(state.username, %{group: "firewall", limit: 50})
-  rescue
-    error ->
-      Logger.warning("could not read the firewall's findings: #{Exception.message(error)}",
-        user: state.username,
-        system: :sandbox
-      )
-
-      []
-  catch
-    :exit, _reason -> []
   end
 
   @doc "Changes a setting: the switch, a rule's action or a list."
@@ -313,15 +306,21 @@ defmodule MWTClient.Sandbox.Server.Firewall do
 
       %Firewall{isolated: incident} = firewall ->
         released = Firewall.release(firewall, State.now(), trust?)
+        entry = trust? && Firewall.trust_entry(incident)
+        trusted = if entry, do: ", #{entry} trusted from now on", else: ""
 
-        trusted =
-          if trust? and incident.host, do: ", #{incident.host} trusted from now on", else: ""
-
+        # What it was counted on starts over before the mark goes: the
+        # watch answers what already waits there as isolated, then judges
+        # from zero.
+        rule = incident.rule
+        key = Map.get(incident, :key)
+        :ok = Watch.forget(state.username, rule, key)
         Notifications.withdraw(state.username, {:sandbox_firewall, :isolated})
         Gate.untrip(state.username)
 
         state =
           state
+          |> Map.update(:firewall_watch, nil, &(&1 && Firewall.forget(&1, rule, key)))
           |> State.change(:firewall, fn _ -> released end)
           |> Map.put(:firewall_refused, 0)
           |> Forwarding.sync()
@@ -334,7 +333,7 @@ defmodule MWTClient.Sandbox.Server.Firewall do
                 {"For", EventDetails.duration(DateTime.diff(State.now(), incident.at, :second))},
                 {"By", Firewall.isolated_by(incident)},
                 {"Seen", incident.summary},
-                {"Trusted from now on", trust? && incident.host},
+                {"Trusted from now on", entry || nil},
                 {"Grants to turn back on",
                  {:list, Enum.map(Map.get(incident, :grants_on, []), &grant_name(state, &1.id))}}
               ])

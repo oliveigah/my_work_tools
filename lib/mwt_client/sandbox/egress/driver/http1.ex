@@ -35,7 +35,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   @behaviour MWTClient.Sandbox.Egress.Driver
 
   alias MWTClient.Sandbox.{Describe, Exchange, Placeholder, Secrets}
-  alias MWTClient.Sandbox.Egress.{Driver, Request}
+  alias MWTClient.Sandbox.Egress.{Driver, Request, RequestHead}
   alias MWTClient.Sandbox.Egress.Driver.Http1.{Answer, Framing, Response, WebSocket}
 
   @head_limit 64 * 1024
@@ -49,9 +49,6 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # The value put in a request is looked for in its answer down to this
   # many bytes: that value only, so a shorter one than anywhere else.
   @echo_shortest 8
-  @token ~r/\A[!#$%&'*+.^_`|~0-9A-Za-z-]+\z/
-  @overrides ~w(x-http-method-override x-http-method x-method-override)
-  @field_value ~r/\A[\t\x20-\x7e\x80-\xff]*\z/
 
   # `phase`: reading a `:head`, the start of its `:body`, `:judging` it, or
   # its `:answer`. `linked?` while a link to the host is open, kept from
@@ -63,7 +60,8 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # after it took them); `fresh?` until anything moved since it went; `ws`,
   # a WebSocket whose messages MWT reads: its answer's head until it
   # switched, then each side's frames (`WebSocket`); `read`, the request's
-  # bytes until it is judged, looked through should MWT refuse it.
+  # bytes until it is judged, looked through should MWT refuse it; `later`,
+  # what the VM sent while it was judged, framed once it goes.
   defstruct [
     :ctx,
     :by,
@@ -79,6 +77,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     read: "",
     body: "",
     pending: "",
+    later: "",
     linked?: false,
     keep?: false,
     reused?: false,
@@ -104,18 +103,31 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # `Driver.Http2`'s.
   def detect("PRI " <> _rest, %{transport: :tcp, tls?: true}), do: :no
 
-  def detect(data, %{transport: :tcp, tls?: true}),
-    do: if(data =~ ~r/\A[A-Z]{1,20}( |\z)/, do: :yes, else: :no)
+  # Empty lines before a request are claimed, so the request is refused
+  # (`400`) rather than passed on unread: servers skip them (RFC 9112
+  # 2.2), and a request a host reads that MWT took for bytes would go
+  # unjudged, past a host list and a network grant's ask.
+  def detect(data, %{transport: :tcp, tls?: true}) do
+    case past_empty_lines(data) do
+      empty when empty in ["", "\r"] -> :more
+      rest -> if rest =~ ~r/\A[A-Z]{1,20}( |\z)/, do: :yes, else: :no
+    end
+  end
 
   def detect(data, %{transport: :tcp, tls?: false, first: :vm}) do
+    rest = past_empty_lines(data)
+
     cond do
-      data =~ ~r/\A[A-Z]{1,20} [\x21-\x7e]+ HTTP\/1\.[01]\r\n/ -> :yes
-      byte_size(data) < 8192 and data =~ ~r/\A[A-Z]{1,20}( [^\r\n]*)?\z/ -> :more
+      rest =~ ~r/\A[A-Z]{1,20} [\x21-\x7e]+ HTTP\/1\.[01]\r\n/ -> :yes
+      byte_size(data) < 8192 and rest =~ ~r/\A(\r|[A-Z]{1,20}( [^\r\n]*)?)?\z/ -> :more
       true -> :no
     end
   end
 
   def detect(_data, _ctx), do: :no
+
+  defp past_empty_lines("\r\n" <> rest), do: past_empty_lines(rest)
+  defp past_empty_lines(data), do: data
 
   @impl true
   def init(ctx), do: awaiting_head(%__MODULE__{ctx: ctx, linked?: ctx.linked?}, "")
@@ -169,9 +181,17 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   def handle_data(:vm, data, %{phase: :body} = http),
     do: body(%{http | read: http.read <> data}, data)
 
-  # Asked for before the request was whole: the next one's start, kept.
-  def handle_data(:vm, data, %{phase: :judging} = http),
-    do: {[], %{http | pending: http.pending <> data}}
+  # Read while it is judged, so a client that gives up (a timeout while
+  # you decide) ends the request before it goes: one decision sends it
+  # once, for the client still there. What comes meanwhile (the rest of
+  # its body, the next request) is kept as it came, framed once it goes;
+  # past a head's worth the VM waits, and a close behind those bytes goes
+  # unseen until they are read.
+  def handle_data(:vm, data, %{phase: :judging} = http) do
+    later = http.later <> data
+    more = if byte_size(later) <= @head_limit, do: [{:read, :vm, :infinity}], else: []
+    {more, %{http | later: later}}
+  end
 
   # A WebSocket's frames from the VM: written again, their text looked
   # through as the request's own stream (`WebSocket`). Bytes that stop
@@ -558,7 +578,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
       sent: Exchange.capture(http.ctx.limit)
     }
 
-    {[{:judge, request}],
+    {[{:judge, request}, {:read, :vm, :infinity}],
      %{
        http
        | phase: :judging,
@@ -566,6 +586,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
          record: record,
          framing: framing,
          pending: beyond,
+         later: "",
          body: "",
          read: ""
      }}
@@ -629,9 +650,22 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
           )
     }
 
-    {connect ++
-       [{:write, :host, head}] ++
-       body ++ [{:read, :host, waiting(answer)}, {:read, :vm, :infinity}], http}
+    actions =
+      connect ++
+        [{:write, :host, head}] ++
+        body ++ [{:read, :host, waiting(answer)}, {:read, :vm, :infinity}]
+
+    sent_later(actions, http)
+  end
+
+  # What the VM sent while the request was judged goes on behind it, as
+  # if it came now: the rest of its body, or the next request, kept. It
+  # goes in the same write as the head, so the request is still fresh.
+  defp sent_later(actions, %{later: ""} = http), do: {actions, http}
+
+  defp sent_later(actions, http) do
+    {more, http} = handle_data(:vm, http.later, %{http | later: ""})
+    {actions ++ more, %{http | fresh?: true}}
   end
 
   @doc """
@@ -1043,35 +1077,18 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     encodings = for {"transfer-encoding", value} <- headers, do: String.downcase(value)
 
     cond do
-      method in ["TRACE", "CONNECT"] ->
-        {:refuse, 405, "mwt_method_refused", "MWT does not pass on #{method} requests."}
-
-      # MWT would judge, and an allowance match, the method it reads while
-      # the host carries out another.
-      Enum.any?(headers, fn {name, _} -> name in @overrides end) ->
-        {:refuse, 400, "mwt_bad_request",
-         "A request says its method once: MWT doesn't pass on a method override."}
-
-      not (String.starts_with?(target, "/") or (method == "OPTIONS" and target == "*")) ->
-        {:refuse, 400, "mwt_bad_request", "The request target must be a path."}
-
-      # What HTTP allows in a target, and what an approval can show as it is.
-      not (target =~ ~r/\A[\x21-\x7e]+\z/) ->
-        {:refuse, 400, "mwt_bad_request",
-         "The request target must be visible ASCII: percent-encode anything else."}
+      refusal = RequestHead.refusal(method, target, headers) ->
+        refusal
 
       length(hosts) != 1 ->
         {:refuse, 400, "mwt_bad_request", "A request needs exactly one Host header."}
 
-      hd(hosts) not in [sni, "#{sni}:#{port}"] ->
+      RequestHead.misdirected?(hd(hosts), sni, port) ->
         {:misdirected, hd(hosts)}
 
-      length(lengths) > 1 or (lengths != [] and encodings != []) ->
+      lengths != [] and encodings != [] ->
         {:refuse, 400, "mwt_bad_request",
          "A request says how long its body is once: Content-Length or Transfer-Encoding."}
-
-      lengths != [] and not (hd(lengths) =~ ~r/\A[0-9]+\z/) ->
-        {:refuse, 400, "mwt_bad_request", "Content-Length must be a number."}
 
       encodings not in [[], ["chunked"]] ->
         {:refuse, 400, "mwt_bad_request", "The only Transfer-Encoding passed on is chunked."}
@@ -1106,7 +1123,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
     with [method, target, version] when version in ["HTTP/1.1", "HTTP/1.0"] <-
            String.split(line, " "),
-         true <- method =~ @token,
+         true <- RequestHead.token?(method),
          {:ok, headers} <- parse_headers(lines, []) do
       {:ok, method, target, version, headers}
     else
@@ -1118,10 +1135,9 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
   defp parse_headers([line | rest], acc) do
     with [name, value] <- String.split(line, ":", parts: 2),
-         true <- name =~ @token,
-         true <- value =~ @field_value do
-      value = String.replace(value, ~r/\A[ \t]+|[ \t]+\z/, "")
-      parse_headers(rest, [{String.downcase(name), value} | acc])
+         true <- RequestHead.token?(name),
+         true <- RequestHead.field_value?(value) do
+      parse_headers(rest, [{String.downcase(name), RequestHead.trimmed(value)} | acc])
     else
       _ -> :error
     end

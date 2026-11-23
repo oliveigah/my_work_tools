@@ -130,40 +130,119 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
   end
 
   @doc """
+  Whether a command or a call that waited may be carried out now, as it
+  was asked: `:ok`, or why not. Its grant is still there, on by the clock,
+  held off by no check, under the definition it was asked under
+  (`Grant.definition/1`, `:changed` otherwise); a request subgrant's token
+  grant still lists its host; and the VM isn't isolated. It is the same
+  decision as when it was asked (`MWTClient.Sandbox.Policy`), taken again:
+  a card can wait 30 minutes, and what you turned off, edited or removed
+  meanwhile is what holds.
+  """
+  @spec still(map(), Approval.t()) :: :ok | {:refused, :grant_off | :changed | :isolated}
+  def still(state, %Approval{kind: :command} = approval) do
+    grant = State.grant_of(state, approval)
+
+    cond do
+      Firewall.isolated?(state) ->
+        {:refused, :isolated}
+
+      is_nil(grant) ->
+        {:refused, :grant_off}
+
+      Approval.digest(Grant.definition(grant)) != approval.definition ->
+        {:refused, :changed}
+
+      true ->
+        case Policy.decide(State.policy(state), use_of(approval), State.now()) do
+          {:ask, _grant, _about} -> :ok
+          {:refuse, _why} -> {:refused, :grant_off}
+        end
+    end
+  end
+
+  # The use a card holds, as the policy decides one: a call by its
+  # subgrant's id; a command with the agent's text, or none for a saved
+  # command, whose text is the grant's.
+  defp use_of(%Approval{call: %{}} = approval), do: {:call, %{grant: approval.grant_id}}
+
+  defp use_of(%Approval{script_from: :grant} = approval),
+    do: {:command, %{grant: approval.grant_id, script: nil}}
+
+  defp use_of(%Approval{} = approval),
+    do: {:command, %{grant: approval.grant_id, script: approval.script}}
+
+  @doc "Why a card that waited wasn't carried out, in the log's words and the run's."
+  @spec refused_words(:grant_off | :changed | :isolated) :: String.t()
+  def refused_words(:grant_off),
+    do:
+      "not carried out: its grant no longer allows it (off, out of time, paused, removed, " <>
+        "or no longer listing its host)"
+
+  def refused_words(:changed),
+    do:
+      "not carried out: its grant was edited while it waited, so the card no longer says what would run"
+
+  def refused_words(:isolated), do: "not carried out: the VM is isolated"
+
+  # How a saved command runs, fixed into its card as it is asked: what the
+  # card says, and what Run then does.
+  defp confine_of(%Grant{kind: :command, script: script} = grant) when is_binary(script),
+    do: %{confined: grant.confined, with: grant.with, writes_dir: grant.writes_dir}
+
+  defp confine_of(_grant), do: nil
+
+  @doc """
   Sends a request subgrant's call that you approved, or that went through
   without asking: its grant's value is fetched (minted when it has to be),
   and the request goes out in a task, which reports as a command's run
   does. With no value to send, it ends there, and the agent hears why.
+  It goes only while the subgrant still allows it (`still/2`), looked at
+  before the value is fetched and again once it is at hand: a mint takes
+  up to 30 seconds, and a value never goes out after its grant stopped
+  allowing it.
   """
   def send_call(state, %Approval{call: call} = approval) do
     grant = State.grant_of(state, approval)
     parent = grant && Enum.find(state.grants, &(&1.id == grant.parent))
 
-    if is_nil(parent) do
-      finished_command(state, approval.id, %{error: "its grant was removed"})
-    else
-      Values.fetch(state, parent, SavedRequest.host(grant), fn state, result ->
-        case result do
-          {:ok, value} ->
-            name = parent.name
-            timeout = approval.timeout
+    case still(state, approval) do
+      {:refused, why} ->
+        finished_command(state, approval.id, %{error: refused_words(why)})
 
-            state
-            |> State.used(parent.id)
-            |> State.task({:command, approval.id}, fn ->
-              SavedRequest.send(call, value, name, timeout)
-            end)
+      :ok when is_nil(parent) ->
+        finished_command(state, approval.id, %{error: "its grant was removed"})
 
-          {:error, :no_value} ->
-            finished_command(state, approval.id, %{error: "#{parent.name} has no value yet"})
-
-          {:error, message} ->
-            finished_command(state, approval.id, %{
-              error: "minting #{parent.name}'s token failed: #{message}"
-            })
-        end
-      end)
+      :ok ->
+        fetch_and_send(state, approval, call, grant, parent)
     end
+  end
+
+  defp fetch_and_send(state, approval, call, grant, parent) do
+    Values.fetch(state, parent, SavedRequest.host(grant), fn state, result ->
+      case {result, still(state, approval)} do
+        {_result, {:refused, why}} ->
+          finished_command(state, approval.id, %{error: refused_words(why)})
+
+        {{:ok, value}, :ok} ->
+          name = parent.name
+          timeout = approval.timeout
+
+          state
+          |> State.used(parent.id)
+          |> State.task({:command, approval.id}, fn ->
+            SavedRequest.send(call, value, name, timeout)
+          end)
+
+        {{:error, :no_value}, :ok} ->
+          finished_command(state, approval.id, %{error: "#{parent.name} has no value yet"})
+
+        {{:error, message}, :ok} ->
+          finished_command(state, approval.id, %{
+            error: "minting #{parent.name}'s token failed: #{message}"
+          })
+      end
+    end)
   end
 
   @doc """
@@ -172,12 +251,13 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
   the other (minted where they are). Without one, it ends there, and the
   agent hears why. Each value goes in the variables the VM sees that
   grant's placeholder in, and in its token file, `/mnt/mwt/tokens/<id>`, as
-  in the VM.
+  in the VM. `confine` is how its card says it runs (`Approval.confine`),
+  fixed as it was asked.
   """
-  def run_confined(state, approval, job, %Grant{} = grant) do
-    withs = for id <- grant.with, found = token(state, id), found != nil, do: found
+  def run_confined(state, approval, job, %{with: with} = confine) do
+    withs = for id <- with, found = token(state, id), found != nil, do: found
 
-    if length(withs) != length(grant.with) do
+    if length(withs) != length(with) do
       finished_command(state, approval.id, %{error: "a grant it runs with was removed"})
     else
       fetch_all(state, withs, [], fn state, result ->
@@ -186,7 +266,7 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
             server = self()
             id = approval.id
             reads = Map.get(state.settings, :confine_reads)
-            job = Map.put(job, :confine, %{confine(grant, pairs) | reads: reads})
+            job = Map.put(job, :confine, %{confine(confine, pairs) | reads: reads})
             state = Enum.reduce(withs, state, &State.used(&2, &1.id))
 
             State.task(state, {:command, id}, fn ->
@@ -221,7 +301,7 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
 
   # What the bubble gets: the values under the grants' variables, each
   # token file written from a variable unset before the script runs.
-  defp confine(grant, pairs) do
+  defp confine(%{writes_dir: writes_dir}, pairs) do
     indexed = Enum.with_index(pairs, 1)
 
     values =
@@ -236,7 +316,7 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     files = for {{with, _value}, n} <- indexed, do: {"MWT_FILE_#{n}", Grant.token_file(with)}
 
     %{
-      writes: grant.writes_dir,
+      writes: writes_dir,
       values: values ++ paths ++ carried,
       files: files,
       reads: nil,
@@ -270,6 +350,8 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
          pattern: checked.pattern,
          values: checked.values,
          call: checked[:call],
+         definition: Approval.digest(Grant.definition(grant)),
+         confine: confine_of(grant),
          script_from: if(grant.script || grant.kind == :request, do: :grant, else: :agent),
          suggest_save: checked[:suggest_save],
          save_for: checked[:save_for],
@@ -553,6 +635,9 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     seconds = DateTime.diff(run.finished_at, run.started_at)
 
     cond do
+      # Something it started took its output from MWT's reach
+      # (`MWTClient.Sandbox.HostRun`): over, with no status to tell.
+      is_nil(run.exit) -> "ended after #{seconds} s, its exit status unknown"
       run.stopped -> "stopped by you after #{seconds} s (exit #{run.exit})"
       run.timed_out -> "hit its time limit (exit #{run.exit})"
       true -> "exit #{run.exit} after #{seconds} s"

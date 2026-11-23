@@ -35,6 +35,15 @@ defmodule MWTClient.Sandbox.Approval do
   and the agent's values (`MWTClient.Sandbox.SavedRequest`), shown in full
   as text in `script`. Its run's `status` is the answer's HTTP status.
 
+  A command is carried out only as it was asked. `definition` is a digest
+  of its grant's definition then (`Grant.definition/1`), and `confine` how
+  a saved command runs, as its card says: `%{confined: _, with: _,
+  writes_dir: _}`, nil for one that runs as you. A run checks the grant
+  still allows it, under the same definition, before anything runs
+  (`MWTClient.Sandbox.Server.HostRuns.still/2`); a card whose grant
+  changed meanwhile is refused (`decision: :changed`), never run with the
+  old script under the new grant.
+
   An activation with a `proposal` is an agent proposing a subgrant: the
   grant it would sit under (`parent`), its `name`, what it is for
   (`purpose`), its `params`, and what it does: for a command (`kind:
@@ -92,6 +101,8 @@ defmodule MWTClient.Sandbox.Approval do
     :decided_at,
     :decision,
     :host_entry,
+    :definition,
+    :confine,
     stage: :run,
     script_from: :agent,
     values: [],
@@ -137,6 +148,7 @@ defmodule MWTClient.Sandbox.Approval do
           | :decline
           | :simpler
           | :grant_off
+          | :changed
           | :isolated
           | {:run, output()}
           | :auto
@@ -222,6 +234,8 @@ defmodule MWTClient.Sandbox.Approval do
           saved_as: String.t() | nil,
           proposal: proposal() | nil,
           call: MWTClient.Sandbox.SavedRequest.call() | nil,
+          definition: binary() | nil,
+          confine: %{confined: boolean(), with: [String.t()], writes_dir: boolean()} | nil,
           tool: tool() | nil,
           applied: {:ok | :error, String.t()} | nil,
           values: [{String.t(), String.t()}],

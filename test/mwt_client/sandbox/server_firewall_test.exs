@@ -59,6 +59,9 @@ defmodule MWTClient.Sandbox.ServerFirewallTest do
 
   defp isolated?(username), do: Sandbox.firewall(username).firewall.isolated != nil
 
+  # What the Firewall page lists as found lately, read from the journal.
+  defp findings(username), do: Sandbox.events(username, %{group: "firewall", limit: 50})
+
   defp public, do: {93, 184, 216, 34}
 
   # A DNS answer: one question for `name`, one A record pointing to `ip`.
@@ -91,7 +94,7 @@ defmodule MWTClient.Sandbox.ServerFirewallTest do
 
     view = Sandbox.firewall(username)
     assert %{rule: :credential_leak, host: "paste.example.net"} = view.firewall.isolated
-    assert [%{outcome: :firewall} | _] = view.findings
+    assert [%{outcome: :firewall} | _] = findings(username)
 
     # What waited is refused, with the code agents are told of.
     assert {:deny, 403, body} = Task.await(held)
@@ -227,11 +230,27 @@ defmodule MWTClient.Sandbox.ServerFirewallTest do
 
     leak(username, grant)
 
-    %{firewall: firewall, findings: findings} = Sandbox.firewall(username)
+    %{firewall: firewall} = Sandbox.firewall(username)
     assert Enum.any?(firewall.isolated.events, &(&1.summary == "Looked up before"))
     assert length(firewall.isolated.events) <= 30
-    assert [%{outcome: :firewall} | _] = findings
+    assert [%{outcome: :firewall} | _] = findings = findings(username)
     assert Enum.all?(findings, &(&1.outcome == :firewall))
+  end
+
+  test "the Firewall page's view never waits on the journal", %{username: username} do
+    grant = github(username)
+    leak(username, grant)
+
+    # A journal held by a long write: the server answers all the same.
+    journal = Store.whereis(MWTClient.Storage.Journal, username)
+    :ok = :sys.suspend(journal)
+
+    try do
+      view = Task.async(fn -> Sandbox.firewall(username) end)
+      assert {:ok, %{firewall: %{isolated: %{}}, refused: _}} = Task.yield(view, 2_000)
+    after
+      :sys.resume(journal)
+    end
   end
 
   test "release ends it and turns back on what was on, as it was; release and trust adds the destination",
@@ -417,12 +436,12 @@ defmodule MWTClient.Sandbox.ServerFirewallTest do
     :ok = Sandbox.firewall_set(username, {:action, :blocked_service, :alert})
     assert :ok = Gate.lookup(username, "paste.ee")
     refute isolated?(username)
-    assert [%{summary: summary} | _] = Sandbox.firewall(username).findings
+    assert [%{summary: summary} | _] = findings(username)
     assert summary =~ "alert"
 
     :ok = Sandbox.firewall_set(username, {:action, :blocked_service, :off})
     assert :ok = Gate.lookup(username, "pastebin.com")
-    refute Enum.any?(Sandbox.firewall(username).findings, &(&1.host == "pastebin.com"))
+    refute Enum.any?(findings(username), &(&1.host == "pastebin.com"))
   end
 
   test "the firewall turned off watches nothing", %{username: username} do

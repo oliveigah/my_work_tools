@@ -153,6 +153,23 @@ defmodule MWTClientWeb.SandboxFirewallLiveTest do
     assert has_element?(view, "#firewall-incidents", "by you")
   end
 
+  test "releasing a large upload offers to trust the name it saw, not its domain",
+       %{conn: conn, username: username} do
+    model = "us-east5-aiplatform.googleapis.com"
+    :cut = MWTClient.Sandbox.Gate.upload(username, model, 443, 5 * 1024 * 1024, 0)
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/firewall")
+    assert has_element?(view, "#firewall-findings", model)
+
+    view |> element("#firewall-isolated") |> render_click()
+    assert has_element?(view, "#firewall-release-trust", "Trust #{model} from now on")
+
+    view |> form("#firewall-release-form", release: %{trust: "true"}) |> render_submit()
+    trusted = Sandbox.firewall(username).firewall.trusted
+    assert model in trusted
+    refute "googleapis.com" in trusted
+  end
+
   test "the activity page opens on the firewall's group", %{conn: conn, username: username} do
     isolate(username)
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity?group=firewall")

@@ -45,6 +45,7 @@ defmodule MWTClient.Sandbox.Server.ShareSync do
     Inbound,
     Projects,
     Share,
+    Shown,
     Workspace
   }
 
@@ -427,7 +428,7 @@ defmodule MWTClient.Sandbox.Server.ShareSync do
         shared = MapSet.new(shared(state))
         records = Map.filter(records, fn {path, _} -> MapSet.member?(shared, path) end)
         statuses = Map.new(records, fn {path, record} -> {path, record.status} end)
-        state = held(state, records)
+        state = state |> held(records) |> unread(records)
         {state, copied} = copied(state, Map.get(result, :copy_back))
 
         statuses =
@@ -506,6 +507,42 @@ defmodule MWTClient.Sandbox.Server.ShareSync do
             state
         end
     end
+  end
+
+  # Files of a folder this machine wouldn't let MWT read (a file only root
+  # may read), which the VM therefore doesn't have as they are here: each
+  # sync's status names them, and the log says so when one first can't be
+  # read. The sync itself went on with the rest
+  # (`MWTClient.Sandbox.FolderSync`).
+  defp unread(state, records) do
+    Enum.reduce(records, state, fn {path, record}, state ->
+      before =
+        (get_in(state.sync, [path, :status, :unread]) || []) |> MapSet.new(& &1.path)
+
+      case Enum.reject(Map.get(record.status, :unread, []), &MapSet.member?(before, &1.path)) do
+        [] ->
+          state
+
+        new ->
+          names = Enum.map(new, &Shown.text(&1.path))
+
+          shown =
+            Enum.join(Enum.take(names, 3), ", ") <> if(length(names) > 3, do: ", …", else: "")
+
+          State.log(state, %{
+            outcome: :vm,
+            summary:
+              "Not sent to the VM, since this machine won't let MWT read " <>
+                "#{if length(new) == 1, do: "it", else: "them"}: #{shown} (in #{path})",
+            details: [
+              EventDetails.section("Not sent to the VM", [
+                {"Folder", path},
+                {"Files", {:list, Enum.map(new, &"#{Shown.text(&1.path)}: #{&1.why}")}}
+              ])
+            ]
+          })
+      end
+    end)
   end
 
   # Which files a copy back wrote and took off, from what the record

@@ -112,6 +112,26 @@ defmodule MWTClient.Sandbox.DisksTest do
     assert File.stat!(paths.home).size == 2 * @gib
   end
 
+  test "a disk whose check fails isn't grown, and each start says so again", %{paths: paths} do
+    :ok = Disks.ensure!(paths, @sizes)
+
+    # Damaged so that `e2fsck -p` stops and asks for a manual run (exit 4),
+    # as a damaged or crafted disk would: its root folder's inode cleared.
+    {_, 0} =
+      System.cmd("/usr/sbin/debugfs", ["-w", "-R", "clri <2>", paths.home],
+        stderr_to_stdout: true
+      )
+
+    for _start <- 1..2 do
+      assert_raise RuntimeError, ~r/checking .* failed \(4\)/, fn ->
+        Disks.ensure!(paths, %{@sizes | home: 2})
+      end
+    end
+
+    assert File.stat!(paths.home).size == @gib
+    assert blocks(paths.home) == @gib
+  end
+
   test "Home is copied whole, put back, and emptied", %{paths: paths} do
     :ok = Disks.ensure!(paths, @sizes)
     # Stands in for what the VM wrote: bytes past the file system's start.

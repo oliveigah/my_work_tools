@@ -149,6 +149,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
         options: options,
         drivers: Keyword.get(options, :drivers, Driver.all()),
         target: Map.put(target, :name, sni),
+        reach: reach,
         vm: client,
         vm_mod: :gen_tcp,
         link: nil,
@@ -499,6 +500,8 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   # (what isn't HTTP is refused as such); otherwise the one speaking the
   # protocol settled, or the first bytes decide. Silence inside TLS is a
   # server that greets first (IMAP or SMTP over TLS): passed on decrypted.
+  # What goes on unread is a connection MWT can't show request by request,
+  # so it is decided as one (`unread_inside/3`), as one that isn't TLS is.
   defp intercept(core, first, why) do
     %{vm: client, ctx: %{name: sni, port: port}} = core
     :ok = :gen_tcp.unrecv(client, first)
@@ -543,15 +546,14 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
               {:ok, data} ->
                 case detect(core, data, within(@detect_within)) do
                   {Raw, data} ->
-                    start(%{core | ctx: %{core.ctx | why: {:passed, :inside_tls}}}, Raw, data, "")
+                    unread_inside(core, data, :vm)
 
                   {driver, data} ->
                     start(core, driver, data, "")
                 end
 
               {:error, :timeout} ->
-                core = %{core | ctx: %{core.ctx | why: {:passed, :inside_tls}, first: :host}}
-                start(core, Raw, "", "")
+                unread_inside(core, "", :host)
 
               {:error, _closed} ->
                 :ssl.close(tls)
@@ -561,6 +563,25 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
       {:error, reason} ->
         not_opened(core.username, sni, port, reason)
         :gen_tcp.close(client)
+    end
+  end
+
+  # TLS MWT ended with nothing inside a driver reads (a database, a queue
+  # or a mail server over TLS, or bytes that only look like nothing MWT
+  # reads): a network grant that asks asks about the connection, and a
+  # host list that asks about or blocks its name holds it, before anything
+  # is connected to, as for a connection that isn't TLS. Its bytes then go
+  # on decrypted, looked through, to the host over TLS MWT starts again.
+  defp unread_inside(core, data, first) do
+    %{ip: ip, port: port, name: sni} = core.target
+
+    case asked(core.username, core.reach, ip, port, sni, :inside_tls) do
+      :ok ->
+        ctx = %{core.ctx | why: {:passed, :inside_tls}, first: first}
+        start(%{core | ctx: ctx}, Raw, data, "")
+
+      _denied ->
+        :ssl.close(core.vm)
     end
   end
 

@@ -310,13 +310,64 @@ defmodule MWTClient.Sandbox.FirewallTest do
       assert run([{:upload, "api.openai.com", 443, 50 * @mib, 0}]) == []
     end
 
-    test "subdomains of one domain fold together" do
+    test "subdomains of one domain fold together; the finding names the one it saw" do
       found = run(for i <- 1..2, do: {:upload, "h#{i}.drop.example", 443, 3 * @mib, 0})
 
-      assert [%{rule: :large_upload, action: :isolate, host: "drop.example", summary: summary}] =
-               found
+      assert [
+               %{
+                 rule: :large_upload,
+                 action: :isolate,
+                 host: "h2.drop.example",
+                 key: "drop.example",
+                 summary: summary
+               }
+             ] = found
 
-      assert summary =~ "drop.example"
+      assert summary =~ "h2.drop.example (drop.example)"
+    end
+
+    test "a name trusted since no longer counts toward its domain" do
+      {watch, []} = check({:upload, "model.cloud.example", 443, 3 * @mib, 0})
+      {:ok, trusting} = Firewall.set_list(Firewall.new(), :trusted, "model.cloud.example")
+
+      assert {_watch, []} =
+               check({:upload, "storage.cloud.example", 443, 2 * @mib, 0}, trusting, watch, 1)
+
+      assert {_watch, [%{rule: :large_upload}]} =
+               check(
+                 {:upload, "storage.cloud.example", 443, 2 * @mib, 0},
+                 Firewall.new(),
+                 watch,
+                 1
+               )
+    end
+
+    test "a model's API through a cloud folds under the cloud's domain until its name is trusted" do
+      # A long session's turns, every 15 s: its context up, a short answer back.
+      turns =
+        for turn <- 1..26,
+            do:
+              {turn * 15_000,
+               {:upload, "us-east5-aiplatform.googleapis.com", 443, 160 * 1024, 6 * 1024}}
+
+      assert [
+               %{
+                 rule: :large_upload,
+                 host: "us-east5-aiplatform.googleapis.com",
+                 key: "googleapis.com"
+               }
+             ] =
+               run(turns)
+
+      {:ok, trusting} =
+        Firewall.set_list(Firewall.new(), :trusted, "us-east5-aiplatform.googleapis.com")
+
+      assert run(turns, trusting) == []
+
+      assert run(
+               Enum.take(turns, 1) ++ [{:upload, "storage.googleapis.com", 443, 5 * @mib, 0}],
+               trusting
+             ) != []
     end
 
     test "what was sent over 10 minutes ago no longer counts" do
@@ -514,6 +565,55 @@ defmodule MWTClient.Sandbox.FirewallTest do
   end
 
   describe "isolating and releasing" do
+    test "forgetting a finding's window starts that count over, and no other" do
+      {watch, [finding]} =
+        Enum.reduce(
+          [
+            {:upload, "a.files.example", 443, 3 * @mib, 0},
+            {:upload, "b.files.example", 443, 3 * @mib, 0}
+          ],
+          {Firewall.watch(), []},
+          fn observation, {watch, _found} -> check(observation, Firewall.new(), watch, 1) end
+        )
+
+      {watch, []} = check({:upload, "other.example", 443, 3 * @mib, 0}, Firewall.new(), watch, 2)
+      assert %{rule: :large_upload, key: "files.example"} = finding
+
+      watch = Firewall.forget(watch, finding.rule, finding.key)
+      assert {_, []} = check({:upload, "c.files.example", 443, 0, 0}, Firewall.new(), watch, 3)
+
+      # What another destination sent still counts.
+      assert {_, [%{rule: :large_upload, host: "other.example"}]} =
+               check({:upload, "other.example", 443, 2 * @mib, 0}, Firewall.new(), watch, 3)
+    end
+
+    test "each rule's window is forgotten by its finding's key" do
+      dns = for i <- 1..41, do: {:lookup, "n#{i}.names.example", []}
+      refused = for i <- 1..5, do: {:connect, "10.0.0.#{i}", 5432, :refused}
+      ports = for p <- 1..20, do: {:connect, "93.184.216.34", 1000 + p, :public}
+      sweep = for a <- 1..20, do: {:connect, "93.184.216.#{a}", 22, :public}
+
+      for observations <- [dns, refused, ports, sweep] do
+        {watch, found} =
+          Enum.reduce(observations, {Firewall.watch(), []}, fn observation, {watch, found} ->
+            {watch, more} = check(observation, Firewall.new(), watch, 1)
+            {watch, found ++ more}
+          end)
+
+        finding = Enum.find(found, &(&1.action == :isolate))
+        watch = Firewall.forget(watch, finding.rule, finding.key)
+        {_watch, again} = check(List.last(observations), Firewall.new(), watch, 2)
+        assert again == [], "#{finding.rule} under #{inspect(finding.key)}: #{inspect(again)}"
+      end
+    end
+
+    test "an incident saved before it kept its window forgets the rule's every window" do
+      {watch, _} = check({:upload, "a.example", 443, 3 * @mib, 0})
+      {watch, _} = check({:upload, "b.example", 443, 3 * @mib, 0}, Firewall.new(), watch)
+      assert Firewall.forget(watch, :large_upload, nil).uploads == %{}
+      assert Firewall.forget(watch, :credential_leak, "x") == watch
+    end
+
     test "keeps the incident and the events before it; release keeps it listed" do
       finding = %{
         rule: :large_upload,
@@ -538,6 +638,33 @@ defmodule MWTClient.Sandbox.FirewallTest do
       trusted = Firewall.release(firewall, now, true)
       assert Firewall.trusted?(trusted, "files.example")
       assert [%{released: :trust}] = trusted.incidents
+    end
+
+    test "trusting adds the name the finding saw, as an entry of the list" do
+      now = ~U[2026-11-16 10:00:00Z]
+
+      for {host, entry} <- [
+            {"US-East5-aiplatform.googleapis.com", "us-east5-aiplatform.googleapis.com"},
+            {"paste.example.net:80", "paste.example.net"},
+            {"93.184.216.34", "93.184.216.34"}
+          ] do
+        finding = %{rule: :large_upload, action: :isolate, summary: "s", host: host, port: 443}
+        firewall = Firewall.isolate(Firewall.new(), finding, [], now, "i1")
+        assert entry in Firewall.release(firewall, now, true).trusted
+        refute "googleapis.com" in Firewall.release(firewall, now, true).trusted
+      end
+
+      # A destination that can't be an entry trusts nothing.
+      finding = %{
+        rule: :real_value,
+        action: :isolate,
+        summary: "s",
+        host: "not a name",
+        port: nil
+      }
+
+      firewall = Firewall.isolate(Firewall.new(), finding, [], now, "i1")
+      assert Firewall.release(firewall, now, true).trusted == Firewall.new().trusted
     end
 
     test "isolated by you: no rule, no destination; a release can't trust anything" do

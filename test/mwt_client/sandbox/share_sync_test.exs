@@ -5,6 +5,7 @@ defmodule MWTClient.Sandbox.ShareSyncTest do
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.{Channel, Guest, Server, ShareMounts}
+  alias MWTClient.Sandbox.Server.Machine
   alias MWTClient.StandIns
   alias MWTClient.Vault.Store
 
@@ -124,6 +125,35 @@ defmodule MWTClient.Sandbox.ShareSyncTest do
     assert Sandbox.snapshot(context.username).sync[context.folder].status.sent >= 1
   end
 
+  test "a file this machine won't let MWT read is named in the log, once", context do
+    assert {:ok, _} = wait(context, :all)
+    state = :sys.get_state(context.pid)
+    record = state.sync[context.folder]
+    unread = [%{path: "sub/secret.md", why: "permission denied"}]
+
+    # A sync whose folder held such a file, as FolderSync tells it: the
+    # rest went, that one didn't.
+    result = %{
+      vm: "vm-test",
+      started_at: state.vm.started_at,
+      records: %{context.folder => put_in(record.status[:unread], unread)},
+      took: 1
+    }
+
+    finished = fn -> :sys.replace_state(context.pid, &Machine.finished(&1, :sync, result)) end
+    finished.()
+    finished.()
+
+    named =
+      for event <- Sandbox.events(context.username),
+          event.summary =~ "sub/secret.md",
+          do: event.summary
+
+    assert [summary] = named
+    assert summary =~ "won't let MWT read it"
+    assert Sandbox.snapshot(context.username).sync[context.folder].status.unread == unread
+  end
+
   describe "mwt sync" do
     test "syncs every share, or the one holding a path, and says what changed", context do
       put(context.folder, "sub/more.md", "more\n")
@@ -137,6 +167,27 @@ defmodule MWTClient.Sandbox.ShareSyncTest do
       assert {0, text} = Channel.answer("sync", ask, context.username)
       assert text =~ ~r"^#{context.folder}: up to date, \d+ sent; 3 files, read-only here\.$"
       assert File.read!(shown(context, "sub/more.md")) == "more, changed\n"
+    end
+
+    test "a file this machine won't let MWT read is named to the agent", context do
+      status = %{
+        error: nil,
+        sent: 2,
+        removed: 0,
+        files: 3,
+        held: [],
+        unread: [%{path: "sub/secret.md", why: "permission denied"}]
+      }
+
+      assert {0, text} = Channel.sync_words(%{context.folder => status}, [])
+      assert text =~ "#{context.folder}: up to date, 2 sent; 3 files"
+      assert text =~ "Not copied, since the user's machine doesn't let MWT read them"
+      assert text =~ "sub/secret.md (permission denied)."
+
+      many = for n <- 1..12, do: %{path: "f#{n}", why: "permission denied"}
+      {0, text} = Channel.sync_words(%{context.folder => %{status | unread: many}}, [])
+      assert text =~ "f10 (permission denied); and 2 more."
+      refute text =~ "f11"
     end
 
     test "a path outside the shares is refused, naming them", context do

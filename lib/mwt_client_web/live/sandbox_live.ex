@@ -1965,10 +1965,18 @@ defmodule MWTClientWeb.SandboxLive do
 
   def handle_event("accept_handoff", params, socket) do
     with %{accept: %{}, handoff: handoff} = view <- socket.assigns.handoff_view do
-      %{destination: destination, opts: opts} =
-        accept_state(view, Map.get(params, "accept", %{}), socket.assigns.username)
+      fields = Map.get(params, "accept", %{})
 
-      case Handoffs.accept(socket.assigns.username, handoff.id, destination, opts) do
+      %{destination: destination, opts: opts} =
+        accept_state(view, fields, socket.assigns.username)
+
+      # The revision the page showed when you clicked, as the form sent it:
+      # one handed off since doesn't land in its place.
+      shown = if is_binary(fields["head"]), do: fields["head"], else: handoff.head
+
+      case Handoffs.accept(socket.assigns.username, handoff.id, destination, [
+             {:head, shown} | opts
+           ]) do
         {:ok, handoff} ->
           {:noreply,
            socket
@@ -2616,8 +2624,12 @@ defmodule MWTClientWeb.SandboxLive do
       :handoffs ->
         load_handoff_list(socket)
 
+      # Its findings are read from the journal here, in the page's own
+      # process: a journal held by a long write keeps this page waiting,
+      # not the sandbox's server.
       :firewall ->
-        assign(socket, :firewall_view, Sandbox.firewall(username))
+        findings = Sandbox.events(username, %{group: "firewall", limit: 50})
+        assign(socket, :firewall_view, Map.put(Sandbox.firewall(username), :findings, findings))
 
       :activity ->
         assign(socket, :reading, Sandbox.reading(username))

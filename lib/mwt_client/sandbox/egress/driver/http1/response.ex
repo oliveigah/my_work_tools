@@ -31,7 +31,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
   connection ends (`{:done, bytes}`): one request, one answer.
   """
 
-  alias MWTClient.Sandbox.Egress.Scanner
+  alias MWTClient.Sandbox.Egress.AnswerBody
   alias MWTClient.Sandbox.Secrets
 
   @head_limit 64 * 1024
@@ -42,8 +42,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
     :echo,
     :placeholders,
     :head_only?,
-    :scanner,
-    :inflate,
+    :body,
     phase: :head,
     buffer: "",
     sent?: false
@@ -75,18 +74,18 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
   stream paused. What would complete the value is still looked for.
   """
   @spec release(t()) :: {iodata(), t()}
-  def release(%__MODULE__{scanner: nil} = response), do: {[], response}
+  def release(%__MODULE__{body: nil} = response), do: {[], response}
 
-  def release(%__MODULE__{scanner: scanner} = response) do
-    {held, scanner} = Scanner.release(scanner)
-    response = %{response | scanner: scanner}
+  def release(%__MODULE__{body: body} = response) do
+    {held, body} = AnswerBody.release(body)
+    response = %{response | body: body}
     {framed(response, held), sent(response, held)}
   end
 
   @doc "Whether bytes are held back, waiting for what follows."
   @spec held?(t()) :: boolean()
-  def held?(%__MODULE__{scanner: nil}), do: false
-  def held?(%__MODULE__{scanner: scanner}), do: Scanner.held?(scanner)
+  def held?(%__MODULE__{body: nil}), do: false
+  def held?(%__MODULE__{body: body}), do: AnswerBody.held?(body)
 
   @doc """
   Upstream closed. What was held back goes (it wasn't the value); a head
@@ -172,7 +171,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
           | buffer: "",
             sent?: true,
             phase: :raw,
-            scanner: scanner(response.echo, nil)
+            body: AnswerBody.new(response.echo, nil)
         }
 
         step(response, rest, [out, written])
@@ -191,8 +190,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
               | buffer: "",
                 sent?: true,
                 phase: phase,
-                scanner: scanner(response.echo, encoding),
-                inflate: inflater(encoding)
+                body: AnswerBody.new(response.echo, encoding)
             }
 
             if rest == "",
@@ -208,30 +206,28 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
   defp framing(response, status, headers) do
     codings = tokens(headers, "transfer-encoding")
     lengths = headers |> values("content-length") |> Enum.uniq()
+    encoding = AnswerBody.encoding(headers)
 
     cond do
       response.head_only? or status in [204, 304] ->
         {:ok, :none, nil}
 
-      encoding(tokens(headers, "content-encoding")) == :error ->
-        {:error, "Its body is encoded in a way MWT doesn't decode (MWT asked for none)."}
+      encoding == :error ->
+        {:error, unreadable_encoding()}
 
       codings == ["chunked"] ->
-        {:ok, {:chunked, :size}, elem(encoding(tokens(headers, "content-encoding")), 1)}
+        {:ok, {:chunked, :size}, elem(encoding, 1)}
 
       codings != [] ->
         {:error, "Its body is sent in a way MWT doesn't read: #{Enum.join(codings, ", ")}."}
 
       lengths == [] ->
-        {:ok, :close, elem(encoding(tokens(headers, "content-encoding")), 1)}
+        {:ok, :close, elem(encoding, 1)}
 
       match?([_], lengths) and hd(lengths) =~ ~r/\A[0-9]+\z/ ->
         case String.to_integer(hd(lengths)) do
-          0 ->
-            {:ok, :none, nil}
-
-          length ->
-            {:ok, {:length, length}, elem(encoding(tokens(headers, "content-encoding")), 1)}
+          0 -> {:ok, :none, nil}
+          length -> {:ok, {:length, length}, elem(encoding, 1)}
         end
 
       true ->
@@ -239,27 +235,14 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
     end
   end
 
-  defp encoding([]), do: {:ok, nil}
-  defp encoding(["identity"]), do: {:ok, nil}
-  defp encoding([gzip]) when gzip in ["gzip", "x-gzip"], do: {:ok, :gzip}
-  defp encoding(["deflate"]), do: {:ok, :deflate}
-  defp encoding(_other), do: :error
+  @doc "Why MWT refuses an answer whose body is encoded in a way it doesn't decode, in words."
+  @spec unreadable_encoding() :: String.t()
+  def unreadable_encoding,
+    do: "Its body is encoded in a way MWT doesn't decode (MWT asked for none)."
 
   # A head with each value in it replaced by its own placeholder.
   defp scrub(response, head),
     do: Secrets.replace_each(response.echo, head, &Map.fetch!(response.placeholders, &1))
-
-  defp scanner(echo, nil), do: Scanner.new(echo, hold: true)
-  defp scanner(echo, _encoded), do: Scanner.new(echo)
-
-  defp inflater(nil), do: nil
-
-  defp inflater(encoding) do
-    z = :zlib.open()
-    # 31: gzip only; 47: zlib or gzip, told apart by their headers.
-    :ok = :zlib.inflateInit(z, if(encoding == :gzip, do: 31, else: 47))
-    z
-  end
 
   ## Chunked bodies, written out again in chunks of MWT's own
 
@@ -344,50 +327,21 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
 
   ## The body's bytes
 
-  # Bytes of the body, as sent: looked through (decoded first when encoded),
-  # and what may go to the VM given back, framed.
-  defp body(%__MODULE__{inflate: nil} = response, payload) do
-    case Scanner.feed(response.scanner, payload) do
-      {:ok, bytes, scanner} ->
-        response = %{response | scanner: scanner}
+  # Bytes of the body, as sent: looked through (decoded first when
+  # encoded, `AnswerBody`), and what may go to the VM given back, framed.
+  defp body(%__MODULE__{} = response, payload) do
+    case AnswerBody.feed(response.body, payload) do
+      {:ok, bytes, body} ->
+        response = %{response | body: body}
         {:ok, framed(response, bytes), sent(response, bytes)}
 
       {:found, label} ->
         {:cut, {:found, label}, []}
-    end
-  end
 
-  defp body(%__MODULE__{inflate: z} = response, payload) do
-    case decoded(z, :zlib.safeInflate(z, payload), response.scanner) do
-      {:ok, scanner} ->
-        response = %{response | scanner: scanner}
-        {:ok, framed(response, payload), sent(response, payload)}
-
-      {:found, label} ->
-        {:cut, {:found, label}, []}
-
-      :error ->
+      :unreadable ->
         {:cut, :unreadable, []}
     end
-  rescue
-    ErlangError -> {:cut, :unreadable, []}
   end
-
-  # Inflated a piece at a time, each looked through as it comes, so an
-  # answer that inflates to a lot is never held whole.
-  defp decoded(z, {more, piece}, scanner) when more in [:continue, :finished] do
-    case Scanner.feed(scanner, IO.iodata_to_binary(piece)) do
-      {:ok, _bytes, scanner} ->
-        if more == :continue,
-          do: decoded(z, :zlib.safeInflate(z, []), scanner),
-          else: {:ok, scanner}
-
-      {:found, label} ->
-        {:found, label}
-    end
-  end
-
-  defp decoded(_z, _other, _scanner), do: :error
 
   defp framed(_response, ""), do: []
 

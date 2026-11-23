@@ -154,6 +154,41 @@ defmodule MWTClient.Sandbox.DescribeTest do
              )
   end
 
+  test "Allow similar on a GraphQL operation goes by the whole document, its digest whole" do
+    graphql = fn document ->
+      body = Jason.encode!(%{query: document, variables: %{id: "I_1", body: "LGTM"}})
+
+      Describe.request(
+        request(%{
+          method: "POST",
+          path: "/graphql",
+          headers: [{"content-length", "#{byte_size(body)}"}],
+          body: body
+        })
+      )
+    end
+
+    comment =
+      graphql.(
+        "mutation AddComment($id: ID!, $body: String!) { addComment(input: {subjectId: $id, body: $body}) { clientMutationId } }"
+      )
+
+    # The same name and kind, another change: a document the VM chose to
+    # share as much of the pattern as it can.
+    deletion =
+      graphql.(
+        ~s|mutation AddComment { deleteIssue(input: {issueId: "I_kwDOAbc123", clientMutationId: "ndBy4KAA"}) { clientMutationId } }|
+      )
+
+    assert ["POST github.com/graphql", "mutation AddComment", digest] =
+             String.split(comment.pattern, " · ")
+
+    # The SHA-256, all 64 hex characters: 32 bits were found to match in
+    # under two minutes.
+    assert digest =~ ~r/\A[0-9a-f]{64}\z/
+    refute comment.pattern == deletion.pattern
+  end
+
   test "a body MWT holds only the start of is said, and a GraphQL one is like no other" do
     document = ~s({"query":"query { viewer { login } }"})
 

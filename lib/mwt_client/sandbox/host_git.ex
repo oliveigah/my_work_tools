@@ -2,10 +2,16 @@ defmodule MWTClient.Sandbox.HostGit do
   @moduledoc """
   git on one of your repositories, as the sandbox runs it for a project.
 
-  Two things set it apart from the Git tool's own runner. It talks to a
+  Three things set it apart from the Git tool's own runner. It talks to a
   repository in the VM, so every object that arrives is checked
-  (`fetch.fsckObjects`) and nothing follows submodules. And it never changes
-  what is yours without being asked.
+  (`fetch.fsckObjects`) and nothing follows submodules. It never changes
+  what is yours without being asked. And it runs no hook
+  (`core.hooksPath=/dev/null`), whatever the repository configures: a
+  `core.hooksPath` inside the working tree (`.githooks`, `.husky`) names
+  files a landed handoff wrote, and every ref git moves, a fetch's or
+  `update-ref`'s included, runs `reference-transaction` from there. The
+  cost: a hook of yours doesn't run for what MWT does either, as when it
+  fetches a handoff into your repository or moves your branch to land one.
 
   What git prints can be the VM's to choose (a diff, file names, a remote's
   refusal), and so can its size. `run/3` bounds each output stream by `:max`
@@ -20,7 +26,7 @@ defmodule MWTClient.Sandbox.HostGit do
 
   @max_output 32 * 1024 * 1024
 
-  @transport ~w(-c protocol.ext.allow=always -c fetch.fsckObjects=true -c transfer.fsckObjects=true -c fetch.recurseSubmodules=false)
+  @transport ~w(-c protocol.ext.allow=always -c fetch.fsckObjects=true -c transfer.fsckObjects=true -c fetch.recurseSubmodules=false -c core.hooksPath=/dev/null)
 
   @doc """
   Runs git in `repo`. `{:ok, output}` when it exits 0.

@@ -29,6 +29,8 @@ defmodule MWTClient.Sandbox.Event do
       changed a note, a diagram, a flash card or an HTTP request
     * `:firewall` - MWT's firewall found something (`MWTClient.Sandbox.Firewall`),
       isolated the VM, was released, or its settings changed
+    * `:lost` - events the journal couldn't keep, how many and from when
+      to when: a row it writes itself (`MWTClient.Storage.Journal`)
 
   `agent`, `thread_id` and `thread` (its title) say who asked, as the
   agent claimed it, for what came from one: an ask, a tool call, a host
@@ -95,6 +97,7 @@ defmodule MWTClient.Sandbox.Event do
           | :handoff
           | :tool
           | :firewall
+          | :lost
 
   @type t :: %__MODULE__{
           id: String.t(),
@@ -119,7 +122,7 @@ defmodule MWTClient.Sandbox.Event do
         }
 
   @outcomes ~w(tunnel read read_failed lookup swapped allowed denied timed_out refused blocked violation grant vm
-               command project handoff tool firewall)a
+               command project handoff tool firewall lost)a
 
   @groups %{
     "traffic" => [:read, :tunnel],

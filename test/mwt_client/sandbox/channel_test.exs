@@ -34,6 +34,28 @@ defmodule MWTClient.Sandbox.ChannelTest do
     "channel" |> MWTClient.VaultHelpers.unlocked_identity() |> Map.put(:bin, bin)
   end
 
+  test "an ask is read whole up to the line limit, however it arrives", %{username: username} do
+    {:ok, socket} =
+      :gen_tcp.connect({:local, Channel.socket_path(username)}, 0, [:binary, active: false])
+
+    # Past the driver's default buffer (9216 bytes), sent in pieces as the
+    # VM's bridge does.
+    line = ~s({"command":"grants","note":") <> String.duplicate("a", 40_000) <> ~s("}\n)
+    for <<piece::binary-size(5000) <- line>>, do: :ok = :gen_tcp.send(socket, piece)
+    :ok = :gen_tcp.send(socket, binary_part(line, 40_000, byte_size(line) - 40_000))
+
+    read = fn read, acc ->
+      case :gen_tcp.recv(socket, 0, 5_000) do
+        {:ok, data} -> read.(read, acc <> data)
+        {:error, _closed} -> acc
+      end
+    end
+
+    answer = read.(read, "")
+    assert String.starts_with?(answer, "0\n"), answer
+    refute answer =~ "couldn't read that ask"
+  end
+
   describe "mwt vm" do
     defp record(context, record, status) do
       server = MWTClient.Vault.Store.whereis(MWTClient.Sandbox.Server, context.username)

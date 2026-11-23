@@ -7,6 +7,26 @@ defmodule MWTClient.Sandbox.HostGitTest do
 
   setup :initialized_repository
 
+  test "runs no hook, even from a core.hooksPath in the working tree", %{base: base, path: path} do
+    marker = Path.join(base, "hook-ran")
+    hooks = Path.join(path, ".githooks")
+    File.mkdir_p!(hooks)
+    hook = Path.join(hooks, "reference-transaction")
+    File.write!(hook, "#!/bin/sh\necho \"$1\" >> '#{marker}'\n")
+    File.chmod!(hook, 0o755)
+    git!(path, ["config", "core.hooksPath", ".githooks"])
+
+    # git itself runs it on any ref it moves.
+    git!(path, ["update-ref", "refs/heads/plain", "HEAD"])
+    assert File.exists?(marker)
+    File.rm!(marker)
+
+    assert {:ok, _} = HostGit.run(path, ["update-ref", "refs/heads/ours", "HEAD"])
+    assert {:ok, _} = HostGit.run(path, ["update-ref", "-d", "refs/heads/ours"])
+    assert {:ok, _} = HostGit.run(path, ["fetch", "--no-write-fetch-head", path, "HEAD:refs/x"])
+    refute File.exists?(marker)
+  end
+
   test "successful commands return stdout without warnings", %{path: path} do
     git!(path, ["config", "alias.warn", "!printf '0\\n'; printf 'warning: something\\n' >&2"])
 

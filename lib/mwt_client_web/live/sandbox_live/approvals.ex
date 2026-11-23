@@ -1636,6 +1636,10 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   def decision_words(%Approval{decision: :deny}), do: "denied"
   def decision_words(%Approval{decision: :deny_and_turn_off}), do: "denied, grant turned off"
   def decision_words(%Approval{decision: :grant_off}), do: "refused: the grant turned off"
+
+  def decision_words(%Approval{decision: :changed}),
+    do: "refused: its grant was edited while it waited"
+
   def decision_words(%Approval{decision: :isolated}), do: "refused: the VM was isolated"
   def decision_words(%Approval{decision: :decline}), do: "declined"
   def decision_words(%Approval{decision: :simpler}), do: "declined, asked for a simpler one"

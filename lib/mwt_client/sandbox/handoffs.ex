@@ -43,6 +43,7 @@ defmodule MWTClient.Sandbox.Handoffs do
           | {:not_withdrawable, Handoff.t() | nil, String.t()}
           | :not_accepted
           | :not_closed
+          | {:revised, pos_integer()}
           | Handoff.refusal()
           | Accept.problem()
           | String.t()
@@ -61,8 +62,16 @@ defmodule MWTClient.Sandbox.Handoffs do
   """
   @spec open(String.t(), map()) :: {:ok, Handoff.t(), :opened | :updated} | {:error, error()}
   def open(username, ask) do
-    :global.trans({{__MODULE__, username}, self()}, fn -> open_revision(username, ask) end)
+    exclusive(username, fn -> open_revision(username, ask) end)
   end
+
+  # One change of an identity's handoffs at a time: a revision being
+  # received (its fetch may take minutes), a landing, a catch-up, a close,
+  # a send-back or a withdrawal. Each reads a handoff, works on it, then
+  # writes it; two at once would each write what it read, and the one
+  # written last would undo the other. The cost: a click waits for a
+  # revision being received. The lock goes with the process holding it.
+  defp exclusive(username, fun), do: :global.trans({{__MODULE__, username}, self()}, fun)
 
   defp open_revision(username, ask) do
     %{waiting_handoffs: handoffs, vm: vm, dir: dir} = Server.call(username, :projects)
@@ -235,17 +244,66 @@ defmodule MWTClient.Sandbox.Handoffs do
     end
   end
 
-  defp opened(username, project, existing, handoff) do
-    verb = if existing, do: "updated", else: "handed off"
+  # What a new revision sets on its handoff's record (`opened/4`); the
+  # rest stays as the record has it, its timeline gaining the revision's
+  # event.
+  @revised [
+    :title,
+    :body,
+    :agent,
+    :thread,
+    :thread_id,
+    :onto,
+    :mirrored_branch,
+    :base_branch,
+    :base_ref,
+    :base_commit,
+    :source,
+    :head,
+    :status,
+    :updated_at,
+    :revision,
+    :stats
+  ]
 
+  defp opened(username, project, nil, handoff) do
     :ok =
       Server.call(
         username,
-        {:put_handoff, handoff, "#{who(handoff)} #{verb} ##{handoff.id}: \"#{handoff.title}\""}
+        {:put_handoff, handoff, "#{who(handoff)} handed off ##{handoff.id}: \"#{handoff.title}\""}
       )
 
     Projects.used(username, project.name)
-    {:ok, handoff, if(existing, do: :updated, else: :opened)}
+    {:ok, handoff, :opened}
+  end
+
+  # A new revision changes what it says of the work, and adds its event,
+  # on the record as it is now: what changed on it while the revision was
+  # received (a delivery marked, its size worked out again) stays.
+  defp opened(username, project, _existing, revised) do
+    summary = "#{who(revised)} updated ##{revised.id}: \"#{revised.title}\""
+    event = List.last(revised.timeline)
+
+    result =
+      update(username, revised.id, summary, fn record ->
+        record
+        |> struct(Map.take(revised, @revised))
+        |> Map.update!(:timeline, &(&1 ++ [event]))
+      end)
+
+    handoff =
+      case result do
+        {:ok, handoff} ->
+          handoff
+
+        # Gone from the records meanwhile (past the kept ones): kept again whole.
+        {:error, :not_found} ->
+          :ok = Server.call(username, {:put_handoff, revised, summary})
+          revised
+      end
+
+    Projects.used(username, project.name)
+    {:ok, handoff, :updated}
   end
 
   # The grant whose real value the handoff brings, and where, or nil: in
@@ -447,7 +505,9 @@ defmodule MWTClient.Sandbox.Handoffs do
   now) and who asks.
   """
   @spec withdraw(String.t(), map()) :: {:ok, Handoff.t()} | {:error, error()}
-  def withdraw(username, ask) do
+  def withdraw(username, ask), do: exclusive(username, fn -> withdraw_open(username, ask) end)
+
+  defp withdraw_open(username, ask) do
     %{vm: vm} = Server.call(username, :projects)
     words = Handoff.words(ask)
 
@@ -676,14 +736,22 @@ defmodule MWTClient.Sandbox.Handoffs do
   branch `landing/2` offers first; as it is (a fast-forward, its own
   commits) when that branch hasn't moved, else as one commit, or as one
   commit anyway with `one_commit: true` in `opts`.
+
+  `head: COMMIT` in `opts` names the revision you looked at, as the page
+  showed it: when the handoff's head is another by then (its thread
+  handed it off again meanwhile), nothing lands (`{:revised, revision}`).
+  Without it, the latest revision lands.
   """
   @spec accept(String.t(), pos_integer(), Accept.destination() | nil, keyword()) ::
           {:ok, Handoff.t()} | {:error, error()}
   def accept(username, id, destination \\ nil, opts \\ []) do
-    :global.trans({{__MODULE__, username}, self()}, fn ->
+    {shown, opts} = Keyword.pop(opts, :head)
+
+    exclusive(username, fn ->
       with {:ok, %Handoff{status: status} = handoff, store} <- find(username, id),
            true <- status != :withdrawn or {:error, :withdrawn},
            true <- status in [:open, :sent_back] or {:error, :not_open},
+           true <- shown in [nil, handoff.head] or {:error, {:revised, handoff.revision}},
            {:ok, destination} <- destination(username, id, destination),
            {:ok, accepted} <- Accept.run(store, handoff, destination, opts) do
         Projects.used(username, handoff.project)
@@ -729,7 +797,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   """
   @spec catch_up(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
   def catch_up(username, id) do
-    :global.trans({{__MODULE__, username}, self()}, fn ->
+    exclusive(username, fn ->
       with {:ok, %Handoff{status: status} = handoff, store} <- find(username, id),
            true <- status in [:open, :sent_back] or {:error, :not_open},
            branch when is_binary(branch) <- handoff.base_branch || {:error, :no_branch},
@@ -943,28 +1011,34 @@ defmodule MWTClient.Sandbox.Handoffs do
     note = String.trim(note)
     catch_up? = Keyword.get(opts, :catch_up, false)
 
-    with {:ok, %Handoff{status: status}, _store} <- find(username, id),
-         true <- status in [:open, :sent_back, :withdrawn, :accepted] or {:error, :not_open},
-         {:ok, handoff} <-
-           update(username, id, "##{id} sent back", fn handoff ->
-             text =
-               cond do
-                 catch_up? -> "You asked its thread to catch up and hand off again"
-                 handoff.status == :accepted -> "You sent it back for more, after landing it"
-                 true -> "You sent it back"
-               end
+    # The record changes under the lock; the thread hears of it after,
+    # since its agent may take a while to answer, and its delivery is
+    # marked on the record as it is then.
+    result =
+      exclusive(username, fn ->
+        with {:ok, %Handoff{status: status}, _store} <- find(username, id),
+             true <- status in [:open, :sent_back, :withdrawn, :accepted] or {:error, :not_open} do
+          update(username, id, "##{id} sent back", fn handoff ->
+            text =
+              cond do
+                catch_up? -> "You asked its thread to catch up and hand off again"
+                handoff.status == :accepted -> "You sent it back for more, after landing it"
+                true -> "You sent it back"
+              end
 
-             %{
-               handoff
-               | status: :sent_back,
-                 accepted: nil,
-                 timeline:
-                   handoff.timeline ++
-                     [event(:sent_back, text, %{note: note, catch_up: catch_up?})]
-             }
-           end) do
-      {:ok, tell_thread(username, handoff, note, catch_up?)}
-    end
+            %{
+              handoff
+              | status: :sent_back,
+                accepted: nil,
+                timeline:
+                  handoff.timeline ++
+                    [event(:sent_back, text, %{note: note, catch_up: catch_up?})]
+            }
+          end)
+        end
+      end)
+
+    with {:ok, handoff} <- result, do: {:ok, tell_thread(username, handoff, note, catch_up?)}
   end
 
   @doc """
@@ -1085,16 +1159,18 @@ defmodule MWTClient.Sandbox.Handoffs do
   @doc "Closes an open handoff without landing it."
   @spec close(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
   def close(username, id) do
-    with {:ok, %Handoff{status: status}, _store} <- find(username, id),
-         true <- status in [:open, :sent_back, :withdrawn] or {:error, :not_open} do
-      update(username, id, "##{id} closed", fn handoff ->
-        %{
-          handoff
-          | status: :closed,
-            timeline: handoff.timeline ++ [event(:closed, "You closed it")]
-        }
-      end)
-    end
+    exclusive(username, fn ->
+      with {:ok, %Handoff{status: status}, _store} <- find(username, id),
+           true <- status in [:open, :sent_back, :withdrawn] or {:error, :not_open} do
+        update(username, id, "##{id} closed", fn handoff ->
+          %{
+            handoff
+            | status: :closed,
+              timeline: handoff.timeline ++ [event(:closed, "You closed it")]
+          }
+        end)
+      end
+    end)
   end
 
   @doc "Opens a closed handoff again."
@@ -1206,7 +1282,12 @@ defmodule MWTClient.Sandbox.Handoffs do
   def explain(:no_branch),
     do: "It isn't on one of your branches, so there is nothing to catch up with."
 
-  def explain({:pending, _, _, _} = reason), do: Accept.explain(reason)
+  def explain({kind, _, _, _} = reason) when kind in [:pending, :untracked],
+    do: Accept.explain(reason)
+
+  def explain({:revised, revision}),
+    do:
+      "It was handed off again since the page showed it: revision #{revision} waits now, and nothing landed. Look at what it brings, then land it."
 
   def explain(reason)
       when reason in [:bad_destination, :up_to_date, :no_identity, :nothing_to_undo, :moved],

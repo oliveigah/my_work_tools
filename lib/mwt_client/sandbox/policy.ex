@@ -90,10 +90,15 @@ defmodule MWTClient.Sandbox.Policy do
 
   A grant whose ceiling is `:ask` (`Grant.ceiling/1`) asks for every use,
   whatever allowance it holds. Refusals stay refusals.
+
+  An allowance added while cards wait settles those it would have let
+  through had it been there when they were asked, and no others
+  (`settles?/3`): the same rules, for a use asked before.
   """
 
   alias MWTClient.Sandbox.{
     Allowance,
+    Approval,
     CredentialEndpoint,
     Describe,
     Destinations,
@@ -442,8 +447,10 @@ defmodule MWTClient.Sandbox.Policy do
           not Grant.on?(grant, now) ->
             {:refuse, {:grant_off, grant}}
 
+          # Like no other: nothing is similar to it, and no allowance
+          # settles its card (`settles?/3`).
           Map.get(use, :over_limit, false) ->
-            {:ask, grant, about}
+            {:ask, grant, %{about | pattern: nil}}
 
           true ->
             allow_or_ask(grant, now, about)
@@ -583,6 +590,46 @@ defmodule MWTClient.Sandbox.Policy do
 
       true ->
         {:ask, grant, about}
+    end
+  end
+
+  @doc """
+  Whether `allowance`, added now, lets through the use `approval` holds:
+  as it would have, had it been there when the use was asked. A use its
+  grant's host list asks about takes only an allowance for uses like it
+  (`host_ask/4`), never *Allow every use*; an add of MWT's tools past the
+  hour's limit takes none, and its card has no pattern (`decide/3`). Any
+  other use takes an allowance that covers its pattern, every use
+  included, as `allow_or_ask/3` does for a new one.
+
+  The card itself, the one you decided, is settled by your decision, not
+  by this.
+
+      iex> alias MWTClient.Sandbox.{Allowance, Approval, Policy}
+      iex> now = ~U[2026-11-23 12:00:00Z]
+      iex> every = %Allowance{id: "a", pattern: :all, until: nil}
+      iex> card = %Approval{id: "c", kind: :request, title: "GET /", pattern: "GET h/",
+      ...>   requested_at: now, deadline: now}
+      iex> Policy.settles?(card, every, now)
+      true
+      iex> Policy.settles?(%{card | host_entry: "h"}, every, now)
+      false
+      iex> Policy.settles?(%{card | host_entry: "h"}, %{every | pattern: "GET h/"}, now)
+      true
+      iex> Policy.settles?(%{card | kind: :tool, pattern: nil}, every, now)
+      false
+  """
+  @spec settles?(Approval.t(), Allowance.t(), DateTime.t()) :: boolean()
+  def settles?(%Approval{} = approval, %Allowance{} = allowance, now) do
+    cond do
+      not Approval.use?(approval) -> false
+      not Allowance.covers?(allowance, approval.pattern, now) -> false
+      is_binary(approval.host_entry) -> allowance.pattern != :all
+      # Every call of MWT's tools has a pattern but one past the hour's
+      # limit; a request MWT couldn't describe has none too, and every use
+      # covers that one.
+      approval.kind == :tool and is_nil(approval.pattern) -> false
+      true -> true
     end
   end
 

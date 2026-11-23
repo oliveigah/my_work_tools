@@ -100,6 +100,28 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     )
   end
 
+  # TLS offering no protocol: what it carries decides how MWT reads it.
+  defp bare_tls(proxy, ca) do
+    {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", proxy, [:binary, active: false])
+    :ok = :gen_tcp.send(socket, "CONNECT #{@public} HTTP/1.1\r\n\r\n")
+    {:ok, "HTTP/1.1 200" <> _} = :gen_tcp.recv(socket, 0, 5_000)
+
+    {:ok, tls} =
+      :ssl.connect(
+        socket,
+        [
+          verify: :verify_peer,
+          cacerts: [ca],
+          server_name_indication: ~c"example.com",
+          active: false,
+          mode: :binary
+        ],
+        5_000
+      )
+
+    tls
+  end
+
   defp get(tls, path) do
     :ok = :ssl.send(tls, "GET #{path} HTTP/1.1\r\nHost: example.com\r\n\r\n")
     SandboxProxy.read_answer(tls, :ssl)
@@ -236,6 +258,40 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
 
     assert %{outcome: :blocked, host: "example.com"} =
              event(username, &(&1.outcome == :blocked))
+  end
+
+  test "TLS carrying no HTTP to a blocked host closes, and nothing reaches it", %{
+    username: username,
+    ca: ca,
+    proxy: proxy
+  } do
+    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :block})
+
+    # A database or a queue over TLS: MWT ends the TLS, reads no HTTP in it,
+    # and holds the connection as one it can't read.
+    tls = bare_tls(proxy, ca)
+    :ok = :ssl.send(tls, "*1\r\n$4\r\nPING\r\n")
+    assert {:error, _closed} = :ssl.recv(tls, 0, 5_000)
+    refute_received {:read_target, _}
+    refute_received {:host_got, _}
+
+    assert %{outcome: :blocked, host: "example.com"} =
+             event(username, &(&1.outcome == :blocked))
+  end
+
+  test "a request after an empty line is refused, never passed on as bytes", %{
+    username: username,
+    ca: ca,
+    proxy: proxy
+  } do
+    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :block})
+
+    # Servers skip the empty line (RFC 9112 2.2) and serve what follows.
+    tls = bare_tls(proxy, ca)
+    :ok = :ssl.send(tls, "\r\nGET /blocked HTTP/1.1\r\nHost: example.com\r\n\r\n")
+    assert SandboxProxy.read_answer(tls, :ssl) =~ "HTTP/1.1 400"
+    refute_received {:read_target, _}
+    refute_received {:host_got, _}
   end
 
   test "a network grant's form keeps its host list when saved", %{username: username} do

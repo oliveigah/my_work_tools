@@ -355,6 +355,60 @@ defmodule MWTClient.Sandbox.Grant do
   def subgrants(grants, %__MODULE__{id: id}), do: Enum.filter(grants, &(&1.parent == id))
 
   @doc """
+  What a run or a call of a command grant or request subgrant carries out,
+  beside the values it is given: a saved command's script, folder,
+  parameters and how it is confined, with which grants' values and whether
+  it writes its folder; a request's grant, method, URL, headers, body and
+  parameters. Ask to run commands' is the same always: the agent sends the
+  text. Nil for the other kinds, whose uses carry nothing of the grant's.
+
+  A card is asked under one definition and carried out only under the same
+  (`MWTClient.Sandbox.Server.HostRuns.still/2`): an edit that changes it
+  refuses the cards still waiting, rather than running an old script with a
+  new grant's confinement. Its name and words are left out: changing them
+  changes nothing a run does.
+  """
+  @spec definition(t()) :: map() | nil
+  def definition(%__MODULE__{kind: :command} = grant),
+    do: %{
+      script: grant.script,
+      dir: grant.dir,
+      params: grant.params,
+      confined: grant.confined,
+      with: grant.with,
+      writes_dir: grant.writes_dir
+    }
+
+  def definition(%__MODULE__{kind: :request} = grant),
+    do: %{
+      parent: grant.parent,
+      method: grant.method,
+      url: grant.url,
+      headers: grant.headers,
+      body: grant.body,
+      params: grant.params
+    }
+
+  def definition(%__MODULE__{}), do: nil
+
+  @doc """
+  How a token grant's value is made: stored, or the command that mints it,
+  per host or once, kept at most how long, and the header its login's ID
+  token travels in. What MWT minted, and the values it made from them
+  (`MWTClient.Sandbox.Made`), belong to one of these: an edit that changes
+  it drops them, so the next use is the new one's
+  (`MWTClient.Sandbox.Server.Grants.forget_values/2`).
+  """
+  @spec how_made(t()) :: map()
+  def how_made(%__MODULE__{} = grant),
+    do: %{
+      source: grant.source,
+      mint_per: grant.mint_per,
+      keep_minutes: grant.keep_minutes,
+      id_token_header: get_in(grant.presents, [:login, :header])
+    }
+
+  @doc """
   The states a grant can be put in when MWT starts. Enabled and
   auto-approved (`:auto`) only where uses can be auto-approved: not Ask to
   run commands, whose every run asks. One to review only starts disabled.

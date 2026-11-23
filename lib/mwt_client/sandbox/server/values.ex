@@ -445,9 +445,14 @@ defmodule MWTClient.Sandbox.Server.Values do
 
         keep_ms = grant.keep_minutes && grant.keep_minutes * 60_000
 
+        # How the grant made its value as this mint began: a mint that
+        # ends after an edit changed that keeps nothing (`Machine.finished/3`).
+        made = Grant.how_made(grant)
+
         state
         |> State.task({:mint, key}, fn -> command |> mint(variables) |> kept_at_most(keep_ms) end)
         |> Map.update!(:minting, &Map.put(&1, key, [k]))
+        |> Map.update(:mint_made, %{key => made}, &Map.put(&1, key, made))
     end
   end
 

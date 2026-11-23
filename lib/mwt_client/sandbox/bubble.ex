@@ -347,6 +347,66 @@ defmodule MWTClient.Sandbox.Bubble do
     end
   end
 
+  @doc """
+  Stops the VM, as `stop/2` does, on MWT's way out, by `deadline`
+  (monotonic milliseconds): also one whose bubble was only just launched
+  by a start MWT ended halfway. Its relay listens on `control.sock` a
+  moment after it starts, so while a process of the VM's bubble runs
+  (`launched?/1`) and nothing listens, the stop is asked again. A relay
+  asked stops the VM by itself once its `msb create` or `msb start`
+  returns, whether MWT still waits or not. `{:error, text}` when no relay
+  could be asked, or it didn't answer, by the deadline.
+  """
+  @spec stop_by(String.t(), String.t(), integer()) :: :ok | {:error, String.t()}
+  def stop_by(username, name, deadline) do
+    left = deadline - System.monotonic_time(:millisecond)
+
+    case left > 0 && ask(username, "stop", left) do
+      false ->
+        if launched?(name),
+          do: {:error, "The VM's bubble was still starting, and its relay never listened."},
+          else: :ok
+
+      {:ok, "stopped" <> _output} ->
+        await_down(username, min(deadline, System.monotonic_time(:millisecond) + 5_000))
+        :ok
+
+      {:ok, other} ->
+        {:error, String.trim(other)}
+
+      {:error, reason} when reason in [:enoent, :econnrefused] ->
+        if launched?(name) do
+          Process.sleep(50)
+          stop_by(username, name, deadline)
+        else
+          :ok
+        end
+
+      {:error, reason} ->
+        {:error, "The VM's relay was asked to stop, and didn't answer: #{inspect(reason)}"}
+    end
+  end
+
+  # Whether a process of the VM `name`'s bubble runs on this machine: the
+  # launcher, bwrap or the relay itself, each of which has the relay's path
+  # in the bubble and the VM's name among its words, from the moment
+  # `start/3` runs it until the bubble ends.
+  defp launched?(name) do
+    relay = inside(:runtime) <> "/bin/mwt-relay"
+    Enum.any?(processes(), fn {_pid, words} -> relay in words and named?(words, name) end)
+  end
+
+  defp named?(words, name),
+    do: Enum.chunk_every(words, 2, 1, :discard) |> Enum.member?(["--name", name])
+
+  # This machine's processes, with the words each was started with.
+  defp processes do
+    for entry <- File.ls!("/proc"),
+        entry =~ ~r/^\d+$/,
+        {:ok, raw} <- [MWTClient.Files.read("/proc/#{entry}/cmdline")],
+        do: {entry, String.split(raw, <<0>>)}
+  end
+
   # Down is when nothing answers and the relay's lock is free: the relay
   # holds it until its last moment, after its control socket is gone.
   defp await_down(username, deadline) do
@@ -394,12 +454,9 @@ defmodule MWTClient.Sandbox.Bubble do
   # Ends relays of this VM that nothing can ask any more. Each is process 1
   # of its bubble, so its VM ends with it: a power cut for the VM.
   defp kill_strays(name) do
-    for entry <- File.ls!("/proc"),
-        entry =~ ~r/^\d+$/,
-        {:ok, raw} <- [File.read("/proc/#{entry}/cmdline")],
-        [program | rest] = String.split(raw, <<0>>),
+    for {entry, [program | rest]} <- processes(),
         String.ends_with?(program, "/mwt-relay"),
-        Enum.chunk_every(rest, 2, 1, :discard) |> Enum.member?(["--name", name]) do
+        named?(rest, name) do
       MWTClient.Executable.cmd("kill", ["-KILL", entry], stderr_to_stdout: true)
     end
 

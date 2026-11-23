@@ -906,6 +906,13 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
         phx-submit="accept_handoff"
         class="space-y-3 px-4 py-3"
       >
+        <%!-- The revision shown here: landing refuses once another came. --%>
+        <input
+          type="hidden"
+          id="handoff-accept-head"
+          name={@accept.form[:head].name}
+          value={@handoff.head}
+        />
         <label class="flex flex-col gap-1">
           <span class="text-[11px] font-medium text-muted">Land on</span>
           <select

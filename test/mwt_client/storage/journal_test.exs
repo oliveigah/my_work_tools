@@ -115,6 +115,79 @@ defmodule MWTClient.Storage.JournalTest do
     assert count.() == [[0]]
   end
 
+  # The journal can't be written while its table is away: every insert
+  # fails at once, as one held past the busy timeout fails after it.
+  defp unwritable(username),
+    do: Storage.run(username, :journal, & &1.query!("ALTER TABLE events RENAME TO events_away"))
+
+  defp writable(username),
+    do: Storage.run(username, :journal, & &1.query!("ALTER TABLE events_away RENAME TO events"))
+
+  defp rows_of(username) do
+    Storage.run(username, :journal, fn repo ->
+      repo.query!("SELECT id, outcome, summary, at FROM events ORDER BY seq").rows
+    end)
+  end
+
+  @tag :capture_log
+  test "a write that fails keeps what waited, in order, and writes it once it can", %{
+    username: username
+  } do
+    Journal.record(username, Map.put(row(1), :exchange_id, "x1"))
+    Journal.record_exchange(username, "x1", %{request: :what_went})
+    unwritable(username)
+
+    :ok = Journal.flush(username)
+    Journal.record(username, row(2))
+    :ok = Journal.flush(username)
+
+    writable(username)
+    Journal.record(username, row(3))
+    :ok = Journal.flush(username)
+
+    assert written(username) == ~w(e1 e2 e3)
+    assert Journal.exchange(username, "e1") == %{request: :what_went}
+  end
+
+  @tag :capture_log
+  test "a journal that stays unwritable drops what waits after five tries, and says so in the log",
+       %{username: username} do
+    Journal.record(username, %{row(1) | at: 1_763_287_200_000_000})
+    Journal.record(username, %{row(2) | at: 1_763_287_230_000_000})
+    unwritable(username)
+
+    for _try <- 1..5, do: :ok = Journal.flush(username)
+    # Dropped: what waits now is the gap alone.
+    assert %{rows: [], lost: %{events: 2}} = :sys.get_state(Store.whereis(Journal, username))
+
+    writable(username)
+    Journal.record(username, row(3))
+    :ok = Journal.flush(username)
+
+    assert [[_id, "lost", summary, 1_763_287_200_000_000], ["e3" | _]] = rows_of(username)
+    assert summary =~ "2 events of the activity log weren't kept"
+    assert summary =~ "from 2025-11-16 10:00:00 to 2025-11-16 10:00:30 UTC"
+    assert summary =~ "events_away" or summary =~ "no such table"
+  end
+
+  @tag :capture_log
+  test "while writes fail, what waits is bounded", %{username: username} do
+    unwritable(username)
+    Journal.record(username, row(0))
+    :ok = Journal.flush(username)
+
+    # One failure, then more rows than it keeps: they go, said as a gap.
+    for n <- 1..10_001, do: Journal.record(username, row(n))
+    state = :sys.get_state(Store.whereis(Journal, username))
+    assert state.count < 10_000
+    assert state.lost.events > 0
+
+    writable(username)
+    :ok = Journal.flush(username)
+    assert [[_id, "lost", summary, _at] | _] = rows_of(username)
+    assert summary =~ "weren't kept"
+  end
+
   test "16 MiB of exchanges waiting are written at once, without the timer", %{
     username: username
   } do

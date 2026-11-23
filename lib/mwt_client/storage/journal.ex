@@ -18,6 +18,18 @@ defmodule MWTClient.Storage.Journal do
   `journal.db` runs with `synchronous=NORMAL`: a power cut can lose the
   last second, never the file's consistency.
 
+  A write that fails (the write lock held past SQLite's busy timeout by a
+  long delete of the retention rule or a Clear, a full disk) loses
+  nothing at once: what waited stays, in its order, and is tried again a
+  second later, and at each flush. Retrying is bounded, so a journal
+  that can't be written doesn't hold memory without end: after 5
+  failures in a row, or past 10,000 rows or 64 MiB of exchanges and
+  details waiting, what waits is dropped. The loss is then
+  said in the log itself: a row of its own (`outcome` `lost`) saying how
+  many events weren't kept, from when to when, and why, written ahead of
+  the next batch that goes in, where they would have been. MWT's log
+  says each failure as it happens.
+
   One process per unlocked identity, started by `MWTClient.Storage` after
   the databases.
   """
@@ -37,6 +49,15 @@ defmodule MWTClient.Storage.Journal do
   # they are written at once rather than at the next second.
   @batch_bytes 16 * 1024 * 1024
   @trim_batch 10_000
+  # A batch that failed is tried again this many times, holding at most
+  # this many events, and bytes of exchanges and details, before it is
+  # dropped and the gap logged.
+  @tries 5
+  @kept_most 10_000
+  @kept_bytes 64 * 1024 * 1024
+  # How much of a failure's reason the gap's line says: its first line,
+  # as SQLite's errors go on with the statement.
+  @reason_chars 200
 
   @columns ~w(id at outcome summary grant_id host port method path up down ms agent thread_id
               thread exchange_id detailed search_text)a
@@ -211,7 +232,14 @@ defmodule MWTClient.Storage.Journal do
        details: [],
        count: 0,
        bytes: 0,
-       timer: nil
+       timer: nil,
+       # Writes failed in a row, and why the last one did.
+       failures: 0,
+       failed: nil,
+       # What was dropped and not yet said in the log: how many events,
+       # exchanges and details, the times of the first and last event,
+       # and why.
+       lost: nil
      }}
   end
 
@@ -237,18 +265,30 @@ defmodule MWTClient.Storage.Journal do
     })
   end
 
+  # While writes fail, a full batch waits for the next try rather than
+  # trying again at every row: each try can wait out the busy timeout.
   defp waiting(state) do
     cond do
+      state.failures > 0 and over_kept?(state) ->
+        {:noreply, state |> drop() |> scheduled()}
+
+      state.failures > 0 ->
+        {:noreply, scheduled(state)}
+
       state.count >= @batch or state.bytes >= @batch_bytes ->
         {:noreply, write(state)}
 
-      state.timer == nil ->
-        {:noreply, %{state | timer: Process.send_after(self(), :write, @every_ms)}}
-
       true ->
-        {:noreply, state}
+        {:noreply, scheduled(state)}
     end
   end
+
+  defp scheduled(%{timer: nil} = state),
+    do: %{state | timer: Process.send_after(self(), :write, @every_ms)}
+
+  defp scheduled(state), do: state
+
+  defp over_kept?(state), do: state.count > @kept_most or state.bytes > @kept_bytes
 
   @impl true
   def handle_call(:flush, _from, state), do: {:reply, :ok, write(state)}
@@ -262,30 +302,132 @@ defmodule MWTClient.Storage.Journal do
     :ok
   end
 
-  defp write(%{rows: [], exchanges: [], details: []} = state), do: cancel(state)
+  defp write(%{rows: [], exchanges: [], details: [], lost: nil} = state), do: cancel(state)
 
   defp write(state) do
+    state = cancel(state)
     rows = Enum.reverse(state.rows)
     exchanges = Enum.reverse(state.exchanges)
     details = Enum.reverse(state.details)
 
     try do
       Storage.transaction(state.username, :journal, fn repo ->
+        if state.lost, do: insert(repo, [lost_row(state.lost)])
         for chunk <- Enum.chunk_every(rows, 50), do: insert(repo, chunk)
         for {exchange_id, blob} <- exchanges, do: insert_exchange(repo, exchange_id, blob)
         for {event_id, blob} <- details, do: insert_details(repo, event_id, blob)
       end)
-    rescue
-      error ->
-        Logger.error(
-          "could not write #{length(rows)} activity events: #{Exception.message(error)}",
+
+      if state.lost do
+        Logger.warning("activity log written again; #{state.lost.events} events weren't kept",
           user: state.username,
           system: :storage
         )
-    end
+      end
 
-    cancel(%{state | rows: [], exchanges: [], details: [], count: 0, bytes: 0})
+      %{
+        state
+        | rows: [],
+          exchanges: [],
+          details: [],
+          count: 0,
+          bytes: 0,
+          failures: 0,
+          failed: nil,
+          lost: nil
+      }
+    rescue
+      error -> failed(state, length(rows), Exception.message(error))
+    end
   end
+
+  # Kept for the next try, in order; dropped once tried enough.
+  defp failed(state, events, reason) do
+    failures = state.failures + 1
+
+    Logger.error(
+      "could not write #{events} activity events (try #{failures} of #{@tries}): #{reason}",
+      user: state.username,
+      system: :storage
+    )
+
+    state = %{state | failures: failures, failed: reason}
+    state = if failures >= @tries or over_kept?(state), do: drop(state), else: state
+    scheduled(state)
+  end
+
+  # What waits goes, and is added to the gap the log will say.
+  defp drop(%{rows: rows, exchanges: exchanges, details: details} = state) do
+    times = for row <- rows, is_integer(row[:at]), do: row.at
+    reason = state.failed || "unknown"
+
+    lost =
+      merge_lost(state.lost, %{
+        events: length(rows),
+        exchanges: length(exchanges),
+        details: length(details),
+        from: Enum.min(times, fn -> nil end),
+        to: Enum.max(times, fn -> nil end),
+        why: reason |> String.split("\n", parts: 2) |> hd() |> String.slice(0, @reason_chars)
+      })
+
+    Logger.error(
+      "dropped #{length(rows)} activity events the journal couldn't take: #{reason}",
+      user: state.username,
+      system: :storage
+    )
+
+    %{state | rows: [], exchanges: [], details: [], count: 0, bytes: 0, failures: 0, lost: lost}
+  end
+
+  defp merge_lost(nil, lost), do: lost
+
+  defp merge_lost(before, lost) do
+    %{
+      events: before.events + lost.events,
+      exchanges: before.exchanges + lost.exchanges,
+      details: before.details + lost.details,
+      from: earliest(before.from, lost.from),
+      to: latest(before.to, lost.to),
+      why: lost.why
+    }
+  end
+
+  defp earliest(nil, b), do: b
+  defp earliest(a, nil), do: a
+  defp earliest(a, b), do: min(a, b)
+
+  defp latest(nil, b), do: b
+  defp latest(a, nil), do: a
+  defp latest(a, b), do: max(a, b)
+
+  # The gap as a line of the log, at the time of the first event lost, so
+  # a window that covers them shows it. Its outcome, `lost`, says what it
+  # is to whatever reads the journal (`MWTClient.Sandbox.Event`).
+  defp lost_row(lost) do
+    from = lost.from || Values.time(DateTime.utc_now())
+    to = lost.to || from
+
+    what =
+      if lost.events == 1,
+        do: "event of the activity log wasn't",
+        else: "events of the activity log weren't"
+
+    summary =
+      "#{lost.events} #{what} kept, from #{clock(from)} to #{clock(to)} UTC: " <>
+        "the journal couldn't be written (#{lost.why})"
+
+    %{
+      id: "event-" <> Base.url_encode64(:crypto.strong_rand_bytes(9), padding: false),
+      at: from,
+      outcome: "lost",
+      summary: summary,
+      search_text: String.downcase(summary),
+      detailed: 0
+    }
+  end
+
+  defp clock(at), do: at |> Values.from_time() |> Calendar.strftime("%Y-%m-%d %H:%M:%S")
 
   # Only for an event that was written: one dropped leaves none behind.
   defp insert_details(repo, event_id, blob) do

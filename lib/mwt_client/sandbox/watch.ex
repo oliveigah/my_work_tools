@@ -16,13 +16,20 @@ defmodule MWTClient.Sandbox.Watch do
   isolated in the view (`Gate.trip/2`), so every decision after refuses,
   and every connection the proxy holds is closed. The server is told, and
   does the rest (the incident, approvals refused, grants off, you
-  notified); this never calls it, so neither can wait on the other.
+  notified); this never calls it, so the server may wait on it (a
+  release does, `forget/3`) and it never waits on the server.
 
   What the server sees itself (asks, commands, MWT's tools, the VM's
   processes) it checks in its own windows
   (`MWTClient.Sandbox.Server.Firewall`).
 
   A watch that isn't running answers `:isolated`: nothing passes unwatched.
+
+  A release starts over what the incident was counted on (`forget/3`):
+  the server asks before it lifts the isolation, so every observation
+  already waiting here is refused as isolated, and none after it is
+  judged on what you just reviewed. A watch too busy to answer in 5 s
+  lets the release go on, and drops the window once it gets to it.
   """
 
   use GenServer
@@ -57,6 +64,18 @@ defmodule MWTClient.Sandbox.Watch do
     :exit, _not_running -> :isolated
   end
 
+  @doc """
+  Drops what `rule` counted under `key` (`MWTClient.Sandbox.Firewall.forget/3`).
+  Waits for it, so what comes after is counted from zero; a watch that
+  isn't running has nothing to drop.
+  """
+  @spec forget(String.t(), Firewall.rule() | nil, term()) :: :ok
+  def forget(username, rule, key) do
+    GenServer.call(Store.via(__MODULE__, username), {:forget, rule, key})
+  catch
+    :exit, _not_running -> :ok
+  end
+
   @impl true
   def init(username) do
     {:ok, _} = :timer.send_interval(@prune_every, :prune)
@@ -84,6 +103,9 @@ defmodule MWTClient.Sandbox.Watch do
       end
     end
   end
+
+  def handle_call({:forget, rule, key}, _from, state),
+    do: {:reply, :ok, %{state | watch: Firewall.forget(state.watch, rule, key)}}
 
   @impl true
   def handle_info(:prune, state),

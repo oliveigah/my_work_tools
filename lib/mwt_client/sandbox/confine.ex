@@ -5,7 +5,11 @@ defmodule MWTClient.Sandbox.Confine do
   script of yours instead of the VM.
 
     * user, PID, IPC, UTS and cgroup namespaces of its own; the network is
-      shared, since a script may need your VPN;
+      shared, since a script may need your VPN. With its PID namespace,
+      what the command started ends with it, even a process that left its
+      process group (`setsid`), which a run as you can't reach
+      (`MWTClient.Sandbox.HostRun`): every process of a PID namespace ends
+      when its first one does;
     * the system's folders read-only (`/usr`, `/etc`, and `/opt`, `/nix`
       and `/snap` where they exist), with the folder `/etc/resolv.conf`
       leads to, often under `/run`, so names resolve;

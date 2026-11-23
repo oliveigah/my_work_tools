@@ -45,7 +45,10 @@ defmodule MWTClient.Sandbox.HandoffStore do
     else
       File.mkdir_p!(Path.dirname(store))
 
-      case MWTClient.Executable.cmd("git", ["init", "--quiet", "--bare", store],
+      # Hooks off, as `HostGit` runs every other git here.
+      case MWTClient.Executable.cmd(
+             "git",
+             ["-c", "core.hooksPath=/dev/null", "init", "--quiet", "--bare", store],
              env: Guest.git_env(),
              stderr_to_stdout: true
            ) do
@@ -176,7 +179,13 @@ defmodule MWTClient.Sandbox.HandoffStore do
           :binary,
           :exit_status,
           :use_stdio,
-          args: ["-c", ~s(exec git -C "$1" cat-file --batch < "$2"), "bash", store, list],
+          args: [
+            "-c",
+            ~s(exec git -C "$1" -c core.hooksPath=/dev/null cat-file --batch < "$2"),
+            "bash",
+            store,
+            list
+          ],
           env:
             Enum.map(Guest.git_env(), fn {k, v} ->
               {String.to_charlist(k), String.to_charlist(v)}

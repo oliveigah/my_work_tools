@@ -34,15 +34,19 @@ defmodule MWTClient.Sandbox.Activity do
 
   @doc "The events passing `filters`, the newest first."
   @spec events(String.t(), map()) :: [Event.t()]
-  def events(username, filters \\ %{}), do: read(username, filters, &query/3)
+  def events(username, filters \\ %{}) do
+    {conditions, params} = where(filters)
 
-  @doc """
-  `events/2` for the sandbox's server itself, which can't wait on itself:
-  what it logged before is with the journal already, as it sent it there
-  first.
-  """
-  @spec logged(String.t(), map()) :: [Event.t()]
-  def logged(username, filters \\ %{}), do: read(username, filters, &query_logged/3)
+    username
+    |> query(
+      """
+      SELECT #{Enum.join(Event.columns(), ", ")} FROM events
+      WHERE #{conditions} ORDER BY seq DESC LIMIT ?
+      """,
+      params ++ [Map.get(filters, :limit, 200)]
+    )
+    |> Enum.map(&Event.from_row/1)
+  end
 
   @doc """
   One event, opened: with what its request carried and got back
@@ -68,20 +72,6 @@ defmodule MWTClient.Sandbox.Activity do
       [] ->
         nil
     end
-  end
-
-  defp read(username, filters, query) do
-    {conditions, params} = where(filters)
-
-    username
-    |> query.(
-      """
-      SELECT #{Enum.join(Event.columns(), ", ")} FROM events
-      WHERE #{conditions} ORDER BY seq DESC LIMIT ?
-      """,
-      params ++ [Map.get(filters, :limit, 200)]
-    )
-    |> Enum.map(&Event.from_row/1)
   end
 
   @doc """

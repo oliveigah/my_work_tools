@@ -51,15 +51,20 @@ defmodule MWTClient.Sandbox.GraphQL do
   end
 
   @doc """
-  A short digest of the document's tokens: the same for two copies that
-  differ only in spacing and comments, different for any other change.
+  The SHA-256 of the document's tokens, as 64 hex characters: the same for
+  two copies that differ only in spacing and comments, different for any
+  other change.
+
+  *Allow similar* covers a document by this digest, and the VM writes the
+  documents: a digest cut short would let it search, before it ever asks,
+  for a second document that shares it (32 bits take minutes on a few
+  cores). So it is whole, whatever that costs a card that shows it.
   """
   @spec digest(String.t()) :: String.t()
   def digest(document) when is_binary(document) do
     :sha256
     |> :crypto.hash(:erlang.term_to_binary(tokens(document, [])))
     |> Base.encode16(case: :lower)
-    |> binary_part(0, 8)
   end
 
   ## Definitions

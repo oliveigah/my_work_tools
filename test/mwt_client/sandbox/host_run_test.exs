@@ -118,6 +118,78 @@ defmodule MWTClient.Sandbox.HostRunTest do
     assert group_pids(group) == []
   end
 
+  describe "what the command leaves behind doesn't keep the run going" do
+    # A process that left the group is out of MWT's reach: the script writes
+    # its pid down, and the test ends it.
+    setup %{dir: dir} do
+      pid_file = Path.join(dir, "left.pid")
+
+      on_exit(fn ->
+        with {:ok, text} <- File.read(pid_file),
+             {pid, _} <- Integer.parse(text) do
+          System.cmd("kill", ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
+        end
+      end)
+
+      %{left: ~s[setsid sleep 30 & echo $! > "#{pid_file}"], pid_file: pid_file}
+    end
+
+    test "it ends with its shell: what is left of its group is killed, and its output kept",
+         %{dir: dir} do
+      {result, elapsed} = timed(fn -> run("sleep 30 & seq 1 20000; exit 3", dir, 60) end)
+
+      assert %{exit: 3, timed_out: false, error: nil} = result
+      assert String.ends_with?(result.output, "\n19999\n20000\n")
+      assert result.bytes == byte_size(Enum.map_join(1..20000, &"#{&1}\n"))
+      assert elapsed < 5_000
+      assert_received {:group, group}
+      assert group_pids(group) == []
+    end
+
+    test "a process that left its group doesn't hold it: the shell's status comes back",
+         %{dir: dir, left: left} do
+      {result, elapsed} = timed(fn -> run("#{left}; echo done; exit 4", dir, 60) end)
+
+      assert %{exit: 4, output: "done\n", timed_out: false} = result
+      assert elapsed < 5_000
+    end
+
+    test "at its limit it ends, timed out, whatever holds its output", %{dir: dir, left: left} do
+      {result, elapsed} = timed(fn -> run("#{left}; sleep 30", dir, 1) end)
+
+      assert %{exit: 124, timed_out: true} = result
+      assert elapsed < 5_000
+    end
+
+    test "stopped, it ends, whatever holds its output", %{
+      dir: dir,
+      left: left,
+      pid_file: pid_file
+    } do
+      me = self()
+      job = %{script: "#{left}; sleep 30", dir: dir, timeout: 60}
+      task = Task.async(fn -> HostRun.run(job, &send(me, {:group, &1})) end)
+
+      assert_receive {:group, group}, 2_000
+
+      assert Enum.find_value(1..300, fn _ ->
+               File.exists?(pid_file) || (Process.sleep(10) && nil)
+             end)
+
+      :ok = HostRun.stop(group, "TERM")
+
+      assert %{exit: exit, timed_out: false} = Task.await(task, 5_000)
+      assert exit in [124, 137, 143]
+      assert group_pids(group) == []
+    end
+  end
+
+  defp timed(fun) do
+    started = System.monotonic_time(:millisecond)
+    result = fun.()
+    {result, System.monotonic_time(:millisecond) - started}
+  end
+
   defp group_pids(group) do
     {out, _} = System.cmd("pgrep", ["-g", Integer.to_string(group)])
     String.split(out, "\n", trim: true)
@@ -237,6 +309,18 @@ defmodule MWTClient.Sandbox.HostRunTest do
       assert %{exit: 124, timed_out: true} = HostRun.run(job, &send(me, {:group, &1}))
       assert_received {:group, group}
       assert group_pids(group) == []
+    end
+
+    test "what left its group in the bubble ends with the run", %{dir: dir} do
+      # A length no other sleep has, to find it by.
+      seconds = "30.#{System.unique_integer([:positive])}"
+      started = System.monotonic_time(:millisecond)
+
+      assert %{exit: 0, output: "done\n"} = confined("setsid sleep #{seconds} & echo done", dir)
+      assert System.monotonic_time(:millisecond) - started < 5_000
+
+      {out, _} = System.cmd("pgrep", ["-f", "sleep #{seconds}"])
+      assert out == ""
     end
   end
 

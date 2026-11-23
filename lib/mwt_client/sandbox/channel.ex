@@ -151,6 +151,11 @@ defmodule MWTClient.Sandbox.Channel do
            active: false,
            packet: :line,
            packet_size: @line_limit,
+           # Line mode hands over a line longer than the driver's own buffer
+           # cut at its size (9216 bytes by default), whatever `packet_size`
+           # allows: a longer ask (a script, a handoff's notes) would read as
+           # broken JSON. The cost: 64 KiB a connection while it is read.
+           buffer: @line_limit + 1,
            backlog: 64
          ]) do
       {:ok, socket} ->
@@ -1275,7 +1280,8 @@ defmodule MWTClient.Sandbox.Channel do
     }
 
   # A line per folder, and the notes; one that failed makes the status 1.
-  defp sync_words(statuses, notes) do
+  @doc false
+  def sync_words(statuses, notes) do
     lines =
       statuses
       |> Enum.sort()
@@ -1322,7 +1328,21 @@ defmodule MWTClient.Sandbox.Channel do
             Enum.map_join(held, "; ", &"#{&1.path} (#{&1.why})") <> "."
       end
 
-    "up to date, #{changes}; #{status.files} files, read-only here." <> held
+    "up to date, #{changes}; #{status.files} files, read-only here." <>
+      held <> unread_words(Map.get(status, :unread, []))
+  end
+
+  # Files the user's machine wouldn't let MWT read: not here, tried again
+  # at each sync. The agent hears which, since it may need them.
+  defp unread_words([]), do: ""
+
+  defp unread_words(unread) do
+    shown = Enum.take(unread, 10)
+    more = length(unread) - length(shown)
+
+    " Not copied, since the user's machine doesn't let MWT read them (tell the user if you need them): " <>
+      Enum.map_join(shown, "; ", &"#{&1.path} (#{&1.why})") <>
+      if(more > 0, do: "; and #{more} more.", else: ".")
   end
 
   defp vm_words(name, record) do
@@ -1433,7 +1453,7 @@ defmodule MWTClient.Sandbox.Channel do
       |> Enum.filter(&is_binary/1)
       |> Enum.join("; ")
 
-    {{:ran, run.exit}, "mwt: " <> note <> ".", run.output}
+    {{:ran, ran_status(run)}, "mwt: " <> note <> ".", run.output}
   end
 
   defp ran_once(%Approval{call: %{}, run: %{state: :done, error: error}}) when is_binary(error),
@@ -1446,9 +1466,21 @@ defmodule MWTClient.Sandbox.Channel do
          run: %{state: :done, error: nil, withheld: true} = run
        })
        when decision != :send_output do
-    {{:ran, run.exit},
-     "mwt: ran on the user's machine and exited #{run.exit}; a typed result comes back only from a run that succeeds, so its output stays with the user.",
+    {{:ran, ran_status(run)},
+     "mwt: ran on the user's machine and ended with #{exit_words(run)}; a typed result comes back only from a run that succeeds, so its output stays with the user.",
      ""}
+  end
+
+  # Its output came back, but not its status: something it started held
+  # the output open after it ended, and MWT stopped reading
+  # (`MWTClient.Sandbox.HostRun`). The output goes back; the status is one
+  # of MWT's own, since no number of the command's can be told.
+  defp ran_once(%Approval{status: :allowed, run: %{state: :done, error: nil, exit: nil} = run}) do
+    {{:ran, @run_not_done},
+     "mwt: it ran on the user's machine and its output came back, but its exit status is " <>
+       "unknown: something it started kept its output open after it ended, so MWT stopped " <>
+       "reading. Don't take it as having succeeded; check what it did.",
+     String.replace(run.output, <<0>>, "")}
   end
 
   defp ran_once(%Approval{status: :allowed, run: %{state: :done, error: nil} = run}) do
@@ -1473,12 +1505,29 @@ defmodule MWTClient.Sandbox.Channel do
   defp ran_once(%Approval{status: :denied, decision: :keep_output, run: run}),
     do:
       {@run_not_done,
-       "It ran (exit #{run.exit}), but the user kept its output from you. Ask them about it if you need it."}
+       "It ran (#{exit_words(run)}), but the user kept its output from you. Ask them about it if you need it."}
 
   defp ran_once(%Approval{status: :timed_out, stage: :output, run: run}),
     do:
       {@run_not_done,
-       "It ran (exit #{run.exit}), but the user didn't release its output in 30 minutes. Ask them about it if you need it."}
+       "It ran (#{exit_words(run)}), but the user didn't release its output in 30 minutes. Ask them about it if you need it."}
+
+  # Refused by MWT, not by the user: what it was asked under no longer
+  # holds (`MWTClient.Sandbox.Server.HostRuns.still/2`).
+  defp ran_once(%Approval{status: :denied, decision: :grant_off, grant_id: id}),
+    do:
+      {@run_not_done,
+       "It didn't run: #{id} no longer allowed it by the time it would have. It was turned " <>
+         "off, ran out of time, was paused by its check or removed, or its grant no longer " <>
+         "lists the host. mwt grants shows how it is now; if you still need it, ask for it " <>
+         ~s[again: mwt request #{id} --reason "..."]}
+
+  defp ran_once(%Approval{status: :denied, decision: :changed, grant_id: id}),
+    do:
+      {@run_not_done,
+       "It didn't run: the user edited #{id} while this waited, so it would no longer have " <>
+         "run what its card showed. mwt grants shows #{id} as it is now; call it again if it " <>
+         "still does what you need."}
 
   defp ran_once(%Approval{status: :denied, decision: :isolated}),
     do: {@run_not_done, @isolated}
@@ -1499,6 +1548,14 @@ defmodule MWTClient.Sandbox.Channel do
     do:
       {@run_not_done,
        "The user didn't answer in 30 minutes. Tell them what you need to run, then ask again."}
+
+  # The status a run reports: the command's own, or, when it is unknown,
+  # MWT's for "its output didn't come back as a status".
+  defp ran_status(%{exit: exit}) when is_integer(exit), do: exit
+  defp ran_status(_run), do: @run_not_done
+
+  defp exit_words(%{exit: exit}) when is_integer(exit), do: "exit #{exit}"
+  defp exit_words(_run), do: "its exit status unknown"
 
   defp pending(id) do
     {2,

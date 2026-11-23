@@ -13,14 +13,20 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   own:
 
     1. **Its head**: a header block (`HEADERS` and any `CONTINUATION`, at
-       most 64 KiB), decoded and read as strictly as an HTTP/1.1 head
-       (`acceptable/2`): `:method`, `:scheme` `https`, a `:path` that is a
-       path, its `:authority` (or `host`) the name the connection was
-       encrypted for, no header HTTP/2 forbids.
+       most 64 KiB, and at most 64 KiB decoded, as MWT announces in
+       `SETTINGS_MAX_HEADER_LIST_SIZE`), read as strictly as an HTTP/1.1
+       head (`acceptable/2`, `MWTClient.Sandbox.Egress.RequestHead`):
+       `:method`, `:scheme` `https`, a `:path` that is a path, its
+       `:authority` (or one `host`, never both saying different things) the
+       name the connection was encrypted for, fields HTTP allows (no CR, LF
+       or NUL), no header HTTP/2 forbids, and a `content-length` its DATA
+       then matches.
     2. **The start of its body**, until its stream ends, 64 KiB came, or half
        a second passed, so a streaming request (gRPC's) is judged on what
        came. What follows is held, within the window MWT gave the stream,
-       until the verdict.
+       until the verdict. A peer that sends past the windows MWT gave it
+       ends the connection (`FLOW_CONTROL_ERROR`), so what MWT holds for a
+       connection is bounded by them, both ways.
     3. **Judged** (`{:judge, request}`) as an HTTP request is
        (`Driver.Http1.message/1`): the same card, *Allow similar*, a token
        grant's value in its carriers. A stream waiting for you holds up only
@@ -34,8 +40,10 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     5. **Its answer** goes to the VM decoded and written again, trailers
        (gRPC's `grpc-status`) too. For a stream with a value in it, each form
        of the value becomes its placeholder in the answer's headers, and its
-       body is looked through for them: one found cuts the connection before
-       it goes.
+       body is looked through for them (`MWTClient.Sandbox.Egress.AnswerBody`,
+       gzip and deflate decoded for the look, any other encoding refused):
+       one found cuts the connection before it goes. Bytes that could start
+       one wait 50 ms at most for what follows.
 
   What MWT answers itself (a refusal) is an answer on the stream: MWT's
   JSON, or for gRPC an answer of trailers only, `grpc-status` 7
@@ -49,8 +57,9 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   @behaviour MWTClient.Sandbox.Egress.Driver
 
   alias MWTClient.Sandbox.{Describe, Exchange, Secrets}
-  alias MWTClient.Sandbox.Egress.{Driver, Request, Scanner}
+  alias MWTClient.Sandbox.Egress.{AnswerBody, Driver, Request, RequestHead}
   alias MWTClient.Sandbox.Egress.Driver.Http1
+  alias MWTClient.Sandbox.Egress.Driver.Http1.Response
   alias MWTClient.Sandbox.Egress.Driver.Http2.Frame
 
   @block_limit 64 * 1024
@@ -59,13 +68,25 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   @idle 300_000
   @preface_within 10_000
   # What MWT lets each peer send it before it takes some in: a stream's
-  # window, and the connection's.
+  # window, and the connection's. MWT gives window back only for what went
+  # on, so the connection's is the most it holds of one peer's bytes for
+  # the other: a VM that stops reading, or a stream held for you. The VM
+  # opens up to 512 connections, so that is up to 1 GiB each way at most;
+  # a larger window would let one connection go faster on a far host, and
+  # let a VM make MWT hold more.
   @stream_window 1024 * 1024
-  @connection_window 16 * 1024 * 1024
+  @connection_window 2 * 1024 * 1024
+  # The most a header block may hold decoded (RFC 9113's field section
+  # size, each field's name and value and 32), announced to both peers: as
+  # an HTTP/1.1 head's 64 KiB, since HPACK lets a few bytes on the wire
+  # stand for a field sent before, many times over.
+  @header_list 64 * 1024
+  # How long bytes that could start a real value wait for what follows
+  # before they go anyway (`Response`'s, the same).
+  @hold 50
   @max_streams 100
   @frame_size 16_384
   @default_window 65_535
-  @overrides ~w(x-http-method-override x-http-method x-method-override)
   @forbidden ~w(connection keep-alive proxy-connection transfer-encoding upgrade)
 
   # Errors RFC 9113 §7 names.
@@ -100,7 +121,11 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     vm_frame: @frame_size,
     host_window: @default_window,
     host_initial: @default_window,
-    host_frame: @frame_size
+    host_frame: @frame_size,
+    # What each peer may still send MWT on the connection, by the windows
+    # MWT gave it (`vm_window` and `host_window` are MWT's own to send).
+    vm_may_send: @connection_window,
+    host_may_send: @connection_window
   ]
 
   @impl true
@@ -137,7 +162,8 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
 
     # MWT's settings as the VM's server, and a connection window as large
     # as its streams'.
-    settings = Frame.settings_payload([{3, @max_streams}, {4, @stream_window}])
+    settings =
+      Frame.settings_payload([{3, @max_streams}, {4, @stream_window}, {6, @header_list}])
 
     {[
        {:send, :vm, Frame.encode(:settings, 0, 0, settings)},
@@ -191,7 +217,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     case Frame.split(h2.host <> data, @frame_size) do
       {:ok, frames, rest} ->
         {actions, h2} = each(frames, %{h2 | host: rest}, &host_frame/2)
-        settle(actions ++ [{:read, :host, @idle}], h2)
+        settle(actions ++ [{:read, :host, host_wait(h2)}], h2)
 
       {:error, _reason} ->
         host_broke(h2, "The host's HTTP/2 framing broke.")
@@ -252,7 +278,18 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     end
   end
 
-  def handle_timeout(:host, h2), do: if(busy?(h2), do: settle([], h2), else: {[], h2})
+  # The host paused: what a stream holds back as the possible start of a
+  # value goes, since what would complete it hasn't come.
+  def handle_timeout(:host, h2) do
+    case holding(h2) do
+      [] ->
+        if busy?(h2), do: settle([], h2), else: {[], h2}
+
+      held ->
+        {actions, h2} = each(held, h2, fn stream, h2 -> released(h2, stream) end)
+        settle(actions ++ [{:read, :host, @idle}], h2)
+    end
+  end
 
   @impl true
   def handle_cut({:found, _label}, h2) do
@@ -342,15 +379,28 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     end
   end
 
+  # The VM sends no more than the windows MWT gave it: one that does would
+  # have MWT hold whatever it sends while a stream waits for you or for
+  # the host.
+  defp vm_frame({:data, _flags, _id, _payload, size}, h2) when size > h2.vm_may_send,
+    do: leave(h2, @flow_control_error)
+
   defp vm_frame({:data, flags, id, payload, size}, h2) do
+    h2 = %{h2 | vm_may_send: h2.vm_may_send - size}
+
     case Map.get(h2.streams, id) do
+      %{vm_ended?: false, vm_may_send: room} when size > room ->
+        leave(h2, @flow_control_error)
+
       %{vm_ended?: false} = stream ->
+        stream = %{stream | vm_may_send: stream.vm_may_send - size}
         vm_data(h2, stream, payload, size, Frame.end_stream?(flags))
 
       _gone_or_ended ->
         # Data for a stream that is gone still took from the connection's
         # window: given back.
-        {[{:send, :vm, window_update(0, size)} | rst_unless_known(h2, id)], h2}
+        {credit, h2} = give_vm(h2, size)
+        {credit ++ rst_unless_known(h2, id), h2}
     end
   end
 
@@ -427,6 +477,10 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
               up_window: h2.host_initial,
               to_vm: [],
               vm_window: h2.vm_initial,
+              vm_may_send: @stream_window,
+              host_may_send: @stream_window,
+              declared: head.declared,
+              body_size: 0,
               answer: nil,
               host_ended?: false,
               echo: nil,
@@ -436,7 +490,12 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
             }
 
             h2 = put(h2, stream)
-            if ended?, do: judge(h2, stream), else: {[], h2}
+
+            cond do
+              not ended? -> {[], h2}
+              mismatched?(stream) -> mismatched(h2, stream)
+              true -> judge(h2, stream)
+            end
 
           {:refuse, status, code, message} ->
             json = Jason.encode!(%{code: code, error: message, by: "MWT agent sandbox"})
@@ -452,24 +511,58 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   defp vm_trailers(h2, stream, headers, true) do
     stream = %{stream | trailers: regular(headers), vm_ended?: true}
 
-    case stream.phase do
-      :body -> judge(h2, stream)
-      :sent -> flush_up(h2, stream)
-      _judging -> {[], put(h2, stream)}
+    cond do
+      section_size(headers) > @header_list ->
+        refuse_stream(h2, stream, 431, "The request's trailers are over 64 KiB.")
+
+      not Enum.all?(stream.trailers, fn {name, value} -> field?(name, value) end) ->
+        refuse_stream(h2, stream, 400, fields_refused())
+
+      mismatched?(stream) ->
+        mismatched(h2, stream)
+
+      stream.phase == :body ->
+        judge(h2, stream)
+
+      stream.phase == :sent ->
+        flush_up(h2, stream)
+
+      true ->
+        {[], put(h2, stream)}
     end
   end
 
   defp vm_trailers(h2, _stream, _headers, false), do: leave(h2, @protocol_error)
 
   defp vm_data(h2, stream, payload, size, ended?) do
-    stream = %{stream | vm_ended?: ended?}
+    stream = %{stream | vm_ended?: ended?, body_size: stream.body_size + byte_size(payload)}
+    padding = size - byte_size(payload)
 
-    case stream.phase do
-      :sent ->
+    cond do
+      # A body longer or shorter than its content-length is one two
+      # parsers could read two ways (a host turning it into HTTP/1.1 would
+      # read its end as another request): refused, with what came of it
+      # given back to the windows.
+      mismatched?(stream) ->
+        stream =
+          if stream.phase == :sent,
+            do: %{stream | out: stream.out ++ [payload]},
+            else: %{
+              stream
+              | held: [stream.held, payload],
+                held_size: stream.held_size + byte_size(payload)
+            }
+
+        {credit, h2} = give_vm(h2, padding)
+        {own, stream} = give_vm_stream(stream, padding)
+        {actions, h2} = mismatched(h2, stream)
+        {credit ++ own ++ actions, h2}
+
+      stream.phase == :sent ->
         stream = %{stream | out: stream.out ++ [payload]}
-        flush_up(h2, stream, size - byte_size(payload))
+        flush_up(h2, stream, padding)
 
-      phase when phase in [:body, :judging] ->
+      true ->
         stream = %{
           stream
           | held: [stream.held, payload],
@@ -477,17 +570,57 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
         }
 
         # Padding is given back at once; the rest once it goes up.
-        padding =
-          if size > byte_size(payload),
-            do: [{:send, :vm, window_update(0, size - byte_size(payload))}],
-            else: []
+        {credit, h2} = give_vm(h2, padding)
+        {own, stream} = give_vm_stream(stream, padding)
 
-        if phase == :body and (ended? or stream.held_size >= @body_peek) do
+        if stream.phase == :body and (ended? or stream.held_size >= @body_peek) do
           {actions, h2} = judge(h2, stream)
-          {padding ++ actions, h2}
+          {credit ++ own ++ actions, h2}
         else
-          {padding, put(h2, stream)}
+          {credit ++ own, put(h2, stream)}
         end
+    end
+  end
+
+  # A body that went past its content-length, or ended short of it.
+  defp mismatched?(%{declared: nil}), do: false
+
+  defp mismatched?(%{declared: declared, body_size: size, vm_ended?: ended?}),
+    do: size > declared or (ended? and size != declared)
+
+  defp mismatched(h2, stream) do
+    refuse_stream(
+      h2,
+      stream,
+      400,
+      "The request's content-length says #{stream.declared} bytes, and its DATA carried " <>
+        "#{if stream.body_size > stream.declared, do: "more", else: stream.body_size}."
+    )
+  end
+
+  # A stream MWT refuses once it began, with why: MWT's answer on it while
+  # nothing of it went up; reset both ways after, since the host has its
+  # start. What it held is given back to the VM's window.
+  defp refuse_stream(h2, stream, status, message) do
+    json = Jason.encode!(%{code: "mwt_bad_request", error: message, by: "MWT agent sandbox"})
+
+    cond do
+      stream.phase == :sent ->
+        {done, h2} = finish(h2, stream, "Refused by MWT: " <> message)
+
+        {[
+           {:frame, :host, rst(stream.up, @cancel)},
+           {:send, :vm, rst(stream.id, @protocol_error)} | done
+         ], h2}
+
+      stream.request ->
+        answer_self(h2, stream, status, json)
+
+      true ->
+        {credit, h2} = give_vm(h2, unsent(stream))
+        {answer, h2} = respond(h2, stream.id, status, json, grpc?(stream.head.headers))
+        reset = if stream.vm_ended?, do: [], else: [{:send, :vm, rst(stream.id, @no_error)}]
+        {answer ++ reset ++ credit, drop(h2, stream)}
     end
   end
 
@@ -532,9 +665,14 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     headers = Http1.replace(headers, replace.request)
     echo = echo(Http1.echo(replace, headers))
 
+    # With a value in it, its answer is asked for unencoded, so a value it
+    # quotes can be read; gRPC's own compression of each message too.
     headers =
       if echo,
-        do: List.keystore(headers, "accept-encoding", 0, {"accept-encoding", "identity"}),
+        do:
+          headers
+          |> Enum.reject(fn {name, _} -> name == "grpc-accept-encoding" end)
+          |> List.keystore("accept-encoding", 0, {"accept-encoding", "identity"}),
         else: headers
 
     pseudo = [
@@ -567,7 +705,8 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
         echo: echo,
         skip: byte_size(stream.record.sent_up.body),
         ended_up?: alone?,
-        up_window: h2.host_initial
+        up_window: h2.host_initial,
+        host_may_send: @stream_window
     }
 
     h2 = %{
@@ -584,7 +723,13 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   defp link(%{linked?: true} = h2), do: {[], h2}
 
   defp link(h2) do
-    settings = Frame.settings_payload([{2, 0}, {3, @max_streams}, {4, @stream_window}])
+    settings =
+      Frame.settings_payload([
+        {2, 0},
+        {3, @max_streams},
+        {4, @stream_window},
+        {6, @header_list}
+      ])
 
     {[
        {:connect, %{alpn: ["h2"]}},
@@ -602,6 +747,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
          host_window: @default_window,
          host_initial: @default_window,
          host_frame: @frame_size,
+         host_may_send: @connection_window,
          next_up: 1,
          by_up: %{}
      }}
@@ -627,19 +773,9 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
         {[], stream, h2}
       end
 
-    given = sent + extra
-
-    credit =
-      if given > 0,
-        do:
-          [{:send, :vm, window_update(0, given)}] ++
-            if(sent > 0 and not stream.vm_ended?,
-              do: [{:send, :vm, window_update(stream.id, sent)}],
-              else: []
-            ),
-        else: []
-
-    {frames ++ trailers ++ credit, put(h2, stream)}
+    {credit, h2} = give_vm(h2, sent + extra)
+    {own, stream} = give_vm_stream(stream, sent + extra)
+    {frames ++ trailers ++ credit ++ own, put(h2, stream)}
   end
 
   defp data_up(h2, %{out: []} = stream, acc, sent), do: {Enum.reverse(acc), stream, h2, sent}
@@ -759,16 +895,28 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     end
   end
 
+  # The host sends no more than the windows MWT gave it, or MWT would hold
+  # whatever it sends for a VM that doesn't read.
+  defp host_frame({:data, _flags, _up, _payload, size}, h2) when size > h2.host_may_send,
+    do: host_broke(h2, "The host sent past the window MWT gave it.")
+
   defp host_frame({:data, flags, up, payload, size}, h2) do
+    h2 = %{h2 | host_may_send: h2.host_may_send - size}
+
     case stream_up(h2, up) do
       nil ->
-        {[{:frame, :host, window_update(0, size)}], h2}
+        give_host(h2, size)
+
+      %{host_may_send: room} when size > room ->
+        host_broke(h2, "The host sent past the window MWT gave it.")
 
       stream ->
+        stream = %{stream | host_may_send: stream.host_may_send - size}
         padding = size - byte_size(payload)
-        give = if padding > 0, do: [{:frame, :host, window_update(0, padding)}], else: []
+        {give, h2} = give_host(h2, padding)
+        {own, stream} = give_host_stream(stream, padding)
         {actions, h2} = answer_data(h2, stream, payload, Frame.end_stream?(flags))
-        {give ++ actions, h2}
+        {give ++ own ++ actions, h2}
     end
   end
 
@@ -824,8 +972,13 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
         h2 = %{h2 | host_hpack: table}
 
         case stream_up(h2, up) do
-          nil -> {[], h2}
-          stream -> answer_head(h2, stream, headers, Frame.end_stream?(flags))
+          nil ->
+            {[], h2}
+
+          stream ->
+            if section_size(headers) > @header_list,
+              do: unreadable_answer(h2, stream, "Its head is over 64 KiB."),
+              else: answer_head(h2, stream, headers, Frame.end_stream?(flags))
         end
 
       {:error, _reason} ->
@@ -838,6 +991,47 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   # Its head, or its trailers: to the VM written again, each form of a
   # value that went in as its placeholder.
   defp answer_head(h2, stream, headers, ended?) do
+    case readable(stream, headers) do
+      {:ok, stream} -> answer_head_read(h2, stream, headers, ended?)
+      {:error, message} -> unreadable_answer(h2, stream, message)
+    end
+  end
+
+  # A stream with a value in it has its answer's body looked through for
+  # the value: its final head says how the body comes, and one MWT can't
+  # decode is refused rather than passed on unread. gRPC's compression of
+  # each message, which MWT asked for none of, is one.
+  defp readable(%{echo: nil} = stream, _headers), do: {:ok, stream}
+  defp readable(%{echo: %{body: %AnswerBody{}}} = stream, _headers), do: {:ok, stream}
+
+  defp readable(%{echo: echo} = stream, headers) do
+    status = with {_, status} <- List.keyfind(headers, ":status", 0), do: status
+    compressed = for {"grpc-encoding", value} <- headers, value != "identity", do: value
+
+    cond do
+      is_nil(status) or status =~ ~r/\A1[0-9]{2}\z/ ->
+        {:ok, stream}
+
+      compressed != [] ->
+        {:error,
+         "Its gRPC messages are compressed (#{hd(compressed)}), which MWT asked for none of."}
+
+      true ->
+        case AnswerBody.encoding(headers) do
+          {:ok, encoding} ->
+            {:ok, %{stream | echo: %{echo | body: AnswerBody.new(echo.secrets, encoding)}}}
+
+          :error ->
+            {:error, Response.unreadable_encoding()}
+        end
+    end
+  end
+
+  defp answer_head_read(h2, stream, headers, ended?) do
+    # Bytes held back as the possible start of a value go before a head
+    # that follows them (gRPC's trailers): nothing more of the body comes.
+    {held, stream} = release_held(stream)
+    stream = queue_data(stream, held, h2.ctx.limit)
     headers = Enum.map(headers, fn {name, value} -> {name, back(stream.echo, value)} end)
     {block, table} = HPAX.encode(:no_store, headers, h2.to_vm_hpack)
     h2 = %{h2 | to_vm_hpack: table}
@@ -867,6 +1061,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
 
   defp answer_data(h2, stream, payload, ended?) do
     case looked(stream, payload, ended?) do
+      # Even empty, a piece is queued: the DATA frame ending the stream.
       {:ok, out, stream} ->
         stream = %{
           stream
@@ -876,6 +1071,9 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
         }
 
         flush_vm(h2, stream)
+
+      :unreadable ->
+        unreadable_answer(h2, stream, "Its body didn't decode.", byte_size(payload))
 
       {:found, label} ->
         # What came before it goes; then the connection ends, as an HTTP/1.1
@@ -899,13 +1097,81 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   defp looked(%{echo: nil} = stream, payload, _ended?), do: {:ok, payload, stream}
 
   defp looked(%{echo: echo} = stream, payload, ended?) do
-    case Scanner.feed(echo.scanner, payload) do
-      {:ok, out, scanner} ->
-        {released, scanner} = if ended?, do: Scanner.release(scanner), else: {"", scanner}
-        {:ok, out <> released, %{stream | echo: %{echo | scanner: scanner}}}
+    body = echo.body || AnswerBody.new(echo.secrets, nil)
 
-      {:found, label} ->
-        {:found, label}
+    case AnswerBody.feed(body, payload) do
+      {:ok, out, body} ->
+        {released, body} = if ended?, do: AnswerBody.release(body), else: {"", body}
+        {:ok, out <> released, %{stream | echo: %{echo | body: body}}}
+
+      found_or_unreadable ->
+        found_or_unreadable
+    end
+  end
+
+  # The answer's bytes for the VM, queued behind what waits, and kept for
+  # the log.
+  defp queue_data(stream, "", _limit), do: stream
+
+  defp queue_data(stream, bytes, limit),
+    do: %{
+      stream
+      | to_vm: stream.to_vm ++ [{:data, bytes}],
+        answer: kept_answer(stream.answer, bytes, limit)
+    }
+
+  # What a stream holds back as the possible start of a value, let go.
+  defp release_held(%{echo: %{body: %AnswerBody{} = body} = echo} = stream) do
+    {held, body} = AnswerBody.release(body)
+    {held, %{stream | echo: %{echo | body: body}}}
+  end
+
+  defp release_held(stream), do: {"", stream}
+
+  defp released(h2, stream) do
+    {held, stream} = release_held(stream)
+    flush_vm(h2, queue_data(stream, held, h2.ctx.limit))
+  end
+
+  # The streams holding bytes back, waiting for what follows.
+  defp holding(h2) do
+    for {_id, %{echo: %{body: %AnswerBody{} = body}} = stream} <- h2.streams,
+        AnswerBody.held?(body),
+        do: stream
+  end
+
+  # How long the host is read for: a pause holding bytes back lets them go
+  # after `@hold`; otherwise the idle time.
+  defp host_wait(h2), do: if(holding(h2) == [], do: @idle, else: @hold)
+
+  # An answer MWT can't read for the value that went in: MWT's 502 while
+  # nothing of it reached the VM, the stream cut after; the host stops
+  # sending it, and what it sent of it is given back to its window.
+  defp unreadable_answer(h2, stream, message, taken \\ 0) do
+    line = %{
+      outcome: :blocked,
+      summary: "An answer MWT could not read, not passed on",
+      host: h2.ctx.name,
+      port: h2.ctx.port
+    }
+
+    stop = if stream.up && h2.linked?, do: [{:frame, :host, rst(stream.up, @cancel)}], else: []
+    {credit, h2} = give_host(h2, taken)
+
+    if is_nil(stream.answer) do
+      json =
+        Jason.encode!(%{
+          code: "mwt_unreadable_response",
+          error:
+            "MWT could not read #{authority(h2)}'s answer, so it did not pass it on: #{message}",
+          by: "MWT agent sandbox"
+        })
+
+      {answer, h2} = answer_self(h2, stream, 502, json)
+      {stop ++ credit ++ [{:log, line} | answer], h2}
+    else
+      {done, h2} = finish(h2, stream, "Cut by MWT: it could not read the rest of the answer.")
+      {stop ++ credit ++ [{:send, :vm, rst(stream.id, @cancel)}, {:log, line} | done], h2}
     end
   end
 
@@ -914,17 +1180,9 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   defp flush_vm(h2, stream) do
     {sends, stream, h2, sent} = to_vm(h2, stream, [], 0)
 
-    credit =
-      if sent > 0 and stream.up,
-        do: [
-          {:frame, :host, window_update(0, sent)}
-          | if(stream.host_ended?,
-              do: [],
-              else: [{:frame, :host, window_update(stream.up, sent)}]
-            )
-        ],
-        else: []
-
+    {credit, h2} = if stream.up, do: give_host(h2, sent), else: {[], h2}
+    {own, stream} = give_host_stream(stream, sent)
+    credit = credit ++ own
     h2 = put(h2, stream)
 
     if stream.to_vm == [] and stream.host_ended? do
@@ -982,8 +1240,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   # it; what the VM sent of it is given back to its window.
   defp answer_self(h2, stream, status, json) do
     # What the VM sent of it that never goes is given back to its window.
-    given = stream.held_size + IO.iodata_length(stream.out)
-    credit = if given > 0, do: [{:send, :vm, window_update(0, given)}], else: []
+    {credit, h2} = give_vm(h2, unsent(stream))
     reset = if stream.vm_ended?, do: [], else: [{:send, :vm, rst(stream.id, @no_error)}]
     {answer, h2} = respond(h2, stream.id, status, json, grpc?(stream.head.headers))
     exchange = exchange(stream, Exchange.mwt_answer(status, json), h2.ctx.limit)
@@ -1106,8 +1363,25 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
         do: [{:done, stream.request, exchange(stream, response, h2.ctx.limit)}],
         else: []
 
-    {done, drop(h2, stream)}
+    # What it took of the windows and never passed on goes back to them:
+    # a stream the VM reset while it waited for you, or one the host cut,
+    # must not leave the connection with less room for the rest.
+    {credit, h2} = give_vm(h2, unsent(stream))
+
+    {host_credit, h2} =
+      if stream.up && h2.linked? && Map.get(h2.by_up, stream.up) == stream.id,
+        do: give_host(h2, queued(stream)),
+        else: {[], h2}
+
+    {done ++ credit ++ host_credit, drop(h2, stream)}
   end
+
+  # The VM's bytes a stream holds that never went up.
+  defp unsent(stream), do: IO.iodata_length(stream.held) + IO.iodata_length(stream.out)
+
+  # The host's bytes a stream holds that never went to the VM.
+  defp queued(stream),
+    do: for({:data, data} <- stream.to_vm, reduce: 0, do: (size -> size + byte_size(data)))
 
   defp drop(h2, stream) do
     %{
@@ -1139,52 +1413,93 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
 
   ## Reading a head
 
-  # As strictly as an HTTP/1.1 head (`Http1`): one of each pseudo-header
-  # a request needs, before every other; a path; the name the connection
-  # was encrypted for; nothing HTTP/2 forbids, and no method override.
+  # As strictly as an HTTP/1.1 head (`RequestHead`, the rules both share):
+  # one of each pseudo-header a request needs, before every other; fields
+  # HTTP allows; a path; one name for its host, the one the connection was
+  # encrypted for; one content-length at most; nothing HTTP/2 forbids, and
+  # no method override.
   defp acceptable(headers, %{name: name, port: port}) do
     {pseudo, rest} = Enum.split_while(headers, fn {key, _} -> String.starts_with?(key, ":") end)
     regular = regular(rest)
     names = Enum.map(pseudo, &elem(&1, 0))
     get = fn key -> with {_, value} <- List.keyfind(pseudo, key, 0), do: value end
-    host = get.(":authority") || with({_, value} <- List.keyfind(regular, "host", 0), do: value)
+    authority = get.(":authority")
+    hosts = for {"host", value} <- regular, do: value
+    host = authority || List.first(hosts)
     method = get.(":method")
     path = get.(":path")
 
     cond do
+      section_size(headers) > @header_list ->
+        {:refuse, 431, "mwt_bad_request", "The request's head is over 64 KiB."}
+
       Enum.any?(rest, fn {key, _} -> String.starts_with?(key, ":") end) or
         names -- Enum.uniq(names) != [] or
           Enum.any?(names, &(&1 not in [":method", ":scheme", ":authority", ":path"])) ->
         {:refuse, 400, "mwt_bad_request", "MWT could not read this as one HTTP/2 request."}
 
-      method in ["CONNECT", "TRACE"] ->
-        {:refuse, 405, "mwt_method_refused", "MWT does not pass on #{method} requests."}
-
-      Enum.any?(regular, fn {key, _} -> key in @overrides end) ->
-        {:refuse, 400, "mwt_bad_request",
-         "A request says its method once: MWT doesn't pass on a method override."}
-
-      is_nil(method) or not (method =~ ~r/\A[!#$%&'*+.^_`|~0-9A-Za-z-]+\z/) or
-        get.(":scheme") != "https" or is_nil(path) ->
+      is_nil(method) or not RequestHead.token?(method) or get.(":scheme") != "https" or
+          is_nil(path) ->
         {:refuse, 400, "mwt_bad_request", "MWT could not read this as one HTTP/2 request."}
 
-      not String.starts_with?(path, "/") or not (path =~ ~r/\A[\x21-\x7e]+\z/) ->
-        {:refuse, 400, "mwt_bad_request",
-         "The request target must be a path, in visible ASCII: percent-encode anything else."}
+      not Enum.all?(regular, fn {key, value} -> field?(key, value) end) ->
+        {:refuse, 400, "mwt_bad_request", fields_refused()}
 
-      is_nil(host) or String.downcase(host) not in [name, "#{name}:#{port}"] ->
+      refusal = RequestHead.refusal(method, path, regular) ->
+        refusal
+
+      # One name for its host, as HTTP/1.1 has one Host: a front end that
+      # goes by `host` would take it elsewhere than `:authority` says.
+      length(hosts) > 1 or
+          (authority != nil and hosts != [] and
+             String.downcase(hd(hosts)) != String.downcase(authority)) ->
+        {:refuse, 400, "mwt_bad_request",
+         "A request names its host once: :authority, or one Host header saying the same."}
+
+      is_nil(host) or RequestHead.misdirected?(host, name, port) ->
         {:refuse, 421, "mwt_misdirected",
          "#{host} does not match #{Describe.authority(%{host: name, port: port})}."}
 
       Enum.any?(regular, fn {key, value} ->
-        key in @forbidden or key != String.downcase(key) or (key == "te" and value != "trailers")
+        key in @forbidden or (key == "te" and value != "trailers")
       end) ->
         {:refuse, 400, "mwt_bad_request", "HTTP/2 forbids this request's headers."}
 
       true ->
-        {:ok, %{method: method, path: path, headers: List.keydelete(regular, "host", 0)}}
+        declared = for {"content-length", value} <- regular, do: String.to_integer(value)
+
+        {:ok,
+         %{
+           method: method,
+           path: path,
+           headers: regular |> Enum.reject(&match?({"host", _}, &1)) |> trimmed(),
+           declared: List.first(declared)
+         }}
     end
   end
+
+  # A field as HTTP/1.1 reads one: a token's name, in lower case as HTTP/2
+  # writes names, and a value of visible bytes, spaces and tabs. A CR, LF
+  # or NUL in one splits it in two for a parser that reads it as HTTP/1.1
+  # (a host's front end, a card showing it), but not for MWT.
+  defp field?(name, value),
+    do:
+      RequestHead.token?(name) and name == String.downcase(name) and
+        RequestHead.field_value?(value)
+
+  defp fields_refused,
+    do:
+      "A field's name must be a token in lower case, and its value visible bytes, spaces " <>
+        "and tabs: no CR, LF or NUL."
+
+  defp trimmed(headers), do: for({name, value} <- headers, do: {name, RequestHead.trimmed(value)})
+
+  # A header block's size as RFC 9113 counts it (`SETTINGS_MAX_HEADER_LIST_SIZE`).
+  defp section_size(headers),
+    do:
+      Enum.reduce(headers, 0, fn {name, value}, size ->
+        size + byte_size(name) + byte_size(value) + 32
+      end)
 
   defp regular(headers),
     do: Enum.reject(headers, fn {key, _} -> String.starts_with?(key, ":") end)
@@ -1202,9 +1517,10 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   # placeholder (`Http1.echo/2`).
   defp echo(nil), do: nil
 
-  defp echo({secrets, placeholders}) do
-    %{scanner: Scanner.new(secrets, hold: true), secrets: secrets, placeholders: placeholders}
-  end
+  # Its body is looked through once its final head says how it comes
+  # (`readable/2`).
+  defp echo({secrets, placeholders}),
+    do: %{body: nil, secrets: secrets, placeholders: placeholders}
 
   defp back(nil, value), do: value
 
@@ -1291,6 +1607,36 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     do: if(id > h2.last_vm, do: [], else: [{:send, :vm, rst(id, @internal_error)}])
 
   defp rst(id, code), do: Frame.encode(:rst_stream, 0, id, <<code::32>>)
+
+  # Window given back to the VM, on the connection and on a stream it
+  # still sends on: what it may send MWT again.
+  defp give_vm(h2, amount) when amount > 0,
+    do: {[{:send, :vm, window_update(0, amount)}], %{h2 | vm_may_send: h2.vm_may_send + amount}}
+
+  defp give_vm(h2, _none), do: {[], h2}
+
+  defp give_vm_stream(%{vm_ended?: false} = stream, amount) when amount > 0,
+    do:
+      {[{:send, :vm, window_update(stream.id, amount)}],
+       %{stream | vm_may_send: stream.vm_may_send + amount}}
+
+  defp give_vm_stream(stream, _none), do: {[], stream}
+
+  # The same for the host, on MWT's own connection to it.
+  defp give_host(h2, amount) when amount > 0,
+    do:
+      {[{:frame, :host, window_update(0, amount)}],
+       %{h2 | host_may_send: h2.host_may_send + amount}}
+
+  defp give_host(h2, _none), do: {[], h2}
+
+  defp give_host_stream(%{host_ended?: false, up: up} = stream, amount)
+       when is_integer(up) and amount > 0,
+       do:
+         {[{:frame, :host, window_update(up, amount)}],
+          %{stream | host_may_send: stream.host_may_send + amount}}
+
+  defp give_host_stream(stream, _none), do: {[], stream}
 
   defp window_update(id, increment) when increment > 0,
     do: Frame.encode(:window_update, 0, id, <<0::1, increment::31>>)

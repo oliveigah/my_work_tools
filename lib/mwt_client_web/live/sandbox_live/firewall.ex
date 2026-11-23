@@ -332,7 +332,12 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
   attr :restorable, :list, required: true
 
   defp release_dialog(assigns) do
-    assigns = assign(assigns, form: to_form(%{"trust" => "false"}, as: :release))
+    assigns =
+      assign(assigns,
+        form: to_form(%{"trust" => "false"}, as: :release),
+        # The name or address the finding saw, as trusting it adds it.
+        trust: Firewall.trust_entry(assigns.incident)
+      )
 
     ~H"""
     <div
@@ -377,14 +382,14 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
           </p>
           <p class="text-[11px] leading-4 text-muted">{back_words(@restorable)}</p>
           <div
-            :if={@incident.host}
+            :if={@trust}
             id="firewall-release-trust"
             class="rounded-md border border-line px-3 py-2"
           >
             <.input
               field={@form[:trust]}
               type="checkbox"
-              label={"Trust #{@incident.host} from now on"}
+              label={"Trust #{@trust} from now on"}
             />
             <p class="mt-1 pl-5.5 text-[11px] leading-4 text-faint">
               The rules on destinations spare it. A placeholder sent there is still caught.

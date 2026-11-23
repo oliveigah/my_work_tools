@@ -76,6 +76,48 @@ defmodule MWTClient.Sandbox.EgressNetworkTest do
     end
   end
 
+  # A service over TLS that isn't HTTP (a database, a queue): it echoes
+  # what it gets.
+  defp tls_echo_service do
+    test = self()
+    leaf = CA.leaf(CA.new(), "svc.corp.example")
+
+    {:ok, listen} =
+      :ssl.listen(0, CA.ssl_options(leaf) ++ [active: false, mode: :binary, reuseaddr: true])
+
+    {:ok, {_, port}} = :ssl.sockname(listen)
+
+    spawn_link(fn ->
+      {:ok, socket} = :ssl.transport_accept(listen)
+      {:ok, socket} = :ssl.handshake(socket)
+      send(test, :service_connected)
+
+      with {:ok, data} <- :ssl.recv(socket, 0, 5_000) do
+        send(test, {:service_got, data})
+        :ssl.send(socket, "echo:" <> data)
+      end
+
+      :ssl.close(socket)
+    end)
+
+    port
+  end
+
+  # The VM's TLS, offering no protocol, as a database's client does.
+  defp bare_tls(proxy, port, ca) do
+    {:ok, tls} =
+      :ssl.connect(
+        connect(proxy, "127.0.0.1:#{port}"),
+        verify: :verify_peer,
+        cacerts: [ca],
+        server_name_indication: ~c"svc.corp.example",
+        active: false,
+        mode: :binary
+      )
+
+    tls
+  end
+
   # A plain TCP service: it greets first when `greets?`, then echoes.
   defp tcp_service(greets?) do
     test = self()
@@ -239,6 +281,40 @@ defmodule MWTClient.Sandbox.EgressNetworkTest do
 
       :ok = Sandbox.decide(username, approval.id, :allow_once)
       assert {:ok, "pong:ping"} = :gen_tcp.recv(socket, 0, 5_000)
+    end
+
+    test "TLS with no HTTP inside is asked about as one, before anything is reached", %{
+      username: username,
+      ca: ca
+    } do
+      service = tls_echo_service()
+      network_grant(username, service, :ask)
+      tls = bare_tls(proxy(username, service), service, ca)
+      :ok = :ssl.send(tls, "*1\r\n$8\r\nFLUSHALL\r\n")
+
+      approval = waiting(username)
+      assert approval.kind == :connection
+
+      assert {"Not read", "not HTTP inside its TLS · passed on decrypted, looked through"} in approval.facts
+
+      refute_received :service_connected
+
+      :ok = Sandbox.decide(username, approval.id, :allow_once)
+      assert {:ok, "echo:*1\r\n$8\r\nFLUSHALL\r\n"} = :ssl.recv(tls, 0, 5_000)
+    end
+
+    test "TLS with no HTTP inside, denied, closes and never reaches the service", %{
+      username: username,
+      ca: ca
+    } do
+      service = tls_echo_service()
+      network_grant(username, service, :ask)
+      tls = bare_tls(proxy(username, service), service, ca)
+      :ok = :ssl.send(tls, "*1\r\n$8\r\nFLUSHALL\r\n")
+
+      :ok = Sandbox.decide(username, waiting(username).id, :deny)
+      assert {:error, _closed} = :ssl.recv(tls, 0, 5_000)
+      refute_received :service_connected
     end
 
     test "a service that greets first is asked about by the client's silence, unreached", %{

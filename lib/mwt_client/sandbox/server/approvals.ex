@@ -296,10 +296,20 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       nil ->
         decide(state, approval, :allow_once)
 
+      # This card goes by your decision; the allowance then settles the
+      # others it would have let through (`Policy.settles?/3`), which may
+      # leave out some it doesn't cover, such as a host its host list
+      # asks about.
       grant ->
         pattern = if scope == :all, do: :all, else: approval.pattern
+        how = if scope == :all, do: "every use", else: "similar"
 
         state
+        |> settle(approval, :allowed, {:allow, scope, duration})
+        |> answer_waiters(approval, :allow)
+        |> State.log(
+          event_for(approval, :allowed, "you allowed #{how} #{State.duration_words(duration)}")
+        )
         |> Grants.allow(grant, pattern, duration)
         |> State.log(%{
           outcome: :grant,
@@ -350,8 +360,26 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   Starts a command that waited to run, settled with `decision`: yours
   (`{:run, output_to}`), or `:auto` for a saved command you auto-approved,
   whose output goes straight to the agent. `how` is what the log says.
+
+  Only as it was asked: when its grant no longer allows it, or was edited
+  since (`HostRuns.still/2`), nothing runs, the card is refused, and the
+  agent hears why. It runs confined as its card says (`Approval.confine`),
+  never as the grant says now.
   """
   def run(state, approval, decision, how) do
+    case HostRuns.still(state, approval) do
+      :ok ->
+        start(state, approval, decision, how)
+
+      {:refused, why} ->
+        state
+        |> settle(approval, :denied, why)
+        |> answer_waiters(approval, {:deny, why})
+        |> State.log(HostRuns.command_event(approval, HostRuns.refused_words(why)))
+    end
+  end
+
+  defp start(state, approval, decision, how) do
     output_to =
       case decision do
         {:run, output_to} -> output_to
@@ -379,8 +407,6 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     server = self()
     id = approval.id
 
-    grant = State.grant_of(state, approval)
-
     job = %{
       script: approval.script,
       dir: approval.dir,
@@ -400,8 +426,8 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       approval.call ->
         HostRuns.send_call(state, approval)
 
-      match?(%Grant{confined: true}, grant) ->
-        HostRuns.run_confined(state, approval, job, grant)
+      match?(%{confined: true}, approval.confine) ->
+        HostRuns.run_confined(state, approval, job, approval.confine)
 
       true ->
         State.task(state, {:command, id}, fn ->
@@ -781,18 +807,35 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   end
 
   @doc """
-  Denies every use waiting on a grant, as when the grant turns off.
+  Refuses what waits on a grant, as when the grant turns off: every use
+  and every command or call still waiting to run, unless `kinds` names
+  fewer. `decision` says why: `:grant_off`, or `:changed` for a grant
+  edited while they waited. Activations wait for a grant that is off, so
+  only its removal refuses them, by naming them. A command that ran and
+  whose output waits for you stays: nothing more runs when you release it.
   """
-  def settle_waiting(state, grant_id, decision, kinds \\ [:request, :connection, :tool]) do
+  def settle_waiting(
+        state,
+        grant_id,
+        decision,
+        kinds \\ [:request, :connection, :tool, :command]
+      ) do
     state.approvals
-    |> Enum.filter(&(&1.status == :waiting and &1.grant_id == grant_id and &1.kind in kinds))
+    |> Enum.filter(
+      &(&1.status == :waiting and &1.grant_id == grant_id and &1.kind in kinds and
+          &1.stage == :run)
+    )
     |> Enum.reduce(state, fn approval, acc ->
       acc
       |> settle(approval, :denied, decision)
-      |> answer_waiters(approval, {:deny, :grant_off})
-      |> State.log(event_for(approval, :refused, "its grant turned off"))
+      |> answer_waiters(approval, {:deny, decision})
+      |> State.log(event_for(approval, :refused, refused_words(approval, decision)))
     end)
   end
+
+  defp refused_words(%Approval{kind: :command}, decision), do: HostRuns.refused_words(decision)
+  defp refused_words(_approval, :changed), do: "its grant was edited"
+  defp refused_words(_approval, _decision), do: "its grant turned off"
 
   @doc """
   The log's event for what became of an approval.

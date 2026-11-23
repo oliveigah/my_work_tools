@@ -72,7 +72,6 @@ defmodule MWTClient.Sandbox.Server do
 
   alias MWTClient.Sandbox.{
     Approval,
-    Bubble,
     CertificateAuthority,
     CredentialEndpoint,
     Disks,
@@ -932,6 +931,9 @@ defmodule MWTClient.Sandbox.Server do
           grant_id: id,
           details: Grant.changes(grant, updated)
         })
+        # What was minted the old way, and the cards asked under the old
+        # definition, don't outlive the edit.
+        |> Grants.edited(grant, updated)
         |> State.write_inbox()
         |> State.changed()
 
@@ -2010,15 +2012,15 @@ defmodule MWTClient.Sandbox.Server do
     # A command reports back to this process, which is going away.
     for {_id, group} <- state.running, is_integer(group), do: HostRun.stop(group, "KILL")
 
-    # Locking MWT or quitting it leaves no VM running without the proxy. A
-    # crash leaves the VM alone: the proxy is a process of its own and keeps
-    # going, and the restarted sandbox finds the VM running and takes it back
-    # (`check/1`), so a bug costs the agents their pending asks, not their VM.
-    # If the restarts give up, the vault locks and the proxy closes with it:
-    # the VM has no internet until an unlock takes it back.
-    if deliberate?(reason) and state.vm.exists? and state.vm.status in [:running, :starting] do
-      Bubble.stop(state.username, 30)
-    end
+    # Locking MWT or quitting it leaves no VM running without the proxy,
+    # nor one a start, create or recreate under way would launch after
+    # (`Machine.shut_down/1`). A crash leaves the VM alone, and any such
+    # action too: the proxy is a process of its own and keeps going, and
+    # the restarted sandbox finds the VM running and takes it back
+    # (`check/1`), so a bug costs the agents their pending asks, not their
+    # VM. If the restarts give up, the vault locks and the proxy closes with
+    # it: the VM has no internet until an unlock takes it back.
+    if deliberate?(reason), do: Machine.shut_down(state)
 
     # Locked: nothing the network path decides from is left. A crash keeps
     # the view, and what it allows, until the restarted server publishes.

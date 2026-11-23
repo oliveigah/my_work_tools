@@ -293,9 +293,21 @@ defmodule MWTClient.Sandbox.Server.State do
   Runs `fun` in a task whose result comes back to the server as a message, remembered under `purpose`.
   """
   def task(state, purpose, fun) do
-    %Task{ref: ref} = Task.Supervisor.async_nolink(@tasks, fun)
-    %{state | tasks: Map.put(state.tasks, ref, purpose)}
+    %Task{ref: ref, pid: pid} = Task.Supervisor.async_nolink(@tasks, fun)
+
+    # Which process runs each, so that locking MWT can end a VM action under
+    # way (`Machine.shut_down/1`). Those of tasks already ended go here.
+    pids =
+      state
+      |> Map.get(:task_pids, %{})
+      |> Map.take(Map.keys(state.tasks))
+      |> Map.put(ref, pid)
+
+    %{state | tasks: Map.put(state.tasks, ref, purpose)} |> Map.put(:task_pids, pids)
   end
+
+  @doc "The process running the task `ref` started by `task/3`, or nil."
+  def task_pid(state, ref), do: state |> Map.get(:task_pids, %{}) |> Map.get(ref)
 
   @doc """
   The folder the VM has a copy of at `/mnt/mwt`.
@@ -498,6 +510,8 @@ defmodule MWTClient.Sandbox.Server.State do
       # placeholder: in memory only, as minted values are.
       made: %{},
       tasks: %{},
+      # ref => the process running it (`task/3`).
+      task_pids: %{},
       running: %{},
       # What agents in the VM added with MWT's tools in the last hour, as
       # {monotonic ms, bytes} (`MWTClient.Sandbox.Server.Tools`).

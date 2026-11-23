@@ -447,4 +447,29 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     view |> element("#activity-paused") |> render_click()
     assert has_element?(view, "#activity-live")
   end
+
+  @tag :capture_log
+  test "events the journal couldn't keep show as a gap in the log", %{
+    conn: conn,
+    username: username
+  } do
+    rename = fn from, to ->
+      MWTClient.Storage.run(
+        username,
+        :journal,
+        & &1.query!("ALTER TABLE #{from} RENAME TO #{to}")
+      )
+    end
+
+    MWTClient.Storage.Journal.flush(username)
+    rename.("events", "events_away")
+    MWTClient.Storage.Journal.record(username, Event.row(event(1, :tunnel, "lost.example")))
+    for _try <- 1..5, do: MWTClient.Storage.Journal.flush(username)
+    rename.("events_away", "events")
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+    assert has_element?(view, "#activity-table", "1 event of the activity log wasn't kept")
+    assert has_element?(view, "#activity-table", "Not kept")
+    refute has_element?(view, "#activity-table", "lost.example")
+  end
 end

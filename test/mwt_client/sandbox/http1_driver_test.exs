@@ -49,7 +49,9 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
         start()
       )
 
-    assert [{:judge, %Request{} = request}] = actions
+    # The VM is still read while it is judged: a client that gives up
+    # ends the request before it goes.
+    assert [{:judge, %Request{} = request}, {:read, :vm, :infinity}] = actions
 
     assert %{operation: "POST", resource: "/repos", name: "api.example.com", under: "internet"} =
              request
@@ -65,7 +67,7 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
 
   test "the verdict's values go in where it says, and come back as their placeholders" do
     head = "GET /user HTTP/1.1\r\nHost: api.example.com\r\nauthorization: token mwt_ph\r\n\r\n"
-    {[{:judge, request}], http} = Http1.handle_data(:vm, head, start())
+    {[{:judge, request}, {:read, :vm, :infinity}], http} = Http1.handle_data(:vm, head, start())
 
     replace = %{
       request: [
@@ -105,7 +107,7 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
 
   test "a request with nothing put in keeps its link for the next" do
     get = "GET /a HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
-    {[{:judge, first}], http} = Http1.handle_data(:vm, get, start())
+    {[{:judge, first}, {:read, :vm, :infinity}], http} = Http1.handle_data(:vm, get, start())
     {actions, http} = Http1.handle_verdict(first.id, {:allow, %{request: [], answer: []}}, http)
     assert [{:connect, _} | _] = actions
     refute sent(actions, :host) =~ "connection: close"
@@ -117,14 +119,14 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
     refute :close in actions
 
     # The next goes on the same link: no new one.
-    {[{:judge, second}], http} = Http1.handle_data(:vm, get, http)
+    {[{:judge, second}, {:read, :vm, :infinity}], http} = Http1.handle_data(:vm, get, http)
     {actions, _http} = Http1.handle_verdict(second.id, {:allow, %{request: [], answer: []}}, http)
     refute Enum.any?(actions, &match?({:connect, _}, &1))
     assert sent(actions, :host) =~ "GET /a HTTP/1.1\r\n"
   end
 
   test "a refusal is MWT's own HTTP answer, logged with the request" do
-    {[{:judge, request}], http} =
+    {[{:judge, request}, {:read, :vm, :infinity}], http} =
       Http1.handle_data(:vm, "GET / HTTP/1.1\r\nHost: api.example.com\r\n\r\n", start())
 
     json = ~s({"code":"mwt_denied_by_user","by":"MWT agent sandbox"})
@@ -148,5 +150,68 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
     assert Http1.detect("NICK agent\r\nUSER agent 0 * :agent\r\n", plain) == :no
     # A server that greets first.
     assert Http1.detect("HELO there\r\n", %{plain | first: :host}) == :no
+  end
+
+  test "a request after empty lines is claimed, and refused, never passed on unread" do
+    # Servers skip empty lines before a request (RFC 9112 2.2): taken for
+    # bytes, it would reach the host unjudged.
+    assert Http1.detect("\r\nGET / HTTP/1.1\r\n", @ctx) == :yes
+    assert Http1.detect("\r\n\r", @ctx) == :more
+    plain = %{@ctx | tls?: false, first: :vm}
+    assert Http1.detect("\r\n\r\nGET / HTTP/1.1\r\nhost: example.com\r\n", plain) == :yes
+
+    {actions, _http} =
+      Http1.handle_data(:vm, "\r\nGET / HTTP/1.1\r\nHost: api.example.com\r\n\r\n", start())
+
+    refute Enum.any?(actions, &match?({:judge, _}, &1))
+    assert sent(actions, :vm) =~ "HTTP/1.1 400 Bad Request\r\n"
+    assert sent(actions, :host) == ""
+  end
+
+  test "a client that closes while its request is judged ends it: nothing goes" do
+    post = "POST /repos HTTP/1.1\r\nHost: api.example.com\r\ncontent-length: 2\r\n\r\n{}"
+    {[{:judge, request}, {:read, :vm, :infinity}], http} = Http1.handle_data(:vm, post, start())
+
+    # The call ends there, and its verdict never comes (`Driver`).
+    {actions, _http} = Http1.handle_closed(:vm, :closed, http)
+    assert {:done, ^request, _exchange} = Enum.find(actions, &match?({:done, _, _}, &1))
+    assert :close in actions
+    assert sent(actions, :host) == ""
+  end
+
+  test "what the VM sends while its request is judged goes behind it, framed, once allowed" do
+    head = "POST /upload HTTP/1.1\r\nHost: api.example.com\r\ncontent-length: 100000\r\n\r\n"
+    start = :binary.copy("a", 70_000)
+
+    {[{:judge, request}, {:read, :vm, :infinity}], http} =
+      Http1.handle_data(:vm, head <> start, start())
+
+    # The rest of the body and the next request come while it waits: kept,
+    # nothing sent, the VM read again.
+    next = "GET /next HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
+    {actions, http} = Http1.handle_data(:vm, :binary.copy("b", 30_000) <> next, http)
+    assert actions == [{:read, :vm, :infinity}]
+
+    {actions, http} = Http1.handle_verdict(request.id, {:allow, %{request: [], answer: []}}, http)
+    up = sent(actions, :host)
+    [_head, body] = String.split(up, "\r\n\r\n", parts: 2)
+    assert body == start <> :binary.copy("b", 30_000)
+
+    # Its answer ends it; the next request is read from what was kept.
+    {actions, _http} =
+      Http1.handle_data(:host, "HTTP/1.1 201 Created\r\ncontent-length: 0\r\n\r\n", http)
+
+    assert [{:judge, second}] = for({:judge, _} = judge <- actions, do: judge)
+    assert second.resource == "/next"
+  end
+
+  test "past a head's worth sent while it is judged, the VM waits" do
+    head = "POST /upload HTTP/1.1\r\nHost: api.example.com\r\ncontent-length: 1000000\r\n\r\n"
+
+    {[{:judge, _request}, _read], http} =
+      Http1.handle_data(:vm, head <> :binary.copy("a", 70_000), start())
+
+    {actions, _http} = Http1.handle_data(:vm, :binary.copy("b", 70_000), http)
+    assert actions == []
   end
 end

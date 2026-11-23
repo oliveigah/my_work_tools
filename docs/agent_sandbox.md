@@ -380,7 +380,10 @@ packages depend on.
   remove is a power cut. Stopping, starting, recreating and reclaiming disk
   space first wait for shared-folder and `/mnt/mwt` copies under way, with
   no new one starting ("Finishing file copies…"): `msb exec` names a VM,
-  and a recreate reuses the name.
+  and a recreate reuses the name. Locking or quitting MWT while a start,
+  create or recreate is under way ends it and stops what it launched,
+  asking the relay again until it listens (`Machine.shut_down/2`); a crash
+  leaves both alone.
 - **Not started from Zed:** `msb ssh` would boot a stopped VM outside the
   bubble; the launcher refuses it, and there it has neither the disks'
   paths nor KVM.
@@ -405,7 +408,9 @@ times faster than a shared folder (10,000 files made in 0.85 s, not 3.51 s).
 
 - **Sizes** are settings, and the limit on what the VM writes: the root
   disk's applies by recreating (microsandbox's default is 4 GiB), the
-  others' at the next start, bigger only.
+  others' at the next start, bigger only. A disk is checked (`e2fsck -p`)
+  before its file grows: one whose check fails stays as it was, and each
+  start says why.
 - **Not readable here** while the VM is stopped: files come out through git
   ([Handoffs](#handoffs)), or `msb cp` while it runs.
 - **Snapshots of Home:** before each recreate MWT copies `home.img` (a
@@ -649,9 +654,13 @@ your folders, and nothing of a copy comes back.
   sync; one whose ctime or inode moved is sent anyway. Through `msb exec
   --stream`, a short bash script in the VM removes what you deleted and
   what is in the way; `tar` here feeds `tar -x` there, each file renamed
-  into place. MWT reads back only a file list (`find -printf`, at the first
-  sync after a start or a failure), and runs or parses nothing else. A
-  result from before a restart or recreate is dropped.
+  into place. A file gone by the time it is sent (a lock or swap file)
+  counts as removed, and one this machine won't let MWT read is named in
+  the folder's status and the activity log and tried again at each sync:
+  neither fails the sync, and what went counts as sent. MWT reads back
+  only a file list (`find -printf`, at the first sync after a start or a
+  failure), and runs or parses nothing else. A result from before a
+  restart or recreate is dropped.
 - **Limits:** 400,000 files and folders, and half the work disk in bytes,
   outside the folder's repositories; past either, nothing of it is copied,
   and Overview and Settings say why. Overview and Settings show each
@@ -1080,7 +1089,11 @@ MWT receives `CONNECT <ip>:<port>` and decides, in this order:
    is ended, and what isn't HTTP (or a server that greets first, IMAP over
    TLS) goes on as it came, to the host over TLS MWT starts again, looked
    through as a tunnel is: decrypted, a placeholder or a real value in it
-   is found.
+   is found. It is a connection MWT can't read, so it is decided as step 9
+   says before anything is connected to: a network grant that asks asks
+   about it ("not HTTP inside its TLS"), a host list's Ask or Block holds
+   it. A request after an empty line (which servers skip) is still HTTP's,
+   and refused (`400`), never passed on as bytes.
 9. Anything else is **tunnelled**, unread both ways; the log keeps its
    host, bytes and duration, and why it wasn't read ("Not read: the client
    offered imap, which MWT doesn't read"), and the firewall hears the bytes
@@ -1395,10 +1408,18 @@ verified for the name it asked for.
    host name, offering HTTP/1.1 and HTTP/2, HTTP/1.1 first: a client that
    offers only HTTP/2 (gRPC's) speaks it, each of its streams a request
    read as these steps say (`Driver.Http2`), its headers as an HTTP/1.1
-   head's, a value going only in a carrier, its answer read back the same
-   way. A client that gives up (a CA of its own, a pinned certificate) is
-   logged under the host with why, as far as TLS said: nothing went out,
-   and the next try fails the same way.
+   head's (`MWTClient.Sandbox.Egress.RequestHead`, the rules both share), a
+   value going only in a carrier, its answer read back the same way. Its
+   `:authority` is its `Host`: a `host` header besides it, unless one
+   saying the same, is refused, and so is a `content-length` its DATA
+   doesn't add up to. A header block holds at most 64 KiB decoded, as MWT
+   announces (`SETTINGS_MAX_HEADER_LIST_SIZE`, `431` past it), and either
+   peer sending past the windows MWT gave it (1 MiB a stream, 2 MiB a
+   connection) ends the connection (`FLOW_CONTROL_ERROR`): MWT holds no
+   more than that of one side's bytes for the other. A client that gives
+   up (a CA of its own, a pinned certificate) is logged under the host
+   with why, as far as TLS said: nothing went out, and the next try fails
+   the same way.
 2. **Read the request head, strictly.** MWT judges a request by what it
    read, and the host must act on the same thing, so a request two parsers
    could read two ways is refused (`400`, `mwt_bad_request`):
@@ -1415,7 +1436,9 @@ verified for the name it asked for.
       folded lines, no space before the colon; a value of visible bytes,
       spaces and tabs, only those around it dropped, no other control
       character, no bare CR or LF;
-    - lines ending in CR LF, a head of at most 64 KiB (`431`);
+    - lines ending in CR LF, a head of at most 64 KiB (`431`), and no
+      empty line before the request line: a host skips one (RFC 9112),
+      so what follows is a request MWT must read, not bytes;
     - no `TRACE` or `CONNECT` (`405`): a host answers `TRACE` with the
       request it got, real value included;
     - no method override (`X-HTTP-Method-Override`, `X-HTTP-Method`,
@@ -1460,11 +1483,15 @@ verified for the name it asked for.
    ([Describing requests](#describing-requests)); an allowance covering it
    lets it through, otherwise it asks.
     - **Ask** holds the request: MWT reads the head and the body, all of
-      it or its first 64 KiB, before making the card, then stops reading
-      until you decide. TCP flow control makes the client wait, so a large
-      upload is not buffered. A body that hasn't come within 10 seconds
-      is refused (`408`): a card never says *No body* for one that was
-      only late. One holding the start of a body says so among its facts.
+      it or its first 64 KiB, before making the card, then reads at most
+      64 KiB more until you decide, kept to go behind it: past that, TCP
+      flow control makes the client wait, so a large upload is not
+      buffered. A client that gives up meanwhile (its own timeout) ends its
+      request: what you then decide sends it only for a client still
+      there, a retry that joined the card. A body that hasn't come within
+      10 seconds is refused (`408`): a card never says *No body* for one
+      that was only late. One holding the start of a body says so among
+      its facts.
     - Not decided within the hold timeout (3 minutes by default): `403`,
       `mwt_approval_timeout`. Hex gives up after 15 seconds on its own, so
       the image sets `HEX_HTTP_TIMEOUT` above the hold ([The image](#the-image)).
@@ -1546,19 +1573,22 @@ percent-encoded where those differ.
 - **Every head** (`1xx` answers, the final head, a chunked body's
   trailers): the value is replaced with the placeholder.
 - **The body**, read through its framing (`Content-Length`, chunked, or up
-  to the close), gzip and deflate decoded for the look only, so a value
-  split by chunks or compressed is still found. Found, the connection is
+  to the close; HTTP/2's DATA), gzip and deflate decoded for the look only
+  (`MWTClient.Sandbox.Egress.AnswerBody`, for both HTTP versions), so a
+  value split by chunks or compressed is still found. Found, the connection is
   cut before any byte of the value goes: the answer stops short, the log
   says why, and the firewall hears of it ([Rules](#rules)). Replacing it
   would change the body's length, and an answer that copies credentials
   isn't worth keeping.
 - Bytes are held back only while the last of them could start the value,
-  50 ms at most. A stream that pauses mid-value lets that start through;
+  50 ms at most, and go before a head that follows them (gRPC's
+  trailers). A stream that pauses mid-value lets that start through;
   what would complete it never follows.
 - **What MWT can't read is refused, not passed on**: a head over 64 KiB,
   framing that doesn't parse, an encoding other than gzip or deflate (MWT
-  asked for none). `502` `mwt_unreadable_response` while nothing has gone
-  to the VM; cut after.
+  asked for none), gRPC messages compressed (MWT drops the request's
+  `grpc-accept-encoding`). `502` `mwt_unreadable_response` while nothing
+  has gone to the VM; cut after (over HTTP/2, that stream reset).
 - Once the final response is whole, the connection ends; after
   `101 Switching Protocols` the bytes are looked through the same way. A
   request MWT put no value in comes back untouched.
@@ -1745,8 +1775,8 @@ four; what they propose waits off for you to review
 | --------- | ----------------------------------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `token`   | A placeholder, only for a command run with `mwt exec`                         | Per request                          | Takes effect on the next request; one still open (an upload, an upgraded WebSocket) is cut. Complete, since the VM never had the value. |
 | `network` | Reachability to listed hosts, ranges and ports ([Private networks](#private-networks)) | Per request read; else connection    | New connections refused, open ones closed                                                                                              |
-| `command` | Nothing. It may ask MWT to run a command on your machine ([Host commands](#host-commands)) | Per run; a subgrant may auto-approve | New asks refused. A command already running goes on until it ends or you stop it.                                                       |
-| `request` | Nothing: a token grant's subgrant ([Request subgrants](#request-subgrants))   | Per call; may auto-approve           | New calls refused                                                                                                                      |
+| `command` | Nothing. It may ask MWT to run a command on your machine ([Host commands](#host-commands)) | Per run; a subgrant may auto-approve | New asks refused, and runs waiting for you. A command already running goes on until it ends or you stop it.                              |
+| `request` | Nothing: a token grant's subgrant ([Request subgrants](#request-subgrants))   | Per call; may auto-approve           | New calls refused, and calls waiting for you; one whose value is being minted sends nothing                                            |
 | `mwt`     | Nothing: MWT carries out each call itself                                     | Per use; may auto-approve            | The next call is refused, naming the grant and how to ask for it                                                                       |
 
 Expiry and removal end a grant the same way, at once
@@ -2180,6 +2210,17 @@ same values as a call already waiting joins it. Exit statuses are those of
 `mwt run` ([Host commands](#host-commands)); `mwt run ID` also calls a
 subgrant with no parameters.
 
+A card is carried out only under what it was asked under
+(`Server.HostRuns.still/2`). How a saved command runs (its script, folder,
+confinement and the grants it runs with) is fixed into its card as it is
+asked, and the card says it. A subgrant turned off, out of time or removed
+refuses the calls waiting on it; an edit of what it runs refuses them too,
+rather than running the old script under the new grant (`Grant.definition/1`).
+*Run* looks again before anything runs or is sent: the subgrant still on,
+no check holding it off, its token grant still listing the host, the VM
+not isolated. Refused, nothing runs, the card says why, and the agent hears
+it was refused, not declined (exit 121).
+
 #### Proposing one
 
 ```
@@ -2211,7 +2252,13 @@ form it was added with, filled in, and checks it as adding does. It keeps
 its id, its placeholder and value (replaced on its page), its kind, the
 grant it sits under, and its state, duration, approval mode and start
 setting. An edit to one that is auto-approved applies to the next use
-without asking: the form says so. The log records the edit.
+without asking: the form says so. So an edit to how a token grant's value
+is made (its mint, per host or not, how long a value is kept, the header
+its ID token travels in; `Grant.how_made/1`) drops what MWT minted and made
+the old way: the next use mints again, and a mint under way as you edit
+keeps nothing, the requests waiting on it answered `mwt_no_value`. An edit
+to what a subgrant runs or sends refuses the calls still waiting on it.
+The log records the edit.
 
 <a id="request-subgrants"></a>
 
@@ -2256,9 +2303,10 @@ mwt call pr-view REPO=oliveigah/klife PR=7 --reason "review it"
   host on stderr. `mwt call` exits 0 for a 2xx, 22 for any other status
   (as `curl --fail`), 124 on timeout, 121 when it couldn't be sent. The log
   keeps the status, never the body.
-- **Checked at each call:** the grant must still list the host, or the call
-  is refused and the agent told to ask you. The token grant's own switch
-  doesn't matter: the subgrant's does.
+- **Checked at each call,** and again as it is sent, before its value is
+  fetched and once the value is at hand: the grant must still list the
+  host and the subgrant be on, or the call is refused and the agent told
+  why. The token grant's own switch doesn't matter: the subgrant's does.
 
 <a id="when-mwt-starts"></a>
 
@@ -2307,6 +2355,15 @@ purpose:
   *Auto-approve* ([Ask each time or auto-approve](#ask-each-time-or-auto-approve)).
   Not a host its host list asks about ([Host lists](#host-lists)): its
   card offers *Allow similar* only.
+- An allowance added while cards wait settles those it would have let
+  through had it been there when they were asked, no others
+  (`Policy.settles?/3`): *Allow every use*, *Auto-approve* or *Enabled,
+  auto* leaves a card its host list holds for asking, and no allowance
+  settles an add of MWT's tools past the hour's limit. The card you decide
+  goes by your decision.
+- For GraphQL, similar is the same operation in the same document, by the
+  whole SHA-256 of its tokens: the agent writes the documents, and a
+  shorter digest would let it find a second document sharing one.
 - Past its time an allowance covers nothing: the clock decides, across a
   restart or a suspend too.
 
@@ -2625,6 +2682,16 @@ grant and drawn apart (red, a terminal icon; a subgrant's violet):
 - `bash -lc SCRIPT` as you, in the directory, with stdin from `/dev/null`,
   under `timeout`: TERM at the limit, KILL 5 seconds later, to its whole
   process group.
+- **A run ends when its shell does,** at its limit, or when you stop it,
+  whatever it started. The command writes into a pipe of its own, which a
+  `cat` in its process group copies to MWT, and MWT looks every 200 ms
+  whether `timeout` is still there. Once it isn't, what the command left
+  in its group (a server started with `&`) gets half a second, then is
+  killed, and the run reports the shell's status: a background job doesn't
+  hold the run open past its limit. A process that left the group
+  (`setsid`, `ssh -f`) is out of reach without a cgroup: it goes on after
+  the run, its output closed, so its next write fails, or ends it. In a
+  [confined](#confined-commands) run it ends with the bubble.
 - The directory on the card is a real path; the command starts there after
   `cd -P` and a check that the path still leads there. A folder swapped for
   a link since you looked runs nothing, and the agent gets exit 126.
@@ -3459,8 +3526,20 @@ mwt project                         where you are, the slots, the rules
 - **Safety:** landing checks the branch is still where the preview saw
   it and moves it with a compare-and-swap; a branch checked out in a
   worktree of yours moves by a fast-forward there, never over pending
-  changes to tracked files. No hook runs. **Undo** puts it back while it
-  still has what landed.
+  changes to tracked files, nor where a file git doesn't track is in the
+  way, ignored ones included (a `.env`): the preview names them, and
+  nothing lands there until they are moved; a new branch writes no file
+  of yours. No hook runs: MWT runs git on your repository and its review
+  store with `core.hooksPath=/dev/null`, so a hook folder in your tree
+  (`.githooks`, `.husky`), which a landing writes into, runs nothing
+  either, and neither does a hook of your own. **Undo** puts it back
+  while it still has what landed, never over a file you made since.
+- **What you saw is what lands:** Land names the revision the page
+  shows; one its thread handed off since lands nothing, and the page
+  says so and shows the new one. A revision being received holds your
+  clicks on that identity's handoffs (Land, Close, Send back) and the
+  thread's withdrawal until it is in, and then adds to the record as it
+  is, so nothing done meanwhile is lost.
 - **Send back** works before and after landing, and MWT tells the thread
   when it can reach it. Closing and sending back leave the VM's branches
   and files alone; landing leaves its files alone, and deletes the task's
@@ -3637,7 +3716,13 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
   and in read requests (head and body, with what comes back), not a
   private address, one you opened with a network grant. The check runs as
   the bytes flow: the chunk that crosses 4 MiB waits for the verdict and
-  doesn't go.
+  doesn't go. The finding names the host it saw, though it counted the
+  domain; a name trusted since no longer counts toward its domain. An
+  agent that reaches its model through a cloud's API (Vertex AI, Bedrock,
+  …) sends its whole context with every turn and gets a short answer
+  back, so that host needs to be trusted, by its exact name
+  (`us-east5-aiplatform.googleapis.com`, not `googleapis.com`, which
+  would spare the cloud's storage too).
 - **A finding is an event** in the activity log (`firewall`, its own group
   on the activity log); an alert is said once per rule and destination in 10
   minutes.
@@ -3694,10 +3779,16 @@ Internet among them, as it was: until the same end, with its allowances
 and Auto-approve (`Server.Firewall.restore_grants/2`), even after a
 restart. One whose time ran out meanwhile, one removed and one to review
 stay as they are; each runs its conditions as turning it on does.
-Trusting adds the destination to the trusted list, for a rule that fired
-on something you know. **Stop the VM**, beside the switch while the VM
-runs, stops it and keeps the isolation. The last 20 incidents stay
-listed, folded under the switch.
+Releasing also starts over what the rule counted for what it fired on
+(`Firewall.forget/3`: the domain's uploads, its names, the address's
+ports, …), in the watch and in the server, before the isolation lifts:
+the next connection or lookup is judged from zero, never isolated again
+on what you just reviewed. Trusting adds the destination to the trusted
+list, for a rule that fired on something you know: the name or address
+the finding saw, never the domain a rule counted it under, and a
+tunnel's port dropped (`Firewall.trust_entry/1`). **Stop the VM**,
+beside the switch while the VM runs, stops it and keeps the isolation.
+The last 20 incidents stay listed, folded under the switch.
 
 <a id="screens-firewall"></a>
 

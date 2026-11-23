@@ -253,6 +253,7 @@ defmodule MWTClientWeb.SandboxLive.Components do
   def outcome_style(:handoff), do: {"Handoff", "bg-accent-soft/60 text-accent-strong"}
   def outcome_style(:tool), do: {"MWT tool", "bg-accent-soft/60 text-accent-strong"}
   def outcome_style(:firewall), do: {"Firewall", "bg-bad text-white"}
+  def outcome_style(:lost), do: {"Not kept", "bg-warn-soft/60 text-warn-strong"}
 
   @doc """
   What an outcome means, in a sentence: shown when its badge is hovered,
@@ -313,6 +314,9 @@ defmodule MWTClientWeb.SandboxLive.Components do
 
   def outcome_meaning(:firewall),
     do: "MWT's firewall found something, isolated the VM or released it, or its settings changed."
+
+  def outcome_meaning(:lost),
+    do: "Events MWT couldn't write to the activity log, so they aren't in it: how many, and when."
 
   @doc "The VM's status as a dot and a word."
   attr :vm, VM, required: true

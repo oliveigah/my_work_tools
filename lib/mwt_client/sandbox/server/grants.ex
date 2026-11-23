@@ -9,7 +9,6 @@ defmodule MWTClient.Sandbox.Server.Grants do
 
   alias MWTClient.Sandbox.{
     Allowance,
-    Approval,
     CredentialEndpoint,
     Destinations,
     Dns,
@@ -46,11 +45,15 @@ defmodule MWTClient.Sandbox.Server.Grants do
     if allowance.until,
       do: State.timer({:expire_allowance, grant.id, allowance.id}, allowance.until)
 
+    # Only what it would have let through, asked now: never a use a host
+    # list holds for asking, nor an add past the hour's limit.
+    now = State.now()
+
     state =
       state.approvals
       |> Enum.filter(fn other ->
-        other.status == :waiting and other.grant_id == grant.id and Approval.use?(other) and
-          Allowance.covers?(allowance, other.pattern)
+        other.status == :waiting and other.grant_id == grant.id and
+          Policy.settles?(other, allowance, now)
       end)
       |> Enum.reduce(state, fn other, acc ->
         how = if pattern == :all, do: "every use", else: "similar"
@@ -148,23 +151,61 @@ defmodule MWTClient.Sandbox.Server.Grants do
     gone
     |> Enum.reduce(state, fn id, state ->
       state
-      |> Approvals.settle_waiting(id, :grant_off, [:activation, :request, :connection])
+      |> Approvals.settle_waiting(id, :grant_off, [
+        :activation,
+        :request,
+        :connection,
+        :tool,
+        :command
+      ])
       |> Map.update!(:values, fn values ->
         Map.reject(values, fn {key, _} -> key == id or match?({^id, _part}, key) end)
       end)
-      |> Map.update!(:minted, fn minted ->
-        Map.reject(minted, fn {key, _} -> key == id or match?({^id, _host}, key) end)
-      end)
-      |> Map.update(:id_tokens, %{}, fn id_tokens ->
-        Map.reject(id_tokens, fn {key, _} -> key == id or match?({^id, _host}, key) end)
-      end)
-      |> Map.update(:made, %{}, &MWTClient.Sandbox.Made.drop_grant(&1, id))
+      |> forget_values(id)
     end)
     |> State.change(:grants, &Enum.reject(&1.grants, fn g -> g.id in gone end))
     # Gone from the state, so the grant as it was goes with the event.
     |> State.log(%{outcome: :grant, summary: summary, details: Grant.details(grant)})
     |> State.write_inbox()
     |> State.changed()
+  end
+
+  @doc """
+  Drops what MWT minted for a grant (each host's too), the ID tokens its
+  mint printed, and the values made from them (`MWTClient.Sandbox.Made`):
+  as it is removed, or once how its value is made changed
+  (`Grant.how_made/1`), so the next use mints again. A stored value stays:
+  it is yours, replaced only on its page. A mint still running when this
+  runs keeps its result: it ends within 30 seconds.
+  """
+  def forget_values(state, id) do
+    state
+    |> Map.update!(:minted, fn minted ->
+      Map.reject(minted, fn {key, _} -> key == id or match?({^id, _host}, key) end)
+    end)
+    |> Map.update(:id_tokens, %{}, fn id_tokens ->
+      Map.reject(id_tokens, fn {key, _} -> key == id or match?({^id, _host}, key) end)
+    end)
+    |> Map.update(:made, %{}, &MWTClient.Sandbox.Made.drop_grant(&1, id))
+  end
+
+  @doc """
+  What an edit from its form changes beyond the grant itself (`edit_grant/3`
+  makes `updated` from `before`): how its value is made changed, what was
+  minted and made from the old one goes (`forget_values/2`); what a run or
+  a call of it carries out changed (`Grant.definition/1`), the cards still
+  waiting on it are refused (`:changed`), since they say what the old one
+  did.
+  """
+  def edited(state, %Grant{id: id} = before, %Grant{} = updated) do
+    state =
+      if Grant.how_made(before) != Grant.how_made(updated),
+        do: forget_values(state, id),
+        else: state
+
+    if Grant.definition(before) != Grant.definition(updated),
+      do: Approvals.settle_waiting(state, id, :changed, [:command]),
+      else: state
   end
 
   @doc """
@@ -339,8 +380,16 @@ defmodule MWTClient.Sandbox.Server.Grants do
 
     state =
       if start == :auto do
+        # Enabled, auto is the every-use allowance (`started/1`): it settles
+        # what that allowance would, no more (`Policy.settles?/3`).
+        every = Enum.find(updated.allowances, &(&1.pattern == :all))
+        now = State.now()
+
         state.approvals
-        |> Enum.filter(&(&1.status == :waiting and &1.grant_id == grant.id and Approval.use?(&1)))
+        |> Enum.filter(
+          &(&1.status == :waiting and &1.grant_id == grant.id and every != nil and
+              Policy.settles?(&1, every, now))
+        )
         |> Enum.reduce(state, fn other, acc ->
           acc
           |> Approvals.settle(other, :allowed, {:allow, :all, :grant})

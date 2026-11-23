@@ -352,12 +352,14 @@ defmodule MWTClient.Sandbox do
 
   @doc """
   The firewall (`MWTClient.Sandbox.Firewall`): its settings and incidents,
-  how much it refused since it isolated the VM, and its last findings.
+  how much it refused since it isolated the VM, and the grants a release
+  turns back on. Its findings are in the activity log (`events/2`, the
+  `firewall` group), read by whoever shows them, never by the server.
   """
   @spec firewall(username()) :: %{
           firewall: MWTClient.Sandbox.Firewall.t(),
           refused: non_neg_integer(),
-          findings: [MWTClient.Sandbox.Event.t()]
+          restorable: [String.t()]
         }
   def firewall(username), do: Server.call(username, :firewall)
 

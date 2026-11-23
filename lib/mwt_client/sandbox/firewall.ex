@@ -54,17 +54,25 @@ defmodule MWTClient.Sandbox.Firewall do
           | {:inbound, String.t(), String.t(), :command | :call | :workspace}
           | {:mint, String.t(), String.t(), String.t()}
 
+  @typedoc """
+  What a rule found: its action, what it saw in words, where, and the
+  window it counted it in (`key`: a domain, an address, a port's sweep,
+  a process, an ask), which a release starts over (`forget/3`).
+  """
   @type finding :: %{
           rule: rule(),
           action: action(),
           summary: String.t(),
           host: String.t() | nil,
-          port: :inet.port_number() | nil
+          port: :inet.port_number() | nil,
+          key: term()
         }
 
   @typedoc """
   An isolation: by the firewall, on a finding (its rule, what it saw and
-  where), or by you, with the switch (no rule, no destination).
+  where, and the window it counted it in), or by you, with the switch (no
+  rule, no destination). An incident saved before it kept its window has
+  no `key`.
   """
   @type incident :: %{
           id: String.t(),
@@ -74,6 +82,7 @@ defmodule MWTClient.Sandbox.Firewall do
           summary: String.t(),
           host: String.t() | nil,
           port: :inet.port_number() | nil,
+          key: term(),
           events: list(),
           grants_on: [grant_on()],
           released_at: DateTime.t() | nil,
@@ -751,7 +760,7 @@ defmodule MWTClient.Sandbox.Firewall do
   end
 
   defp cause(:you),
-    do: %{by: :you, rule: nil, summary: "You isolated the VM", host: nil, port: nil}
+    do: %{by: :you, rule: nil, summary: "You isolated the VM", host: nil, port: nil, key: nil}
 
   defp cause(%{rule: rule} = finding),
     do: %{
@@ -759,7 +768,8 @@ defmodule MWTClient.Sandbox.Firewall do
       rule: rule,
       summary: finding.summary,
       host: finding.host,
-      port: finding.port
+      port: finding.port,
+      key: Map.get(finding, :key)
     }
 
   @doc """
@@ -772,17 +782,18 @@ defmodule MWTClient.Sandbox.Firewall do
 
   @doc """
   Ends the isolation. With `trust: true`, the incident's destination joins
-  the trusted list.
+  the trusted list, as `trust_entry/1` writes it.
   """
   @spec release(t(), DateTime.t(), boolean()) :: t()
   def release(%__MODULE__{isolated: nil} = firewall, _now, _trust?), do: firewall
 
   def release(%__MODULE__{isolated: incident} = firewall, now, trust?) do
     released = %{incident | released_at: now, released: if(trust?, do: :trust, else: :release)}
+    entry = trust? && trust_entry(incident)
 
     trusted =
-      if (trust? and incident.host) && not trusted?(firewall, incident.host),
-        do: firewall.trusted ++ [String.downcase(incident.host)],
+      if entry && not trusted?(firewall, entry),
+        do: firewall.trusted ++ [entry],
         else: firewall.trusted
 
     %{
@@ -792,6 +803,40 @@ defmodule MWTClient.Sandbox.Firewall do
         incidents: Enum.map(firewall.incidents, &if(&1.id == incident.id, do: released, else: &1))
     }
   end
+
+  @doc """
+  The entry *Trust HOST from now on* adds for `incident`, or nil: the
+  exact name or address the finding saw, never the domain a rule counted
+  it under, so trusting a model's API host (`us-east5-aiplatform.googleapis.com`)
+  doesn't spare everything else of that cloud (`storage.googleapis.com`).
+  A destination a tunnel names with its port (`example.com:443`) is taken
+  without it; one that can't be an entry of the list gives nil.
+
+      iex> MWTClient.Sandbox.Firewall.trust_entry(%{host: "US-East5-aiplatform.googleapis.com"})
+      "us-east5-aiplatform.googleapis.com"
+      iex> MWTClient.Sandbox.Firewall.trust_entry(%{host: "paste.example.net:80"})
+      "paste.example.net"
+      iex> MWTClient.Sandbox.Firewall.trust_entry(%{host: "[2001:db8::1]:443"})
+      "2001:db8::1"
+      iex> MWTClient.Sandbox.Firewall.trust_entry(%{host: nil})
+      nil
+  """
+  @spec trust_entry(map()) :: String.t() | nil
+  def trust_entry(%{host: host}) when is_binary(host) do
+    bare =
+      cond do
+        address?(host) -> host
+        match = Regex.run(~r/\A\[([0-9a-fA-F:.]+)\]:\d+\z/, host) -> Enum.at(match, 1)
+        true -> String.replace(host, ~r/:\d+\z/, "")
+      end
+
+    case entry(:trusted, bare) do
+      {:ok, entry} -> entry
+      :error -> nil
+    end
+  end
+
+  def trust_entry(_incident), do: nil
 
   ## Watching
 
@@ -837,17 +882,17 @@ defmodule MWTClient.Sandbox.Firewall do
 
             _not_said ->
               {put_in(watch.said[{rule, key}], now),
-               found ++ [finding(rule, :alert, summary, host, port)]}
+               found ++ [finding(rule, :alert, summary, host, port, key)]}
           end
 
         action ->
-          {watch, found ++ [finding(rule, action, summary, host, port)]}
+          {watch, found ++ [finding(rule, action, summary, host, port, key)]}
       end
     end)
   end
 
-  defp finding(rule, action, summary, host, port),
-    do: %{rule: rule, action: action, summary: summary, host: host, port: port}
+  defp finding(rule, action, summary, host, port, key),
+    do: %{rule: rule, action: action, summary: summary, host: host, port: port, key: key}
 
   defp with_cap({rule, key, summary, host, port}), do: {rule, key, summary, host, port, nil}
   defp with_cap({_rule, _key, _summary, _host, _port, _cap} = seen), do: seen
@@ -869,6 +914,36 @@ defmodule MWTClient.Sandbox.Firewall do
     )
   end
 
+  @doc """
+  The watch with what `rule` counted under `key` (a finding's, `t:finding/0`)
+  dropped: an isolation released, what it was counted on counts again
+  from zero, so the next connection or lookup isn't judged on what you
+  just reviewed. Only that window goes: what other rules, or this rule
+  under other keys, were counting stays. A nil key (an incident saved
+  before it kept one) drops every window of the rule.
+  """
+  @spec forget(map(), rule() | nil, term()) :: map()
+  def forget(watch, :large_upload, key), do: drop_window(watch, :uploads, key)
+
+  def forget(watch, :dns_tunnel, key),
+    do: watch |> drop_window(:names, key) |> drop_window(:long, key)
+
+  def forget(watch, :scanning, :private), do: %{watch | refused: []}
+  def forget(watch, :scanning, {:sweep, port}), do: drop_window(watch, :sweep, port)
+
+  def forget(watch, :scanning, nil),
+    do: %{watch | refused: [], ports: %{}} |> Map.put(:sweep, %{})
+
+  def forget(watch, :scanning, address), do: drop_window(watch, :ports, address)
+  def forget(watch, :cpu_hog, key), do: drop_window(watch, :cpu, key)
+  def forget(watch, :asks_after_decline, key), do: drop_window(watch, :declined, key)
+  def forget(watch, :bulk_reads, _key), do: %{watch | reads: []}
+  # The other rules judge one sighting at a time: there is no window.
+  def forget(watch, _rule, _key), do: watch
+
+  defp drop_window(watch, window, nil), do: Map.put(watch, window, %{})
+  defp drop_window(watch, window, key), do: Map.update(watch, window, %{}, &Map.delete(&1, key))
+
   @doc "The watch with what is past every window dropped, so it can't grow without end."
   def prune(watch, now) do
     %{
@@ -876,7 +951,7 @@ defmodule MWTClient.Sandbox.Firewall do
       | names: prune_map(watch.names, fn {at, _name} -> now - at < @names_window end),
         long:
           prune_map(Map.get(watch, :long, %{}), fn {at, _name} -> now - at < @names_window end),
-        uploads: prune_map(watch.uploads, fn {at, _up, _down} -> now - at < @upload_window end),
+        uploads: prune_map(watch.uploads, &(now - elem(&1, 0) < @upload_window)),
         refused: Enum.filter(watch.refused, fn {at, _} -> now - at < @scan_window end),
         ports: prune_map(watch.ports, fn {at, _port} -> now - at < @scan_window end),
         sweep:
@@ -1031,7 +1106,9 @@ defmodule MWTClient.Sandbox.Firewall do
   end
 
   # Counted by domain for a name (so many subdomains of one domain fold
-  # together), by address otherwise.
+  # together), by address otherwise. Each flow keeps the name it went to:
+  # the finding names the destination it saw, which is what trusting it
+  # adds, and a name trusted since no longer counts toward its domain.
   defp sense(firewall, watch, {:upload, destination, port, up, down}, now) do
     if trusted?(firewall, destination) do
       {watch, []}
@@ -1041,13 +1118,14 @@ defmodule MWTClient.Sandbox.Firewall do
       flows =
         watch.uploads
         |> Map.get(key, [])
-        |> Enum.filter(fn {at, _, _} -> now - at < @upload_window end)
-        |> then(&if(up + down > 0, do: [{now, up, down} | &1], else: &1))
+        |> Enum.filter(&(now - elem(&1, 0) < @upload_window))
+        |> then(&if(up + down > 0, do: [{now, up, down, destination} | &1], else: &1))
         |> Enum.take(1_000)
 
       watch = put_in(capped_window(watch, :uploads).uploads[key], flows)
-      sent = flows |> Enum.map(&elem(&1, 1)) |> Enum.sum()
-      back = flows |> Enum.map(&elem(&1, 2)) |> Enum.sum()
+      counted = untrusted_flows(firewall, flows)
+      sent = counted |> Enum.map(&elem(&1, 1)) |> Enum.sum()
+      back = counted |> Enum.map(&elem(&1, 2)) |> Enum.sum()
 
       where = if key == destination, do: key, else: "#{destination} (#{key})"
 
@@ -1056,7 +1134,8 @@ defmodule MWTClient.Sandbox.Firewall do
           {watch,
            [
              {:large_upload, key,
-              "#{size(sent)} sent to #{where} in 10 minutes, #{size(back)} back", key, port}
+              "#{size(sent)} sent to #{where} in 10 minutes, #{size(back)} back", destination,
+              port}
            ]},
         else: {watch, []}
     end
@@ -1291,6 +1370,19 @@ defmodule MWTClient.Sandbox.Firewall do
             "#{length(addresses)} addresses on port #{port} in a minute", address, port}
          ]},
       else: {watch, []}
+  end
+
+  # The flows of a window whose name isn't trusted now. A flow counted
+  # before its name was trusted no longer counts toward its domain; each
+  # distinct name is looked up once, as a window holds a thousand flows
+  # and only a few names.
+  defp untrusted_flows(firewall, flows) do
+    names = for flow <- flows, tuple_size(flow) == 4, uniq: true, do: elem(flow, 3)
+    trusted = for name <- names, trusted?(firewall, name), into: MapSet.new(), do: name
+
+    if MapSet.size(trusted) == 0,
+      do: flows,
+      else: Enum.reject(flows, &(tuple_size(&1) == 4 and MapSet.member?(trusted, elem(&1, 3))))
   end
 
   # What uploads to a name are counted under: its domain, so that

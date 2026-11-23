@@ -17,6 +17,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
     Build,
     EventDetails,
     Disks,
+    Grant,
     Guest,
     Image,
     Inbox,
@@ -30,6 +31,11 @@ defmodule MWTClient.Sandbox.Server.Machine do
   alias MWTClient.Sandbox.Server.{Copying, HostRuns, ShareSync, State}
 
   @build_log_limit 400
+  # The VM actions that may start a VM.
+  @starting [:start, :create]
+  # What stopping takes at most on MWT's way out: the server's room to stop
+  # (`MWTClient.Sandbox.Server.child_spec/1`), less saving its state first.
+  @shut_down_ms 25_000
 
   @doc """
   The launcher Zed's SSH config names; a failure only matters there. A
@@ -119,6 +125,56 @@ defmodule MWTClient.Sandbox.Server.Machine do
       end
 
     State.task(state, {:vm, action}, work)
+  end
+
+  @doc """
+  On MWT's way out, locked or quit (never after a crash, which leaves the
+  VM to the restarted server): a VM action under way that may start the VM
+  (a start, a create or recreate) is ended, and the VM is stopped, by
+  `within_ms`. Its status may still read `:stopped` while one runs, and a
+  first create has no VM yet, so neither is asked: what an action ended
+  halfway had launched is stopped too (`Bubble.stop_by/3`). Returns the
+  actions ended.
+
+  Ending an action kills its task at once, wherever it is: a tool it waits
+  on (a copy of Home, `mkfs.ext4`, `resize2fs`) runs on to its own end
+  without it. The VM then never starts on it, and the next start finds the
+  disk as that tool left it.
+  """
+  def shut_down(state, within_ms \\ @shut_down_ms) do
+    deadline = System.monotonic_time(:millisecond) + within_ms
+    ended = end_actions(state)
+
+    if ended != [] or state.vm.exists? do
+      case Bubble.stop_by(state.username, state.vm.name, deadline) do
+        :ok ->
+          :ok
+
+        {:error, message} ->
+          Logger.warning("stopping the VM as MWT closes failed: #{message}", system: :sandbox)
+      end
+    end
+
+    ended
+  end
+
+  # Each start or create under way, its task killed, once it has ended.
+  defp end_actions(state) do
+    for {ref, {:vm, action}} <- state.tasks,
+        action in @starting,
+        pid = State.task_pid(state, ref),
+        is_pid(pid) do
+      monitor = Process.monitor(pid)
+      Process.exit(pid, :kill)
+
+      receive do
+        {:DOWN, ^monitor, :process, ^pid, _reason} -> :ok
+      after
+        1_000 -> :ok
+      end
+
+      action
+    end
   end
 
   @doc """
@@ -706,13 +762,24 @@ defmodule MWTClient.Sandbox.Server.Machine do
   # (`Values.mint_key/2`). A value is kept until it stops being fresh, and
   # the ID token the mint printed beside it, if any, as long: one never
   # outlives the other.
+  #
+  # A mint that began before an edit changed how the grant makes its value
+  # (or before the grant went) keeps nothing, and those waiting for it get
+  # no value: what the old command printed never goes out once you changed
+  # it. The cost: the requests that waited on it fail once, and the next
+  # one mints the new way.
   def finished(state, {:mint, key}, result) do
     {continuations, minting} = Map.pop(state.minting, key, [])
+    {made, mint_made} = Map.pop(Map.get(state, :mint_made, %{}), key)
 
-    state = %{state | minting: minting}
+    state = %{state | minting: minting} |> Map.put(:mint_made, mint_made)
+    result = if made != nil and made != how_made_now(state, key), do: :stale, else: result
 
     {state, result} =
       case result do
+        :stale ->
+          {state, {:error, :no_value}}
+
         {:ok, %{value: value, id_token: id_token}, fresh_ms} ->
           until = System.monotonic_time(:millisecond) + fresh_ms
 
@@ -771,6 +838,16 @@ defmodule MWTClient.Sandbox.Server.Machine do
   end
 
   def finished(state, :delete_builds, _result), do: state
+
+  # How the grant `key` names makes its value now, nil once it is gone.
+  defp how_made_now(state, key) do
+    id = with {id, _host} <- key, do: id
+
+    case Enum.find(state.grants, &(&1.id == id)) do
+      nil -> nil
+      grant -> Grant.how_made(grant)
+    end
+  end
 
   defp seeded(state, nil), do: state
 
