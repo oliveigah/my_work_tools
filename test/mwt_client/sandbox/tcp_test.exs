@@ -66,6 +66,25 @@ defmodule MWTClient.Sandbox.TcpTest do
              Tcp.first(real_hello(server_name_indication: :disable))
   end
 
+  # Read from its first record only, a hello split in two would name no
+  # host, and pass the rules that go by its name.
+  test "a ClientHello split over TLS records names its host all the same" do
+    <<0x16, 3, 1, _length::16, handshake::binary>> =
+      hello([@other, sni("admin.corp.example"), alpn(["http/1.1"])])
+
+    <<one::binary-size(20), two::binary>> = handshake
+    split = <<0x16, 3, 1, 20::16, one::binary, 0x16, 3, 1, byte_size(two)::16, two::binary>>
+
+    assert Tcp.first(split) == {:tls, %{name: "admin.corp.example", alpn: ["http/1.1"]}}
+
+    # Its records not all there yet: not read as one that names nothing.
+    assert Tcp.first(binary_part(split, 0, 30)) == :other
+
+    # One byte per record, as far as MWT reads.
+    bytewise = for <<byte <- handshake>>, into: "", do: <<0x16, 3, 1, 1::16, byte>>
+    assert {:tls, %{name: "admin.corp.example"}} = Tcp.first(bytewise)
+  end
+
   test "the first bytes are TLS, nothing, or anything else" do
     assert Tcp.first("") == :silent
     assert Tcp.first("GET / HTTP/1.1\r\n\r\n") == :other

@@ -50,10 +50,11 @@ the VM's word ([Channels](#channels)).
 | Promise                                                         | Kept by                                                                                                               |
 | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | The VM never holds a credential                                 | Placeholders, swapped by the proxy                                                                                    |
-| Nothing leaves the VM except through MWT, DNS included          | The process running the VM has no network; its ways out are MWT's sockets                                             |
+| Nothing leaves the VM except through MWT, DNS included          | The process running the VM has no network; its ways out are MWT's sockets; MWT's own pages load nothing from an address the VM chose (a Content-Security-Policy, and Markdown's images shown as links) |
 | Nothing the VM writes runs on your machine unless you chose it  | The VM's work reaches your repository only as a [handoff](#handoffs) you land, and landing runs no hook; shared folders are copied one way, into the VM; the [workspace](#the-workspace)'s `from-vm/` lands only files and folders, read-only, nothing executable, no name a tool acts on by being there; Ask to run commands is off until you turn it on, and then every run it asks for waits for you |
 | A VM escape reaches no home folder and no network               | [The bubble](#the-bubble), and msb confined wherever MWT runs it on this machine                                      |
 | An approval shows what will happen, with nothing hidden in it   | Facts MWT works out itself, the agent's words kept apart, and text that is written out wherever it hides something ([Text the VM chooses](#text-the-vm-chooses)) |
+| What you turned off stays off                                   | A restart of the sandbox's server after a failure puts each grant back as it was, with the firewall's counts (`MWTClient.Sandbox.UnlockState`); only opening or unlocking MWT starts grants from their start settings |
 
 **Not covered:**
 
@@ -394,9 +395,14 @@ packages depend on.
 
 Sparse ext4 images in `…/sandbox/disks` (`MWTClient.Sandbox.Disks`), made
 with `mkfs.ext4 -E root_owner=0:0` (no root needed), attached with
-`--mount-disk`. Nothing on this machine opens them, so a hook or
-`.git/config` line an agent writes runs nowhere here; and they are several
-times faster than a shared folder (10,000 files made in 0.85 s, not 3.51 s).
+`--mount-disk`. Nothing on this machine mounts them or runs what is in
+them, so a hook or `.git/config` line an agent writes runs nowhere here;
+and they are several times faster than a shared folder (10,000 files made
+in 0.85 s, not 3.51 s). Two tools do read the file system root in the VM
+wrote: `e2fsck`, when you reclaim a disk's space or a disk grows, and
+`resize2fs`, when it grows. They run in a bubble of their own: no network,
+no home, the system read-only, nothing of MWT's environment, and the one
+image, writable (`Disks.check_words/3`); without `bwrap` they don't run.
 
 | Disk   | In the VM       | Holds                                                                                           | Default      | Recreating                                            |
 | ------ | --------------- | ----------------------------------------------------------------------------------------------- | ------------ | ----------------------------------------------------- |
@@ -1556,7 +1562,13 @@ the handshake, so no message comes compressed; it sends the VM's frames up
 masked with zeros, so what MWT looks through is their text, a value split
 across two frames included; and the log keeps each side's messages, one a
 line, up to the body limit. One with a value in it, and any other
-protocol, is tunnelled, still looked through as below.
+protocol, is tunnelled, still looked through as below. What the VM sends
+after a request asking to switch protocols waits for the host's answer:
+only a `101` switches, and what waited goes up as the new protocol's; any
+other answer makes it an ordinary request, its answer read to its end, and
+what waited the next request, judged as any. HTTP leaves the switch to the
+host, and a host that ignores `Upgrade` keeps reading requests: passed on
+before the answer, they would be requests no card showed.
 
 <a id="what-comes-back"></a>
 
@@ -4005,8 +4017,10 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
 27. A grant paused by *Only while…* refuses every use (`check_test.exs`).
 28. A fetch from the VM carries your committed branches and tags, and from
     `remote-origin` your remote branches as last fetched; never configuration,
-    hooks, other refs, ignored files or uncommitted work. A push is refused
-    and moves nothing (`git_transport_test.exs`).
+    hooks, other refs, ignored files or uncommitted work, under any version
+    of git's protocol. A push is refused and moves nothing
+    (`git_transport_test.exs`). A handoff's fetch tells the VM of no ref of
+    yours it doesn't see already (`hostile_text_test.exs`).
 29. A hook or `core.fsmonitor` planted in the VM's clone runs in the VM, never
     here, through a handoff, its revision and its landing (a real VM).
 30. No HTTP request saved in MWT is read from the VM (`mwt_tools_test.exs`).
@@ -4028,6 +4042,47 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     placeholder holds only `iss`, `aud`, `iat`, `exp`, `email` and `hd`,
     and goes only in its header to the grant's hosts
     (`credential_endpoint_test.exs`, `credential_scope_test.exs`).
+35. A restart of the sandbox's server after a failure turns on nothing you
+    turned off, nor off what you turned on: each grant comes back as it
+    was, its time left and its allowances included, and the firewall's
+    counts with it. Only opening or unlocking MWT puts grants in their start
+    settings. No command the agent channel answers, whatever its fields
+    hold, makes the server fail (`server_restart_test.exs`,
+    `channel_hostile_test.exs`).
+36. A card is made from a request whose declared body, up to 64 KiB, was
+    read; one for an HTTP/2 stream whose body hadn't come says so, never
+    "No body". What the VM sends after a request asking to switch protocols
+    goes on only once the host switched (`101`); otherwise it is the next
+    request, judged as any (`http1_driver_test.exs`, `request_view_test.exs`).
+37. A body whose JSON names a key twice, at any depth, is one MWT can't
+    describe: no pattern, so no *Allow similar* (`describe_test.exs`).
+38. MWT's pages load images, media, fonts and scripts only from MWT; an
+    image in Markdown shows as a link to its address
+    (`content_security_policy_test.exs`, `markdown_test.exs`).
+39. With the Internet off, MWT connects for the VM to a token grant's host
+    only at an address its DNS answered for that name (`gate_test.exs`,
+    `egress_read_test.exs`).
+40. A network grant that opened an address by a name lets through there
+    only names MWT answered for it that the grant covers: the name in a
+    ClientHello, split over records or not, and a plain HTTP request's
+    `Host` (`tcp_test.exs`, `egress_plain_http_test.exs`).
+41. A proposed grant is accepted only as its page showed it: one the agent
+    proposed again since is not (`proposal_channel_test.exs`,
+    `sandbox_live_test.exs`).
+42. A handoff MWT couldn't look through whole for real values isn't opened
+    (`hostile_text_test.exs`). A bare repository, or any git folder, in a
+    shared folder is left out of its copy as a repository is
+    (`folder_sync_test.exs`).
+43. `e2fsck` and `resize2fs` read the VM's disks only in a bubble with no
+    network, no home and nothing writable but that disk (`disks_test.exs`).
+44. Git on this machine runs on the VM's objects no configuration of yours
+    but the repository's own, and none of your repository's hooks: the
+    review store's fetch, a handoff's facts and diff, its landing
+    (`hostile_text_test.exs`, `host_git_test.exs`).
+45. A call of MWT's tools that answers with an item goes through the read
+    grant, a change that changes nothing included (`mwt_tools_test.exs`).
+46. MWT opens in Zed only a folder under the VM's `/work` named in plain
+    characters, whatever the VM printed (`zed_test.exs`).
 
 <a id="decisions"></a>
 
@@ -4129,6 +4184,7 @@ history is in git.
 | 2026-11-22 | The VM's clone names each remote for the level it reaches, `host-origin` (your repository on your machine) and `remote-origin` (its own remote `origin`, as your machine fetches it), and has no `origin`, since `origin/main` meant your `main` in the VM and GitHub's on your machine, and agents, messages and you mixed them up; clones made before are renamed in place ([The VM's clone](#the-vms-clone)). |
 | 2026-11-22 | Landing a handoff deletes its task's branch in the VM when nothing was done on it since, taking its slot off the branch at the same commit, so task branches don't pile up; a branch with anything on it stays, and the handoff's timeline says why. Nothing sweeps the clone periodically ([After landing](#after-landing)). |
 | 2026-11-23 | You hand off work you did yourself in the VM: at a terminal, `mwt handoff` offers to make a branch of yours a task, based on the branch it came from, asks the title and opens git's editor for the notes, and finishes a task an agent left ([Handoffs](#handoffs)). |
+| 2026-11-23 | From the threat model review of 2026-11-21 (`docs/dated/`), checked again against the code: a restart of the sandbox's server after a failure puts each grant back as it was, with the firewall's counts, kept by a process of the identity's that lives as long as the unlock (`UnlockState`), rather than coming back with every grant off, which would stop an agent's work at each failure, or from saved state, which would lose a change made in the last 250 ms; only opening or unlocking MWT is a start. Git's upload-pack never speaks protocol version 2, which serves any object by id whatever the settings say; a client asking for it is answered in version 0. MWT's pages carry a Content-Security-Policy, and Markdown's images show as links, also in your own notes, since the renderer doesn't know who wrote the text. With the Internet off, a token grant's host is reached only at an address MWT's DNS gave. A proposed grant is accepted only at the revision its page showed. `e2fsck` and `resize2fs` run in a bubble. Landing runs with git-lfs's smudge off: a file stored in LFS lands as its pointer, for `git lfs pull` to fetch from your remote ([Guarantees to test](#guarantees-to-test), 35 to 46). |
 
 <a id="later"></a>
 

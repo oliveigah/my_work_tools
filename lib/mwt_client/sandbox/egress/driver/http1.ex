@@ -61,9 +61,13 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # a WebSocket whose messages MWT reads: its answer's head until it
   # switched, then each side's frames (`WebSocket`); `read`, the request's
   # bytes until it is judged, looked through should MWT refuse it; `later`,
-  # what the VM sent while it was judged, framed once it goes.
+  # what the VM sent while it was judged, framed once it goes; `upgrade`,
+  # for a request that asked to switch protocols (`Upgrade`), the host's
+  # answer's head as read so far, until it says whether it switched
+  # (`watch_switch/3`).
   defstruct [
     :ctx,
+    :upgrade,
     :by,
     :head,
     :framing,
@@ -196,7 +200,11 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # A WebSocket's frames from the VM: written again, their text looked
   # through as the request's own stream (`WebSocket`). Bytes that stop
   # being frames go on as bytes from there.
-  def handle_data(:vm, data, %{phase: :answer, ws: %{vm_raw?: false} = ws} = http) do
+  def handle_data(
+        :vm,
+        data,
+        %{phase: :answer, ws: %{vm_raw?: false, switched?: true} = ws} = http
+      ) do
     reads = [{:read, :vm, :infinity}, {:read, :host, @idle}]
 
     case WebSocket.feed(ws.vm, data) do
@@ -213,12 +221,14 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   end
 
   # Past the body's end, a kept request's bytes are the next request's,
-  # kept for it; anyone else's go nowhere. A VM sending more than a head's
-  # worth ahead waits for the answer to end.
+  # kept for it, and so are those after a request asking to switch
+  # protocols until its answer says whether the host did (`watch_switch/3`);
+  # anyone else's go nowhere. A VM sending more than a head's worth ahead
+  # waits for the answer to end.
   def handle_data(:vm, data, %{phase: :answer} = http) do
     case body_bytes(http.framing, data) do
       {:ok, data, framing, beyond} ->
-        pending = if http.keep?, do: http.pending <> beyond, else: ""
+        pending = if http.keep? or http.upgrade, do: http.pending <> beyond, else: ""
         up = if data != "", do: [{:send, :host, data}], else: []
         more = if byte_size(pending) <= @head_limit, do: [{:read, :vm, :infinity}], else: []
 
@@ -239,10 +249,57 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
   ## The host's bytes
 
+  def handle_data(:host, data, %{phase: :answer, upgrade: %{} = upgrade} = http),
+    do: watch_switch(%{http | upgrade: nil}, upgrade.head <> data, data)
+
+  def handle_data(:host, data, http), do: host_data(data, http)
+
+  # A request that asked to switch protocols: the VM's bytes past its body
+  # wait until the head of the host's answer says whether it switched
+  # (`101`), which HTTP leaves to the host. Switched, they go on, as
+  # another protocol's, unread (a WebSocket's, as its frames); not, the
+  # request was an ordinary one, and its connection carries the next
+  # request, judged as any is, when its answer was read to its end. Before,
+  # MWT passed on whatever the VM sent after such a request, switched or
+  # not: requests no card showed and the log didn't keep.
+  defp watch_switch(http, buffer, data) do
+    case :binary.split(buffer, "\r\n\r\n") do
+      [head, rest] when byte_size(head) <= @head_limit ->
+        case Response.read_head(head) do
+          {:ok, 101, _headers} -> switched(http, data)
+          {:ok, status, _headers} when status in 100..199 -> watch_switch(http, rest, data)
+          _final -> declined(http, data)
+        end
+
+      [_partial] when byte_size(buffer) <= @head_limit ->
+        host_data(data, %{http | upgrade: %{head: buffer}})
+
+      _unreadable ->
+        declined(http, data)
+    end
+  end
+
+  defp switched(http, data) do
+    held = http.pending
+    # An answer read only for its end has none now: it is another protocol.
+    answer = if match?(%Answer{}, http.answer), do: nil, else: http.answer
+    {down, http} = host_data(data, %{http | answer: answer, framing: :open, pending: ""})
+
+    if held == "" do
+      {down, http}
+    else
+      {up, http} = handle_data(:vm, held, http)
+      {down ++ up, http}
+    end
+  end
+
+  defp declined(http, data),
+    do: host_data(data, %{http | keep?: match?(%Answer{}, http.answer)})
+
   # A WebSocket's answer: its head, to the VM as it is; switched (`101`),
   # its frames are read from then on; any other answer goes on as one MWT
   # doesn't read the end of.
-  def handle_data(:host, data, %{phase: :answer, ws: %{switched?: false} = ws} = http) do
+  defp host_data(data, %{phase: :answer, ws: %{switched?: false} = ws} = http) do
     buffer = ws.head <> data
 
     case :binary.split(buffer, "\r\n\r\n") do
@@ -268,15 +325,15 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     end
   end
 
-  def handle_data(:host, data, %{phase: :answer, ws: %{switched?: true}} = http),
+  defp host_data(data, %{phase: :answer, ws: %{switched?: true}} = http),
     do: websocket_down(%{http | fresh?: false}, data)
 
-  def handle_data(:host, data, %{phase: :answer, answer: nil} = http) do
+  defp host_data(data, %{phase: :answer, answer: nil} = http) do
     {vm, http} = to_vm(%{http | fresh?: false}, data)
     {vm ++ [{:read, :host, @idle}], http}
   end
 
-  def handle_data(:host, data, %{phase: :answer, answer: %Answer{} = answer} = http) do
+  defp host_data(data, %{phase: :answer, answer: %Answer{} = answer} = http) do
     case Answer.feed(answer, data) do
       {:more, bytes, answer} ->
         {vm, http} = to_vm(%{http | answer: answer, fresh?: false}, bytes)
@@ -291,11 +348,11 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     end
   end
 
-  def handle_data(:host, data, %{phase: :answer} = http),
+  defp host_data(data, %{phase: :answer} = http),
     do: http.answer |> Response.feed(data) |> answered(%{http | fresh?: false})
 
   # On a kept link between requests, bytes nothing asked for end it.
-  def handle_data(:host, _data, http), do: {[{:close, :host}], %{http | linked?: false}}
+  defp host_data(_data, http), do: {[{:close, :host}], %{http | linked?: false}}
 
   ## Verdicts
 
@@ -549,9 +606,6 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     end
   end
 
-  defp judge(%{head: %{upgrade?: true}} = http, body, _framing, beyond),
-    do: judging(http, body <> beyond, :open, "")
-
   defp judge(http, body, framing, beyond), do: judging(http, body, framing, beyond)
 
   defp judging(http, body, framing, beyond) do
@@ -617,10 +671,14 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     head = head(method, path, data.version, headers, echo != nil, keep?)
     reuse? = keep? and http.linked?
 
+    upgrade? = List.keymember?(headers, "upgrade", 0)
+
+    # A switch the host may decline: its answer is read to where it ends,
+    # so a declined one's connection carries the next request.
     answer =
       case echo do
         {secrets, placeholders} -> Response.new(method, secrets, placeholders)
-        nil -> if keep?, do: Answer.new(method)
+        nil -> if keep? or (upgrade? and not websocket?), do: Answer.new(method)
       end
 
     connect = if reuse?, do: [], else: [{:connect, %{alpn: alpn()}}]
@@ -637,6 +695,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
         retry?: keep? and retryable?(method, http.framing),
         retrying?: false,
         fresh?: true,
+        upgrade: if(upgrade?, do: %{head: ""}),
         ws:
           if(websocket?,
             do: %{

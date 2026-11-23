@@ -523,6 +523,11 @@ defmodule MWTClient.Sandbox.Server.State do
       # how much it refused since it isolated the VM.
       firewall_watch: MWTClient.Sandbox.Firewall.watch(),
       firewall_refused: 0,
+      # What was last handed to `UnlockState`, when, and the timer of a
+      # change of the windows still to hand (`MWTClient.Sandbox.Server.Kept`).
+      kept: nil,
+      kept_at: nil,
+      kept_due: nil,
       # The last events logged, newest first, kept for the record an
       # isolation makes at once, with no wait on the journal.
       recent_events: [],

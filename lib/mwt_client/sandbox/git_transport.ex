@@ -330,7 +330,7 @@ defmodule MWTClient.Sandbox.GitTransport do
 
     {:ok, {_address, number}} = :inet.sockname(listener)
     token = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
-    port = upload(number, token, dir, Map.get(ask, "protocol", ""))
+    port = upload(number, token, dir, served_protocol(Map.get(ask, "protocol", "")))
 
     try do
       with {:ok, host} <- :gen_tcp.accept(listener, 5_000) do
@@ -369,6 +369,16 @@ defmodule MWTClient.Sandbox.GitTransport do
       stop(port)
     end
   end
+
+  # The protocol upload-pack speaks: never version 2. Under it `git
+  # upload-pack` sends any object it has to whoever names its id, whatever
+  # the `uploadpack.allow*InWant` settings say, and this view borrows your
+  # repository's whole object store: a stash, a commit reset away. Asked
+  # for version 2, it answers in version 0, which a client that asked for
+  # 2 reads as servers without it have always answered. The cost: version
+  # 2's ref filtering, so a repository with many refs advertises them all.
+  defp served_protocol("version=1"), do: "version=1"
+  defp served_protocol(_asked), do: ""
 
   defp upload(number, token, dir, protocol) do
     env = [{"GIT_PROTOCOL", protocol} | Guest.git_env()]

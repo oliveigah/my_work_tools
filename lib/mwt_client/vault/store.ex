@@ -32,6 +32,9 @@ defmodule MWTClient.Vault.Store do
     MWTClient.Sandbox.Monitor,
     MWTClient.Sandbox.Watch,
     MWTClient.Sandbox.Server,
+    # Started before the server and stopped after it: what it holds
+    # outlives the server's restarts, not a lock.
+    MWTClient.Sandbox.UnlockState,
     MWTClient.MCP.Access,
     MWTClient.Flashcards.Library,
     MWTClient.Notes.Library,

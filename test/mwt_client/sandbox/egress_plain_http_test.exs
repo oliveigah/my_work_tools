@@ -186,6 +186,42 @@ defmodule MWTClient.Sandbox.EgressPlainHttpTest do
     refute_received {:host_got, _}
   end
 
+  # An address shared by many names (an ingress) serves each by its Host.
+  test "under a network grant opened by a name, only that name's Host goes on", %{
+    username: username,
+    proxy: proxy
+  } do
+    {:ok, grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "network",
+        "name" => "The app",
+        "purpose" => "The office's app",
+        "destinations" => "app.corp.test:80"
+      })
+
+    {:ok, _} = Sandbox.turn_on(username, grant.id, 60, :all)
+    # MWT's DNS answered the grant's name with the ingress's address.
+    :ok = Gate.answered(username, "app.corp.test", [{10, 20, 30, 40}], 60)
+
+    get = fn host ->
+      {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", proxy, [:binary, active: false])
+      :ok = :gen_tcp.send(socket, "CONNECT 10.20.30.40:80 HTTP/1.1\r\n\r\n")
+      {:ok, "HTTP/1.1 200" <> _} = :gen_tcp.recv(socket, 0, 5_000)
+      :ok = :gen_tcp.send(socket, "GET /admin HTTP/1.1\r\nhost: #{host}\r\n\r\n")
+      SandboxProxy.read_answer(socket, :gen_tcp)
+    end
+
+    answer = get.("admin.corp.test")
+    assert answer =~ "HTTP/1.1 403"
+    assert answer =~ "mwt_name_not_granted"
+    refute_received {:host_got, _}
+
+    assert event(username, &(&1.summary =~ "admin.corp.test isn't a name MWT answered"))
+
+    assert get.("app.corp.test") =~ "HTTP/1.1 200"
+    assert_received {:host_got, "GET /admin" <> _}
+  end
+
   test "a Host that names another port, or no host, is refused as unreadable", %{proxy: proxy} do
     assert get(proxy, "/", [{"host", "example.com:8080"}]) =~ "HTTP/1.1 400"
     assert get(proxy, "/", []) =~ "HTTP/1.1 400"

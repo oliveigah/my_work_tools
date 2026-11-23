@@ -125,6 +125,99 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
     assert sent(actions, :host) =~ "GET /a HTTP/1.1\r\n"
   end
 
+  # Before, whatever the VM sent after a request with an Upgrade went up
+  # unread, whether the host switched or not: requests no card showed.
+  describe "a request asking to switch protocols" do
+    @upgrade "GET /h HTTP/1.1\r\nHost: api.example.com\r\nUpgrade: x\r\nConnection: keep-alive\r\n\r\n"
+    @behind "DELETE /x HTTP/1.1\r\nHost: api.example.com\r\n\r\n"
+
+    test "declined, what the VM sent after it is the next request, judged as any" do
+      {[{:judge, request}, {:read, :vm, :infinity}], http} =
+        Http1.handle_data(:vm, @upgrade, start())
+
+      {actions, http} =
+        Http1.handle_verdict(request.id, {:allow, %{request: [], answer: []}}, http)
+
+      assert sent(actions, :host) =~ "GET /h HTTP/1.1\r\n"
+
+      {actions, http} = Http1.handle_data(:vm, @behind, http)
+      assert sent(actions, :host) == ""
+      refute Enum.any?(actions, &match?({:judge, _}, &1))
+
+      {actions, _http} =
+        Http1.handle_data(:host, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok", http)
+
+      assert sent(actions, :vm) =~ "HTTP/1.1 200 OK"
+      assert sent(actions, :host) == ""
+      assert {:done, ^request, _exchange} = Enum.find(actions, &match?({:done, _, _}, &1))
+
+      assert {:judge, %Request{operation: "DELETE"}} =
+               Enum.find(actions, &match?({:judge, _}, &1))
+    end
+
+    test "switched, what the VM sends goes on as the new protocol's, after the 101" do
+      {[{:judge, request}, {:read, :vm, :infinity}], http} =
+        Http1.handle_data(:vm, @upgrade, start())
+
+      {_actions, http} =
+        Http1.handle_verdict(request.id, {:allow, %{request: [], answer: []}}, http)
+
+      {actions, http} = Http1.handle_data(:vm, "early", http)
+      assert sent(actions, :host) == ""
+
+      {actions, http} =
+        Http1.handle_data(:host, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\n\r\nhi", http)
+
+      assert sent(actions, :vm) =~ "101 Switching Protocols\r\nUpgrade: x\r\n\r\nhi"
+      assert sent(actions, :host) == "early"
+
+      {actions, _http} = Http1.handle_data(:vm, "more", http)
+      assert sent(actions, :host) == "more"
+    end
+
+    test "what the VM sent while it was judged waits for the answer too" do
+      {[{:judge, request}, {:read, :vm, :infinity}], http} =
+        Http1.handle_data(:vm, @upgrade, start())
+
+      {_actions, http} = Http1.handle_data(:vm, @behind, http)
+
+      {actions, http} =
+        Http1.handle_verdict(request.id, {:allow, %{request: [], answer: []}}, http)
+
+      assert sent(actions, :host) =~ "GET /h HTTP/1.1\r\n"
+      refute sent(actions, :host) =~ "DELETE"
+
+      {actions, _http} =
+        Http1.handle_data(:host, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok", http)
+
+      assert sent(actions, :host) == ""
+
+      assert {:judge, %Request{operation: "DELETE"}} =
+               Enum.find(actions, &match?({:judge, _}, &1))
+    end
+
+    test "an informational answer first is not the switch" do
+      {[{:judge, request}, {:read, :vm, :infinity}], http} =
+        Http1.handle_data(:vm, @upgrade, start())
+
+      {_actions, http} =
+        Http1.handle_verdict(request.id, {:allow, %{request: [], answer: []}}, http)
+
+      {_actions, http} = Http1.handle_data(:vm, @behind, http)
+
+      {actions, http} = Http1.handle_data(:host, "HTTP/1.1 103 Early Hints\r\n\r\n", http)
+      assert sent(actions, :host) == ""
+
+      {actions, _http} =
+        Http1.handle_data(:host, "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n", http)
+
+      assert sent(actions, :host) == ""
+
+      assert {:judge, %Request{operation: "DELETE"}} =
+               Enum.find(actions, &match?({:judge, _}, &1))
+    end
+  end
+
   test "a refusal is MWT's own HTTP answer, logged with the request" do
     {[{:judge, request}, {:read, :vm, :infinity}], http} =
       Http1.handle_data(:vm, "GET / HTTP/1.1\r\nHost: api.example.com\r\n\r\n", start())

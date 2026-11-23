@@ -237,6 +237,9 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
 
       save(username, key, %{saved | grants: grants})
       :ok = Store.open(username, key)
+      # The Internet starts off here: MWT's DNS answered the name with the
+      # address the proxy is asked for, as it does a token grant's host.
+      :ok = MWTClient.Sandbox.Gate.answered(username, "api.github.com", [{140, 82, 112, 3}], 300)
 
       net = proxy(username)
 

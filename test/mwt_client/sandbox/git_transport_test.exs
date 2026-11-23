@@ -84,7 +84,7 @@ defmodule MWTClient.Sandbox.GitTransportTest do
     assert File.read!(Path.join(context.clone, "image.bin")) == content
   end
 
-  test "Git's requested protocol version works through the helper", context do
+  test "a client asking for protocol version 2 is answered in an earlier one", context do
     assert {refs, 0} =
              remote_git(context, context.base, [
                "-c",
@@ -101,7 +101,44 @@ defmodule MWTClient.Sandbox.GitTransportTest do
                stderr_to_stdout: true
              )
 
-    assert trace =~ "version 2"
+    assert trace =~ "< #{sha(context.repo, "master")} refs/heads/master"
+    refute trace =~ ~r/< version 2/
+  end
+
+  # Under version 2, upload-pack ignores `uploadpack.allow*InWant` and
+  # serves any object of the borrowed store by its id.
+  test "a stash and a commit reset away can't be fetched by id under any protocol version",
+       context do
+    File.write!(Path.join(context.repo, "secret.env"), "API_KEY=only-in-the-stash\n")
+    git(context.repo, ["add", "secret.env"])
+    git(context.repo, ["stash", "push", "--quiet", "-m", "wip"])
+    stash = sha(context.repo, "refs/stash")
+    commit(context.repo, [{"oops.txt", "reset away\n"}], "Oops")
+    dangling = sha(context.repo, "HEAD")
+    git(context.repo, ["reset", "--quiet", "--hard", "HEAD~1"])
+
+    assert {_, 0} = remote_git(context, context.base, ["clone", context.remote, context.clone])
+
+    for oid <- [stash, dangling], protocol <- ["version=1", "version=2"] do
+      assert {error, status} =
+               System.cmd(
+                 "timeout",
+                 ["--kill-after=2", "20", "git", "-C", context.clone, "fetch", "origin", oid],
+                 env: context.env ++ [{"GIT_PROTOCOL", protocol}],
+                 stderr_to_stdout: true
+               )
+
+      assert status not in [0, 124, 137], "#{protocol} fetch of #{oid} gave #{status}"
+      assert error =~ "not our ref" or error =~ "unadvertised object"
+
+      assert {_, missing} =
+               System.cmd("git", ["-C", context.clone, "cat-file", "-e", oid],
+                 env: context.env,
+                 stderr_to_stdout: true
+               )
+
+      assert missing != 0
+    end
   end
 
   test "pushes are refused and never change host branches", context do

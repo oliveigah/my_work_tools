@@ -450,8 +450,12 @@ defmodule MWTClient.Sandbox.Accept do
          [] <- pending(path),
          # Never over an ignored file, should one appear since the plan
          # looked: git refuses then, as it does for an untracked one.
+         # git-lfs fetches what a file it checks out points at, from where
+         # the VM's `.lfsconfig` says: not at landing (`git lfs pull` does it
+         # after, from your remote).
          {:ok, _} <-
            HostGit.run(path, ["merge", "--ff-only", "--no-overwrite-ignore", commit],
+             env: [{"GIT_LFS_SKIP_SMUDGE", "1"}],
              seconds: 300
            ) do
       {:ok, %{kind: :merge, before: before, after: commit}}

@@ -563,7 +563,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
           <.copy_button id={"copy-curl-#{@id}"} target={"copy-curl-text-#{@id}"} label="curl" />
           <.copy_button id={"copy-raw-#{@id}"} target={"copy-raw-text-#{@id}"} label="HTTP" />
           <.copy_button
-            :if={@body.format not in [:none, :binary]}
+            :if={@body.format not in [:none, :unread, :binary]}
             id={"copy-body-#{@id}"}
             target={"copy-body-text-#{@id}"}
             label="Body"
@@ -608,7 +608,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       </dl>
 
       <div
-        :if={@body.format != :none}
+        :if={@body.format not in [:none, :unread]}
         id={"approval-body-#{@id}"}
         class="border-t border-line-soft"
       >
@@ -626,10 +626,17 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       >
         No body
       </p>
+      <p
+        :if={@body.format == :unread}
+        id={"approval-body-unread-#{@id}"}
+        class="border-t border-line-soft px-3 py-1.5 text-[11px] text-bad"
+      >
+        Body not read: none of it had come when MWT made this card. What follows your decision goes unseen.
+      </p>
 
       <pre id={"copy-curl-text-#{@id}"} hidden>{@curl}</pre>
       <pre id={"copy-raw-text-#{@id}"} hidden>{@raw}</pre>
-      <pre :if={@body.format not in [:none, :binary]} id={"copy-body-text-#{@id}"} hidden>{@body.text}</pre>
+      <pre :if={@body.format not in [:none, :unread, :binary]} id={"copy-body-text-#{@id}"} hidden>{@body.text}</pre>
     </section>
     """
   end

@@ -206,7 +206,9 @@ defmodule MWTClient.Sandbox.Grant do
           reason: String.t(),
           minutes: pos_integer(),
           at: DateTime.t(),
-          reviewed_at: DateTime.t() | nil
+          reviewed_at: DateTime.t() | nil,
+          # New at each proposing; none on a proposal saved before it.
+          revision: String.t() | nil
         }
 
   @typedoc """

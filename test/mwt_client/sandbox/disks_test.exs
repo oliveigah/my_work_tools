@@ -3,6 +3,8 @@ defmodule MWTClient.Sandbox.DisksTest do
 
   alias MWTClient.Sandbox.{Disks, Snapshot}
 
+  doctest Disks
+
   @sizes %{home: 1, cache: 1, work: 2, memory: 1}
   @gib 1024 * 1024 * 1024
 
@@ -95,6 +97,18 @@ defmodule MWTClient.Sandbox.DisksTest do
     assert %{before: before, after: now} = Disks.reclaim!(paths.home)
     assert before - now > 15 * 1024 * 1024
     assert %{"TYPE" => "ext4"} = kind(paths.home)
+  end
+
+  # They parse a file system root in the VM wrote: a flaw in them must not
+  # run as you, with your home and your network.
+  test "e2fsck and resize2fs see nothing of this machine but the disk" do
+    words = Disks.check_words("bwrap", ["/usr/sbin/e2fsck", "-f"], "/x/home.img")
+    assert "--unshare-all" in words
+    refute Enum.any?(words, &(&1 == System.user_home!()))
+    refute "--share-net" in words
+    binds = for ["--bind", from, to] <- Enum.chunk_every(words, 3, 1), do: {from, to}
+    assert binds == [{"/x/home.img", "/disk.img"}]
+    assert ["/usr/bin/env", "-i" | _] = Enum.drop_while(words, &(&1 != "/usr/bin/env"))
   end
 
   test "a disk that exists is left as it is, and grown when its size grew", %{paths: paths} do

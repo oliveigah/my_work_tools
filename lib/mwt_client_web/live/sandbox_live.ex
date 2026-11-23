@@ -925,7 +925,7 @@ defmodule MWTClientWeb.SandboxLive do
 
   # A grant an agent proposed, accepted on its page: enabled for as long as
   # the agent asked, every use asking, or kept off.
-  def handle_event("review_grant", %{"id" => id, "enable" => enable}, socket) do
+  def handle_event("review_grant", %{"id" => id, "enable" => enable} = params, socket) do
     enable =
       case Integer.parse(enable) do
         {minutes, ""} when minutes in 1..1440 -> {minutes, :ask}
@@ -933,7 +933,7 @@ defmodule MWTClientWeb.SandboxLive do
       end
 
     socket =
-      case Sandbox.review(socket.assigns.username, id, enable) do
+      case Sandbox.review(socket.assigns.username, id, enable, params["revision"]) do
         {:ok, grant} ->
           put_notice(
             socket,
@@ -952,6 +952,11 @@ defmodule MWTClientWeb.SandboxLive do
         {:error, :no_value} ->
           put_notice(socket, :info, "Paste its value first",
             body: "A token grant needs its value before it can turn on."
+          )
+
+        {:error, :changed} ->
+          put_notice(socket, :error, "The agent changed this proposal as you read it",
+            body: "Nothing was accepted. Read it again as it is now, then accept it."
           )
 
         {:error, _reason} ->

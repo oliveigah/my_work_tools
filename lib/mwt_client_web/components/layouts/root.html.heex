@@ -15,7 +15,7 @@
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>
-    <script>
+    <script nonce={assigns[:csp_nonce]}>
       // Applies the theme and panel sizes before the first paint, so the app
       // never flashes the wrong colors or layout. See Layouts.theme_toggle/1 and
       // the ".Resize" hook in MWTClientWeb.PanelComponents.

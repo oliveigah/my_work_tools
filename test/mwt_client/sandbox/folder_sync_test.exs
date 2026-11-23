@@ -71,6 +71,39 @@ defmodule MWTClient.Sandbox.FolderSyncTest do
     refute File.exists?(Path.join(context.copy, "app"))
   end
 
+  # It has no `.git`: it is one. Its config's remote URL can carry a token.
+  test "a bare repository, or a git folder kept apart, is left out as a repository", context do
+    bare = Path.join(context.share, "mirror.git")
+    {_, 0} = System.cmd("git", ["init", "-q", "--bare", bare])
+
+    {_, 0} =
+      System.cmd("git", [
+        "-C",
+        bare,
+        "config",
+        "remote.origin.url",
+        "https://user:ghp_token@github.com/o/r.git"
+      ])
+
+    File.mkdir_p!(Path.join(context.share, "kept"))
+
+    {_, 0} =
+      System.cmd("git", [
+        "init",
+        "-q",
+        "--separate-git-dir",
+        Path.join(context.share, "kept/apart.git"),
+        Path.join(context.share, "work")
+      ])
+
+    record = sync(context)
+
+    assert record.status.trees == ["app", "kept/apart.git", "mirror.git", "work"]
+    refute File.exists?(Path.join(context.copy, "mirror.git"))
+    refute File.exists?(Path.join(context.copy, "kept/apart.git"))
+    refute Enum.any?(tree(context.copy), &(&1 =~ "config"))
+  end
+
   test "a sync with nothing changed changes nothing", context do
     record = sync(context)
     {:ok, before} = File.stat(Path.join(context.copy, "readme.txt"))

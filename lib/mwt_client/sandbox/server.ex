@@ -109,6 +109,7 @@ defmodule MWTClient.Sandbox.Server do
     Forwarding,
     Grants,
     HostRuns,
+    Kept,
     Machine,
     ShareSync,
     State,
@@ -200,17 +201,22 @@ defmodule MWTClient.Sandbox.Server do
     current = saved[:current]
     # Isolated when MWT stopped: still isolated, with every grant off.
     firewall = MWTClient.Sandbox.Firewall.upgrade(saved[:firewall])
+    # What this process kept since the unlock, when it is starting again
+    # after a failure: nil at a start.
+    kept = Kept.restore(username)
 
     state =
       Map.merge(State.memory(), %{
         username: username,
         dir: dir,
         ca: saved[:ca] || CertificateAuthority.new(),
-        # Every start begins from each grant's own setting.
+        # Every start begins from each grant's own setting; a restart
+        # after a failure, from each grant as it was.
         grants:
-          (saved[:grants] || [])
-          |> Grants.with_built_in()
-          |> Grants.start()
+          if(kept,
+            do: Grants.with_built_in(kept.grants),
+            else: (saved[:grants] || []) |> Grants.with_built_in() |> Grants.start()
+          )
           |> then(&if(firewall.isolated, do: Firewall.all_off(&1), else: &1)),
         # The firewall's settings and incidents (`MWTClient.Sandbox.Firewall`).
         firewall: firewall,
@@ -255,6 +261,8 @@ defmodule MWTClient.Sandbox.Server do
         flush: nil,
         code: State.code()
       })
+
+    state = Kept.restored(state, kept)
 
     # Connections a grant let through before a restart of this process
     # close unless it is live again.
@@ -1054,7 +1062,7 @@ defmodule MWTClient.Sandbox.Server do
 
   # You accept a grant an agent proposed, on its page: reviewed, and, with
   # `{minutes, uses}`, turned on, which answers the agent waiting for it.
-  defp answer({:review, id, enable}, _from, state) do
+  defp answer({:review, id, enable, revision}, _from, state) do
     case Enum.find(state.grants, &(&1.id == id)) do
       nil ->
         {:reply, {:error, :not_found}, state}
@@ -1063,6 +1071,11 @@ defmodule MWTClient.Sandbox.Server do
         cond do
           not Grant.to_review?(grant) ->
             {:reply, {:error, :reviewed}, state}
+
+          # The agent proposed it again since the page you accepted from
+          # showed it: you haven't read what it is now.
+          not MWTClient.Sandbox.Proposal.accepts?(grant.proposal, revision) ->
+            {:reply, {:error, :changed}, state}
 
           enable != :keep_off and grant.kind == :token and grant.source == :stored and
               not Map.has_key?(state.values, id) ->
@@ -1725,7 +1738,7 @@ defmodule MWTClient.Sandbox.Server do
   defp settled(other), do: other
 
   defp settle(state),
-    do: state |> Gate.publish() |> Grants.close_ended()
+    do: state |> Gate.publish() |> Grants.close_ended() |> Kept.keep()
 
   defp info(:mirror, state) do
     if state.vm.status == :running and state.projects != [] and
@@ -1745,6 +1758,9 @@ defmodule MWTClient.Sandbox.Server do
 
   # MWT's own files changed: their copy in the VM follows within moments.
   defp info(:sync_inbox, state), do: {:noreply, Copying.start(state)}
+
+  # The firewall's windows changed a moment ago: handed to `UnlockState` now.
+  defp info(:keep, state), do: {:noreply, Kept.due(state)}
 
   # A sync of the shared folders is due, or was waiting for the VM to be
   # free (`ShareSync`).

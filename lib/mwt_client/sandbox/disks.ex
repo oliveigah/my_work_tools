@@ -13,21 +13,31 @@ defmodule MWTClient.Sandbox.Disks do
       three, so an older image tag can come back with the Home it had.
 
   Work lives here, not in shared host folders, for two reasons. Nothing on
-  the host opens these files, so nothing the VM writes in them can run
-  here. And they are fast: small-file work is 4 to 8 times faster on a disk
-  image than through a shared folder.
+  the host runs what the VM writes in them. And they are fast: small-file
+  work is 4 to 8 times faster on a disk image than through a shared folder.
 
   The images are sparse: a 64 GiB disk takes host space only as it fills.
   They are made without root (`mkfs.ext4` on a plain file). The host never
   mounts them, so what is inside can be read only through the VM.
 
+  Two tools of this machine do read them: `e2fsck`, when a disk is
+  reclaimed (`reclaim!/1`) or grown (`grow!/2`), and `resize2fs`, when it
+  grows. Root in the VM writes the disks byte for byte, so they parse a
+  file system the VM made, and e2fsprogs has had memory errors on crafted
+  ones (CVE-2019-5188, CVE-2022-1304). So both run in a bubble
+  (`check_words/3`): no network, no home, the system's folders read-only,
+  nothing of MWT's environment, and that one image, writable, at
+  `/disk.img`. There is no fallback: without `bwrap` they don't run.
+
   Everything here runs in a task while the VM is stopped, never in the
   sandbox process. A disk the VM is using must not be copied or resized.
   """
 
-  alias MWTClient.Sandbox.Snapshot
+  alias MWTClient.Sandbox.{Bubble, Snapshot}
 
   @memory_gib 2
+  # Where a disk is, inside the bubble the tools that read it run in.
+  @inside "/disk.img"
 
   @kept 3
   # Home before the memory, which mounts inside it.
@@ -164,7 +174,7 @@ defmodule MWTClient.Sandbox.Disks do
   def reclaim!(path) do
     before = used(path)
 
-    case System.cmd(tool!("e2fsck"), ["-f", "-y", "-E", "discard", path], stderr_to_stdout: true) do
+    case checked("e2fsck", ["-f", "-y", "-E", "discard"], path) do
       # 0 is clean, 1 is "errors corrected": both leave a sound file system.
       {_, status} when status in [0, 1] -> %{before: before, after: used(path)}
       {output, status} -> raise "checking #{path} failed (#{status}): #{String.trim(output)}"
@@ -211,15 +221,54 @@ defmodule MWTClient.Sandbox.Disks do
   # system into the new room. A `resize2fs` that fails, or MWT stopping
   # between the two, still leaves a file bigger than its file system.
   defp grow!(path, bytes) do
-    case System.cmd(tool!("e2fsck"), ["-f", "-p", path], stderr_to_stdout: true) do
+    case checked("e2fsck", ["-f", "-p"], path) do
       # 0 is clean, 1 is "errors corrected": both leave a sound file system.
       {_, status} when status in [0, 1] -> :ok
       {output, status} -> raise "checking #{path} failed (#{status}): #{String.trim(output)}"
     end
 
     run!("truncate", ["--size=#{bytes}", path])
-    run!(tool!("resize2fs"), [path])
-    :ok
+
+    case checked("resize2fs", [], path) do
+      {_, 0} -> :ok
+      {output, status} -> raise "resize2fs failed (#{status}): #{String.trim(output)}"
+    end
+  end
+
+  # One of e2fsprogs' tools on the image at `path`, in its bubble.
+  defp checked(tool, args, path) do
+    bwrap =
+      Bubble.bwrap() ||
+        raise "bwrap isn't installed (package bubblewrap): MWT reads the VM's disks only in a bubble"
+
+    {:ok, %File.Stat{type: :regular}} = File.lstat(path)
+    [command | words] = check_words(bwrap, [tool!(tool) | args], path)
+    System.cmd(command, words, stderr_to_stdout: true)
+  end
+
+  @doc """
+  The command line that runs `tool_args`, a tool of e2fsprogs and its
+  arguments, on the image at `path` in its bubble, with `bwrap`: the image
+  is the last argument, at #{@inside}.
+
+      iex> words = MWTClient.Sandbox.Disks.check_words("bwrap", ["/usr/sbin/e2fsck", "-f"], "/d/home.img")
+      iex> Enum.take(words, 2)
+      ["bwrap", "--unshare-all"]
+      iex> Enum.chunk_every(words, 3, 1) |> Enum.member?(["--bind", "/d/home.img", "/disk.img"])
+      true
+      iex> Enum.take(words, -3)
+      ["/usr/sbin/e2fsck", "-f", "/disk.img"]
+  """
+  @spec check_words(String.t(), [String.t()], Path.t()) :: [String.t()]
+  def check_words(bwrap, tool_args, path) do
+    [bwrap, "--unshare-all", "--die-with-parent", "--new-session"] ++
+      ["--ro-bind", "/usr", "/usr"] ++
+      Bubble.usr_links() ++
+      ["--ro-bind", "/etc", "/etc"] ++
+      ~w(--proc /proc --dev /dev --tmpfs /tmp) ++
+      ["--bind", path, @inside, "--chdir", "/", "--"] ++
+      ["/usr/bin/env", "-i", "PATH=/usr/sbin:/usr/bin", "LC_ALL=C"] ++
+      tool_args ++ [@inside]
   end
 
   defp label(path), do: "mwt-" <> Path.basename(path, ".img")

@@ -29,7 +29,8 @@ defmodule MWTClient.Sandbox.Channel do
 
   Exit statuses for grants: 0 the grant is on, 1 something is wrong with the
   ask, 2 still waiting for the user, 3 declined or given up. The command
-  itself uses 4 when MWT doesn't answer: locked, or not running.
+  itself uses 4 when MWT doesn't answer: locked, or not running; MWT
+  answers 4 too when its sandbox failed answering and started again.
 
   A command that ran answers `ran STATUS` on the first line, a note for the
   agent's stderr on the second (often empty), then the output. MWT's own
@@ -115,9 +116,17 @@ defmodule MWTClient.Sandbox.Channel do
   @run_wrong 122
   @run_unreachable 123
 
+  # The asks `answer/3` takes, each answered by a clause of `reply/3`;
+  # `attach`, `mcp` and `git` are served apart (`serve/2`).
+  @commands ~w(grants host why ports sync project worktree handoff handoffs call propose run
+               request wait vm)
   # What acts on the user's behalf, refused while the VM is isolated.
   @acting ~w(request run call propose handoff)
   @isolated "MWT's firewall isolated this VM: nothing it sends leaves through MWT until the user releases it. The user has been told. Stop, and tell them what you were doing."
+
+  @doc "The commands an ask may name, besides `attach`, `mcp` and `git`."
+  @spec commands() :: [String.t()]
+  def commands, do: @commands
 
   @doc "The vsock port agents connect to inside the VM."
   @spec port() :: pos_integer()
@@ -287,8 +296,8 @@ defmodule MWTClient.Sandbox.Channel do
   defp attach(client, username, ask) do
     AgentThreads.attach(username, client, ask)
   catch
-    :exit, _locked ->
-      :gen_tcp.send(client, encode({4, "MWT is locked. Ask the user to unlock it."}))
+    :exit, _reason ->
+      :gen_tcp.send(client, encode({4, unanswered(username)}))
   after
     :gen_tcp.close(client)
   end
@@ -302,13 +311,25 @@ defmodule MWTClient.Sandbox.Channel do
           %{"command" => command} -> answer(command, ask, username)
         end
       catch
-        :exit, _locked ->
+        :exit, _reason ->
           status = if run?(ask), do: @run_unreachable, else: 4
-          {status, "MWT is locked. Ask the user to unlock it."}
+          {status, unanswered(username)}
       end
 
     :gen_tcp.send(client, encode(reply))
     :gen_tcp.close(client)
+  end
+
+  # Why MWT didn't answer an ask: locked, or the sandbox failed answering
+  # it and started again, which keeps grants as they were but not what
+  # the ask was waiting for. `UnlockState` lives as long as the unlock,
+  # through the server's restarts.
+  defp unanswered(username) do
+    if Store.whereis(MWTClient.Sandbox.UnlockState, username),
+      do:
+        "MWT failed while answering this and started its sandbox again: nothing of this ask was kept. " <>
+          "Ask again; if it fails again, tell the user.",
+      else: "MWT is locked. Ask the user to unlock it."
   end
 
   @doc """
@@ -1207,9 +1228,7 @@ defmodule MWTClient.Sandbox.Channel do
   end
 
   defp reply(_command, _ask, _username),
-    do:
-      {1,
-       "MWT knows these commands: grants, host, request, run, call, propose, wait, mcp, project, worktree, handoff, handoffs, sync, vm. Run mwt help."}
+    do: {1, "MWT knows these commands: #{Enum.join(@commands ++ ["mcp"], ", ")}. Run mwt help."}
 
   # What to sync for `path`, and the grants that decide it.
   defp sync_which([], nil, _path),
@@ -1217,6 +1236,9 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp sync_which(_shares, root, path) when path in [nil, ""],
     do: {:ok, :all, if(root, do: [:share_sync, :workspace], else: [:share_sync])}
+
+  defp sync_which(_shares, _root, path) when not is_binary(path),
+    do: {:error, "mwt sync takes the path of a folder, as text."}
 
   defp sync_which(shares, root, path) do
     path = Path.expand(path, "/")

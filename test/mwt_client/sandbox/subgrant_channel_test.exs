@@ -577,7 +577,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
       # Without --header, the headers the service expects, the token in place.
       assert {"Authorization", "Bearer {token}"} in sub.headers
 
-      {:ok, _} = Sandbox.review(context.username, sub.id, {60, :ask})
+      {:ok, _} = Sandbox.review(context.username, sub.id, {60, :ask}, sub.proposal.revision)
       assert {output, 0} = Task.await(asking)
       assert output =~ "accepted it as pr-view"
       assert output =~ "mwt call pr-view REPO=… PR=…"

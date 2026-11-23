@@ -144,6 +144,40 @@ defmodule MWTClient.Sandbox.DescribeTest do
              Describe.request(request(%{method: "POST", path: "/graphql", body: query}))
   end
 
+  # Jason keeps the first of two equal keys, most servers the last: the
+  # card would show and allow one document while the server runs another.
+  test "a GraphQL body naming a key twice is described as none, with no pattern" do
+    viewer = ~s|{"query":"query Viewer { viewer { login } }"}|
+
+    twice =
+      ~s|{"query":"query Viewer { viewer { login } }",| <>
+        ~s|"query":"mutation { deleteRepository(input: {}) { clientMutationId } }"}|
+
+    deep =
+      ~s|{"query":"query R($o: String!) { repository(owner: $o) { id } }",| <>
+        ~s|"variables":{"o":"mine","o":"theirs"}}|
+
+    allowed = Describe.request(request(post_graphql(viewer)))
+    assert allowed.pattern =~ "query Viewer"
+
+    for body <- [twice, deep] do
+      described = Describe.request(request(post_graphql(body)))
+      assert described.title == "GraphQL unknown on api.github.com"
+      assert described.pattern == nil
+      refute Enum.any?(described.facts ++ described.claims, fn {_, value} -> value =~ "mine" end)
+    end
+  end
+
+  defp post_graphql(body) do
+    %{
+      host: "api.github.com",
+      method: "POST",
+      path: "/graphql",
+      headers: [{"content-length", "#{byte_size(body)}"}],
+      body: body
+    }
+  end
+
   test "REST requests name their endpoint, and similar ones share a pattern" do
     assert %{facts: [{"Endpoint", "GET /repos/o/r/pulls"}]} =
              Describe.request(request(%{path: "/repos/o/r/pulls?state=open"}))

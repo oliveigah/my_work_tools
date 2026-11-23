@@ -5,6 +5,44 @@ defmodule MWTClient.Sandbox.ZedTest do
 
   @moduletag :tmp_dir
 
+  describe "folder?/2" do
+    test "takes a folder under the VM's /work, named in plain characters" do
+      for folder <-
+            ~w(/work/app /work/app.wt/slot-1 /work/my_work_tools.wt/slot-0 /work/café/x+y@z) do
+        assert Zed.folder?(folder, "/work"), folder
+      end
+    end
+
+    # The address is the host followed by the path, and the VM prints the
+    # paths of its worktrees.
+    test "refuses a path that would change what the address names" do
+      for folder <- [
+            ".evil.example/work/slot-1",
+            "@evil.example/work/slot-1",
+            ":2222/work/slot-1",
+            "/work",
+            "/workshop/x",
+            "/etc/passwd",
+            "/work/../etc",
+            "/work/./app",
+            "/work/app?x=1",
+            "/work/app#x",
+            "/work/my app",
+            "/work/app\n",
+            "/work//app",
+            nil
+          ] do
+        refute Zed.folder?(folder, "/work"), inspect(folder)
+      end
+    end
+
+    test "nothing is opened for a folder it refuses" do
+      guest = Guest.local("/work")
+      assert {:error, said} = Zed.open("nobody", ".evil.example/work/slot-1", guest)
+      assert said =~ "under /work"
+    end
+  end
+
   describe "args/2" do
     @opened %{connected?: true, folders: ["/work/app", "/work/app.wt/slot-1"]}
 

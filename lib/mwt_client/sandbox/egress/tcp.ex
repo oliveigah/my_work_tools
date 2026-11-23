@@ -385,18 +385,53 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   end
 
   # A ClientHello can span TCP segments (post-quantum key shares make it
-  # large), so read until the TLS record is whole.
+  # large), and TLS records (a client may split it), so read until it is
+  # whole, up to 64 KiB.
   defp complete_record(client, data), do: complete_record(client, data, within(@record_within))
 
-  defp complete_record(client, <<0x16, _major, _minor, length::16, _::binary>> = data, by)
-       when byte_size(data) < length + 5 do
-    case :gen_tcp.recv(client, 0, left(by)) do
-      {:ok, more} -> complete_record(client, data <> more, by)
-      {:error, _} -> data
+  defp complete_record(client, <<0x16, _::binary>> = data, by)
+       when byte_size(data) < @head_limit do
+    case hello_bytes(data, "") do
+      {:partial, _so_far} ->
+        case :gen_tcp.recv(client, 0, left(by)) do
+          {:ok, more} -> complete_record(client, data <> more, by)
+          {:error, _} -> data
+        end
+
+      _whole_or_not_one ->
+        data
     end
   end
 
   defp complete_record(_client, data, _by), do: data
+
+  # A ClientHello is a handshake message, which TLS may split over several
+  # records: its bytes are their payloads, joined. `{:ok, bytes}` once
+  # they are all there, `{:partial, so_far}` while a record or the message
+  # is still coming, `:error` past 64 KiB. Read from the first record only,
+  # a hello split in two would name no host: tunnelled unread, past the
+  # rules that go by its name and past a network grant's check of it.
+  defp hello_bytes(
+         <<0x16, _major, _minor, length::16, payload::binary-size(length), rest::binary>>,
+         so_far
+       ) do
+    so_far = so_far <> payload
+
+    case so_far do
+      <<1, hello_length::24, _::binary>> when byte_size(so_far) >= hello_length + 4 ->
+        {:ok, binary_part(so_far, 0, hello_length + 4)}
+
+      _more when byte_size(so_far) >= @head_limit ->
+        :error
+
+      _more ->
+        hello_bytes(rest, so_far)
+    end
+  end
+
+  defp hello_bytes(<<0x16, _::binary>>, so_far), do: {:partial, so_far}
+  defp hello_bytes(<<>>, so_far), do: {:partial, so_far}
+  defp hello_bytes(_other, _so_far), do: :error
 
   ## What the first bytes are
 
@@ -416,10 +451,11 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   @spec first(binary()) :: first()
   def first(""), do: :silent
 
-  def first(<<0x16, _major, _minor, length::16, record::binary-size(length), _::binary>>) do
-    with <<1, _hlen::24, _version::16, _random::binary-32, sid_len, _sid::binary-size(sid_len),
+  def first(<<0x16, _::binary>> = data) do
+    with {:ok, hello} <- hello_bytes(data, ""),
+         <<1, _hlen::24, _version::16, _random::binary-32, sid_len, _sid::binary-size(sid_len),
            cs_len::16, _cs::binary-size(cs_len), comp_len, _comp::binary-size(comp_len),
-           ext_len::16, extensions::binary-size(ext_len), _::binary>> <- record do
+           ext_len::16, extensions::binary-size(ext_len), _::binary>> <- hello do
       {:tls, extensions(extensions, %{name: nil, alpn: nil})}
     else
       _ -> :other

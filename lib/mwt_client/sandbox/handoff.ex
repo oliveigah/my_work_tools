@@ -491,7 +491,11 @@ defmodule MWTClient.Sandbox.Handoff do
   end
 
   defp numstat(store, from, to, env) do
-    case HostGit.run(store, ["diff", "--numstat", "--no-renames", "-z", from, to], env: env) do
+    case HostGit.run(
+           store,
+           ["diff", "--numstat", "--no-renames", "--no-textconv", "-z", from, to],
+           env: env
+         ) do
       {:ok, output} ->
         for entry <- String.split(output, <<0>>, trim: true),
             [added, removed, path] <- [String.split(entry, "\t", parts: 3)] do
@@ -604,7 +608,14 @@ defmodule MWTClient.Sandbox.Handoff do
           {:ok, %{files: [FileDiff.t()], cut?: boolean()}} | {:error, String.t()}
   def diff(store, %__MODULE__{head: head}, merge_base) do
     HandoffStore.view(store, fn env ->
-      args = ["-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff"]
+      args = [
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv"
+      ]
 
       case HostGit.run(store, args ++ ["--find-renames", merge_base, head],
              env: env,

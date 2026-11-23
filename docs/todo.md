@@ -158,10 +158,10 @@ What it would take:
 - **Shown on the card and the grant's page**: "Mints with: X", and on X's
   page, "Used by the mint of: Y", so you see where a password goes.
 
-Decided on 2026-11-21: an agent may propose a mint command. It is shown as
-a script, and accepted only as you read it: today a proposal's Accept
-isn't bound to what its page showed (the threat model review's smaller
-gaps), so a change between your reading and your click would go through.
+Decided on 2026-11-21, built on 2026-11-23: an agent may propose a mint
+command. It is shown as a script, with a command's hints, and accepted only
+as you read it: Accept names the proposal's revision its page showed
+(`Proposal.accepts?/2`).
 
 ## What MWT doesn't read yet
 
@@ -303,50 +303,14 @@ What is known:
   enough is the organization's call, not MWT's. Decided on 2026-11-21:
   masked access is enough for now.
 
-## A crash of the sandbox server, and the grants after it
+## Resetting grants to their start settings
 
-Set aside on 2026-11-19, widened on 2026-11-21.
-`mwt propose commands --dir DIR`, with `DIR` inside a shared folder,
-crashes the sandbox's server: `Approvals.place/3`
-matches two elements, `{_where, dir} = HostCommand.place(...)`
-(`server/approvals.ex:660`), and `HostCommand.place/3` returns three for a
-folder in a share, `{:share, dir, share}` (`host_command.ex:229`, its
-`@spec` says so); a folder outside every share gives `{:home, home}` and
-works. The agent then hears "MWT is locked. Ask the user to unlock it.":
-`Channel.serve_ask/3` (`channel.ex:288`) catches every `:exit` from
-answering and reports it as a lock. Nothing is saved, and the server
-restarts.
-
-The way around today: propose without `--dir` and `cd` into the folder in
-the script, or set the folder on the subgrant's page as you review it.
-
-The fix: match both shapes (`{:share, dir, _share}`, `{:home, dir}`); and
-in `serve_ask`, say "locked" only when the store is, otherwise that MWT
-failed answering and nothing changed, with the reason in MWT's log.
-
-What the restart does matters more than the crash (the threat model
-review of 2026-11-21, finding 1, in `docs/dated/`): `Server.init/1` puts
-every grant in its start setting (`Grants.start/1`), after a crash as
-after an unlock. The review's probe turned the Internet and `mwt-read`
-off, sent the proposal, and both were on again. So a crash the VM can
-cause undoes what you turned off.
-
-Wanted:
-
-- **A restart after a crash keeps the grants as they were**: on or off,
-  their approval modes, and the time left on those turned on for a while;
-  an isolation stays. Only a start (opening MWT, unlocking) puts them in
-  their start settings. You are told the sandbox restarted, and an agent
-  whose ask was lost hears that MWT restarted and to ask again, not that
-  it is locked.
-- **A button on the Grants page: "Reset to start settings"**, which puts
-  every grant in its start setting, as a start does, without restarting
-  anything.
-- **No channel command crashes the server**: a test that sends every
-  command the channel answers with hostile fields (missing, of the wrong
-  type, huge, nested, control characters), built from the channel's own
-  list so a new command is covered, and checks the server is the same
-  process afterwards.
+Left from the threat model review of 2026-11-21 (finding 1, built on
+2026-11-23: a restart of the sandbox's server after a failure puts each
+grant back as it was, `UnlockState`, and no channel command makes it fail,
+`channel_hostile_test.exs`). Wanted still: **a button on the Grants page,
+"Reset to start settings"**, which puts every grant in its start setting,
+as opening MWT does, without restarting anything.
 
 ## Docker in the VM
 
@@ -478,24 +442,34 @@ tree, above, has no such conflict.
 
 ## From the threat model review of 2026-11-21
 
-Its findings that no section above covers. The review
-(`docs/dated/20261121-threat_model_fable5.2_review.md`) has the details,
-the code each touches, and probes for findings 1 and 2.
+Checked again against the code on 2026-11-23, and its significant
+findings fixed (guarantees 35 to 46 in `docs/agent_sandbox.md`; the
+2026-11-23 decision there). The review
+(`docs/dated/20261121-threat_model_fable5.2_review.md`) has the details of
+what is left:
 
-- **A fetch serves objects no branch or tag reaches** (finding 2). Under
-  Git protocol v2 the `uploadpack.allow*InWant` options aren't enforced, so
-  any object of your repository is served by id (a stash, a commit you
-  reset away); and a handoff's fetch tells the VM the ids of your stash and
-  remote-tracking branches.
-- **Git here runs your global configuration on the VM's objects**: a
-  `textconv`, external diff or filter of yours runs on the VM's files at
-  the review store's fetch, the Handoffs page's diff and the landing.
-- **Markdown the VM wrote makes your webview fetch addresses it chose**
-  (finding 5): a remote image in a note, diagram or flash card loads, and
-  MWT's pages have no Content-Security-Policy.
-- **Disk tools run here on images the VM wrote** (finding 6): `e2fsck` and
-  `resize2fs` parse the Home and Cache disks' file systems, as you, with no
-  bubble.
-- **Smaller gaps** are listed under its *Smaller gaps* and *Reported by the
-  area audits only*, and what the document itself misses under *Gaps in
-  the threat model*.
+- **Agent threads**: any attached `mwt-acp` can take over an open thread's
+  id and settle another's message (`agent_threads.ex`), and a handoff's
+  note goes to the thread id its ask claimed. Inside the VM's own trust,
+  but one process there can take the notes you send another.
+- **Isolation and a request subgrant's call under way**: an isolation stops
+  running commands, not a request subgrant's call already sent
+  (`server/host_runs.ex`).
+- **Who made an item**: notes, diagrams, flash cards and HTTP samples the
+  VM adds carry nothing that marks them as the VM's. Agents on this
+  machine read them through `/mcp` as yours, and a sample may point at
+  loopback or a private address for your Send.
+- **The upload rule keyed on names the VM chooses**: an unread tunnel's
+  uploads count under the TLS name it gave, so made-up names each get a
+  window, and 10,000 keys empty the map.
+- **With the firewall's switch off**, plaintext tunnels aren't looked
+  through for real values: say so where the document says a real value
+  "never goes".
+- **The document's own gaps** (the review's *Gaps in the threat model*):
+  the programs on this machine that read what the VM wrote, as attack
+  surface; what the VM holds by default; the agents' own logins; pages of
+  the VM's servers opened in your browser; standing access given at a
+  service; a column of guarantee numbers in the promises table.
+- **What needs an escape from the VM first** (the bubble's files believed
+  for state, symlinks in the disks folder, a CONNECT by name resolved
+  before the gate): left as the review lists them.

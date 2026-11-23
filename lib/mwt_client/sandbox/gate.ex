@@ -242,6 +242,22 @@ defmodule MWTClient.Sandbox.Gate do
   end
 
   @doc """
+  Records the answer for a name a token grant's host list covers, held as
+  long as a trusted name's: with the Internet off, a connection naming it
+  goes on only to an address MWT answered for it (`route/5`). A no-op for
+  any other name, or an answer with no address.
+  """
+  def remember_read(username, name, answer) do
+    with %{grants: grants} <- view(username),
+         true <- Policy.reads?(grants, name),
+         {[_ | _] = addresses, seconds} <- MWTClient.Sandbox.Dns.addresses(answer, name) do
+      answered(username, name, addresses, seconds, @trusted_hold)
+    end
+
+    :ok
+  end
+
+  @doc """
   Records the answer for a name a network grant's host list asks about or
   blocks (the Internet's included, `Grant.host_rules`), so a connection to
   one of its addresses is held by that entry even when it names another
@@ -706,6 +722,21 @@ defmodule MWTClient.Sandbox.Gate do
 
         :refuse
 
+      # With the Internet off, the VM reaches a token grant's host only
+      # there: at any other address it chose, MWT's connection would carry
+      # the name it wrote, and whatever the name holds, to a host it picked.
+      (read_only? and sni) && Policy.reads?(view.grants, sni) &&
+          not answered_name?(username, ip, sni) ->
+        log(username, %{
+          outcome: :blocked,
+          summary:
+            "#{sni} to #{:inet.ntoa(ip)}, an address MWT didn't resolve for it, with the Internet off · refused",
+          host: destination,
+          port: port
+        })
+
+        :refuse
+
       sni && Policy.reads?(view.grants, sni) ->
         {:intercept, tunnel_watch(view, ip, destination)}
 
@@ -929,9 +960,23 @@ defmodule MWTClient.Sandbox.Gate do
   def authorize(username, %Request{driver: Http1, plain?: true} = request) do
     # Over plain HTTP the name is the client's word: a host list holds it by
     # the strictest of that and the names MWT's DNS answered for the
-    # address it goes to.
+    # address it goes to. A network grant opened by a name it lists goes on
+    # only for a name MWT answered for that address and the grant covers,
+    # as its TLS connections do by the name in their ClientHello (`route/5`):
+    # a shared address (an ingress) serves other names by their Host.
     names = Map.get(answered_for(username, request.ip), Destinations.unmap(request.ip), [])
-    authorize(username, request |> Http1.message() |> Map.put(:names, names))
+    message = request |> Http1.message() |> Map.put(:names, names)
+    view = view(username)
+
+    case name_mismatch(username, view, request.under, request.ip, request.port, request.name) do
+      nil ->
+        authorize(username, message)
+
+      grant ->
+        {event, nil, answer} = Values.refusal({:name_not_granted, grant}, message)
+        log(username, event)
+        answer
+    end
   end
 
   def authorize(username, %Request{driver: Http1} = request),

@@ -154,7 +154,11 @@ defmodule MWTClient.Sandbox.Proposal do
 
   @doc """
   Who proposed it, as the grant keeps it (`Grant.proposal`): the agent, its
-  thread, why, how long it asked for, and when; not reviewed yet.
+  thread, why, how long it asked for, and when; not reviewed yet. Its
+  `revision` is new each time the agent proposes it, a changed one
+  included: accepting names the revision the page showed, so one the agent
+  changed between your reading and your click isn't accepted
+  (`accepts?/2`).
   """
   @spec stamp(map(), DateTime.t()) :: Grant.proposal()
   def stamp(said, now) do
@@ -164,9 +168,19 @@ defmodule MWTClient.Sandbox.Proposal do
       reason: said.reason,
       minutes: said.minutes,
       at: now,
-      reviewed_at: nil
+      reviewed_at: nil,
+      revision: 9 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
     }
   end
+
+  @doc """
+  Whether accepting from a page that showed `revision` accepts `proposal`
+  as the agent last proposed it. A proposal saved before revisions has
+  none, and a page showing it sends none.
+  """
+  @spec accepts?(Grant.proposal(), String.t() | nil) :: boolean()
+  def accepts?(proposal, revision),
+    do: to_string(Map.get(proposal, :revision)) == to_string(revision)
 
   @order [
     :kind,

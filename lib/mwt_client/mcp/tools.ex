@@ -100,9 +100,10 @@ defmodule MWTClient.MCP.Tools do
             |> then_run(name, args, caller)
 
           # Nothing would change, or it is based on an older version: the
-          # library answers that as it does for anyone, with nothing to ask.
+          # library answers with the item as it is, so for the gate it is a
+          # read, under the read grant, counted as one.
           :same ->
-            run(name, args, caller)
+            name |> read_use(args) |> gate.() |> then_run(name, args, caller)
 
           :error ->
             {:ok, failure("Item not found in this identity.")}

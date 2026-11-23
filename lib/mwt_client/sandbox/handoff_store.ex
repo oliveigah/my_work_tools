@@ -81,11 +81,18 @@ defmodule MWTClient.Sandbox.HandoffStore do
         do: branch,
         else: "refs/heads/" <> branch
 
+    # Git tells the side it fetches from what it has already, as the tips
+    # of its refs and of the refs of the repository it borrows from: yours.
+    # Those it offers the VM are only your branches and tags, which
+    # host-origin serves anyway, never your stash or another remote's
+    # branches, whose ids would let the VM ask for them.
     case HostGit.run(
            store,
-           ["fetch", "--no-tags", "--no-write-fetch-head", guest.git_url.(folder)] ++
+           ["-c", "core.alternateRefsPrefixes=refs/heads/ refs/tags/"] ++
+             ["fetch", "--no-tags", "--no-write-fetch-head", guest.git_url.(folder)] ++
              ["+#{source}:#{ref(id)}"],
-           env: guest.env,
+           # None of your git configuration: the fetch is MWT's.
+           env: guest.env ++ Guest.git_env(),
            seconds: 600,
            file_limit: limit
          ) do
@@ -215,6 +222,10 @@ defmodule MWTClient.Sandbox.HandoffStore do
       {:found, label, where} ->
         stop(port)
         {label, where}
+
+      {:unreadable, reason} ->
+        stop(port)
+        {:error, reason}
     end
   end
 
@@ -243,8 +254,9 @@ defmodule MWTClient.Sandbox.HandoffStore do
             current = {id, type, String.to_integer(size), Scanner.new(secrets)}
             read_batch(rest, current, names, secrets)
 
-          [_id, "missing"] ->
-            read_batch(rest, nil, names, secrets)
+          # Not looked through is not found clean.
+          [id, "missing"] ->
+            {:unreadable, "#{id} is missing"}
         end
 
       [_partial] ->
@@ -301,17 +313,22 @@ defmodule MWTClient.Sandbox.HandoffStore do
   @doc """
   Runs `fun` with the environment in which git, run in the store or in
   your repository, sees both histories and writes what it makes into a
-  folder of its own, deleted when `fun` returns.
+  folder of its own, deleted when `fun` returns. It reads no
+  configuration of yours but the repository's own: a `textconv`, an
+  external diff or a merge driver in your global configuration would run
+  on the VM's files, which the VM's `.gitattributes` can point at.
   """
   @spec view(Path.t(), ([{String.t(), String.t()}] -> result)) :: result when result: var
   def view(store, fun) do
     # A folder only you can open: objects git reads from it are its own.
     Scratch.with_dir("mwt-view", fn scratch ->
-      fun.([
-        {"GIT_OBJECT_DIRECTORY", scratch},
-        # The store's own alternates lead on to your repository's objects.
-        {"GIT_ALTERNATE_OBJECT_DIRECTORIES", Path.join(store, "objects")}
-      ])
+      fun.(
+        [
+          {"GIT_OBJECT_DIRECTORY", scratch},
+          # The store's own alternates lead on to your repository's objects.
+          {"GIT_ALTERNATE_OBJECT_DIRECTORIES", Path.join(store, "objects")}
+        ] ++ Guest.git_env()
+      )
     end)
   end
 
@@ -352,9 +369,11 @@ defmodule MWTClient.Sandbox.HandoffStore do
     with {:ok, _} <-
            HostGit.run(
              repo,
-             ["fetch", "--no-tags", "--no-write-fetch-head", store, "+#{source}:#{target}"],
+             ["-c", "core.hooksPath=/dev/null"] ++
+               ["fetch", "--no-tags", "--no-write-fetch-head", store, "+#{source}:#{target}"],
              seconds: 600
            ),
+         # Your repository's hooks don't run on the VM's commits.
          commit when is_binary(commit) <- HostGit.line(repo, ["rev-parse", "--verify", target]) do
       {:ok, commit}
     else

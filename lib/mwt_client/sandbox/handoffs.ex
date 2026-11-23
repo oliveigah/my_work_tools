@@ -44,6 +44,7 @@ defmodule MWTClient.Sandbox.Handoffs do
           | :not_accepted
           | :not_closed
           | {:revised, pos_integer()}
+          | {:unscanned, String.t()}
           | Handoff.refusal()
           | Accept.problem()
           | String.t()
@@ -117,6 +118,9 @@ defmodule MWTClient.Sandbox.Handoffs do
 
           {:error, _} ->
             {:error, :unrelated}
+
+          {:unscanned, reason} ->
+            {:error, {:unscanned, reason}}
 
           {grant, where} ->
             Server.call(username, {:found, {:value, grant}, "handoff ##{id}, #{where}", :handoff})
@@ -308,6 +312,8 @@ defmodule MWTClient.Sandbox.Handoffs do
 
   # The grant whose real value the handoff brings, and where, or nil: in
   # its words, its commits or its files. Nothing in the VM should hold one.
+  # What MWT couldn't look through is `{:unscanned, why}`, never nil: a
+  # handoff it couldn't read whole isn't one it found nothing in.
   defp real_value(username, store, handoff, base) do
     secrets = Server.call(username, :secrets)
     words = [handoff.title, handoff.body] |> Enum.filter(&is_binary/1)
@@ -318,8 +324,9 @@ defmodule MWTClient.Sandbox.Handoffs do
 
       nil ->
         case HandoffStore.find(store, handoff.head, base, secrets) do
+          nil -> nil
           {{:value, grant}, where} -> {grant, where}
-          _nothing_or_unreadable -> nil
+          {:error, reason} -> {:unscanned, reason}
         end
     end
   end
@@ -1225,6 +1232,10 @@ defmodule MWTClient.Sandbox.Handoffs do
   def explain({:real_value, grant, where}),
     do:
       "MWT refused this handoff: #{where} holds #{grant}'s real value, which nothing in the VM should have. Nothing was handed off. The user has been told; don't send it again."
+
+  def explain({:unscanned, reason}),
+    do:
+      "MWT couldn't look through everything this handoff brings for real values (#{reason}), so it wasn't handed off. Try again; if it fails again, tell the user."
 
   def explain(:not_found), do: "That handoff is gone."
 

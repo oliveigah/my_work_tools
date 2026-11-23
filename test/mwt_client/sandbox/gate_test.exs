@@ -203,6 +203,8 @@ defmodule MWTClient.Sandbox.GateTest do
     } do
       grant = github(username)
       {:ok, _} = Sandbox.turn_off(username, "internet")
+      # MWT's DNS answered the name with the address the proxy is asked for.
+      :ok = Gate.answered(username, "api.github.com", [{140, 82, 112, 3}], 300)
       net = SandboxProxy.start(username)
 
       response =
@@ -351,6 +353,25 @@ defmodule MWTClient.Sandbox.GateTest do
       :ok =
         Gate.remember_listed(username, "harmless.example", a_answer("harmless.example", other))
 
+      assert Map.get(Gate.answered_for(username, other), other) in [nil, []]
+    end
+  end
+
+  describe "with the Internet off, a token grant's host is reached only where MWT's DNS said" do
+    test "its answer is kept; a connection naming it elsewhere is refused", %{username: username} do
+      _grant = github(username)
+      {:ok, _} = Sandbox.turn_off(username, "internet")
+      ip = {160, 1, 2, 20}
+
+      assert :refuse = Gate.route(username, ip, 443, "api.github.com", :read_only)
+
+      :ok = Gate.remember_read(username, "api.github.com", a_answer("api.github.com", ip))
+      assert ["api.github.com"] = Map.get(Gate.answered_for(username, ip), ip)
+      assert {:intercept, _watch} = Gate.route(username, ip, 443, "api.github.com", :read_only)
+
+      # A name no token grant reads is not kept.
+      other = {160, 1, 2, 21}
+      :ok = Gate.remember_read(username, "example.com", a_answer("example.com", other))
       assert Map.get(Gate.answered_for(username, other), other) in [nil, []]
     end
   end

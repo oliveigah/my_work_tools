@@ -740,6 +740,23 @@ defmodule MWTClient.Sandbox.Server.Values do
      )}
   end
 
+  def refusal({:name_not_granted, grant}, request) do
+    {request_event(
+       request,
+       grant,
+       :blocked,
+       "#{request.host} isn't a name MWT answered for this address under #{grant.name} · refused"
+     ), nil,
+     deny(
+       403,
+       "mwt_name_not_granted",
+       "#{request.host} isn't one of the names #{grant.name} opens at this address: it opens " <>
+         "only the names it lists, at the addresses MWT's DNS gave for them. Ask the user for " <>
+         "a grant that lists it.",
+       grant
+     )}
+  end
+
   def refusal({:plain_http, grant}, request) do
     {request_event(
        request,

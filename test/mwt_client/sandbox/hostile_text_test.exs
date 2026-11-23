@@ -24,6 +24,7 @@ defmodule MWTClient.Sandbox.HostileTextTest do
     HostCommand,
     HostGit,
     RequestView,
+    Secrets,
     Shown
   }
 
@@ -486,6 +487,62 @@ defmodule MWTClient.Sandbox.HostileTextTest do
       end
     end
 
+    test "its fetch tells the VM of no ref of yours it doesn't already see" do
+      context = repository()
+      File.write!(Path.join(context.repo, "secret.env"), "API_KEY=only-in-the-stash\n")
+      git(context.repo, ["add", "secret.env"])
+      git(context.repo, ["stash", "push", "-q", "-m", "wip"])
+      stash = context.repo |> git(["rev-parse", "refs/stash"]) |> String.trim()
+      git(context.repo, ["checkout", "-q", "-b", "colleague"])
+      File.write!(Path.join(context.repo, "b.txt"), "theirs\n")
+      git(context.repo, ["add", "b.txt"])
+      git(context.repo, ["commit", "-q", "-m", "colleague's work"])
+      colleague = context.repo |> git(["rev-parse", "HEAD"]) |> String.trim()
+      git(context.repo, ["checkout", "-q", "master"])
+      git(context.repo, ["update-ref", "refs/remotes/upstream/colleague", colleague])
+      git(context.repo, ["branch", "-q", "-D", "colleague"])
+      master = context.repo |> git(["rev-parse", "master"]) |> String.trim()
+
+      trace = Path.join(Path.dirname(context.store), "trace.txt")
+      context = %{context | guest: %{context.guest | env: [{"GIT_TRACE_PACKET", trace}]}}
+      File.write!(Path.join(context.clone, "vm.txt"), "vm\n")
+
+      assert {:ok, _handoff} = open(context)
+      haves = trace |> File.read!() |> String.split("\n") |> Enum.filter(&(&1 =~ "fetch> have "))
+      assert Enum.any?(haves, &(&1 =~ master))
+      refute Enum.any?(haves, &(&1 =~ stash))
+      refute Enum.any?(haves, &(&1 =~ colleague))
+    end
+
+    # Your own attributes (a global attributes file; here the store's
+    # `info/attributes`, which a bare repository reads) can name a driver
+    # your configuration defines: it would run on the VM's files.
+    test "its diff and facts run no configured diff driver on the VM's files" do
+      context = repository()
+      dir = Path.dirname(context.store)
+      marker = Path.join(dir, "driver-ran")
+      script = Path.join(dir, "conv.sh")
+      File.write!(script, "#!/bin/sh\ntouch #{marker}\ncat \"$1\"\n")
+      File.chmod!(script, 0o755)
+      git(context.store, ["config", "diff.evil.textconv", script])
+      git(context.store, ["config", "diff.evil.command", script])
+
+      File.mkdir_p!(Path.join(context.store, "info"))
+      File.write!(Path.join([context.store, "info", "attributes"]), "*.txt diff=evil\n")
+      File.write!(Path.join(context.clone, "a.txt"), "changed by the VM\n")
+      assert {:ok, handoff} = open(context)
+
+      assert {:ok, facts} = Handoff.facts(context.store, handoff)
+      assert {:ok, diff} = Handoff.diff(context.store, handoff, facts.merge_base)
+      assert Enum.any?(diff.files, &(&1.path == "a.txt"))
+      refute File.exists?(marker)
+
+      # Nor anything of your global configuration.
+      env = HandoffStore.view(context.store, & &1)
+      assert {"GIT_CONFIG_GLOBAL", "/dev/null"} in env
+      assert {"GIT_CONFIG_NOSYSTEM", "1"} in env
+    end
+
     test "shows all it holds: file names, commit messages and the diff" do
       context = repository()
       File.write!(Path.join(context.clone, <<"caf", 0xE9, ".txt">>), "latin-1 name\n")
@@ -523,6 +580,60 @@ defmodule MWTClient.Sandbox.HostileTextTest do
 
       assert git(context.repo, ["ls-tree", "--name-only", "mwt/hostile-review"]) =~ "latin1.txt"
       refute File.exists?(Path.join(context.repo, <<"caf", 0xE9, ".txt">>))
+    end
+
+    test "lands with no hook of your repository run on the VM's commits" do
+      context = repository()
+      marker = Path.join(Path.dirname(context.store), "hook-ran")
+      hooks = Path.join([context.repo, ".git", "hooks"])
+      File.mkdir_p!(hooks)
+
+      for hook <- ~w(reference-transaction post-merge post-checkout) do
+        File.write!(Path.join(hooks, hook), "#!/bin/sh\ntouch #{marker}\n")
+        File.chmod!(Path.join(hooks, hook), 0o755)
+      end
+
+      File.write!(Path.join(context.clone, "b.txt"), "the VM's\n")
+      assert {:ok, handoff} = open(context)
+      git(context.repo, ["config", "user.name", "You"])
+      git(context.repo, ["config", "user.email", "you@example.test"])
+
+      assert {:ok, _landed} = Accept.run(context.store, handoff, {:commit, "master"})
+      assert File.read!(Path.join(context.repo, "b.txt")) == "the VM's\n"
+      refute File.exists?(marker)
+    end
+
+    # Not looked through is not found clean: a handoff MWT couldn't read
+    # whole isn't opened as one with no real value in it.
+    test "its scan for real values says when it couldn't read all it brings" do
+      context = repository()
+      secrets = Secrets.new([{{:value, "GitHub"}, Secrets.forms("ghp_REAL_value_0123456789")}])
+      missing = String.duplicate("1", 40)
+
+      {tree, 0} =
+        System.cmd(
+          "bash",
+          [
+            "-c",
+            ~s(printf '100644 blob %s\tsecret.env\n' "$1" | git -C "$2" mktree --missing),
+            "x"
+          ] ++
+            [missing, context.store],
+          env: Guest.git_env()
+        )
+
+      {commit, 0} =
+        System.cmd("git", ["-C", context.store, "commit-tree", String.trim(tree), "-m", "x"],
+          env:
+            Guest.git_env() ++
+              [{"GIT_AUTHOR_NAME", "t"}, {"GIT_AUTHOR_EMAIL", "t@t"}] ++
+              [{"GIT_COMMITTER_NAME", "t"}, {"GIT_COMMITTER_EMAIL", "t@t"}]
+        )
+
+      assert {:error, reason} =
+               HandoffStore.find(context.store, String.trim(commit), nil, secrets)
+
+      assert reason =~ missing
     end
 
     test "has only the start of a long diff read, and says so" do

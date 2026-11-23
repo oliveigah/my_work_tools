@@ -190,6 +190,23 @@ defmodule MWTClient.Sandbox.MwtToolsTest do
     assert Sandbox.snapshot(username).waiting == []
   end
 
+  # Its answer is the item as it is: with the read grant off, the VM would
+  # read it by its id and a version.
+  test "a change that changes nothing is a read, refused with the read grant off",
+       %{username: username} do
+    {:ok, note} = Notes.save(username, Note.new_id(), %{title: "Keys", body: "private"})
+    {:ok, _} = Notes.save(username, note.id, %{body: "still private"})
+    {:ok, _} = Sandbox.turn_off(username, "mwt-read")
+
+    for args <- [change(note, 2, "still private"), change(note, 1, "x")] do
+      said = error!(call(vm(username), "update_note", args))
+      assert said =~ "MWT: read is off"
+      refute said =~ "still private"
+    end
+
+    assert Sandbox.snapshot(username).waiting == []
+  end
+
   test "with a grant off, its tools say which, and how to ask for it", %{username: username} do
     {:ok, _} = Sandbox.turn_off(username, "mwt-read")
 

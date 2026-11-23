@@ -46,6 +46,23 @@ defmodule MWTClient.MarkdownTest do
     assert html =~ "<code>&lt;b&gt;code&lt;/b&gt;</code>"
   end
 
+  test "an image is a link to its address, never loaded" do
+    html =
+      Markdown.to_html(
+        "![status](http://127.0.0.1:8080/admin?do=1) ![](https://example.invalid/p.gif?d=c2VjcmV0)"
+      )
+
+    refute html =~ "<img"
+
+    assert html =~
+             ~s(<a target="_blank" rel="noopener noreferrer" href="http://127.0.0.1:8080/admin?do=1">status</a>)
+
+    assert html =~
+             ~s(href="https://example.invalid/p.gif?d=c2VjcmV0">https://example.invalid/p.gif?d=c2VjcmV0</a>)
+
+    refute Markdown.to_html("![x](javascript:alert(1))") =~ "javascript:"
+  end
+
   test "links open outside the app" do
     html = Markdown.to_html("[docs](https://example.com) and https://elixir-lang.org")
 

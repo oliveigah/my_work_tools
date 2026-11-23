@@ -286,11 +286,19 @@ defmodule MWTClient.Sandbox do
   as you do on its page: reviewed, yours from now on. With
   `{minutes, uses}` it also turns on, which answers the agent waiting for
   it; with `:keep_off` it stays off. A token grant with no value yet can't
-  be enabled: `{:error, :no_value}`.
+  be enabled: `{:error, :no_value}`. `revision` is the proposal's as the
+  page showed it (`Grant.proposal`): one the agent changed since is
+  `{:error, :changed}`, not accepted.
   """
-  @spec review(username(), String.t(), :keep_off | {pos_integer() | :until_off, :ask | :all}) ::
-          {:ok, Grant.t()} | {:error, :not_found | :reviewed | :no_value}
-  def review(username, id, enable), do: Server.call(username, {:review, id, enable})
+  @spec review(
+          username(),
+          String.t(),
+          :keep_off | {pos_integer() | :until_off, :ask | :all},
+          String.t() | nil
+        ) ::
+          {:ok, Grant.t()} | {:error, :not_found | :reviewed | :no_value | :changed}
+  def review(username, id, enable, revision),
+    do: Server.call(username, {:review, id, enable, revision})
 
   @doc """
   Gives a grant that is on a new duration, counted from now: `minutes`, or

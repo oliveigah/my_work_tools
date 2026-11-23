@@ -70,6 +70,28 @@ defmodule MWTClient.Sandbox.RequestViewTest do
              )
   end
 
+  # A card is made for an HTTP/2 stream whose body is still coming.
+  test "a body MWT didn't read before the card is never said to be none" do
+    assert %{format: :unread, complete?: false} =
+             RequestView.body(request(%{body: "", body_whole?: false}))
+
+    assert %{format: :none, complete?: true} =
+             RequestView.body(request(%{body: "", body_whole?: true}))
+
+    assert %{format: :text, complete?: false} =
+             RequestView.body(request(%{body: "the start", body_whole?: false}))
+
+    assert RequestView.raw(request(%{body: "", body_whole?: false}), []) =~ "[body not read"
+  end
+
+  test "a GraphQL body naming a key twice is shown as the JSON it is, both keys in it" do
+    twice = ~s|{"query":"query V { viewer { login } }","query":"mutation { delete }"}|
+
+    assert %{format: :json, text: text} = RequestView.body(request(%{body: twice}))
+    assert text =~ "query V"
+    assert text =~ "mutation { delete }"
+  end
+
   test "bodies are shown for what they are" do
     json = ~s({"z":1,"a":{"b":[1,2]}})
 

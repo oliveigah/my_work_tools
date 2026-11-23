@@ -1643,12 +1643,24 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           grant.kind == :token and grant.source == :stored and not Grant.subgrants_only?(grant) and
             not assigns.has_value,
         hints:
-          if(Grant.saved_command?(grant),
-            do:
+          cond do
+            Grant.saved_command?(grant) ->
               MWTClient.Sandbox.Param.hints(grant.params, grant.script) ++
-                MWTClient.Sandbox.HostCommand.hints(grant.script, assigns.grants),
-            else: []
-          )
+                MWTClient.Sandbox.HostCommand.hints(grant.script, assigns.grants)
+
+            # A mint the agent wrote runs as you, unconfined, whenever the
+            # value is needed: read like a command's script.
+            match?({:minted, _}, grant.source) ->
+              {:minted, command} = grant.source
+
+              [
+                "Its mint is a command the agent wrote. It runs on this machine as you, outside any bubble, each time the value is needed, with no ask."
+                | MWTClient.Sandbox.HostCommand.hints(command, assigns.grants)
+              ]
+
+            true ->
+              []
+          end
       )
 
     ~H"""
@@ -1703,6 +1715,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           id="grant-accept-enable"
           phx-click="review_grant"
           phx-value-id={@grant.id}
+          phx-value-revision={Map.get(@proposal, :revision)}
           phx-value-enable={@minutes}
           disabled={@needs_value? or Grant.subgrants_only?(@grant)}
           class="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-violet px-3 py-1.5 text-xs font-semibold text-deep transition-all hover:brightness-110 active:brightness-95 disabled:cursor-default disabled:opacity-40 disabled:hover:brightness-100"
@@ -1715,6 +1728,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           id="grant-accept"
           phx-click="review_grant"
           phx-value-id={@grant.id}
+          phx-value-revision={Map.get(@proposal, :revision)}
           phx-value-enable="keep_off"
           class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-line bg-panel px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-accent/50 hover:bg-accent-soft/30 hover:text-accent"
         >
@@ -1986,9 +2000,11 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         <%= case @grant.source do %>
           <% {:minted, command} -> %>
             <p class="text-[11px] text-ink">Minted on this machine when needed, by</p>
-            <code class="mt-1 block break-all rounded-md border border-line-soft bg-deep px-2 py-1.5 font-mono text-[10px] leading-4 text-muted">
-              {command}
-            </code>
+            <pre
+              id={"grant-mint-command-#{@grant.id}"}
+              class="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-line-soft bg-deep/50 p-2 font-mono text-[11px] text-ink"
+              phx-no-format
+            >{command}</pre>
             <.kept_line grant={@grant} />
           <% :stored -> %>
             <p class="text-[11px] text-ink">Stored in your vault</p>
@@ -2081,9 +2097,11 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           <%= case @grant.source do %>
             <% {:minted, command} -> %>
               <p class="text-[11px] text-ink">Minted on this machine when needed, by</p>
-              <code class="mt-1 block break-all rounded-md border border-line-soft bg-deep px-2 py-1.5 font-mono text-[10px] leading-4 text-muted">
-                {command}
-              </code>
+              <pre
+                id={"grant-mint-command-#{@grant.id}"}
+                class="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-line-soft bg-deep/50 p-2 font-mono text-[11px] text-ink"
+                phx-no-format
+              >{command}</pre>
               <.kept_line grant={@grant} />
             <% :stored -> %>
               <p class="text-[11px] text-ink">Stored in your vault</p>

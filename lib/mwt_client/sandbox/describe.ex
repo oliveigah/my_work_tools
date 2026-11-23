@@ -40,7 +40,7 @@ defmodule MWTClient.Sandbox.Describe do
 
   require Logger
 
-  alias MWTClient.Sandbox.{Chunked, GraphQL, Shown}
+  alias MWTClient.Sandbox.{Chunked, GraphQL, Shown, StrictJson}
 
   @type request :: %{
           required(:host) => String.t(),
@@ -320,7 +320,7 @@ defmodule MWTClient.Sandbox.Describe do
   # same name is not.
   defp graphql(request) do
     {label, fields, variables, digest} =
-      case Jason.decode(request.body) do
+      case StrictJson.decode(request.body) do
         {:ok, %{"query" => document} = body} when is_binary(document) ->
           name = if is_binary(body["operationName"]), do: body["operationName"]
           variables = if is_map(body["variables"]), do: body["variables"], else: %{}
@@ -377,7 +377,7 @@ defmodule MWTClient.Sandbox.Describe do
 
   defp rest(request, route) do
     body_claims =
-      case Jason.decode(request.body) do
+      case StrictJson.decode(request.body) do
         {:ok, %{} = json} -> claims(json)
         _ -> []
       end

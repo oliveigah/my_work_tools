@@ -11,6 +11,8 @@ defmodule MWTClient.Sandbox.EgressReadTest do
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.CertificateAuthority, as: CA
   alias MWTClient.Sandbox.Egress.Tcp
+  alias MWTClient.Sandbox.Gate
+  alias MWTClient.Vault.Store
 
   @mib 1024 * 1024
 
@@ -286,6 +288,30 @@ defmodule MWTClient.Sandbox.EgressReadTest do
     assert Tcp.handshake_failure({:tls_alert, {:decode_error, ~c"x"}}) =~ "decode error"
   end
 
+  # Its connection would carry the name the VM wrote to a host the VM
+  # picked: data out, with the Internet off.
+  test "with the Internet off, a token grant's host is reached only where MWT's DNS said", %{
+    username: username,
+    ca: ca
+  } do
+    _grant = github(username)
+    {:ok, _} = Sandbox.turn_off(username, "internet")
+    :ok = Gate.answered(username, "api.github.com", [{140, 82, 112, 3}], 300)
+    proxy = proxy(username, upstream())
+
+    assert {:error, _refused} = tls(proxy, "203.0.113.9:8443", "api.github.com", [ca])
+    refute_receive {:target, _}, 100
+    _ = :sys.get_state(Store.whereis(MWTClient.Sandbox.Server, username))
+
+    assert Enum.any?(
+             Sandbox.events(username),
+             &(&1.summary =~ "an address MWT didn't resolve for it, with the Internet off")
+           )
+
+    request = "GET /meta HTTP/1.1\r\nHost: api.github.com\r\n\r\n"
+    assert https(proxy, "140.82.112.3:443", ca, "api.github.com", request) =~ "HTTP/1.1 200 OK"
+  end
+
   test "with the Internet off, a token grant's host is reached only while that grant is on", %{
     username: username,
     ca: ca
@@ -293,6 +319,9 @@ defmodule MWTClient.Sandbox.EgressReadTest do
     grant = github(username)
     {:ok, _} = Sandbox.turn_off(username, "internet")
     {:ok, _} = Sandbox.turn_off(username, grant.id)
+    # MWT's DNS answered the name with that address, as it does a token
+    # grant's host with the Internet off.
+    :ok = Gate.answered(username, "api.github.com", [{140, 82, 112, 3}], 300)
     proxy = proxy(username, upstream())
     request = "GET /meta HTTP/1.1\r\nHost: api.github.com\r\n\r\n"
 

@@ -61,12 +61,36 @@ defmodule MWTClient.Sandbox.Zed do
   @spec command(Path.t()) :: String.t()
   def command(folder), do: "zed #{url(folder)}"
 
+  @doc """
+  Whether `folder` may go into Zed's address: a path under `root`, the
+  VM's `/work`, of letters, digits and `._+@~-`, with no `.` or `..` step.
+  The address is the host's name followed by the path, so a path that
+  doesn't start with `/` names another host (`.evil.example/x` gives
+  `ssh://mwt-sandbox.evil.example/x`), and one with `?`, `#` or a space
+  says something else than the folder. The paths of the VM's worktrees
+  are what git there prints, so the VM chooses them.
+  """
+  @spec folder?(String.t(), Path.t()) :: boolean()
+  def folder?(folder, root) when is_binary(folder) do
+    String.starts_with?(folder, root <> "/") and
+      Regex.match?(~r"\A(/[\p{L}\p{N}._+@~-]+)+\z"u, folder) and
+      not Enum.any?(Path.split(folder), &(&1 in [".", ".."]))
+  end
+
+  def folder?(_folder, _root), do: false
+
   @doc "Opens `folder` of the VM in Zed, looking first at what Zed has open in `guest`, the VM."
   @spec open(String.t(), Path.t(), Guest.t()) :: :ok | {:error, error()}
   def open(username, folder, guest) do
-    case Application.get_env(:mwt_client, __MODULE__, [])[:open] do
-      nil -> launch(username, folder, guest)
-      fun -> fun.(username, url(folder))
+    cond do
+      not folder?(folder, guest.root) ->
+        {:error, "MWT opens only folders under #{guest.root} in Zed, named in plain characters."}
+
+      fun = Application.get_env(:mwt_client, __MODULE__, [])[:open] ->
+        fun.(username, url(folder))
+
+      true ->
+        launch(username, folder, guest)
     end
   end
 

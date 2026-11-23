@@ -833,7 +833,7 @@ defmodule MWTClient.Sandbox.FolderSync do
       not File.dir?(root) ->
         {:error, :missing}
 
-      kind == :share and git_entry?(root) ->
+      kind == :share and repository?(root) ->
         {:ok, %{project?: true, trees: [""]}}
 
       inside = kind == :share && enclosing(Path.dirname(root)) ->
@@ -896,7 +896,7 @@ defmodule MWTClient.Sandbox.FolderSync do
   defp add(acc, rel, abs, now) do
     case File.lstat(abs, time: :posix) do
       {:ok, %File.Stat{type: :directory}} ->
-        if acc.kind == :share and git_entry?(abs),
+        if acc.kind == :share and repository?(abs),
           do: {:ok, %{acc | trees: [rel | acc.trees]}},
           else: counted(%{acc | entries: Map.put(acc.entries, rel, :dir)}, :dir)
 
@@ -991,13 +991,25 @@ defmodule MWTClient.Sandbox.FolderSync do
   @spec enclosing(Path.t()) :: Path.t() | nil
   def enclosing(path) do
     cond do
-      git_entry?(path) -> path
+      repository?(path) -> path
       path == "/" -> nil
       true -> enclosing(Path.dirname(path))
     end
   end
 
-  defp git_entry?(dir), do: match?({:ok, _}, File.lstat(Path.join(dir, ".git")))
+  # A repository: a folder with a `.git` entry, its working tree, or a git
+  # folder itself, as git tells one (`HEAD`, `objects/` and `refs/`): a bare
+  # repository, a mirror, the target of `--separate-git-dir`. Either is left
+  # out of the copy: a git folder holds its `config`, whose remote URLs can
+  # carry a token, its hooks, and every object, uncommitted work stashed.
+  defp repository?(dir),
+    do: match?({:ok, _}, File.lstat(Path.join(dir, ".git"))) or git_folder?(dir)
+
+  defp git_folder?(dir) do
+    match?({:ok, %File.Stat{type: :regular}}, File.lstat(Path.join(dir, "HEAD"))) and
+      match?({:ok, %File.Stat{type: :directory}}, File.lstat(Path.join(dir, "objects"))) and
+      match?({:ok, %File.Stat{type: :directory}}, File.lstat(Path.join(dir, "refs")))
+  end
 
   @doc """
   One sync of each folder in `records` (by path), one after the other, for

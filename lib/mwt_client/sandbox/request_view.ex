@@ -21,14 +21,14 @@ defmodule MWTClient.Sandbox.RequestView do
   what you read.
   """
 
-  alias MWTClient.Sandbox.{Chunked, Grant, Shown}
+  alias MWTClient.Sandbox.{Chunked, Grant, Shown, StrictJson}
 
   @type request :: MWTClient.Sandbox.Approval.request()
   @type mark :: %{placeholder: String.t(), variable: String.t(), label: String.t()}
   @type segment :: {:text, String.t()} | {:mark, String.t()}
 
   @type body :: %{
-          format: :none | :json | :graphql | :form | :git | :text | :binary,
+          format: :none | :unread | :json | :graphql | :form | :git | :text | :binary,
           text: String.t(),
           kept: non_neg_integer(),
           size: non_neg_integer() | nil,
@@ -96,13 +96,23 @@ defmodule MWTClient.Sandbox.RequestView do
   def body(request) do
     {data, complete?, framing} = dechunk(request)
     size = declared_size(request)
-    complete? = complete? and (is_nil(size) or size <= byte_size(data))
+
+    # An HTTP/2 stream says itself whether MWT read it whole: a card is
+    # made for one whose body is still coming (`Driver.Http2`).
+    complete? =
+      complete? and Map.get(request, :body_whole?, true) and
+        (is_nil(size) or size <= byte_size(data))
+
     type = header(request, "content-type") || ""
 
     {format, text} =
       cond do
-        data == "" ->
+        data == "" and complete? ->
           {:none, ""}
+
+        # A body none of which came before the card: not one that is empty.
+        data == "" ->
+          {:unread, ""}
 
         # Chunked framing MWT doesn't read as a host would: the bytes as
         # they came, byte for byte, where a CR or a LF tells.
@@ -155,6 +165,9 @@ defmodule MWTClient.Sandbox.RequestView do
       case body do
         %{format: :none} ->
           []
+
+        %{format: :unread} ->
+          ["", "[body not read: none of it had come when MWT made the card]"]
 
         %{format: :binary} ->
           ["", "[#{size_words(body)} of binary data, not included]"]
@@ -251,8 +264,15 @@ defmodule MWTClient.Sandbox.RequestView do
 
   defp json(data) do
     with first when first in ["{", "["] <- data |> String.trim_leading() |> String.first(),
-         {:ok, plain} <- Jason.decode(data),
          {:ok, ordered} <- Jason.decode(data, objects: :ordered_objects) do
+      # A key named twice reads two ways (`StrictJson`): shown as the JSON
+      # it is, both keys in it, never as one GraphQL document.
+      plain =
+        case StrictJson.decode(data) do
+          {:ok, plain} -> plain
+          :error -> nil
+        end
+
       case plain do
         %{"query" => query} when is_binary(query) ->
           variables =

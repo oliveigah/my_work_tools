@@ -9,6 +9,7 @@ defmodule MWTClientWeb.Router do
     plug :put_root_layout, html: {MWTClientWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
+    plug MWTClientWeb.Plugs.ContentSecurityPolicy
   end
 
   pipeline :api do
@@ -81,7 +82,9 @@ defmodule MWTClientWeb.Router do
     scope "/dev" do
       pipe_through :browser
 
-      live_dashboard "/dashboard", metrics: MWTClientWeb.Telemetry
+      live_dashboard "/dashboard",
+        metrics: MWTClientWeb.Telemetry,
+        csp_nonce_assign_key: :csp_nonce
     end
   end
 end

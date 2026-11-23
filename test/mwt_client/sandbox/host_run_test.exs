@@ -115,7 +115,10 @@ defmodule MWTClient.Sandbox.HostRunTest do
     assert %{exit: exit, timed_out: false} = Task.await(task, 5_000)
     # Some versions of timeout answer 124 to being stopped too.
     assert exit in [124, 137, 143]
-    assert group_pids(group) == []
+    # The group's last processes may still be exiting when timeout has.
+    assert Enum.find_value(1..200, fn _ ->
+             group_pids(group) == [] || (Process.sleep(10) && nil)
+           end)
   end
 
   describe "what the command leaves behind doesn't keep the run going" do
