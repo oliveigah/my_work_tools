@@ -51,10 +51,10 @@ the VM's word ([Channels](#channels)).
 | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | The VM never holds a credential                                 | Placeholders, swapped by the proxy                                                                                    |
 | Nothing leaves the VM except through MWT, DNS included          | The process running the VM has no network; its ways out are MWT's sockets; MWT's own pages load nothing from an address the VM chose (a Content-Security-Policy, and Markdown's images shown as links) |
-| Nothing the VM writes runs on your machine unless you chose it  | The VM's work reaches your repository only as a [handoff](#handoffs) you land, and landing runs no hook; shared folders are copied one way, into the VM; the [workspace](#the-workspace)'s `from-vm/` lands only files and folders, read-only, nothing executable, no name a tool acts on by being there; Ask to run commands is off until you turn it on, and then every run it asks for waits for you |
+| Nothing the VM writes runs on your machine unless you chose it  | The VM's work reaches your repository only as a [handoff](#handoffs) you land, and landing runs no hook; shared folders are copied one way, into the VM; the [workspace](#the-workspace)'s `from-vm/` lands only files and folders, read-only, nothing executable, no name a tool acts on by being there; every command an agent asks to run waits for you, its exact text on a card, and locking your machine stops even the asks |
 | A VM escape reaches no home folder and no network               | [The bubble](#the-bubble), and msb confined wherever MWT runs it on this machine                                      |
 | An approval shows what will happen, with nothing hidden in it   | Facts MWT works out itself, the agent's words kept apart, and text that is written out wherever it hides something ([Text the VM chooses](#text-the-vm-chooses)) |
-| What you turned off stays off                                   | A restart of the sandbox's server after a failure puts each grant back as it was, with the firewall's counts (`MWTClient.Sandbox.UnlockState`); only opening or unlocking MWT starts grants from their start settings |
+| What you turned off stays off                                   | A restart of the sandbox's server after a failure puts each grant back as it was, with the firewall's counts (`MWTClient.Sandbox.UnlockState`); only opening or unlocking MWT starts grants from their start settings; your [locks](#locks) are saved with the sandbox, and isolating or releasing changes no grant |
 
 **Not covered:**
 
@@ -68,7 +68,7 @@ the VM's word ([Channels](#channels)).
   they hold. Your review is the check.
 - **What your programs do with a file of the workspace's `from-vm/`**
   once you open or run it (a viewer's parser, `bash` on a script), as with
-  a download; and a command or subgrant that takes it as its input runs on
+  a download; and a command or action that takes it as its input runs on
   what the VM chose. Its card says when a script names the workspace
   ([The workspace](#the-workspace)).
 - **Data sent out through DNS** while the Internet is on. Every lookup goes
@@ -76,7 +76,8 @@ the VM's word ([Channels](#channels)).
   resolver gets no answer. But MWT passes on every name, so query names can
   still carry data out. The [firewall](#firewall) judges their shape (long
   labels, many names under one domain), not their content; a little at a
-  time still goes. With the Internet off, only names grants list go out.
+  time still goes. With the Internet off, only names network grants that
+  are on list go out.
 - **A real value the VM got anyway, sent where MWT can't read.** The
   firewall looks for real values wherever MWT reads what the VM sends, and
   MWT reads every Internet connection it can. What it can't (TLS naming no
@@ -120,16 +121,16 @@ VM ──all TCP──▶ msb ──HTTP CONNECT ip:port──▶ relay ──pr
                                                │   (decided from the view the sandbox publishes, never waiting on it)
                                                ├─ loopback, link-local, this machine's own addresses → deny
                                                ├─ private ranges (VPN, LAN) → deny unless a network grant is on
-                                               ├─ public addresses → the Internet grant; off, only a grant listing them
-                                               ├─ TLS to a host a token grant lists → read (with the Internet off too)
-                                               │     read request → placeholder? → allowance or approve → swap → forward
+                                               ├─ public addresses → the Internet's grant; off, only a network grant on listing them
+                                               ├─ TLS to a host a token grant lists → read
+                                               │     read request → a grant on for each resource it uses, its network's limits → swap → forward
                                                ├─ TLS to any other public host, naming it, offering HTTP/1.1, HTTP/2 or nothing,
-                                               │  and plain HTTP, not set as Not read → read, each request judged (its host's
-                                               │  entry on the grant's host list: ask, auto, block), logged with what it carried
+                                               │  and plain HTTP, not set as Not read → read, each request judged (the Internet's
+                                               │  grants and its host limits), logged with what it carried
                                                └─ anything else → blind byte tunnel (log host, bytes, duration, why unread)
 
 VM ──DNS──▶ msb ──▶ relay ──dns.sock──▶ MWT DNS forwarder ──▶ this machine's resolver (every name logged;
-                                                              with the Internet off, only names grants list)
+                                                              with the Internet off, only names network grants on list)
 
 VM ──vsock:5000──▶ $XDG_RUNTIME_DIR/mwt/<id>/channel.sock ──▶ agent channel: `mwt` (grants, request, call,
                                                                 │  run, host, why, ports, project, worktree,
@@ -521,8 +522,8 @@ disks.
 | `ca.pem`, `ca-bundle.pem`                            | The identity's CA, alone and appended to this machine's trusted roots           |
 | `java-truststore.jks`                                | The same roots as `ca-bundle.pem`, as a JVM reads them (`MWTClient.Sandbox.JavaTrust`) |
 | `profile.sh`, `bashrc.sh`, `env.sh`                  | Tool paths and interactive defaults; no credential exports                      |
-| `grant-env/<id>.sh`, `tokens/<grant>`                | A token grant's environment, for `mwt exec <id> -- COMMAND` while it is on; its placeholder |
-| `bin/git-credential`, `git/<id>`                     | git's credential helper; the hosts a selected token grant answers git for       |
+| `grant-env/<id>.sh`, `tokens/<id>`, `logins/<id>.json` | A [credential](#credentials)'s environment, for `mwt exec <id> -- COMMAND` while a grant over it is on; its placeholder; its Google login file |
+| `bin/git-credential`, `git/<id>`                     | git's credential helper; the hosts a selected credential answers git for        |
 | `bin/mwt`, `bin/mwt-acp`, `bin/mwt-present`          | The [`mwt` command](#agent-channel); the ACP shell; the presentations           |
 | `bin/mwt-boot`, `agents-block.md`, `handoff-command.md`, `bin/memo` | What the boot script copies; `memo` when you have OptMem       |
 | `AGENTS.md`, `grants.md`, `host.md`                  | What agents are told; what `mwt grants` prints; [your machine](#host-commands)  |
@@ -543,7 +544,7 @@ rebuilt;
 `/etc/profile.d/mwt.sh` and `BASH_ENV` point at `profile.sh`, so every
 `bash -c` reads it, and `/etc/bash.bashrc` loads `bashrc.sh`; git's
 credential helper is `bin/git-credential`, which answers with a placeholder
-only within `mwt exec GRANT_ID -- COMMAND`, and GitHub's SSH URLs are
+only within `mwt exec CREDENTIAL -- COMMAND`, and GitHub's SSH URLs are
 rewritten to HTTPS. It also sets the Cache variables, `HEX_HTTP_TIMEOUT`
 (Hex's default 15 s is shorter than any approval), Zed's file watcher to
 poll every 5 s, and `MWT_SANDBOX=1`.
@@ -571,7 +572,7 @@ need. The rest is in guides, `priv/sandbox/guides/TOPIC.md`, which reach
 the VM at `/mnt/mwt/guides` and which `mwt help TOPIC` prints: `projects`
 (slots in detail, another thread's task, catching up), `handoff` (the
 steps, which `/handoff` follows, and what comes after), `access` (token
-grants, subgrants, the network, every `mwt_*` code), `propose`, `run` and
+grants, actions, the network, every `mwt_*` code), `propose`, `run` and
 `workspace`. Each line of `agents.md` that leaves something to a guide
 names it, as what to read before doing that.
 
@@ -583,10 +584,11 @@ In short, `agents.md` says:
   per task, work left uncommitted for your review, a handoff only when you
   ask, and the VM kept out of the history
   ([Projects and handoffs](#projects-and-handoffs));
-- access only from grants (`mwt grants`, `mwt request`, `mwt exec`; no
-  logins, no pasted or written tokens), each use possibly waiting for you;
-  a refusal by you or an isolation never worked around; subgrants
-  (`mwt call`) before `mwt run`, the last resort;
+- access only from grants (`mwt grants`, `mwt request`,
+  `mwt exec CREDENTIAL`; no logins, no pasted or written tokens), each use
+  possibly waiting for you; `mwt why --recent` when a tool fails with a
+  bare 403; a refusal by you, a lock or an isolation never worked around;
+  actions (`mwt call`) before `mwt run`, the last resort;
 - `mise install` first, ports 4100 to 4199 for what you'll open, notes and
   flash cards only when asked, and their memory (the OptMem block).
 
@@ -689,8 +691,8 @@ your folders, and nothing of a copy comes back.
 
 An inbox and outbox between the VM and your machine, for files that
 aren't a project's code (`MWTClient.Sandbox.Workspace`): an agent leaves a
-file a program of yours reads (a config entry a CLI uploads, an input a
-subgrant takes, a report you asked for); a command or subgrant of yours
+file a program of yours reads (a config entry a CLI uploads, an input an
+action takes, a report you asked for); a command or action of yours
 leaves its result for the agent. It moves files, nothing more: agents are
 told to work in `/work`, use it only to move a file across, and remove what
 they put there once it served. MWT keeps nothing there for any time, and
@@ -698,7 +700,7 @@ knows nothing of projects or tasks.
 
 - **`~/mwt-vm`**, made by MWT at the first sync with the VM running, at
   the same path in the VM, named by **`MWT_WORKSPACE`** in every shell
-  there (`profile.sh`) and in every command and subgrant here, confined
+  there (`profile.sh`) and in every command and action here, confined
   ones included. A second identity's is `~/mwt-vm-<name>`. MWT uses only a
   folder it made (`.mwt-workspace` holds the identity's id): one already
   there, or a symlink, stays as it is, and the Overview says to move it
@@ -792,7 +794,7 @@ in traffic*, Isolate by default) and the finding says to replace it.
 **What `to-vm/` hands the VM:** a shared folder's rules (copied one way,
 read-only there, a repository in it not copied). Unlike a shared folder,
 each changed file is looked through as a command's output is
-(`MWTClient.Sandbox.Inbound`), since a confined subgrant holding a grant's
+(`MWTClient.Sandbox.Inbound`), since a confined action holding a grant's
 value writes its result there, which would otherwise skip what its output
 goes through: a real value holds the file back, never sent; a credential's
 shape does as the rule *Credential entering the VM* says (Block holds it,
@@ -801,7 +803,7 @@ VM had of it staying, until it changes or you choose **Send it to the
 VM** on the Overview, which sends it as it is then; each is in the log,
 and the firewall hears of it.
 
-**Commands and subgrants:** `MWT_WORKSPACE` in their environment, after
+**Commands and actions:** `MWT_WORKSPACE` in their environment, after
 MWT's own variables are removed. Confined, `from-vm/` is bound read-only
 and `to-vm/` writable, the one folder outside its own a confined command
 may write to; its own folder's bind comes after. A command may run in
@@ -937,8 +939,9 @@ per identity) shows what the VM uses and what it costs your machine.
 Everything belongs to the signed-in identity, in
 `~/.mwt_client/identities/<id>/`:
 
-- **Encrypted, like other MWT data:** grants, stored values, allowances, VM
-  settings and MWT's CA key, as the `sandbox` document of `library.db`; the
+- **Encrypted, like other MWT data:** credentials, networks, grants,
+  stored values, allowances, locks, VM settings and MWT's CA key, as the `sandbox`
+  document of `library.db`; the
   activity log in `journal.db`: grant changes, swaps, approvals, denials,
   violations and connections (host, IP, port, bytes, duration), never a
   real value. Approvals are in memory only; real values never appear in the
@@ -954,14 +957,16 @@ The main modules, `MWTClient.Sandbox.*` in `lib/mwt_client/sandbox/`:
 | Modules                                                               | Job                                                          |
 | --------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `Server`, `Server.*`                                                  | One identity's sandbox: its state, every message, a part per concern |
-| `Policy`, `Gate`                                                      | Through, ask or refuse; the network path's view              |
+| `Policy`, `Gate`, `Attributes`, `Overlaps`                            | Through, ask or refuse: a grant on for each resource a use goes through; the network path's view; what a grant narrows by; grants that may cover one use |
 | `Proposal`                                                            | A grant an agent proposes, as the add form's fields          |
-| `Grant`, `Param`, `SavedRequest`, `Allowance`, `Approval`, `Check`, `Presets` | Records of access and of what waits for you; grant types |
+| `Grant`, `Resource`, `Credential`, `Network`, `HostLimits`, `Param`, `SavedRequest`, `Allowance`, `Approval`, `Presets` | Records of access, of the resources it is to and their limits, and of what waits for you; grant types |
+| `Adapter`, `Adapter.Bearer`, `Adapter.GitHub`, `Adapter.Google`       | What MWT knows of each family of credentials                 |
+| `Transfer`, `Server.Transfers`                                        | The sandbox's section of an export                           |
 | `Egress`, `Egress.*`, `Dns`, `Destinations`, `Routes`                 | The proxy; lookups; where an address may go                  |
 | `Placeholder`, `Secrets`, `CertificateAuthority`, `Roots`             | Swapping values in; finding them; MWT's CA; the system roots |
 | `CredentialEndpoint`, `Made`                                          | Credential endpoints MWT answers; the values it made there   |
 | `Describe`, `GraphQL`, `RequestView`, `Chunked`, `Shown`, `Inbound`   | A request as facts; text the VM chose, made safe to show     |
-| `Channel`, `Why`, `MwtTools`, `AgentThreads`                          | The `mwt` socket; `mwt why`; `mwt mcp`; Zed's agent threads  |
+| `Channel`, `Why`, `Explain`, `MwtTools`, `AgentThreads`               | The `mwt` socket; `mwt why`; `mwt mcp`; Zed's agent threads  |
 | `HostCommand`, `HostRun`, `HostInfo`, `Confine`, `Bounded`            | Commands on this machine: checked, run, confined; `host.md`  |
 | `Bubble`, `Seccomp`, `Sockets`, `Msb`, `VM`                           | The bubble, its filter and sockets; `msb`; the VM's record   |
 | `Settings`, `Resources`, `MemoryControl`, `NestedVirt`, `Monitor`     | How the VM is built; CPUs and memory; nesting; the monitor   |
@@ -1021,10 +1026,11 @@ for one in what goes out, are uses of that reading, not its reason.
 
 Each lookup, connection and request is decided in its own process, from the
 **view** the server publishes after every change, before it answers
-(`MWTClient.Sandbox.Gate`: grants, the firewall's settings and
-isolation, what the scanners look for, the CA), so a call that turned a
-grant off returns once every new decision sees it off. Only what waits for
-you or puts a real value in a request asks the server, so a busy one makes
+(`MWTClient.Sandbox.Gate`: grants, [locks](#locks), the firewall's
+settings and isolation, what the scanners look for, the CA), so a call
+that turned a grant off returns once every new decision sees it off.
+Only what waits for you or puts a real value in a request asks the
+server, so a busy one makes
 nothing wait; the firewall's counts go to `MWTClient.Sandbox.Watch`, which
 only counts. With no view (identity locked, server starting), everything is
 refused.
@@ -1053,16 +1059,18 @@ MWT receives `CONNECT <ip>:<port>` and decides, in this order:
    the exact address and port opens one (a database tunnel on loopback,
    say). The VM gets a plain "connection refused"; agents learn why from
    `mwt grants` and `mwt why`.
-3. **Public addresses** are the Internet grant's while it is on, held under
-   it. Off, a network grant that is on and lists the address opens it,
-   waiting for your approval unless an allowance covers it
-   ([Approvals](#approvals)). Otherwise the CONNECT is answered 200 and the
-   connection may still reach a host a token grant lists, read: its
-   ClientHello must name one, and a request carrying no placeholder goes
-   only while a grant listing that host is on (`403` `mwt_grant_off`
-   otherwise), since with the Internet off the host is reached for that
-   grant. Anything else closes, logged as *The Internet is off*; MWT
-   connects nowhere for it first, even for a server that speaks first.
+3. **Public addresses** are the Internet's: opened while its grant is on,
+   held under it. A connection to an address MWT's DNS answered for a name
+   the Internet's limits block, or a name a grant over one of its hosts
+   names, waits for its first bytes to say which host it is for
+   ([Host limits](#host-lists)). With the Internet's grant off, a network
+   grant that is on and lists the address opens it, a grant over a host of
+   the Internet included, waiting for your approval unless it
+   auto-approves or an allowance covers it ([Approvals](#approvals)). A
+   token grant's hosts are no exception: a request carrying a placeholder
+   needs a grant over its network too ([The rule](#the-rule)). Anything
+   else closes, logged as *The Internet is off*; MWT connects nowhere for
+   it first, even for a server that speaks first.
 4. **Private ranges** (RFC 1918, ULA, site-local `fec0::/10`,
    `100.64.0.0/10`, `198.18.0.0/15`, which local proxies such as Clash hand
    out as fake addresses mapped anywhere, NAT64 prefixes a network chose,
@@ -1081,9 +1089,10 @@ MWT receives `CONNECT <ip>:<port>` and decides, in this order:
    client that speaks first does so at once; after 100 ms of silence MWT
    also connects and takes the first bytes from whichever side speaks, so a
    server that greets first (SSH, SMTP, MySQL) is heard in 0.1 s, not 1.5.
-7. A host **any token grant lists, on or off,** is read
-   ([Each intercepted request](#each-intercepted-request)), so an off grant
-   gives a clear answer instead of the provider's auth failure. A network
+7. A host **any token grant lists, on or off,** or its
+   credential's adapter implies ([Adapters](#adapters)), is read
+   ([Each intercepted request](#each-intercepted-request)), so a grant not
+   on gives a clear answer instead of the provider's auth failure. A network
    grant's check of the TLS name ([Private networks](#private-networks))
    comes first, read or not.
 8. **Every other connection to the Internet MWT can read, it reads**
@@ -1096,17 +1105,19 @@ MWT receives `CONNECT <ip>:<port>` and decides, in this order:
    TLS) goes on as it came, to the host over TLS MWT starts again, looked
    through as a tunnel is: decrypted, a placeholder or a real value in it
    is found. It is a connection MWT can't read, so it is decided as step 9
-   says before anything is connected to: a network grant that asks asks
-   about it ("not HTTP inside its TLS"), a host list's Ask or Block holds
-   it. A request after an empty line (which servers skip) is still HTTP's,
-   and refused (`400`), never passed on as bytes.
+   says before anything is connected to: of the grants over its network
+   that cover it, the most permissive counts, and one that asks asks about
+   it ("not HTTP inside its TLS"); a host its network blocks is refused. A
+   request after an
+   empty line (which servers skip) is still HTTP's, and refused (`400`),
+   never passed on as bytes.
 9. Anything else is **tunnelled**, unread both ways; the log keeps its
    host, bytes and duration, and why it wasn't read ("Not read: the client
    offered imap, which MWT doesn't read"), and the firewall hears the bytes
-   as they flow. A network grant's connection MWT can't read is asked
-   about as one ([Private networks](#private-networks)); so is one under
-   any grant whose host list asks about a name it may be for
-   ([Host lists](#host-lists)).
+   as they flow. A connection MWT can't read is decided as one, by the
+   grants over its network that cover a name it may be for, and refused
+   when its network blocks one of those names
+   ([Private networks](#private-networks), [Host limits](#host-lists)).
 
 <a id="drivers"></a>
 
@@ -1163,9 +1174,10 @@ the look for real values and placeholders, nor the firewall's count.
   judged and logged as one inside TLS is. Nothing proves which host is
   there: the host is the one its `Host` names, the client's word, so its
   card says the address it goes to, *Allow similar* for it covers that
-  address only, a host list holds it by the strictest of its name and
-  those MWT's DNS answered for the address, and no placeholder goes in it
-  (`403` `mwt_plain_http`). What else comes as plain bytes is tunnelled.
+  address only, its network's limits and the grants over some of its hosts
+  go by its name and those MWT's DNS answered for the address, and no
+  placeholder goes in it (`403` `mwt_plain_http`). What else comes as
+  plain bytes is tunnelled.
 - **UDP**: a core for it would sit beside `Tcp` and run the same drivers,
   each told which transport it is on (`ctx.transport`). None is built,
   since msb carries no UDP but DNS.
@@ -1248,7 +1260,7 @@ included.
 A connection a grant let through (a tunnel a network grant opened, a
 request carrying a token grant's value, the session it upgrades to) is held
 under it (`MWTClient.Sandbox.Connections`), and closes when the grant is
-turned off, removed or out of time
+turned off, removed or out of time, or what it reaches is locked
 (`MWTClient.Sandbox.Server.Grants.close_ended/1`). It looks at the
 grant itself when its time is up, so expiry cuts it even while the server
 is busy.
@@ -1271,18 +1283,23 @@ another resolver gets no answer: msb has no network to send it.
   carrying records REFUSED, without reaching the resolver, which may be
   your LAN's. A name not of visible ASCII labels isn't answered. Every name
   is logged with its type, a name again only after 10 minutes.
-- **REFUSED, never leaving this machine**: with the Internet off, every
-  name no grant lists (a token grant's host, a network grant's name), so
-  lookups can't carry data out either; a name a network grant lists while
-  none listing it is on ([Private networks](#private-networks)); every name
-  while the VM is isolated or there is no view.
+- **REFUSED, never leaving this machine**: with the Internet's grant off,
+  every name no network grant that is on lists, a token grant's host
+  included, so lookups can't carry data out either; a name a grant over a
+  private network lists while none listing it is on: it is a name of that
+  network, not sent to the Internet's resolver, and the log names the
+  grant to ask for (`Gate.lookup/2`, [Private networks](#private-networks));
+  every name while the VM is isolated or there is no view. A grant over
+  one of the Internet's hosts that is on lists its name, answered while
+  the Internet's grant is off as any listed name is; off, it holds no name
+  back.
 
 <a id="private-networks"></a>
 
 ### Private networks
 
-A network grant opens destinations: addresses, ranges and names, each with
-its ports ([Grant kinds](#grant-kinds)). Its names lead only where MWT's own
+A network grant opens destinations of its network: addresses, ranges and
+names, each with its ports ([Networks](#networks)). Its names lead only where MWT's own
 DNS said (`Dns`, `Gate`, `MWTClient.Sandbox.Routes`): a connection there
 may carry what MWT doesn't read (a database's password, SSH), and a dropped
 VPN would leave the grant's ranges to whatever LAN this machine is on,
@@ -1296,10 +1313,13 @@ read when MWT can, as an Internet one is ([Each connection](#each-connection)):
 - **Read, each request is a card of its own** under the grant, in full, as
   a token grant's request is (method, URL, headers, body, the client),
   with the grant's approval mode and *Allow similar* (the same method and
-  endpoint) for the repeats; no card for the connection. A placeholder in
-  the request is then its token grant's to allow, by that grant's own
-  mode: each grant decides by its own rules. Each one is in the log, read,
-  with what it carried and what came back.
+  endpoint) for the repeats; no card for the connection. Every grant over
+  the network that is on and covers its host can let it through, the most
+  permissive counting, and the network's limits can refuse it
+  ([Host limits](#host-lists)); a request carrying a credential also needs
+  a grant over that credential, one decision for both, with one card
+  naming every grant that asks ([The rule](#the-rule)). Each one is in the
+  log, read, with what it carried and what came back.
 - **Not read, the connection is the card**, asked only once its first
   bytes have come, so it says what MWT saw: the name the client asked for
   (its TLS name), the names MWT's DNS answered for the address, and why
@@ -1307,12 +1327,17 @@ read when MWT can, as an Internet one is ([Each connection](#each-connection)):
   hosts MWT doesn't read"; "the server speaks first"). Nothing is
   connected to before you decide: a client that stays quiet (a server
   that greets first, MySQL) is asked about by its silence.
-- **The entry that says it most exactly decides**, of two grants that
-  open the same address: an exact address or name, then the longest name
-  under a wildcard, then the narrowest range, one naming ports before one
-  that doesn't; on a tie, the grant that would ask. So an exact
-  `dev.corp.example:443` on one grant goes by its approval mode, not by a
-  `*.corp.example:443` elsewhere.
+- **The entry that says it most exactly holds the connection**, of the
+  grants that are on and open the same address: an exact address or name,
+  then the longest name under a wildcard, then the narrowest range, one
+  naming ports before one that doesn't; on a tie, the grant that lets it
+  through (`Policy`'s `opening`). It is the grant whose end closes the
+  connection. A grant that is off opens nothing and refuses nothing. Each
+  request the connection carries is then decided by every grant over its
+  network that covers its host, the most permissive counting
+  ([The rule](#the-rule)); a connection MWT can't read, by the grant
+  holding it and every grant over part of the network naming a name it
+  may be for. Its network, locked, refuses (`mwt_locked`).
 - **A host whose certificate this machine's roots don't vouch for** (an
   internal CA your machine doesn't trust) can't be read: MWT starts TLS
   with the host itself and checks it. Its line is *Not read*, the agent
@@ -1324,8 +1349,9 @@ read when MWT can, as an Internet one is ([Each connection](#each-connection)):
   `db.corp.example:5432`, `*.corp.example:443` (the name and every name
   under it, as a token grant's hosts).
 - **Names are bound by MWT's own DNS answers.** A name a network grant
-  lists is answered only while one listing it is on, the Internet on or
-  not; off, it is refused and logged ("Not looked up: Corp is off"). The
+  lists is answered only while a grant listing it is on, the Internet's
+  on or not; otherwise it is refused and logged ("Not looked up: Corp is
+  off"). The
   addresses answered (A and AAAA, through CNAMEs) are kept for that name
   for the answer's shortest TTL, held between 1 and 10 minutes, 64 names an
   address at most. A connection goes under the grant by a name only to an
@@ -1338,10 +1364,11 @@ read when MWT can, as an Internet one is ([Each connection](#each-connection)):
   so an address shared by many names (a load balancer, an ingress) opens
   for the grant's names only. One opened by a listed address or range isn't
   checked; one without a TLS name (a database, SSH) goes on.
-- **Its own DNS server** (`Grant.resolver`, `10.8.0.1` or `10.8.0.1:5353`)
-  is asked its names instead of this machine's resolver.
-- **A way out** (`Grant.anchor`, `wg0`, `tun0`, `utun4`): the interface its
-  addresses are reached through. MWT asks the system which interface routes
+- **Its own DNS server**, the network's (`resolver`, copied to each grant
+  over it as `Grant.resolver`; `10.8.0.1` or `10.8.0.1:5353`), is asked its
+  names instead of this machine's resolver.
+- **A way out**, the network's (`anchor`, copied as `Grant.anchor`; `wg0`,
+  `tun0`, `utun4`): the interface its addresses are reached through. MWT asks the system which interface routes
   an address (`ip -j route get` on Linux, `route -n get` on macOS, kept 3
   seconds); while it isn't the anchor the grant opens nothing
   (`{:refuse, {:network_down, grant}}`) and its DNS server isn't asked. On
@@ -1356,55 +1383,67 @@ read when MWT can, as an Internet one is ([Each connection](#each-connection)):
 
 <a id="host-lists"></a>
 
-### Host lists
+### Host limits
 
-Some hosts need finer control than the grant that reaches them: on the
-Internet, which lets everything through, a few hosts whose every request
-you want to see before it goes (an API that can act as you, a service
-holding your data), and a few the agent must never reach (a paste site);
-on a network grant, one host of many that asks while the rest go. A
-network grant's **host list** (`Grant.host_rules`, the Internet's
-included), set on its page, names such hosts, each with what its uses
-get:
+Some hosts of a network the agent must never reach, whatever any grant
+says: a paste site on the Internet, one production host on a VPN whose
+other hosts are fine. That is a limit of the network's, not a grant
+(`MWTClient.Sandbox.HostLimits`), set on the network's page as *What MWT
+reads* is ([Not read](#not-read)):
 
-- **Ask**: each request MWT reads there waits for you on a card of its
-  own, whatever the grant's mode, Auto-approve included (only *Allow
-  similar*, from such a card, covers its repeats); a connection MWT can't
-  read is asked about as a whole, after its first bytes, before anything
-  is reached. Its card says which entry asked.
-- **Auto**: each goes through, even while the grant asks each time,
-  unless the grant always asks (*Always ask me*).
-- **Block**: each is refused, `403` `mwt_host_blocked`, saying the user set
-  it so; a connection MWT can't read is closed. Logged as blocked.
+- **Hosts on neither list**: *Reachable* (the default) or *Blocked*.
+  Reachable with a few blocked is a block list; blocked with a few
+  reachable is the only hosts the VM may ever reach there.
+- **Two lists, *Reachable* and *Blocked***, each host on one at most: an
+  entry `example.com` covers that name and every name under it
+  (`*.example.com` the same), and the entry naming a host most exactly
+  decides, so `api.example.com` under Reachable with `example.com` under
+  Blocked leaves that one host of the domain reachable.
+- **A blocked host is refused** through that network, `403`
+  `mwt_host_blocked`, saying you set it so, whatever any grant says; a
+  connection MWT can't read is closed. Logged as blocked. Agents can't ask
+  for it to change.
+- **A limit only takes away.** A host it leaves reachable still needs a
+  grant over the network that is on and covers it ([The rule](#the-rule)).
+- **Only you set it**, from MWT's pages, as *What MWT reads*.
 
-Hosts no entry names go as the grant's approval mode says. The Internet
-has one like any grant, *Auto-approve* unless you choose *Ask each time*
-(each request it reads waits for you, then; an address alone is never
-asked about). How it works:
+Which hosts go unasked is the grants' job. A grant over part of a
+network, one host of the Internet say, gives uses of that host beside the
+grant over all of it, and within one network the most permissive grant
+counts: with the Internet's grant asking, a grant over `api.example.com`
+that auto-approves lets that host through unasked. **Always ask for one
+host the Internet's grant lets through isn't expressible**: block the
+host, or put the Internet's grant on *Ask each time* and auto-approve the
+hosts you trust with grants over them.
 
-- **Entries** are names as clients ask for them, never addresses, the
-  same form as *What MWT reads* (`MWTClient.Sandbox.HostRules`): an entry
-  covers its name and every name under it, on any port, and the one
-  naming a host most exactly speaks (`api.example.com` before
-  `example.com`); `example.com` and `*.example.com` are one entry.
-- **A read request** is held by the entry for its host: inside TLS, the
-  name its certificate proved. Over plain HTTP, the strictest of the
-  entries for its `Host` and for the names MWT's DNS answered for its
-  address, so no name chosen for the purpose gets it past one.
-- **A connection MWT can't read** is held by the strictest entry for any
-  name it may be for: the TLS name it asked for and the names MWT's DNS
-  answered for its address. One whose address has such a name waits for
-  its first bytes before anything is connected to (`Policy`'s
-  `{:connection, _, _}` asks), so a server that greets first is asked
-  about by its silence.
-- **Agents hear it**: `mwt grants` lists each grant's hosts of its own,
-  and `mwt why HOST` says whether a host is blocked or asked about.
+- **A host is a name** as clients ask for it, never an address, the same
+  form as *What MWT reads* (`MWTClient.Sandbox.HostRules.entry/1`).
+- **A read request** is judged by its host: inside TLS, the name its
+  certificate proved; over plain HTTP, its `Host` and the names MWT's DNS
+  answered for its address, so no name chosen for the purpose gets it
+  past a block.
+- **A connection MWT can't read** is judged by every name it may be for:
+  the TLS name it asked for and the names MWT's DNS answered for its
+  address. One of them blocked, it is refused.
+- **Held until its first bytes:** a connection to an address MWT's DNS
+  answered for a name its network may block, or a grant over part of the
+  network names, waits for its first bytes before anything is connected
+  to (`Policy.remembers?/4`): read, each request is decided as above; not
+  read, the connection is. So a server that greets first is judged by its
+  silence, and an address many names share opens for the others.
+- **Agents hear it**: `mwt why HOST` says when a network blocks it, and
+  that asking for a grant won't change it.
+- **From grants saved before** (`Network.migrate/2`, as MWT starts): a
+  host list's Block and Ask entries become the network's Blocked list, so
+  nothing that waited for you goes unasked; its Auto entries become grants
+  over those hosts, auto-approving. A grant over part of a network that
+  was off as a block, or always asked, becomes a Blocked entry too.
 
 What it doesn't hold: an address the agent learned elsewhere (not from
 MWT's DNS), reached with no name or another name, over what MWT can't read
-(not TLS it ends, not plain HTTP), isn't recognised as the host it is: an
-entry is a name. Read connections have no such gap: TLS MWT ends is
-verified for the name it asked for.
+(not TLS it ends, not plain HTTP), isn't recognised as the host it is: a
+limit names hosts, not their addresses. Read connections have no such gap:
+TLS MWT ends is verified for the name it asked for.
 
 <a id="each-intercepted-request"></a>
 
@@ -1460,34 +1499,52 @@ verified for the name it asked for.
    or shown, and the firewall hears of it ([Rules](#rules)).
 4. **Look for placeholders** in every header; Basic auth, whatever the case
    of its scheme, is decoded and checked inside.
-    - One of a grant that doesn't list this host, in a header, the target
-      or the body (as it streams too): blocked (`403`,
-      `mwt_placeholder_blocked`) and recorded as a violation
-      ([Rules](#rules): *Credential sent elsewhere*).
-    - Only a header gets a value. One in a header that isn't one of its
+    - A [credential](#credentials)'s placeholder (its own, or one it had
+      before a merge) to a host no grant over it lists, nor its adapter
+      implies, in a header, the target or the body (as it streams too):
+      blocked (`403`, `mwt_placeholder_blocked`) and recorded as a
+      violation ([Rules](#rules): *Credential sent elsewhere*).
+    - Only a header gets a value. One in a header that isn't one of the
       grant's carriers is refused (`403`, `mwt_not_a_carrier`, naming the
-      header and the carriers); one in the target or the body of a host its
-      grant lists goes on as it is. A request carries one grant's
-      placeholder at most (`403`, `mwt_multiple_grants`).
+      header and the carriers); one in the target or the body of a host a
+      grant over it lists goes on as it is. A request carries one
+      credential's placeholder at most (`403`, `mwt_multiple_grants`).
     - A value made from a grant's ([Credential endpoints MWT
       answers](#credential-endpoints-answered)) is a use of that grant,
       with hosts and carriers of its own: its placeholder elsewhere is
       blocked as a grant's is; one MWT no longer holds (expired, from
       before MWT started, or no longer covered by its grant) is refused,
       `403` `mwt_placeholder_expired`, never sent as it is.
-    - A login's placeholder, in a grant's login file, makes only the body
-      of a refresh at Google's token endpoint that grant's use; anywhere
-      else it is blocked as any placeholder moved where it doesn't go.
+    - A login's placeholder, in its credential's login file, belongs only
+      in the body of a refresh at Google's token endpoint, which MWT
+      answers with no card ([Credential endpoints MWT
+      answers](#credential-endpoints-answered)); anywhere else it is
+      blocked as any placeholder moved where it doesn't go.
     - A request to a credential endpoint the grant takes is checked here
       and, let through, answered by MWT itself, never forwarded.
-5. **No placeholder**: forwarded unchanged, the rest of the body still
-   looked through for real values ([What comes back](#what-comes-back)).
-6. **Grant off or expired**: `403` with
-   `{"code": "mwt_grant_off", "grant": "...", "error": "... mwt request <id> ..."}`;
-   held off by its checks, `403` `mwt_check_failing` ([Checks](#checks)).
-7. **Grant on**: the request is described
-   ([Describing requests](#describing-requests)); an allowance covering it
-   lets it through, otherwise it asks.
+5. **No placeholder**: the network the connection went under decides
+   alone, its grants covering the host, the most permissive counting
+   ([The rule](#the-rule)); let through, it goes unchanged, the rest of
+   the body still looked through for real values
+   ([What comes back](#what-comes-back)).
+6. **Refused before anyone is asked**: the credential, or the network the
+   connection went under, locked, `403` `mwt_locked` ([Locks](#locks));
+   its host blocked by that network, `403` `mwt_host_blocked`
+   ([Host limits](#host-lists)); no grant over the credential listing the
+   host covers the request (none whose [attributes](#attributes) match),
+   `403` `mwt_not_covered`; no grant that covers it on, over the
+   credential or over the network, `403` with
+   `{"code": "mwt_grant_off", "grant": "...", "error": "... mwt request <id> ..."}`,
+   naming a grant that would.
+   Each refusal also names the decision as made, kept with its event
+   (`"decision": "event-…"`, `"why": "mwt why event-…"`,
+   [Finding out why](#finding-out-why)).
+7. **One decision for both resources**: the request is described
+   ([Describing requests](#describing-requests)); of the grants over the
+   credential that cover it the most permissive counts, and so of the
+   grants over the network covering its host. It goes unasked only if
+   both let it through unasked ([The rule](#the-rule)); otherwise an ask
+   holds it, on one card naming every grant that asks.
     - **Ask** holds the request: MWT reads the head and the body, all of
       it or its first 64 KiB, before making the card, then reads at most
       64 KiB more until you decide, kept to go behind it: past that, TCP
@@ -1511,8 +1568,9 @@ verified for the name it asked for.
       a notification, and the VM decides how many it sends: at most 20
       wait at once, 10 callers on any one; one more gets `429`
       `mwt_too_many_waiting` at once.
-8. **On allow**: get the value (minting it if needed), put it in the
-   carrier, ask for an answer without content encoding
+8. **On allow**: get the credential's value (minting it if needed, once
+   for every grant over it), put it in the carrier, ask for an answer
+   without content encoding
    (`Accept-Encoding: identity`), and connect to the address and port the
    VM asked for, through the grant's way out, starting TLS again with the
    host name and verifying its certificate against this machine's roots.
@@ -1545,7 +1603,7 @@ its connection, none at all.
   apiece, 0.27 ms on one kept connection (a local host, so no round
   trips; a real one adds its own to the first figure).
 - **A grant's time running out** while a kept connection waits is looked
-  at before its next request, which goes only if the grant still is;
+  at before its next request, which goes only if the grant still is on;
   turning a grant off closes the connections it let through, as always.
 - **A kept connection the host closed as a request went on it**, before
   any of the answer came, is what any client meets with its own: the
@@ -1749,7 +1807,7 @@ way MWT moves something into the VM. It looks for:
 | ------------------------------- | ------------------------------------------------------------------------------------------------ |
 | A proxy answer                  | [What comes back](#what-comes-back) (`Egress.Driver.Http1.Response`): a real value in it cuts the connection  |
 | A command's output              | Looked through. A real value holds it for you; a shape holds it when the firewall rule blocks    |
-| A request subgrant's answer     | Every grant's value written out as `[NAME's token]`, in every form; a shape holds it as above    |
+| A request action's answer       | Every grant's value written out as `[NAME's token]`, in every form, and the ID token and JWTs it sent as what they are; a shape holds it as above |
 | A result of MWT's tools         | Every grant's value written out. Shapes aren't looked for: your notes are yours                  |
 | MWT's own files in `/mnt/mwt`   | Nothing: MWT wrote them, and none holds a real value                                             |
 | Shared folders                  | Not looked through (see [Later](#later))                                                         |
@@ -1768,157 +1826,275 @@ way MWT moves something into the VM. It looks for:
 
 ## Grants
 
-A grant is one piece of access you turn on and off, for a time or until
-turned off, with your own words for what it is for, which agents read
-(`mwt grants`) to find the one they need. Changing a grant's state,
-allowances or value never restarts the VM.
+You keep a list of what the VM could use, the resources (the token
+"GitHub personal", the prod VPN, your machine), and grants give it uses
+of them. A grant is one piece of access you turn on and off, for a time or
+until turned off, with your own words for what it is for, which agents
+read (`mwt grants`) to find the one they need. Each grant mediates
+exactly one resource the VM reaches through MWT: a
+[credential](#credentials), a [network](#networks), your machine, or
+MWT's tools. It is on or off, and off has no say ([On and off](#states)).
+Grants only give: with no grant on, nothing goes, and a use needs, for
+every resource it goes through, a grant that is on and covers it
+([The rule](#the-rule)). Resources limit: each has a lock, for when
+something went wrong, yours or the isolation's ([Locks](#locks)), and a
+network has host limits, hosts it blocks whatever any grant says
+([Host limits](#host-lists)). Changing a grant's state, allowances or
+value never restarts the VM.
+
+This is the design of 2026-11-24
+(`docs/dated/20261124-grants_redesign.md`), with its second pass, *grants
+give, resources limit*; what it leaves for later is said where it matters
+and in [Later](#later).
 
 <a id="grant-kinds"></a>
 
 ### Grant kinds
 
-You add grants of three generic types, none tied to a provider: token,
-network and command. A token grant's request subgrants are a fourth kind,
-and MWT's own built-in tools a fifth. Agents may propose any of the first
-four; what they propose waits off for you to review
-([Proposed grants](#proposed-grants)).
+You add grants of three generic types, none tied to a provider, each
+over one resource: token (over a credential), network (over a network)
+and command, a saved command (over your machine). A request action, one
+fixed request MWT sends with a credential's value, is a fourth kind, over
+its credential, and MWT's own built-in tools a fifth. Agents may propose
+any of the first four; what they propose waits off for you to review
+([Proposed grants](#proposed-grants)). The table's last column is what
+happens when a grant stops being on.
 
 | Type      | What the VM gets                                                              | Approval                             | Turning it off                                                                                                                         |
 | --------- | ----------------------------------------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `token`   | A placeholder, only for a command run with `mwt exec`                         | Per request                          | Takes effect on the next request; one still open (an upload, an upgraded WebSocket) is cut. Complete, since the VM never had the value. |
-| `network` | Reachability to listed hosts, ranges and ports ([Private networks](#private-networks)) | Per request read; else connection    | New connections refused, open ones closed                                                                                              |
-| `command` | Nothing. It may ask MWT to run a command on your machine ([Host commands](#host-commands)) | Per run; a subgrant may auto-approve | New asks refused, and runs waiting for you. A command already running goes on until it ends or you stop it.                              |
-| `request` | Nothing: a token grant's subgrant ([Request subgrants](#request-subgrants))   | Per call; may auto-approve           | New calls refused, and calls waiting for you; one whose value is being minted sends nothing                                            |
+| `network` | Reachability to its network's hosts, ranges and ports, all of them or some ([Networks](#networks)) | Per request read; else connection    | New connections refused, open ones closed                                                                                              |
+| `command` | Nothing: agents call your script on your machine by id ([Grants and actions](#grants-and-actions)) | Per run; may auto-approve | New asks refused, and runs waiting for you. A command already running goes on until it ends or you stop it.                              |
+| `request` | Nothing: an action over a credential ([Request actions](#request-actions))     | Per call; may auto-approve           | New calls refused, and calls waiting for you; one whose value is being minted sends nothing                                            |
 | `mwt`     | Nothing: MWT carries out each call itself                                     | Per use; may auto-approve            | The next call is refused, naming the grant and how to ask for it                                                                       |
 
 Expiry and removal end a grant the same way, at once
-(`Server.Grants.close_ended/1`).
+(`Server.Grants.close_ended/1`), and so does a lock on what it reaches.
 
-**Built in**, for every identity: the **Internet** (`internet`), below;
-**Ask to run commands** (`commands`), the escape hatch, disabled by
-default ([Ask to run commands](#ask-to-run-commands)); MWT's tools,
-`mwt-read`, `mwt-create`, `mwt-change`
-([MWT's tools](#mwt-tools-in-the-vm)); the projects' Git, `git-fetch`,
-`git-fetch-remote`, `git-handoff` ([Git grants](#git-grants)); syncing
-the shared folders, `share-sync` ([Shared folders](#shared-folders)); and
+**Built in**, for every identity: **the Internet's grant** (`internet`),
+below, over the Internet; MWT's tools, `mwt-read`, `mwt-create`,
+`mwt-change`, over MWT's tools ([MWT's tools](#mwt-tools-in-the-vm));
+and over your machine, the projects' Git, `git-fetch`,
+`git-fetch-remote`, `git-handoff` ([Git grants](#git-grants)), syncing
+the shared folders, `share-sync` ([Shared folders](#shared-folders)), and
 the workspace's copy onto this machine, `workspace`
-([The workspace](#the-workspace)), the last eight `kind: :mwt`. They are never removed, hold no value, keep MWT's words
-and have no *Edit*; their switch, duration, approval mode and start
-setting work as any grant's.
+([The workspace](#the-workspace)); the last eight `kind: :mwt`. They are
+never removed, hold no value, keep MWT's words and have no *Edit*. They
+can be turned off: their switch, duration, approval mode and start
+setting work as any grant's. A command an agent writes needs no grant:
+you approve each one ([Commands agents write](#ask-to-run-commands)).
 
-**The Internet** is a network grant for every public address; private and
-reserved addresses are never its. It is enabled and auto-approved on
-startup unless you choose otherwise, and never asks about an address
-alone, which is all a card could show: set to ask each time, it asks about
-each request MWT reads, and a connection it can't read by the names it
-may be for. Its host list asks about, lets through or blocks the hosts you
-name ([Host lists](#host-lists)). Off, the VM reaches only a token grant's hosts (read by MWT, which
-connects by name) and network grants' destinations, public ones included,
-and DNS answers only names some grant lists ([DNS](#dns)). Turning it off,
-its time running out or an isolation closes every connection it let
-through; a release turns it back on when it was on as the VM was isolated. Agents reach their model's API over the internet: with it off
+**The Internet's grant** is a network grant over all of the Internet,
+every public address; private and reserved addresses are never its. It
+is on and auto-approving on startup unless you choose otherwise, and
+never asks about an address alone, which is all a card could show: set
+to ask each time, it asks about each request MWT reads, and a connection
+it can't read by the names it may be for. The Internet's host limits
+block hosts whatever any grant says, and grants over some of its hosts
+give those hosts beside it ([Host limits](#host-lists)). Off, it gives
+nothing: the VM reaches only the destinations of network grants that are
+on, public ones included (a grant over one host of the Internet among
+them), and DNS answers only names those grants list ([DNS](#dns)). A
+token grant's hosts are no exception: a request carrying a placeholder
+needs a grant over its network too ([The rule](#the-rule)). In this
+document *the Internet off* means its grant off. Turning it off, its
+time running out, locking the Internet or an isolation closes every
+connection it let through; releasing changes no grant, so it is on again
+if it was. Agents reach their model's API over the internet: with it off
 they stop, unless a network grant lists it (`api.anthropic.com:443`).
 
-A token grant names:
+A token grant is over one [credential](#credentials), which holds the
+value, and names:
 
-- the **hosts** its value may go to;
+- the **hosts** its value may go to, beside those the credential's
+  adapter implies for its own endpoints ([Adapters](#adapters));
 - its **carriers**, the headers the value travels in: `Authorization`
   unless you name others (`X-Api-Key`), Basic credentials included. A
   placeholder in any other header is refused (`mwt_not_a_carrier`): a
   header the service copies into its answer would hand the value back;
-- **variables** holding the placeholder (`GH_TOKEN`), and variables naming
-  the **token file**, `/mnt/mwt/tokens/<grant>`, always there
-  (`CLOUDSDK_AUTH_ACCESS_TOKEN_FILE`);
-- whether **git** over HTTPS gets it, from MWT's credential helper, for its
-  exact hosts (not its `*.` entries);
-- how the placeholder **starts** (`ghp_`, `sk-`), for clients that check;
+- **only these uses**, the [attributes](#attributes) it narrows by (a
+  method, a path, a GitHub repository), and *Covers requests MWT can't
+  read*;
 - the **service accounts** MWT signs JWTs as for it, answering Google's
   `signJwt` itself ([Credential endpoints MWT
   answers](#credential-endpoints-answered));
-- where its real value comes from, who uses it, and its presentations,
-  below.
+- whether its value may also be used **on your machine**, by the saved
+  commands that run with its credential (*Allow your machine*,
+  `Grant.machine`; [Who uses its value](#who-uses-its-value)).
 
-**`mwt exec GRANT_ID -- COMMAND [ARG...]`** is the only way a placeholder
-reaches a command (`mwt exec github -- gh api user`,
-`mwt exec github -- git push`):
+Reaching its hosts is not its to give: a request carrying its
+placeholder also needs a grant over the network the host is on, usually
+the Internet's ([The rule](#the-rule)).
+
+Its credential holds the rest, the same for every grant over it:
+
+- **variables** holding the placeholder (`GH_TOKEN`), and variables naming
+  the **token file**, `/mnt/mwt/tokens/<credential>`, always there
+  (`CLOUDSDK_AUTH_ACCESS_TOKEN_FILE`);
+- whether **git** over HTTPS gets it, from MWT's credential helper, for
+  its grants' exact hosts (not their `*.` entries);
+- how the placeholder **starts** (`ghp_`, `sk-`), for clients that check;
+- where its real value comes from, and its presentations, below.
+
+**`mwt exec CREDENTIAL -- COMMAND [ARG...]`** is the only way a
+placeholder reaches a command (`mwt exec github -- gh api user`,
+`mwt exec github -- git push`). It chooses which credential a command
+speaks as, and decides nothing: the grants over that credential decide
+each request the command sends, at the proxy, by where it goes, as
+`aws-vault exec PROFILE -- COMMAND` hands a command a profile and AWS
+decides what it may do.
 
 - It runs here in the VM, with exact arguments, stdin and exit status. It
-  loads `/mnt/mwt/grant-env/<id>.sh`, which MWT rewrites when the grant
-  changes: on, the placeholder in its variables and the token file in its
-  file variables; off or expired, a refusal.
-- When it doesn't run the command (the grant off or unknown, a wrong use)
-  it exits 125, as `env` and `timeout` do, with a line on stderr; any
-  other status is the command's own. Nested,
-  `mwt exec github -- mwt exec hex -- COMMAND` gives both grants, and
-  `MWT_TOKEN_GRANT` lists them.
-- Git's credential helper answers only inside it, for the selected grants'
-  hosts. Outside, for a host a grant covers, it answers nothing and says
-  on stderr which grant to run git through: git alone would only fail to
-  read a username, which reads like a login to set up.
+  loads `/mnt/mwt/grant-env/<credential>.sh`, which MWT rewrites when a
+  grant over the credential changes: while one is on, the placeholder in
+  its variables, the token file in its file variables, and what its
+  adapter adds (`GOOGLE_CLOUD_PROJECT`); with none on, a refusal naming
+  the grants to ask for; with the credential locked, a refusal saying you
+  locked it.
+- It names a credential, never a grant: every grant over one shares its
+  placeholder. A grant's own id, when it isn't its credential's, loads a
+  script that says to run `mwt exec CREDENTIAL` instead.
+- When it doesn't run the command (no grant over the credential on, the
+  credential locked or unknown, a wrong use) it exits 125, as `env` and
+  `timeout` do, with a line on stderr; any other status is the command's
+  own. Nested, `mwt exec github -- mwt exec hex -- COMMAND` gives both
+  credentials, and `MWT_TOKEN_GRANT` lists them.
+- Git's credential helper answers only inside it, for the selected
+  credentials' hosts. Outside, for a host a grant covers, it answers
+  nothing and says on stderr which credential to run git through: git
+  alone would only fail to read a username, which reads like a login to
+  set up.
 - Ordinary shells, editors' environment probes and public downloaders get
   no token variables, a grant on or off, and a new grant doesn't change
-  the VM's environment.
+  the VM's environment. That keeps credentials out of commands that need
+  none, and chooses between two that one tool would pick up alike (two
+  GitHub Apps that both fill `GH_TOKEN`).
 - The scope is explicit, never inferred from process names, and no
-  security boundary: the command's requests still meet the proxy's checks
-  (the grant on, the host listed, your approval).
+  security boundary: its refusal at the start spares an agent a long job
+  that would fail, and the command's requests still meet the proxy's
+  checks (a grant over the credential listing the host, one over its
+  network, your approval). MWT doesn't learn the command, so a card shows
+  the request.
+
+<a id="credentials"></a>
+
+### Credentials
+
+A credential is where a real value comes from, and how tools in the VM
+find its placeholder (`MWTClient.Sandbox.Credential`). It decides
+nothing: the grants over it say where its value may go and how each use
+is approved. Several token grants can be over one credential
+(`Grant.credential`), each with its own hosts, attributes, approval and
+state: "Google: BigQuery, auto" and "Google: Cloud Storage, asking" over
+one Google login. Its request actions are grants over it too, listed
+under it ([Request actions](#request-actions)).
+
+- **What it holds:** its `source` (`:stored`, a value pasted into your
+  vault; or `{:minted, command}`), its one placeholder, made once, how
+  values are made and kept (`mint_per`, `keep_minutes`, a GitHub App's
+  ids), what `mwt exec` presents (`env`, `file_env`, `git`, `presents`),
+  what a preset gave, and `aliases`, the placeholders it had before a
+  merge, still its own so a tool holding one goes on working.
+- **One value for all its grants.** Stored and minted values are kept
+  under the credential's id (`Server.Values`): one mint serves every
+  grant over it, or one a host for one minted per host.
+- **A token grant keeps a copy** of its credential's fields
+  (`Credential.attach/2`), filled in whenever either changes, so code
+  reading a grant's placeholder or mint reads its credential's. The copy
+  is a view: an edit to how the value is made, through any grant over
+  the credential, is the credential's, and every grant over it follows.
+- **Added on its own**, on the Grants page's *Resources* tab (*Add
+  resource*): its name and purpose, where its value comes from, how tools
+  in the VM find its placeholder; a page of its own, with its lock and
+  the grants over it ([The Grants page](#the-grants-page)). A grant over
+  it starts from that page: a token grant says only where the value may
+  go and how each use is approved (hosts, carriers, the accounts it signs
+  as, only these uses, your machine), and holds no value of its own.
+  Editing one says which credential it is over.
+- **Removing it** removes the grants over it, its actions included, with
+  its value and what was minted from it (`Server.Resources.delete/2`).
+- **Nothing of it is in the VM without a token grant over it**: `/mnt/mwt`
+  holds its placeholder, token file and git hosts only for a credential a
+  token grant is over (`MWTClient.Sandbox.Inbox`). One only request
+  actions use leaves the VM nothing to hold.
+- **Its adapter** is the family it belongs to, `bearer`, `github` or
+  `google`, from its preset or its fields ([Adapters](#adapters)); its
+  row on the *Resources* tab names it.
+- **From grants saved before 2026-11-24** (`Credential.migrate/2`): each
+  token grant becomes a credential under its own id, and grants minted
+  the same way (the same preset, mint command and `mint_per`) merge into
+  one, under the first one's id, named after the preset. The merged
+  credential keeps every old placeholder and login placeholder as its
+  own, presents what each presented (variables, token files, git), keeps
+  a value as long as the shortest `keep_minutes` among them, and, where
+  their logins' ID tokens travelled in different headers, sends it in
+  each grant's carriers, that header added to them. Stored values never
+  merge: two can't be told the same without reading them.
 
 <a id="who-uses-its-value"></a>
 
 ### Who uses its value
 
-A request subgrant needs a token grant above it; if the VM could always
-send that grant's placeholder, "MWT sends this one request" would come
-with "the VM may send any request", one switch away. So a token grant
-says who wields its value (`Grant.reach`):
+A credential's value goes only where a grant over it lets it, and three
+kinds of use reach it, each through a grant of its own:
 
-| Reach                                             | The VM gets                                             | Its own switch           |
-| ------------------------------------------------- | ------------------------------------------------------- | ------------------------ |
-| **The VM, through mwt exec** (`:vm`, the default) | a placeholder, variables, the token file, git's helper | as any grant             |
-| **Only its subgrants** (`:subgrants`)             | nothing: no placeholder, no variable, no file          | none: nothing to turn on |
+| Use                                   | How the value goes                                                    | The grant over the credential it needs                       |
+| ------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------ |
+| A request a command in the VM sends   | its placeholder, under `mwt exec CREDENTIAL`, swapped at the proxy    | a token grant listing the host                               |
+| A call of a request action            | MWT sends the request itself ([Request actions](#request-actions))    | the action, or a token grant listing its host                |
+| A saved command on your machine       | the real value, in its bubble ([Confined commands](#confined-commands)) | a token grant with *Allow your machine* (`Grant.machine`)  |
 
-- **Only its subgrants:** `/mnt/mwt` holds no `tokens/<id>` and no
-  `git/<id>`; `grant-env/<id>.sh` only says no, so `mwt exec ID` exits 125
-  naming the subgrants to call; `mwt request ID` answers there is nothing
-  to turn on; `mwt grants` says "for its subgrants only". Its request
-  subgrants depend only on their own switches, and a
-  confined command may name it ([Confined commands](#confined-commands)).
-- **Its hosts aren't read** on the VM's connections (`Policy.reads?/2`),
-  and with the Internet off DNS doesn't answer them for it. Its
-  placeholder, made once, is refused with `mwt_subgrants_only` wherever
-  MWT reads it, and sent to a host it doesn't list is still *Credential
-  sent elsewhere* ([Rules](#rules)); sent to its own host it is refused
-  only if another grant lists that host, since nothing else reads it.
-- **Changing it to Only its subgrants** turns it off as turning it off
-  does: allowances end, what waited is refused, what it let through is
-  closed. Its form then hides the variables, token file, git and prefix;
-  the hosts stay, since a subgrant's URL must be on one.
+- **A token grant lets the VM use the value**, through `mwt exec`, at the
+  hosts it lists, and with *Allow your machine*, the saved commands that
+  run with its credential too. Each such use also needs a grant over the
+  other resource it goes through: the network of the host, your machine
+  for a saved command ([The rule](#the-rule)).
+- **A request action is a grant of its own over the credential**, so a
+  few fixed API calls need no token grant: the VM then holds nothing of
+  the value, not even a placeholder ([Credentials](#credentials)).
+- **From grants saved before 2026-11-24** (`Grant.upgrade_all/1`): a
+  token grant only its actions used (reach `:actions`, before that
+  `:subgrants`) gave the VM nothing and goes, its actions staying under
+  its credential; a token grant a confined command ran with allows your
+  machine.
 
 <a id="where-real-values-come-from"></a>
 
 ### Where real values come from
 
+A value is its [credential](#credentials)'s, kept under its id, whichever
+grant over it a use goes through.
+
 - **Stored** in the identity's vault.
 - **Minted:** a command run on the host that prints a short-lived token
   (`gcloud auth print-access-token --impersonate-service-account=…
-  --lifetime=1800s`). Prefer this: the long-lived credential never leaves
-  your host tools. It runs as you, unconfined: the one place that touches
-  your login.
-  - It is told `MWT_GRANT`, and, for a grant minted **per host**
-    (`Grant.mint_per`), `MWT_HOST`: one grant then serves tokens bound to
-    where they go, each kept apart. A confined command, which has no
-    single host, can't name a grant minted per host.
+  --lifetime=1800s`), once for every grant over the credential. Prefer
+  this: the long-lived credential never leaves your host tools. It runs
+  as you, unconfined: the one place that touches your login.
+  - It is told `MWT_GRANT`, the credential's id, and, for a credential
+    minted **per host** (`mint_per`), `MWT_HOST`: one credential then
+    serves tokens bound to where they go, each kept apart. A confined
+    command, which has no single host, can't name a grant minted per
+    host.
   - It prints the bare value, kept 10 minutes, or
     `{"value": "…", "expires_in": 1800}`, kept until a minute before it
     expires; JSON with no `value` is an error. Beside its value it may
-    print an `id_token`, kept as long, for a grant with a login file
-    ([Credential endpoints MWT answers](#credential-endpoints-answered));
-    what `gcloud config config-helper --format=json` prints is read as it
+    print an `id_token`, kept as long, for a credential with a login file
+    ([Credential endpoints MWT answers](#credential-endpoints-answered))
+    or a request action that sends it ([Request actions](#request-actions)).
+    Its adapter reads what it prints ([Adapters](#adapters)): Google's
+    reads what `gcloud config config-helper --format=json` prints as it
     is (`credential.access_token`, `credential.id_token`,
     `credential.token_expiry`), so that needs no reshaping here.
-  - A grant may keep each value at most N minutes (`Grant.keep_minutes`),
+  - A credential may keep each value at most N minutes (`keep_minutes`),
     whatever the mint says of its expiry, for a service that takes a token
     only while it is young: one that refuses an ID token issued more than
-    5 minutes before keeps it 4.
+    5 minutes before keeps it 4. The ID token and the access token are
+    kept as long as each other: no keep time of the ID token's own yet.
+- **Made by its adapter** from what a command prints: a GitHub App's
+  installation token, from the App's private key ([Adapters](#adapters)).
+  The command runs as a mint does; the key is held only while MWT signs
+  with it.
   - The grant is looked at again once the value is at hand: one turned
     off, out of time or no longer listing the host while it ran sends
     nothing (`mwt_grant_off`).
@@ -1930,13 +2106,14 @@ says who wields its value (`Grant.reach`):
 
 ### Presentations
 
-Every token grant has three ways to reach a tool: variables, the token
+Every credential has three ways to reach a tool: variables, the token
 file, git's helper. Tools that find credentials otherwise (a helper they
 call, a local server they ask) get a presentation: a small program,
 `/mnt/mwt/bin/mwt-present` (`native/mwt_present`, static, built as
 `mwt-acp` is), that shows a placeholder the way a tool family expects. It
-holds only placeholders, so adding one is no trust decision. A grant names
-the ones it needs (`Grant.presents`); `mwt exec` runs the command under it,
+holds only placeholders, so adding one is no trust decision. A credential
+names the ones it needs (`presents`, edited through any grant over it);
+`mwt exec` runs the command under it,
 so it owns the child, its signals (passed on) and its exit status, and
 nothing of it is left once the command ends.
 
@@ -1954,7 +2131,9 @@ client library's detection ping goes elsewhere). Every path but `/` needs
 | `…/universe/universe-domain`                | `googleapis.com`                                                          |
 
 Its settings travel in variables (`MWT_PRESENT…`) that reach the
-presentation, never the command. The form offers it on a token grant
+presentation, never the command. Its project is also the command's
+`GOOGLE_CLOUD_PROJECT`, set by the google adapter: google-auth warns
+without one, and some clients need it. The form offers it on a token grant
 whose hosts are Google's APIs (under `googleapis.com`), added or edited,
 or that has it on: gcloud reads the token file, and only Google's client
 libraries look for a metadata server. An agent proposes it with
@@ -1963,9 +2142,10 @@ grants](#proposed-grants)).
 
 **A Google login file** (*Give it a Google login file*): within `mwt
 exec`, `GOOGLE_APPLICATION_CREDENTIALS` names
-`/mnt/mwt/logins/<grant>.json`, an `authorized_user` login whose refresh
-token is a placeholder of its own (`1//mwt…`, made once, kept across
-edits), with gcloud's public client id and a secret that is none. It is
+`/mnt/mwt/logins/<credential>.json`, an `authorized_user` login whose
+refresh token is a placeholder of its own (`1//mwt…`, made once, kept
+across edits), with gcloud's public client id and a secret that is none.
+It is
 for tools that refresh a login themselves rather than take a token, as
 one that needs an ID token must. That refresh never goes out: MWT answers
 it ([Credential endpoints MWT answers](#credential-endpoints-answered)).
@@ -1983,7 +2163,10 @@ credential*), since the answer would be a credential in the VM. For a
 grant that takes the endpoint, MWT answers it itself instead
 (`MWTClient.Sandbox.CredentialEndpoint`): it makes the credential with
 the grant's real value, keeps it as a **value made from the grant**
-(`MWTClient.Sandbox.Made`), and the VM gets a placeholder for it.
+(`MWTClient.Sandbox.Made`), and the VM gets a placeholder for it. The
+endpoint's host is plumbing, not access: the google adapter implies it for
+every grant that needs it, so no grant has to list it
+([Adapters](#adapters)).
 
 A made value belongs to its grant: a request carrying its placeholder is a
 use of that grant, asking or allowed as the grant is, refused while it is
@@ -1999,19 +2182,24 @@ client that reads them locally still works.
 
 Two there are.
 
-**Google's token endpoint**, for a grant with a login file
+**Google's token endpoint**, for a credential with a login file
 ([Presentations](#presentations)):
 
 1. The request: `POST oauth2.googleapis.com/token`, its body carrying the
-   login's placeholder, which makes it the grant's use; that placeholder
-   anywhere else is blocked as any is.
+   login's placeholder (its own, or one it had before a merge), which
+   makes it the credential's; that placeholder anywhere else is blocked
+   as any is.
 2. Checked: a refresh (`grant_type=refresh_token`) of that very login,
    read whole.
-3. Let through as any use of the grant, nothing goes out: MWT fetches the
-   grant's value (minting it when it must) and answers
-   `{"access_token": the grant's placeholder, "expires_in": as long as MWT
-   keeps it, "token_type": "Bearer", "id_token": …}`. The access token is
-   the grant's own placeholder, swapped on the way out as always.
+3. Nothing goes out, and the VM gets placeholders only, so the refresh is
+   no use of a grant: no card, no allowance. It is answered while a grant
+   over the credential is on and the credential isn't locked, and refused
+   otherwise (`mwt_grant_off`, `mwt_locked`). MWT fetches the
+   credential's value (minting it when it must) and answers
+   `{"access_token": the placeholder, "expires_in": as long as MWT keeps
+   it, "token_type": "Bearer", "id_token": …}`. The access token is the
+   credential's own placeholder, swapped on the way out as always, where
+   the grants over it say.
 4. The `id_token`, when the mint printed one, is a placeholder made from
    the grant that stands for *its current ID token*: on the way out MWT
    puts in the one the mint gives now, minting again once the kept one is
@@ -2031,27 +2219,130 @@ builds as a service account, and sends the JWT as its bearer:
 
 1. The request: `POST
    iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/ACCOUNT:signJwt`,
-   carrying the grant's placeholder.
-2. Checked before anyone is asked: the account is one the grant names
-   (`mwt_not_a_signer`); the claims' `aud` is an `https` URL on a host the
-   grant lists, the only place the signed JWT will go
-   (`mwt_placeholder_blocked`); no `delegates`, which would sign as an
-   account the grant doesn't name; the whole body read.
-3. Let through as any use of the grant, MWT sends the same request itself
-   with the grant's real value: the very request the tool makes on your
-   machine, with the same token. A grant that signs must list
-   `iamcredentials.googleapis.com` (or `*.googleapis.com`), since the
-   value goes there.
+   carrying the credential's placeholder.
+2. Checked before anyone is asked, against every grant over the
+   credential that is on, together (their accounts and their hosts): the
+   account is one of them names (`mwt_not_a_signer`); the claims' `aud`
+   is an `https` URL on a host one of them lists, the only place the
+   signed JWT will go (`mwt_placeholder_blocked`); no `delegates`, which
+   would sign as an account none of them names; the whole body read.
+3. Let through by [the rule](#the-rule), as any use of the credential,
+   MWT sends the same request itself with the real value: the very
+   request the tool makes on your machine, with the same token. No grant
+   needs to list `iamcredentials.googleapis.com`: the google adapter
+   implies it for every grant that signs.
 4. Google's answer: the signed JWT is kept, going only to the `aud` host,
    in `Authorization`, until its `exp` (12 hours at most); the VM gets
    `{"keyId": …, "signedJwt": placeholder}`. A refusal of Google's goes to
    the VM as it came; no other answer does.
 
-Naming an account is a trust decision, unlike a presentation: the VM may
-then act as that account, through MWT and the grant's approval, toward
-every host the grant lists, Google's APIs among them where it lists them.
-Your login needs *Service Account Token Creator* on the account; without
-it the agent gets Google's `403`.
+Naming an account is a trust decision, unlike a presentation: while the
+grant is on, the VM may act as that account, through MWT and the grants'
+approval, toward every host a grant over the credential that is on lists,
+Google's APIs among them where one lists them. Your login needs *Service
+Account Token Creator* on the account; without it the agent gets Google's
+`403`.
+
+<a id="adapters"></a>
+
+### Adapters
+
+An adapter is what MWT knows of one family of credentials, whatever the
+protocol (`MWTClient.Sandbox.Adapter`). The core owns the flow: the locks,
+the rule, the cards, when to mint and what is kept, swapping
+placeholders, what the VM gets, the firewall. An adapter supplies, behind
+fixed extension points:
+
+- `read_mint/2`: reading what a mint prints, the value, a value that comes
+  with it (an ID token), and how long it lasts;
+- `implied_hosts/1`: the hosts its own endpoints need, which a grant needn't
+  list, since they are plumbing, not access;
+- `env/1`: variables `mwt exec` sets beside the credential's own;
+- `attributes/1`: what its requests name that a grant may narrow by
+  ([Attributes](#attributes)), read only from a URL or a documented field;
+- `exchange/3`, for one that makes its value from what a mint prints;
+- `sign_jwt/4`, optional: a JWT signed as one of the accounts a grant
+  names, with the credential's value, for a request action that sends one
+  (`{signed_jwt}`, [Request actions](#request-actions)). Google's alone
+  has it.
+
+A credential's adapter comes from its preset or its fields
+(`Adapter.of/1`): Google's when it signs, presents a login file or a
+metadata server, or comes from a Google preset; GitHub's when it has a
+GitHub App or comes from a GitHub preset; `bearer` otherwise. Three ship:
+
+| Adapter | Knows | Implies | Adds |
+| ------- | ----- | ------- | ---- |
+| `bearer` (`Adapter.Bearer`) | any token in `Authorization` or headers you name, Basic credentials included: a bare value or MWT's JSON from a mint | nothing | nothing |
+| `github` (`Adapter.GitHub`) | personal and fine-grained tokens, a GitHub App's installation token | nothing | the attribute `github.repository`, from the REST API's `/repos/OWNER/NAME/…` and git's `/OWNER/NAME(.git)/…` |
+| `google` (`Adapter.Google`) | an access token; what `gcloud config config-helper --format=json` prints, ID token included; a login file whose refresh MWT answers; `signJwt`, answered for the VM or called for a request action's `{signed_jwt}` | `oauth2.googleapis.com` for a credential with a login file, `iamcredentials.googleapis.com` for a grant that signs | `GOOGLE_CLOUD_PROJECT` under `mwt exec`, from its metadata server's project |
+
+- **Implied hosts** are among the hosts a grant's value may go to
+  (`Adapter.hosts/1`), read by the proxy and named by `mwt why`; reaching
+  them is the network's grants' to give, as any host's. The form no longer asks a Google
+  grant to list them.
+- **A GitHub App's installation token** (`ghs_…`, an hour, no person's):
+  the credential holds the App's id and the installation's id
+  (`Credential.app`), and its mint is a command that prints the App's
+  private key, run on your machine as any mint, from where you keep the
+  key. MWT signs a JWT as the App with it (RS256, ten minutes) and trades
+  it at `POST api.github.com/app/installations/ID/access_tokens` for an
+  installation token, kept until a minute before it expires
+  (`GitHub.exchange/3`). The key is held only while MWT signs, never
+  logged. The *GitHub App* preset fills it in.
+- **Shipped with MWT, never plugins:** an adapter runs in the process that
+  holds every real value. Your presets stay data, on top of any adapter.
+- **Not yet behind an adapter:** the token shapes the scanner looks for,
+  the credential endpoints the firewall refuses, how a placeholder looks,
+  and the presets, which adapters don't declare.
+
+<a id="networks"></a>
+
+### Networks
+
+A network is a resource of its own, as a credential is
+(`MWTClient.Sandbox.Network`): what network grants are over. It holds
+what is the network's and no grant's: an `id` and a `name`, its
+`destinations` (addresses, ranges and names, each with its ports), its
+`resolver` (the DNS server that answers its names, nil for this
+machine's), its `anchor` (the interface its addresses are reached
+through, nil for wherever this machine routes them) and its `limits`,
+the hosts it blocks ([Host limits](#host-lists)). The Internet is built
+in: every public address, listing none (`internet: true`). Grants over a
+network give its uses and say how each is approved; you lock the
+network, not a grant ([Locks](#locks)), and block its hosts on its page.
+
+- **All of it or part.** A network grant names its network
+  (`Grant.network`) and covers all of it (`Grant.scope` nil) or part of
+  it (`scope`, a list written as destinations are): one host of the
+  Internet set apart, say. It holds a copy of its network's resolver and
+  interface, and, over all of it, its destinations (`Network.attach/2`),
+  so code reading a grant's reads its network's; one over part keeps its
+  scope as its destinations.
+- **Added on its own**, on the Grants page's *Resources* tab (*Add
+  resource*), with a page of its own: its destinations, DNS server and
+  interface, its lock, its host limits and the grants over it. Editing
+  it edits what every grant over it reaches, each taking its fields
+  again; removing it removes the grants over it
+  (`Server.Resources.delete/2`). The Internet is MWT's: no edit changes
+  what it is, and it stays.
+- **Grants over it only give.** Of those on that cover a use, the most
+  permissive counts ([The rule](#the-rule)); the most exact one holds a
+  connection ([Private networks](#private-networks)). A grant over one
+  host of the Internet that auto-approves lets that host through while
+  the Internet's grant asks.
+- **From before 2026-11-24** (`Network.migrate/2`, as MWT starts): each
+  network grant becomes a network under its own id and the grant over all
+  of it. Its host list's Block and Ask entries become the network's
+  Blocked list, so nothing that waited for you goes unasked; its Auto
+  entries, grants over those hosts, auto-approving, under an id made of
+  the grant's and the host's (`internet-api-example`). An entry
+  `example.com` becomes the scope `*.example.com`, the name and every
+  name under it, as the entry covered. A grant over part of a network
+  that was off as a block, or always asked, becomes a Blocked entry too.
+- **On the *Resources* tab**, each network, the Internet first, with
+  what it is (every public address, or its destinations, DNS server and
+  interface), the grants over it and its lock.
 
 <a id="presets"></a>
 
@@ -2068,26 +2359,28 @@ dialog. It holds:
 - `grant`, the form's fields (hosts, carriers, variables, a presentation,
   a mint command…), and `fill`, fields you fill first, each with a label
   and an example, `{name}` marking where it goes in the grant's fields and
-  its subgrants' (only one still written somewhere must be filled);
+  its actions' (only one still written somewhere must be filled);
 - what the form doesn't hold: `request_headers` (what its request
-  subgrants start from), `tools` (what a command's card says it covers),
-  `checks` and `subgrants`.
+  actions start from), `tools` (what a command's card says it covers) and
+  `actions` (read from `subgrants` in a file written before actions were
+  called so).
 
 Everything it gives is copied onto the grant (`Grant.icon`,
-`request_headers`, `cli_tools`, `checks`, its subgrants), so removing the
+`request_headers`, `cli_tools`, its actions), so removing the
 file changes no grant. A file that can't be read is left out, with its
 path and why (`Presets.load/1`).
 
 | Preset       | Type                                                                        | VM side                                                 | Hosts                                                |
 | ------------ | --------------------------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------- |
 | GitHub       | `token`, placeholder `ghp_…`                                                | `GITHUB_TOKEN`, `GH_TOKEN`, git's credential helper     | `api.github.com`, `github.com`, `uploads.github.com` |
+| GitHub App   | `token`, made from the App's private key a command prints, with the App's and the installation's ids you fill ([Adapters](#adapters)), placeholder `ghs_…` | `GITHUB_TOKEN`, `GH_TOKEN`, git's credential helper | `api.github.com`, `github.com`, `uploads.github.com` |
 | Hex          | `token`                                                                     | `HEX_API_KEY`                                           | `hex.pm`, `repo.hex.pm`                              |
 | Google Cloud | `token`, minted (`gcloud auth print-access-token`), placeholder `ya29.mwt…` | `CLOUDSDK_AUTH_ACCESS_TOKEN_FILE` naming the token file | `*.googleapis.com`                                   |
 | Google login, with ID token | `token`, minted (`gcloud config config-helper --force-auth-refresh --format=json`), placeholder `ya29.mwt…` | a login file (`GOOGLE_APPLICATION_CREDENTIALS`), its refresh answered by MWT | `*.googleapis.com` |
 
 Placeholders look like the real thing where a preset says so, since some
-clients check the format. Each grant's placeholder is made once and never
-changes.
+clients check the format. Each credential's placeholder is made once and
+never changes.
 
 <a id="setting-up-credentials"></a>
 
@@ -2101,81 +2394,302 @@ give the VM only a placeholder.
 | -------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A token or API key                                                         | token, stored             | Paste it once; it lives in your vault.                                                                                                                                                                        |
 | A CLI login on the host (`gcloud auth login`, `gh auth login`, `az login`) | token, minted             | A command that prints a short-lived token, run on the host when needed (`gcloud auth print-access-token`, `gh auth token`, `az account get-access-token --query accessToken -o tsv`). The login stays there. |
-| A token for a few fixed API calls                                          | token, only its subgrants | Request subgrants, which MWT sends itself; the VM holds nothing of it.                                                                                                                                        |
+| A credential you gave MWT already, for another use (BigQuery beside Cloud Storage) | token, over that credential | *Credential* on the add form: the new grant says only where the value may go and how each use is approved, and the value is minted once for both ([Credentials](#credentials)). |
+| A GitHub App                                                               | token, made by the github adapter | The *GitHub App* preset: the App's id, the installation's id, a command that prints the App's private key ([Adapters](#adapters)). |
+| A token for a few fixed API calls                                          | request actions over the credential | Request actions, which MWT sends itself, and no token grant: the VM holds nothing of it.                                                                                                             |
 | Something only reachable from here (VPN, a database through a tunnel)      | network                   | List the destinations; for a database, run the tunnel on the host and list its exact address.                                                                                                                 |
-| A key or file a tool reads for one job (SSH keys, a kubeconfig, signing)   | command subgrant          | Your script runs here, confined with the values it names, and only its output goes back.                                                                                                                      |
-| Something a process in the VM must read for long (a client certificate)    | file                      | Last resort, labelled: the VM holds the value while the grant is on.                                                                                                                                          |
-| Something none of these covers                                             | Ask to run commands       | One command the agent writes runs here, with your approval each time.                                                                                                                                         |
+| A key or file a tool reads for one job (SSH keys, a kubeconfig, signing)   | saved command             | Your script runs here, confined with the values it names, and only its output goes back.                                                                                                                      |
+| Something a process in the VM must read for long (a client certificate)    | saved command             | No grant hands the VM a file's value: the job runs here, where the file is, and only its output goes back.                                                                                                    |
+| Something none of these covers                                             | no grant: a command the agent writes | One command the agent writes runs here, with your approval each time ([Commands agents write](#ask-to-run-commands)).                                                                       |
 
 Agents don't see the guides. They see each grant's own words (`mwt
 grants`), and describe what's missing in theirs (`mwt request --need`).
 
-<a id="checks"></a>
+<a id="states"></a>
 
-### Checks: *Only while…*
+### On and off
 
-MWT can't know whether what a grant depends on is there; you do. So a
-grant can carry conditions, *Only while…* on its page (`Grant.checks`,
-`MWTClient.Sandbox.Check`): scripts of yours whose exit 0 says the
-condition holds, named as the condition ("the VPN is up").
+A grant is on or off (`Grant.state`):
 
-- **When:** before the grant turns on (by you, an agent's ask, its start
-  setting, the firewall's release), once a day while it is on, and on *Run now* or when
-  added. Results are kept, so a restart doesn't make a grant that passed
-  wait; an enabled grant's checks run again as MWT starts.
-- **A condition pauses the grant until it holds**: never run, failed last,
-  or, daily, not run in over a day. Paused, every use is refused
-  (`mwt_check_failing`), and a network grant opens nothing.
-  One that fails turns the grant off, refuses what waited on it, and tells
-  you. (A check saved as not gating only tells you; the form makes none.)
-- **It runs confined** ([Confined commands](#confined-commands)), in a
-  folder of its own, for at most a minute, with a token grant's own real
-  value in its variables and token file.
-- **Its output, the first 4 KiB, is for you only**, on the grant's page.
-  Agents hear its name: `mwt grants` says *paused: its check "the VPN is
-  up" doesn't hold*, and so does every refusal.
-- **On the page:** each condition with a dot (holds, failed, running, not
-  run), when it last ran, *Remove* and *Run now*; *Add a condition* takes a
-  name and the script. A paused grant has *Paused* on its card.
+- **On**, for a time or until you turn it off: agents use it. It asks
+  each time or auto-approves, with allowances while it is on, unless it
+  has [Always ask me](#ceiling), which no allowance or auto-approval
+  passes.
+- **Off**: it has no say. It gives nothing and refuses nothing. Agents
+  can ask for it to be turned on (`mwt request`), but for a proposal you
+  haven't reviewed, whose card only leads to its review, and a grant
+  whose resource is locked, an ask refused at once, with no card.
 
-<a id="grants-and-subgrants"></a>
+The clock decides, not a timer: a grant on for a time is off once the
+time ends (`Grant.state_at/2`).
 
-### Grants and subgrants
+- **Deny by default.** With no grant on, the VM reaches nothing through
+  MWT: it can only ask you, for a grant or to run a command it wrote.
+  What it has from the start is the grants whose start setting turns
+  them on, the Internet's among them ([When MWT starts](#when-mwt-starts)).
+- **A grant you add starts off**, so adding one changes nothing until
+  you turn it on. A grant an agent proposes stays off until you accept
+  it ([Proposed grants](#proposed-grants)).
+- **Holding a use back is a resource's job**, not a grant's: lock the
+  resource ([Locks](#locks)), or block the host on its network
+  ([Host limits](#host-lists)).
+- **From what is saved** (`Grant.upgrade/1`): a grant saved disabled, and
+  a start setting saved as Disabled or *Off, refusing*, are off now.
 
-A **subgrant** is one fixed use of a grant, stored under it, which MWT
-carries out when an agent calls it by id: a function, with a body that
-never changes and parameters the agent fills in.
+<a id="the-rule"></a>
+
+### The rule
+
+Grants give, resources limit (`MWTClient.Sandbox.Policy`):
+
+1. **Nothing goes without a grant.** With no grant on, the agent reaches
+   nothing.
+2. A use goes through one or more resources, and **each of them needs a
+   grant that is on and covers this use**. One missing, it is refused:
+   `mwt_grant_off`, naming a grant that is off and would cover it, or
+   `mwt_not_covered` when none would.
+3. **Within one resource**, any grant covering the use is enough, and the
+   most permissive counts: grants only give (`Policy.most_permissive/1`).
+4. **Across resources**, the use goes unasked only if every one lets it
+   through unasked. If any asks, **one card** names each grant that asks;
+   *Allow for a while* adds an allowance to each (`Policy.all_of/1`).
+5. **A locked resource or a blocked host refuses**, whatever the grants
+   say (`mwt_locked`, [Locks](#locks); `mwt_host_blocked`,
+   [Host limits](#host-lists)), and so does every use while the VM is
+   isolated.
+
+A grant lets a use through unasked when it auto-approves or an allowance
+of its covers the use; it asks when it is on and asking with no
+allowance covering the use, or has *Always ask me*
+([Always ask me](#ceiling)).
+
+| A use | goes through |
+| ----- | ------------ |
+| A connection, a request with no credential | its network |
+| A request carrying a credential's placeholder | the credential (a token grant listing the host) and the network |
+| A call of a request action | the credential (the action, or a token grant listing its host) and the network of its host |
+| A saved command | your machine (the saved command) and each credential it runs with (a token grant allowing your machine) |
+| A call of MWT's tools | MWT's tools, or your machine for git, the shared folders and the workspace |
+| An agent's own command | nothing to grant: you approve each one; refused at once while your machine is locked |
+
+An HTTP request MWT reads is one decision (`Policy.decide/3`): the grants
+over the credential it carries that cover it, and the grants over the
+network its connection went under, those over all of it and those over
+part of it naming its host. So a request to a host behind your VPN that
+carries a token is one card, not two in a row. With no credential, the
+network's grants decide alone.
+
+At work it decides like this:
+
+| Use | Grants on that cover it | Each resource | Result |
+| --- | ----------------------- | ------------- | ------ |
+| `bq query`, to `bigquery.googleapis.com` with Google's placeholder | Google: BigQuery, auto; Internet's, auto | credential: yes; network: yes | goes |
+| The same, with Google: BigQuery off | Internet's, auto | credential: none | refused, `mwt_grant_off` naming Google: BigQuery |
+| The same, with Google: BigQuery off and Google: all its hosts, auto | Google: all, auto; Internet's, auto | credential: yes; network: yes | goes: off gives nothing and refuses nothing |
+| The same, with the Internet's grant off | Google: BigQuery, auto | credential: yes; network: none | refused, `mwt_grant_off` naming the Internet's grant |
+| A datalake request to `internal.ume.com.br` | UME datalake, asks; prod gateway, asks | credential: ask; network: ask | one card naming both |
+| The same, with UME datalake auto-approved | UME datalake, auto; prod gateway, asks | credential: yes; network: ask | a card naming the prod gateway |
+| A GitHub request, with no grant over the GitHub credential on | Internet's, auto | credential: none | refused |
+| A request to `paste.example`, on the Internet's Blocked list | Internet's, auto | network: blocked | refused, `mwt_host_blocked` |
+| A request to `api.example.com`, with the Internet's grant asking and a grant over `api.example.com` auto-approving | Internet's, asks; Internet: api.example.com, auto | network: yes, the most permissive | goes unasked |
+
+What follows from the rule:
+
+- **Grants only give.** A narrow grant can't hold back a wide one: to let
+  BigQuery through unattended while the rest of Google asks, make a
+  grant over BigQuery's hosts that auto-approves beside one over all of
+  Google's hosts that asks. To hold back a use whatever the grants say,
+  lock its resource or block its host.
+- **No order and no ranking** among the grants over a resource: the order
+  grants were made or listed in changes nothing, and a narrow grant and a
+  wide one both give.
+- **One card.** When the answer is ask, one card shows the use and names
+  every grant that asked (*Asking*), the network grant it came through
+  (*Through*) and those that let it through (*Let through by*); your
+  answer goes to each ([Approvals](#approvals)). Once it is allowed, the
+  credential's value goes in, whichever grant led the card.
+- **A host is asked about only through its grants**: a host reached with
+  a credential asks when that credential's grant asks. Always ask for one
+  host the Internet's grant lets through isn't expressible: block the
+  host, or put the Internet's grant on *Ask each time* and auto-approve
+  the hosts you trust with grants over them ([Host limits](#host-lists)).
+- **Pure.** `Policy.decide/3` takes the grants, the resources' locks and
+  limits, the use and the clock, and acts on nothing, so a dry run is the
+  same call ([Finding out why](#finding-out-why)).
+
+A connection opens under a network grant that is on and covers its
+address, the most exact one holding it
+([Private networks](#private-networks)); each request it carries is then
+decided by every grant over its network that covers the host. Network
+grants narrow by no attribute.
+
+<a id="locks"></a>
+
+### Locks
+
+Resources are open by default. A lock stops every use of its resource,
+whatever its grants say, and means something went wrong: it waits for you
+to look and unlock it. Everyday access is the grants' job.
+
+- **What can be locked** (`Grant.resource/1`, `MWTClient.Sandbox.Resource`):
+  a credential, for every grant over it, its request actions included; a
+  network ([Networks](#networks)), the Internet included, for every grant
+  over it, all of it or part (`{:network, Network.id_of(grant)}`); your
+  machine, for what MWT carries out there: the commands agents write,
+  saved commands, the projects' git, the shared folders' sync and the
+  workspace's copy; and MWT's tools, for notes, diagrams and flash
+  cards.
+- **Two hold locks, each apart** (`MWTClient.Sandbox.Server.Locks`): you
+  (`:you`), with a resource's switch, and the isolation (`:isolation`). A
+  resource stays locked while either holds it (`Locks.holders/2`).
+  Releasing the VM never ends a lock of yours, and unlocking never ends
+  the isolation's.
+- **Locking** (`MWTClient.Sandbox.lock/2`) refuses every use of it, `403`
+  `mwt_locked`, saying the user locked it and that asking won't change
+  it; closes the connections its grants let through; refuses the cards
+  waiting on them; stops the commands running with it, TERM then KILL
+  5 s later (`HostRuns.running_with/2`, `HostRuns.stop_running/3`): for
+  your machine every command running there, for a credential those
+  confined with its value; and changes no grant. `mwt exec` on a locked
+  credential refuses at the start.
+- **Checked again as a value arrives.** A mint takes time, so a request
+  decided before it looks at the lock again once the value is at hand
+  (`Server.Values`' `still/3`): a credential locked meanwhile sends
+  nothing (`{:locked, resource}`, `mwt_locked`).
+- **Only you unlock it** (`MWTClient.Sandbox.unlock/2`), on the Grants
+  page's *Resources* tab or the resource's page. Agents can ask for a
+  grant, never for a lock to end, and are told to tell you what they were
+  doing; an ask for a grant whose resource is locked is refused at once,
+  with no card.
+- **Kept** with the sandbox, each with who holds it, so a restart keeps
+  them; a lock saved before the isolation locked anything is yours
+  (`Locks.upgrade/1`).
+- **Isolating the VM locks everything** at once, each credential, each
+  network, your machine and MWT's tools, as the isolation's lock (`Locks.lock_all/2`),
+  beside any lock of yours, and changes no grant
+  ([Isolating](#isolating)). Releasing ends only the isolation's
+  (`Locks.unlock_all/2`): what you locked stays locked.
+- **On the *Resources* tab** each resource's switch reads as the
+  resource working: on, open, as it is by default; off, locked, with a
+  *Locked* badge. A lock only the isolation holds shows *Isolated*
+  instead, its switch disabled until you release the VM on the Firewall
+  page.
+
+<a id="attributes"></a>
+
+### Attributes
+
+A token grant may narrow by attributes MWT reads from the use, beyond its
+hosts (`Grant.attributes`, `MWTClient.Sandbox.Attributes`): it covers a
+use only when each it names matches. On its form, *Only these uses*, one a
+line, `name = pattern, pattern`.
+
+| Name                | Read by                  | A use's value                                    |
+| ------------------- | ------------------------ | ------------------------------------------------ |
+| `http.method`       | the HTTP driver          | its method                                       |
+| `http.path`         | the HTTP driver          | its path, without the query                      |
+| `grpc.method`       | gRPC, on HTTP/2          | `Service/Method`, from a gRPC call's path        |
+| `graphql.operation` | GraphQL, on HTTP         | `query`, `mutation` or `subscription`, and the operation's name |
+| `git.direction`     | git over HTTPS           | `fetch` or `push`                                |
+| `github.repository` | the github adapter       | `owner/name`, from the REST or git path          |
+
+- **Patterns** match exactly, in any case, or by segment for a path: `*`
+  stands for one segment, `**` for any number (`/repos/*/pulls/**`). An
+  attribute a use doesn't have (no gRPC method on a REST call) doesn't
+  match.
+- **What MWT couldn't read is unknown,** and counts against the use: a
+  GraphQL body it holds only the start of, a repository a GraphQL query
+  names in its variables. With *Covers requests MWT can't read*
+  (`Grant.covers_unread`, on by default), an unknown attribute matches a
+  grant that would ask (always asking, or not auto-approving), so such a
+  use waits for you rather than go, and doesn't match one that would let
+  the use through. Off, it matches neither, and the other grants over the
+  credential decide. It is part of what the grant means: changed only on
+  its form, no timer, never asked for by agents, and `mwt grants` lists
+  it.
+- **None covering is a refusal:** a request no grant over its credential
+  covers is refused, `403` `mwt_not_covered`, naming the grant and what it
+  covers only.
+- **At work:** "GitHub: repository `credit-engine`, asking" and "GitHub:
+  repository `klife`, auto" over one GitHub credential. A REST call about
+  `klife` goes; one about `credit-engine` asks; one about another
+  repository is covered by neither and refused. A GraphQL query's
+  repository is unknown, so the asking grant covers it and it waits for
+  you, unless that grant's *Covers requests MWT can't read* is off.
+- **Not yet:** network grants narrow by no attribute, and drivers don't
+  declare theirs: one module reads them all (`Attributes.of/1`), the
+  github adapter adding the repository.
+
+<a id="overlaps"></a>
+
+### Overlaps
+
+Overlapping grants are where a use goes in a way that is hard to see:
+of the grants over one resource that cover a use, the most permissive
+counts, so turning one off doesn't stop a use another still gives. So MWT
+works out which grants over the same resource may cover the same use from
+their scopes, every time it is asked (`MWTClient.Sandbox.Overlaps`).
+Nobody declares a link, so none can be missing or stale. Two grants
+overlap when:
+
+- both are token grants over one credential and their hosts meet: equal
+  hosts, a host under the other's `*.` entry, or one `*.` entry under
+  another;
+- both are network grants over one network and their destinations meet,
+  the one over all of it meeting every one over part of it.
+
+Grants over different resources never overlap: a use that goes through
+both needs each (a token grant and the grant over its host's network). A
+name and an address range meet only if the name resolves into the range,
+which DNS decides when the use is made: those *may overlap*, with why. A
+grant's page has an *Overlaps* card: each grant it overlaps, and where.
+`mwt grants` lists `- overlaps:` under each grant. Not yet:
+attributes aren't compared (two grants over the same hosts overlap
+whatever their attributes), the Grants page doesn't group linked grants,
+and changing a state doesn't say first what it changes through them.
+
+<a id="grants-and-actions"></a>
+
+### Grants and actions
+
+An **action** is a grant for one fixed use of a resource, listed under
+that resource, which MWT carries out when an agent calls it by id: a
+function, with a body that never changes and parameters the agent fills
+in.
 
 ```
 mwt call gh-repo-view REPO_NAME=oliveigah/klife --reason "check the default branch"
 ```
 
-| Grant               | Subgrant type | Its body                               | Who carries it out                                                                    |
-| ------------------- | ------------- | -------------------------------------- | ------------------------------------------------------------------------------------- |
-| Ask to run commands | `command`     | Your script, and the folder it runs in | This machine, confined or as you ([Confined commands](#confined-commands))            |
-| A token grant       | `request`     | Method, URL, headers and body          | MWT, from this machine, with the real value ([Request subgrants](#request-subgrants)) |
-| Network, file       | none          |                                        | The VM connects or reads the file itself: nothing to stand in for                     |
+| Resource            | Action type | Its body                               | Who carries it out                                                         |
+| ------------------- | ----------- | -------------------------------------- | -------------------------------------------------------------------------- |
+| Your machine        | `command`   | Your script, and the folder it runs in | This machine, confined or as you ([Confined commands](#confined-commands)) |
+| A credential        | `request`   | Method, URL, headers and body          | MWT, from this machine, with the real value ([Request actions](#request-actions)) |
+| A network           | none        |                                        | The VM connects itself: nothing to stand in for                            |
 
-**A saved command is a command subgrant of Ask to run commands**: your
-script, in your folder, which agents call by id and send no text for. It
-starts off like any grant (saved from a card, on for 1 hour, asking each
-time), new ones run confined, and `mwt grants` and the Grants page show it
-under Ask to run commands. Asking, approving and running are in
-[Host commands](#host-commands).
+**A saved command is a grant over your machine**: your script, in your
+folder, which agents call by id and send no text for. It starts off like
+any grant (saved from a card, on for 1 hour, asking each time), new ones
+run confined, and the Grants page shows it under your machine. Each
+credential it runs with needs a token grant over it that allows your
+machine ([Who uses its value](#who-uses-its-value)). Asking, approving
+and running are in [Host commands](#host-commands).
 
 - **Never in the VM.** The agent is root there and can replace any tool,
   so a command MWT started there would prove nothing. What VM tools do
   with a grant (`mwt exec github -- git push`) stays a use of the grant;
-  for an API call, a request subgrant is better: nothing in the VM holds
+  for an API call, a request action is better: nothing in the VM holds
   even a placeholder, and you read the exact request.
 - **By id, never by match.** MWT never takes a command or a request as
-  "the same as" a subgrant: an ad-hoc command with a subgrant's exact text
-  still waits for you, with a hint naming the subgrant. A name is not
+  "the same as" an action: an ad-hoc command with an action's exact text
+  still waits for you, with a hint naming the action. A name is not
   enough.
-- **A switch of its own**, on or off, for a time, asking or auto-approved,
-  apart from its grant's: `gh-repo-view` can be enabled on startup and
-  auto-approved while Ask to run commands stays disabled.
-- **Removing a grant** removes its subgrants.
+- **A grant of its own**, on or off, for a time, asking or
+  auto-approved: `gh-repo-view` can be enabled on startup and
+  auto-approved while every command an agent writes still asks, and a
+  request action can run with no token grant over its credential on.
+- **Removing a resource** removes its actions
+  ([Credentials](#credentials)).
 
 #### Parameters
 
@@ -2206,7 +2720,7 @@ agents both read.
   holds ([Text the VM chooses](#text-the-vm-chooses)). The agent hears
   what is wrong, with the parameter's line.
 - No defaults and no optional parameters: two uses that differ in more than
-  values are two subgrants.
+  values are two actions.
 
 #### Calling one
 
@@ -2214,70 +2728,77 @@ agents both read.
 mwt call ID [NAME=value …] --reason "why now" [--timeout 120] [--wait 60]
 ```
 
-The subgrant must be on; off, the agent asks with `mwt request ID`. The
+The action must be on; off, the agent asks with `mwt request ID`. The
 card shows the script unchanged, each value under it: run it, with the
 output sent back or shown to you first, or decline. An auto-approved one
-runs at once, and the log keeps its values. The same subgrant with the
+runs at once, and the log keeps its values. The same action with the
 same values as a call already waiting joins it. Exit statuses are those of
-`mwt run` ([Host commands](#host-commands)); `mwt run ID` also calls a
-subgrant with no parameters.
+`mwt run` ([Host commands](#host-commands)); `mwt run ID` also calls an
+action with no parameters.
 
 A card is carried out only under what it was asked under
 (`Server.HostRuns.still/2`). How a saved command runs (its script, folder,
 confinement and the grants it runs with) is fixed into its card as it is
-asked, and the card says it. A subgrant turned off, out of time or removed
+asked, and the card says it. An action turned off, out of time or removed
 refuses the calls waiting on it; an edit of what it runs refuses them too,
 rather than running the old script under the new grant (`Grant.definition/1`).
-*Run* looks again before anything runs or is sent: the subgrant still on,
-no check holding it off, its token grant still listing the host, the VM
-not isolated. Refused, nothing runs, the card says why, and the agent hears
-it was refused, not declined (exit 121).
+*Run* looks again before anything runs or is sent, deciding the call
+again (`Policy.decide/3`): the action still on, each other resource it
+goes through still granted (the network of a request's host, the
+credentials a saved command runs with), nothing it goes through locked,
+no host blocked, the VM not isolated. Refused, nothing
+runs, the card says why, and the agent hears it was refused, not declined
+(exit 121).
 
 #### Proposing one
 
 ```
-mwt propose GRANT --name NAME --for "what it does, any time it runs" \
+mwt propose commands --name NAME --for "what it does, any time it runs" \
     [--param 'NAME:shape:what it is' …] [--dir DIR] --reason "why you need it" -- SCRIPT
 ```
 
-- It is saved at once, off and to review, as every grant an agent proposes
-  is ([Proposed grants](#proposed-grants)), and confined, as a subgrant you
-  add starts. Its page shows the script, folder, parameters and hints;
-  *Accept and enable* turns it on, asking each time, for the agent's
-  `--minutes` (60 by default). The agent hears its id and how to call it.
-- It needs nothing to be on: Ask to run commands can stay off for good.
-  `GRANT` is the grant it would sit under: `commands`, or a token grant
-  for a request ([Request subgrants](#request-subgrants)).
+- It is saved at once, off and to review, as every grant an agent
+  proposes is ([Proposed grants](#proposed-grants)), and confined, as an
+  action you add starts. Its page shows the script, folder, parameters
+  and hints; *Accept and enable* turns it on, asking each time, for the
+  agent's `--minutes` (60 by default). The agent hears its id and how to
+  call it.
+- It needs nothing else to be on. The word after `mwt propose` says
+  which resource it goes under: `commands`, your machine, for a saved
+  command, or a credential for a request
+  ([Request actions](#request-actions)).
 - Agents are told to design one for whoever approves it: one job, a name
   that says it, the fewest parameters of the narrowest shapes, a script
   read at a glance, nothing that changes anything unless that is its job,
   raw output to work on in the VM.
-- *Save as a subgrant*, on the card of an ad-hoc run, opens the same form
+- *Save as an action*, on the card of an ad-hoc run, opens the same form
   with the command as sent, to turn what varies into parameters.
   `--suggest-save` on `mwt run` still leads the card with it; agents are
   told to propose instead.
 
 #### Editing
 
-Every grant and subgrant but the built-in ones has *Edit*, which opens the
+Every grant and action but the built-in ones has *Edit*, which opens the
 form it was added with, filled in, and checks it as adding does. It keeps
-its id, its placeholder and value (replaced on its page), its kind, the
-grant it sits under, and its state, duration, approval mode and start
-setting. An edit to one that is auto-approved applies to the next use
-without asking: the form says so. So an edit to how a token grant's value
-is made (its mint, per host or not, how long a value is kept, the header
-its ID token travels in; `Grant.how_made/1`) drops what MWT minted and made
-the old way: the next use mints again, and a mint under way as you edit
+its id, its credential, placeholder and value (replaced on its page), its
+kind, the resource it is over, and its state, duration, approval mode
+and start setting. An edit to one that is auto-approved
+applies to the next use without asking: the form says so. An edit to
+how a token grant's value is made (its mint, per host or not, how long a
+value is kept, the header its ID token travels in; `Grant.how_made/1`) is
+its credential's, for every grant over it, and drops what MWT minted and
+made the old way: the next use mints again, and a mint under way as you edit
 keeps nothing, the requests waiting on it answered `mwt_no_value`. An edit
-to what a subgrant runs or sends refuses the calls still waiting on it.
+to what an action runs or sends refuses the calls still waiting on it.
 The log records the edit.
 
-<a id="request-subgrants"></a>
+<a id="request-actions"></a>
 
-### Request subgrants
+### Request actions
 
-A subgrant of a token grant is one HTTP request MWT sends itself, with the
-grant's real value (`MWTClient.Sandbox.SavedRequest`):
+A request action is a grant over a credential, listed under it: one
+HTTP request MWT sends itself, with the credential's real value
+(`MWTClient.Sandbox.SavedRequest`):
 
 ```
 mwt propose github --name "pr view" --for "Shows a pull request" \
@@ -2291,69 +2812,100 @@ mwt call pr-view REPO=oliveigah/klife PR=7 --reason "review it"
   `--header 'Name: value'` (repeatable; without it, the preset's) and
   `--data 'JSON'`; a proposal that breaks a rule below is refused before it
   waits for you.
-- **The URL** is `https://` to a host the grant lists, written out (a `*.`
-  entry covers a name under it), on the usual port, with no user or `#`
-  part. Parameters go in the path or the query as `$NAME`, never the host,
+- **The URL** is `https://` to a host written out, on the usual port,
+  with no user or `#` part. Parameters go in the path or the query as `$NAME`, never the host,
   each percent-encoded where it sits; a `word` keeps its `/` in the path,
   so `$REPO` can be `owner/name`.
 - **Headers are fixed**, with no parameters. `{token}` stands for the real
-  value where the service takes it (`Authorization: Bearer {token}`), in
-  one header at least. MWT writes `Host`, `Content-Length` and the like. A
-  new subgrant starts with the headers its grant's preset gave.
+  value where the service takes it (`Authorization: Bearer {token}`). The
+  values the credential's adapter makes from it may stand there too:
+  `{id_token}`, the ID token the Google login's mint prints beside its
+  value; `{signed_jwt}`, a JWT signed as the action's one account (*May
+  sign as*, `Grant.signs_as`), or `{signed_jwt:ACCOUNT}` naming one of its
+  accounts. One header at least carries one of them; saving refuses an
+  `{id_token}` or `{signed_jwt}` on a credential that isn't Google's, and
+  an account the action doesn't name. MWT writes `Host`, `Content-Length`
+  and the like. A new action starts with the headers its credential's
+  preset gave.
+- **A signed JWT is made for the call** (`HostRuns`' `fetch_and_send/5`):
+  once the credential's value is at hand, MWT asks IAM Credentials'
+  `signJwt` to sign, as that account, claims with `iss` and `sub` the
+  account, `aud` the call's URL without its query
+  (`SavedRequest.audience/1`), valid one hour
+  (`Adapter.Google.sign_jwt/4`, the optional `sign_jwt/4` of
+  `MWTClient.Sandbox.Adapter`). Your login needs *Service Account Token
+  Creator* on the account; Google's refusal ends the call, saying so. The
+  JWT is used for this call only, never kept.
 - **The body** is JSON. A parameter in it is a whole value, `"$TITLE"`,
   never part of a longer string or a key, so a value can't change the
   body's shape or a query written inside a string. A `number` alone goes
   in as a number. Every parameter appears in the URL or the body.
 - **The call's card** shows the request as it will go, every value in place
-  and the token as `[GitHub's token]`, the values apart, and who sends it.
+  and the token as `[GitHub's token]` (the ID token as `[GitHub's ID
+  token]`, a JWT as `[a JWT signed as ACCOUNT]`), the values apart, and
+  who sends it.
   *Run* sends it: nothing to stop, no output to see first.
 - **Sending:** no redirects, no retries, no decompression; 30 s by default
-  (`--timeout`, up to 300). With no value set, or a mint that fails, it
-  doesn't go, and the agent hears why.
-- **What comes back:** the body's first 256 KiB on stdout, the real value
-  written as the grant's name wherever the service echoed it; status and
+  (`--timeout`, up to 300). With no value set, a mint that fails, an
+  `{id_token}` whose mint printed none, or a JWT Google wouldn't sign, it
+  doesn't go, and the agent hears why. `SavedRequest.send/4` takes the
+  values as `%{token, id_token, jwts}`.
+- **What comes back:** the body's first 256 KiB on stdout, each value the
+  call sent (the token, the ID token, a JWT) written out as what it is
+  wherever the service echoed it; status and
   host on stderr. `mwt call` exits 0 for a 2xx, 22 for any other status
   (as `curl --fail`), 124 on timeout, 121 when it couldn't be sent. The log
   keeps the status, never the body.
 - **Checked at each call,** and again as it is sent, before its value is
-  fetched and once the value is at hand: the grant must still list the
-  host and the subgrant be on, or the call is refused and the agent told
-  why. The token grant's own switch doesn't matter: the subgrant's does.
+  fetched and once the value is at hand: the action must still be on and
+  its host's network still granted, or the call is refused and the agent
+  told why. Once the value is at hand, the action must also still sign as
+  each account the call names (`SavedRequest.accounts/2`).
+- **Judged as a use of its credential and its host's network**
+  ([The rule](#the-rule)). Over the credential, the action itself gives
+  it, and so does a token grant over the credential listing the host,
+  the most permissive counting; over the network, a grant covering the
+  host, usually the Internet's. It goes unasked only if both let it
+  through unasked; otherwise one card names each grant that asks. A lock
+  on the credential or the network, or the host blocked, refuses the
+  call.
 
 <a id="when-mwt-starts"></a>
 
 ### When MWT starts
 
-Every grant and subgrant has a setting for the state it is in when MWT
+Every grant and action has a setting for the state it is in when MWT
 starts or unlocks (`Grant.start`):
 
-| Setting                     | At each start                                                                                         |
-| --------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Disabled** (`:off`)       | Disabled, the default. You, or an agent's ask, enable it for a time.                                  |
-| **Enabled, ask** (`:on`)    | Enabled until turned off. Every use still waits for you.                                              |
-| **Enabled, auto** (`:auto`) | Enabled until turned off, every use through without asking, still logged. For what you fully trust. |
+| Setting                       | At each start                                                                                         |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Off** (`:off`)              | Off: it gives nothing. The default. You, or an agent's ask, enable it for a time.                    |
+| **Enabled, ask** (`:on`)      | Enabled until turned off. Every use still waits for you.                                              |
+| **Enabled, auto** (`:auto`)   | Enabled until turned off, every use through without asking, still logged. For what you fully trust. |
 
-- Where only one is offered it is just **Enabled**: Ask to run commands has
-  nothing to auto-approve. A token grant only
-  for its subgrants, and a grant to review, are Disabled only. *Enabled, auto* asks
-  you to confirm.
+- Not every grant takes all three (`Grant.starts/1`): a grant to review
+  takes Off only; one that always asks, no *Enabled, auto*. *Enabled,
+  auto* asks you to confirm.
 - Choosing a setting puts the grant in that state at once and at every
   start; in between its switch, duration and approval mode change it.
   Every start begins from the settings: a grant left on goes back to its
-  setting, and every allowance ends with the session.
-- A row or card whose setting isn't Disabled says *Enabled on startup*; its
+  setting, and every allowance ends with the session. A setting saved as
+  Disabled or *Off, refusing* is Off.
+- A row or card whose setting enables it says *Enabled on startup*; its
   Ask/Auto switch shows how uses are approved.
 
 <a id="approvals"></a>
 
 ### Approvals
 
-Every use of a grant waits for you: a request carrying a placeholder, a
-request or connection through a network grant ([Private networks](#private-networks)),
-a call of a subgrant, a change through `mwt-change`. No rules decide by method or path: what a request does
-depends on the API, and guessing per provider doesn't generalize. The
-shortcuts are allowances (`MWTClient.Sandbox.Allowance`), added on
-purpose:
+Every use a grant that is on covers waits for you, unless an allowance
+covers it: a request carrying a placeholder, a request or connection
+through a network grant ([Private networks](#private-networks)), a call
+of an action, a change through `mwt-change`. No rules decide by method
+or path on their own: what a request does depends on the API, and
+guessing per provider doesn't generalize; a grant you narrow by
+[attributes](#attributes) says it for one credential. The shortcuts are
+allowances (`MWTClient.Sandbox.Allowance`), added on purpose:
 
 - **Allow similar:** uses like this one (the same method and endpoint, the
   same GraphQL operation, the same address and port, the same item of
@@ -2363,38 +2915,58 @@ purpose:
   tool. A method override is refused for every request
   ([Each intercepted request](#each-intercepted-request)), and the value
   goes only in a carrier.
+- **Allow similar, any id:** the same, with each segment of the path that
+  looks like an id (digits, a UUID, long hex, a long token holding a
+  digit) as `*`, so one allowance covers the endpoint whatever its ids:
+  `GET api.github.com/repos/o/r/pulls/*` (`Allowance.widen/1`). Offered
+  only where the path has such a segment.
 - **Allow every use:** everything the grant covers, as long; also
   *Auto-approve* ([Ask each time or auto-approve](#ask-each-time-or-auto-approve)).
-  Not a host its host list asks about ([Host lists](#host-lists)): its
-  card offers *Allow similar* only.
+  A grant that [always asks](#ceiling) offers *Allow once* only.
 - An allowance added while cards wait settles those it would have let
   through had it been there when they were asked, no others
-  (`Policy.settles?/3`): *Allow every use*, *Auto-approve* or *Enabled,
-  auto* leaves a card its host list holds for asking, and no allowance
-  settles an add of MWT's tools past the hour's limit. The card you decide
-  goes by your decision.
+  (`Policy.settles?/3`): no allowance settles an add of MWT's tools past
+  the hour's limit. The card you decide goes by your decision.
 - For GraphQL, similar is the same operation in the same document, by the
   whole SHA-256 of its tokens: the agent writes the documents, and a
   shorter digest would let it find a second document sharing one.
 - Past its time an allowance covers nothing: the clock decides, across a
   restart or a suspend too.
 
-A card's choices: *Allow once*; *Allow for a while*, one menu with both
-allowances (this one's pattern written out, and every use), each for
-10 minutes, 1 hour or while the grant stays on; deny; *Deny and turn off*.
-**Activations**, agents asking for a grant (`mwt request`), wait in the
-same queue: you choose how long it stays on and whether each use still
-asks ([Agent channel](#agent-channel)).
+A card's choices: *Allow once*; *Allow for a while*, one menu with the
+allowances (this one's pattern written out, any id where it applies, and
+every use), each for 10 minutes, 1 hour or while the grant stays on;
+deny; *Deny and turn off*, which turns the grant off: it gives nothing
+from then on, though another grant on may still give the same use
+([Overlaps](#overlaps)). **Activations**, agents asking for a
+grant (`mwt request`), wait in the same queue: you choose how long it
+stays on and whether each use still asks ([Agent channel](#agent-channel)).
+
+**One card for several grants.** Where more than one grant asks about one
+use ([The rule](#the-rule)), one card answers for all of them
+(`Approval.also`, `Approval.grant_ids/1`): its facts say *Asking* (each
+grant that asked), *Through* (the network grant the request came
+through) and *Let through by* (those that said yes).
+
+- *Allow once* lets this use through every grant on the card.
+- *Allow for a while* lists each grant that asked, each with a checkbox,
+  all ticked, and adds the allowance to those still ticked: one you untick
+  gets none, and asks again next time. It is offered only when none of
+  them always asks.
+- *Deny and turn off* becomes one button per grant, *Deny, turn X off*:
+  you choose which one turns off.
+- An allowance added on one of them settles a waiting card several asked
+  about only once each of its grants allows it.
 
 **A decision answers only what its card shows.** A second ask joins a
 waiting card only when it is the very same: a request as MWT read it,
 every header in order ([Each intercepted request](#each-intercepted-request));
-a command, a subgrant's call or a call of MWT's tools compared whole, by
+a command, an action's call or a call of MWT's tools compared whole, by
 SHA-256. A request whose body MWT holds only the start of joins none: two
 that differ only past it would share one card.
 
 **Every card is drawn the same way,** each thing once: who asked and for
-which grant, with the time left, on one line; what would happen, as its
+which grants, with the time left, on one line; what would happen, as its
 title; the thing in full (the request, the script, the change, the grant);
 what MWT saw beside what the agent says; your choices. One calm frame;
 only text the agent wrote to run as you (an ad-hoc command, its output) is
@@ -2420,14 +2992,14 @@ page, an agent's ask), both changed while it is on without turning it off:
   log and on the grant's page. It is the *every use* allowance while the
   grant stays on, shown under *Allowed for now*; *Ask each time*, *End
   now* there, or turning the grant off ends it. Requests, connections and
-  MWT's tool calls go through; a subgrant's call runs at once, a command's
+  MWT's tool calls go through; an action's call runs at once, a command's
   output straight to the agent, shown running on the Approvals page with
   Stop and logged as auto-approved with its exit status.
 - **Duration:** 15 min, 1 h, 4 h or until turned off. Picked while on, it
   counts again from now: more time, or less.
-- Ask to run commands takes a duration only: every ad-hoc run waits for
-  you, as its row says.
-  A grant that [always asks](#ceiling) has no mode.
+- A command an agent writes takes neither: it needs no grant, and every
+  one waits for you ([Commands agents write](#ask-to-run-commands)). A
+  grant that [always asks](#ceiling) has no mode.
 
 <a id="ceiling"></a>
 
@@ -2437,8 +3009,13 @@ How unattended a grant may run is one switch on its page, **Always ask
 me** (`Grant.ceiling`: `:ask`; off, `:allow`): every use is a card you
 allow once, and no allowance or Auto-approve covers one.
 
-- Every grant and subgrant has it (`Grant.ceilings/1`) but the Internet,
-  which never asks. Ask to run commands always asks.
+- Every grant and action has it (`Grant.ceilings/1`) but the Internet's
+  own grant, which asks at most each time. A command an agent writes
+  always asks.
+- It holds back only its own grant: within one resource the most
+  permissive grant counts, so another grant on over the same use still
+  gives it unasked. Always ask for one host the Internet's grant lets
+  through isn't expressible ([Host limits](#host-lists)).
 - Turning it on, once you confirm, ends every allowance, Auto-approve
   included, and makes a start of *Enabled, auto* *Enabled, ask*.
 - Its card has only *Allow once*, its grant no Ask/Auto switch; it has an
@@ -2456,11 +3033,11 @@ describing it with `mwt request --need`:
 mwt propose token --name NAME --for "what it is for" --host HOST [--host …] \
     [--env VAR …] [--file-env VAR …] [--carrier HEADER …] [--git] [--mint 'COMMAND' [--keep-minutes N]] \
     [--sign-as ACCOUNT …] [--login-file [--id-token-header HEADER]] \
-    [--metadata-project PROJECT [--metadata-account EMAIL]] [--subgrants-only] \
+    [--metadata-project PROJECT [--metadata-account EMAIL]] \
     [--preset ID] --reason "why"
 mwt propose network --name NAME --for "what it is for" --destination 'HOST_OR_RANGE:PORTS' [--destination …] \
     [--resolver ADDRESS] [--via INTERFACE] --reason "why"
-mwt propose GRANT --name … --for … …        a subgrant (Proposing one, Request subgrants)
+mwt propose commands|CREDENTIAL --name … --for … …   an action (Proposing one, Request actions)
 ```
 
 - **Checked as the form checks yours.** The ask becomes the add form's
@@ -2469,22 +3046,23 @@ mwt propose GRANT --name … --for … …        a subgrant (Proposing one, Req
   before anything is saved, naming the option it came from. `--preset`
   starts a token or network grant from a preset, MWT's or yours, whose
   fields the agent's override. A token grant needs no value: you paste it
-  as you review it. A command subgrant starts confined.
+  as you review it. A saved command starts confined.
 - **Saved at once, off, to review** (`Grant.proposal`: who proposed it,
   from which thread, why, for how long, when, and when you reviewed it).
-  It is never enabled on startup (`Grant.starts/1` offers only Disabled),
-  and nothing turns it on until you accept it: its switch says to review it
-  first, an agent's `mwt request` for it makes a card that only leads to its
-  page, and a release from the firewall leaves it off. `mwt grants` says it
-  waits for you. It never carries a value, a condition, an approval mode or
-  a start setting.
+  Off, it gives nothing. It is never enabled on startup
+  (`Grant.starts/1` offers only Off), and
+  nothing turns it on until you accept it: its switch says to review it
+  first, and an agent's `mwt request` for it makes a card that only leads
+  to its page. `mwt grants` says it waits for you. It never carries a
+  value, an approval mode or a start setting. A proposed
+  token grant is over a credential of its own.
 - **Tagged** *Proposed by AGENT* wherever it shows, and *To review* until
   you accept it. The Grants page says how many wait, *To review* is a
   status of All grants, and Overview counts them. The tag stays once you
   accept it.
 - **Its page** leads with the review: the agent's reason and thread, the
   hints for a script, and *Accept and enable for N* (the time the agent
-  asked; a token grant needs its value first), *Accept, keep disabled*,
+  asked; a token grant needs its value first), *Accept, keep off*,
   *Edit* and *Remove*. Editing keeps it to review. Accepted, it is yours,
   as any other.
 - **The agent waits** as for `mwt request`: exit 0 once you accept it and
@@ -2495,41 +3073,157 @@ mwt propose GRANT --name … --for … …        a subgrant (Proposing one, Req
   place and joins the same ask.
 - **At most 20** wait for review at once; the 21st is refused.
 
+<a id="finding-out-why"></a>
+
+### Finding out why
+
+When a use fails, the agent should find out why from MWT and tell you
+exactly what to change, rather than guess (an expired login, a
+provider's IAM) or try again. Most tools hide MWT's answer: a client
+library turns a refusal's JSON into "403 Forbidden". So the agent asks
+(`MWTClient.Sandbox.Explain`, on the agent channel):
+
+- **`mwt why URL [--method M] [--with CREDENTIAL]`** decides a request not
+  made yet, as it would be decided now: each resource it goes through,
+  the grants over it that cover it and what each says, the locks and
+  host limits, the result, and what would change it. A dry run is
+  the very decision a request would meet (`Policy.decide/3`): it sends
+  nothing, resolves no name, waits on no one, makes no card, and is no use
+  of any grant. Without `--with`, the request carries no credential. Its
+  answer starts "Dry run, with the grants as they are now: nothing was
+  sent, no card was made, no grant was used."
+- **`mwt why --recent`** lists the last 50 decisions on this VM's
+  requests since it started, newest first: refused, blocked, denied,
+  timed out, and the cards still waiting, each with its id.
+- **Each refused request keeps its decision.** A request MWT read and
+  refused records how it was decided at that moment
+  (`MWTClient.Sandbox.Explain.record/2`, from what the decision read),
+  kept in its event's details as *The decision, as made*, and the refusal
+  the agent gets names it: `"decision": "event-…"` and
+  `"why": "mwt why event-…"` beside its code and error
+  (`Server.Values.kept_refusal/3`).
+- **`mwt why ID`** (`event-…` or `approval-…`, from that list or a
+  refusal) explains one. An event gives back its decision as made, *As
+  decided then*, whatever changed since; only one without it (from
+  before decisions were kept) is decided again, with the grants as they
+  are now, and says it is a dry run. A card is explained with the grants
+  as they are now.
+- **`mwt why HOST[:PORT]`** stays as it was, for destinations
+  ([Agent channel](#agent-channel)).
+- **Try a use**, on the Grants page, is the same engine for you: a URL, a
+  method and a credential, decided and dropped, never logged or sent.
+
+What an explanation holds is built from a list of what may be shown,
+never by leaving things out of the activity log: the VM's own uses
+(method, host, port, path and query, made safe to show by `Shown`), each
+grant's say by its name and id and why (its state, an allowance in force
+for this use, *Always ask me*), the locks, a host a network blocks,
+whether the VM is isolated, and the decision. It never holds a real value or a placeholder (a
+credential shows by its name), a body, a header's value, a command's
+output, the firewall's workings (which rule saw what), or anything but
+this VM's uses since it started. Not yet: `mwt why -- curl …`, and the
+attributes read from a body, which a dry run without one leaves unknown.
+
 <a id="the-grants-page"></a>
 
 ### The Grants page
 
-A catalog: a card for every grant and subgrant.
+Three tabs, and a page for each grant and each resource.
 
-1. **Enabled**, first and apart, whatever the search or filters: each
-   grant and subgrant that is on, with its time left, duration, approval
-   mode and switch, all changeable there. Each row has four tags at most:
-   *Enabled on startup*, its type, *Subgrant of* its grant, *Built in* or
-   *Yours*. Those enabled on startup and still on until off, as MWT left
-   them, fold into one row (their icons and names, how many auto-approve,
-   how many ask) that opens to their rows and stays open once opened; one
-   you changed has a row of its own above it.
-2. **All grants**, below, with what narrows it:
-   - **Search** over each grant and subgrant's name, purpose, type, hosts,
+1. **On now**, first: every grant and action that is on, whatever the
+   search or filters of All grants, with its time left, duration, Ask or
+   Auto, and switch, all changeable there; the resources it uses, and
+   any lock on them. Each row has four tags at most: *Enabled on
+   startup*, its type, its resource, *Built in* or *Yours*. Those enabled
+   on startup and still on until off, as MWT left them, fold into one row
+   (their icons and names, how many auto-approve, how many ask) that
+   opens to their rows and stays open once opened; one you changed has a
+   row of its own above it.
+2. **Resources**: every resource with its lock and its grants: each
+   credential with `mwt exec ID`, its adapter's name and its request
+   actions; each network, the Internet first, with what it is
+   ([Networks](#networks)); your machine, with its saved commands; MWT's
+   tools. Each has its lock switch, on while it is open
+   ([Locks](#locks)). *Add resource* adds a credential or a network. A
+   resource's page has what it is, its lock, for a network its host
+   limits ([Host limits](#host-lists)), and the grants over it, with
+   *Add grant*.
+3. **All grants**: every grant and action with its switch, and its
+   resource as a link; *Add grant* starts from the resource. What
+   narrows it:
+   - **Search** over each grant and action's name, purpose, type, hosts,
      variables, destinations, file name, script, folder and parameters:
      every word must match, in any case, as you type; × clears it.
      **Sort**: recently used (the default; never used last, by name), by
      name, or enabled first.
-   - **Filters** down the side, status and type, each option with how many
-     cards it would show; *Clear search and filters*.
-   - **The cards**: type (a subgrant's grant too), name and purpose, what
-     it reaches (hosts and variables, destinations, a script, how to call
-     a subgrant), its badges (what the VM holds, *Built in*, *Enabled on
-     startup*, *Auto-approve*, *Always asks*, *Paused*), and its time left
-     or when it was last used. The footer has Enabled's controls, compact.
-     A grant that takes subgrants has *+ Subgrant*.
+   - **Filters** down the side, status (on, off, to review) and type,
+     each option with how many cards it would show; *Clear search and
+     filters*.
+   - **The cards**: type, name and purpose, its resource, what it
+     reaches (hosts and variables, destinations, a script, how to call an
+     action), its badges (what the VM holds, *Built in*, *Enabled on
+     startup*, *Auto-approve*, *Always asks*), and its time left or when
+     it was last used. The footer has On now's controls, compact.
    All grants shows six cards a page, with the pages below it; searching or
    filtering starts again from the first.
-3. **A grant's page**: for one an agent proposed and you haven't accepted,
-   the review first ([Proposed grants](#proposed-grants)); its start setting, *Always ask me*, *Only while…*,
-   its allowances and its own activity, and its subgrants, each with a
-   page that leads back to it and shows the script or the request, each
-   parameter's shape in words, and how to call it.
+4. **Try a use**: a URL, a method and a credential, decided now with every
+   grant's say and what would change it, sending nothing
+   ([Finding out why](#finding-out-why)).
+5. **A grant's page**: for one an agent proposed and you haven't accepted,
+   the review first ([Proposed grants](#proposed-grants)); its resource,
+   as a link; its start setting, *Always ask me*, *Overlaps*
+   ([Overlaps](#overlaps)), its allowances and its own activity. An
+   action's page leads back to its resource and shows the script or the
+   request, each parameter's shape in words, and how to call it.
+
+<a id="export"></a>
+
+### Export
+
+An export (`MWTClient.Transfer`, the transfer page, a `.mwtexport` file
+sealed with your password) holds a section *Agent sandbox grants*
+(`MWTClient.Sandbox.Transfer`, key `sandbox`), so a setup moves to
+another machine or comes back from a backup:
+
+- your credentials, how each value is made and how tools find it; their
+  stored values only when you tick *Include stored credential values* as
+  you export (`Transfer.export(…, values: true)`), off by default; minted
+  values never, since they come from logins on the machine that mints
+  them;
+- your grants and actions as you defined them, with their start
+  settings, *Always ask me* and attributes, the grants over one host of a
+  network among them; a grant an agent proposed that you haven't
+  reviewed is left out;
+- your networks with their host limits, and the Internet's host limits,
+  not the Internet itself, which is MWT's;
+- the built-in grants' start settings and *Always ask me*, not their
+  definitions, which are MWT's;
+- your presets, *This machine, for agents*, your way of working, and the
+  folders confined commands may read, as paths.
+
+It leaves out what lasts a session (states, allowances, locks), so grants
+come in as their start settings say, off unless a setting turns them on;
+and the activity log, handoffs, the VM's disks and the CA.
+
+**Importing** checks the section first and changes nothing
+(`Sandbox.Transfer.prepare/2`): ids of the shape MWT gives, a network
+that isn't the Internet, a command grant with its script. Merging
+(`Server.Transfers`) keeps everything there: the same id with the same
+definition changes nothing, so importing twice is harmless; the same id
+with another definition comes in under a new id ending in `-imported`,
+to review, as a proposal waits for you. A network whose id you have
+stays yours. Values come only for the credentials that come in, a preset
+is written only where none has its name, and the settings only where
+yours are empty. Replacing puts the file's grants and networks in place
+of yours. A file from before networks holds host lists, in its grants or
+in the built-in Internet's settings: their Block and Ask entries become
+the network's Blocked list and their Auto entries grants over those
+hosts, as saved state does as MWT starts (`Network.migrate/2`); merged
+again, such a file's Auto entries come in again, under new ids.
+Merging makes new placeholders for each credential that comes in, in the
+shape of its old one, since one from a file could be one of yours;
+replacing keeps the section's, since replacing is also how a failed
+import puts back what was there. `docs/transfer.md` has the rest.
 
 <a id="desktop-notifications"></a>
 
@@ -2590,32 +3284,33 @@ shows only its text.
 
 <a id="ask-to-run-commands"></a>
 
-### Ask to run commands
+### Commands agents write
 
-A command grant (`kind: :command`) gives the VM nothing: it lets agents
-ask MWT to run a command on your machine. **Ask to run commands** (id
-`commands`) is the one MWT builds in: always there, off at first, with
-MWT's name and words, no Edit and no Remove. It turns on for a time like
-any grant, is listed by `mwt grants`, and has its own activity.
+A command an agent writes needs no grant: agents can always ask to run
+one on your machine, and you read and approve every run, its exact text,
+once (`MWTClient.Sandbox.Server.HostRuns`).
 
-- **Off, `mwt run commands` is refused,** saying to ask with
-  `mwt request commands`. On, it only lets agents *ask*: you read and
-  approve every run, and its row says so. No allowance or Auto-approve
-  covers one. Turned off, it refuses new asks; a command already running goes
-  on until it ends or you stop it.
-- **Saved commands are its command subgrants:** your script, in your
+- **Agents can always ask, and every run asks.** There is no switch, no
+  duration and no start setting, and no allowance or Auto-approve covers
+  a run: since nothing runs without your approval of its exact text, a
+  switch would only stop the asks.
+- **Locking your machine refuses them at once** ([Locks](#locks)): `mwt
+  run` is refused, saying you locked it, what waited is refused, and the
+  commands running are stopped, as isolating does.
+- **Saved commands are grants over your machine:** your script, in your
   folder, with parameters it reads as variables, which agents call by id
   (`mwt call ID NAME=value`; `mwt run ID` also runs one without
-  parameters) and propose with `mwt propose`; see
-  [Grants and subgrants](#grants-and-subgrants). They may run
-  [confined](#confined-commands), and need no escape hatch, so Ask to run
-  commands can stay off.
-- **Save as a subgrant,** on the card of a run, opens the add form filled
+  parameters) and propose with `mwt propose commands`; see
+  [Grants and actions](#grants-and-actions). Each is on or off, for a
+  time, asking or auto-approving, and may run
+  [confined](#confined-commands); each credential it runs with needs a
+  token grant over it that allows your machine.
+- **Save as an action,** on the card of a run, opens the add form filled
   in: the script, the folder it would run in, a name (the agent's
   suggestion, else the command's first words) and what it's for (the
   agent's `--save-for`, else empty for you to write; never the agent's
   reason, which is about this run). Saving doesn't decide the card. The
-  subgrant turns on for 1 h, asking each time (one set to start enabled
+  action turns on for 1 h, asking each time (one set to start enabled
   is on already), and the agent hears, with this run's answer, to call it
   by id next time.
 - **An agent may suggest the save** with `--suggest-save NAME --save-for
@@ -2623,9 +3318,14 @@ any grant, is listed by `mwt grants`, and has its own activity.
   command is for any time it runs, so `--suggest-save` alone is refused.
   The card then leads with the save. Agents are told to `mwt propose`
   instead.
-- **The same text as a subgrant:** a run whose script and folder match a
+- **The same text as an action:** a run whose script and folder match a
   saved command's gets a hint saying so, and the agent hears to call that
   one by id.
+- **From what is saved:** Ask to run commands, the grant these asks went
+  through until 2026-11-24 (`commands`, before it `any-command`), goes as
+  MWT starts, its saved commands staying grants over your machine
+  (`Grant.upgrade_all/1`). An ask naming either id is a command the agent
+  writes, as one naming none is (`Grant.former_command_ids/0`).
 - **Small commands.** A card should take seconds to read. Agents are told
   to send the smallest command that gets what they need, to run on your
   machine only what must run there, and to bring the raw output back and
@@ -2637,16 +3337,18 @@ any grant, is listed by `mwt grants`, and has its own activity.
 
 ```
 mwt host                                       your machine, as agents see it
-mwt run commands --reason "…" [--dir DIR] [--timeout 120] [--wait 60] [--suggest-save NAME --save-for "…"] -- COMMAND [ARG…]
-mwt run commands --reason "…" [options] <<'EOF'   the script from stdin
+mwt run --reason "…" [--dir DIR] [--timeout 120] [--wait 60] [--suggest-save NAME --save-for "…"] -- COMMAND [ARG…]
+mwt run --reason "…" [options] <<'EOF'            the script from stdin
 …
 EOF
 mwt wait RUN_ID [--wait 60]
 ```
 
-- **The one word before `--` is the grant,** so a typo is never run as a
-  command. A saved command takes no text: sent one, it is refused, saying
-  to `mwt call` it.
+- **Options go before `--`, the command after it.** A word before `--`
+  names a saved command to run (`mwt run ID`); `commands` and
+  `any-command`, the ids Ask to run commands had, still work and name
+  none. A saved command takes no text: sent one, it is refused, saying to
+  `mwt call` it.
 - **The script travels in the ask.** Arguments after `--` are quoted for
   the shell and joined; a single argument is a shell line as it is; with
   none, the script is read from stdin. At most 16 KiB. What you read on the
@@ -2669,11 +3371,12 @@ mwt wait RUN_ID [--wait 60]
 
 ### Approving
 
-A command is an approval of its own kind, in the same queue, named by its
-grant and drawn apart (red, a terminal icon; a subgrant's violet):
+A command is an approval of its own kind, in the same queue, named as
+the agent's own or by its saved command, and drawn apart (red, a
+terminal icon; a saved command's violet):
 
 - **Facts:** the script in full, with a copy button; who it runs as; the
-  folder and what it is (a shared folder, your home folder, the subgrant's
+  folder and what it is (a shared folder, your home folder, the action's
   own); the time limit.
 - **Hints,** from the script's text and marked as hints, not a review: it
   runs a script file, whose content the card doesn't show; it downloads
@@ -2682,9 +3385,9 @@ grant and drawn apart (red, a terminal icon; a subgrant's violet):
   uses.
 - **The agent's reason,** as a claim.
 - **Choices:** *Run once, as you*, with the output sent to the agent or
-  shown to you first; decline; *Ask for a simpler one*; through Ask to run
-  commands, *Save as a subgrant*. No "allow similar": each command runs
-  once, as you, outside the VM. A subgrant turned on with Auto-approve runs
+  shown to you first; decline; *Ask for a simpler one*; for a command the
+  agent wrote, *Save as an action*. No "allow similar": each command runs
+  once, as you, outside the VM. An action turned on with Auto-approve runs
   without a card ([Ask each time or auto-approve](#ask-each-time-or-auto-approve)).
 - Commands are decided on the Approvals page only, where the card shows
   the script in full; the Overview counts them.
@@ -2709,7 +3412,7 @@ grant and drawn apart (red, a terminal icon; a subgrant's violet):
   a link since you looked runs nothing, and the agent gets exit 126.
 - The environment is MWT's own, without MWT's and the BEAM's variables
   (`RELEASE_*`, `ERL_*`, `ELIXIR_*`, `MIX_*`, `PHX_*`, `MWT_*`,
-  `SECRET_KEY_BASE`, `PORT`…), plus a subgrant's parameters; the login
+  `SECRET_KEY_BASE`, `PORT`…), plus an action's parameters; the login
   shell then sets up your usual tools. SIGPIPE, which the BEAM ignores, is
   back to its default (`env --default-signal`, where `env` has it), so
   `cmd | head` ends quietly, as in a terminal.
@@ -2737,7 +3440,7 @@ grant and drawn apart (red, a terminal icon; a subgrant's violet):
 
 As you, a saved command has your home, SSH keys, cloud logins and every
 tool's stored session in reach, for one mistake in its script or one
-parameter used carelessly. So a command subgrant can run **confined**
+parameter used carelessly. So a command action can run **confined**
 (`Grant.confined`, `MWTClient.Sandbox.Confine`), in a bubble on this
 machine made with `bwrap`, as the VM's own is:
 
@@ -2756,13 +3459,14 @@ machine made with `bwrap`, as the VM's own is:
   (it gets no login profile), your user and language, its parameters, and
   the values below. A value travels in the environment, never the
   arguments, which every account on this machine can read;
-- **`with`: the token grants whose real values it gets**, under the same
+- **`with`: the credentials whose real values it gets**, under the same
   variables the VM sees their placeholders in, and in their token files,
-  `/mnt/mwt/tokens/<id>`, written from a variable unset before the script
-  runs, so a script reads `$SOME_TOKEN` the same way on both sides. Each
+  `/mnt/mwt/tokens/<credential>`, written from a variable unset before the
+  script runs, so a script reads `$SOME_TOKEN` the same way on both sides.
+  Each needs a token grant over it that is on and allows your machine
+  (*Allow your machine*, `Grant.machine`; [The rule](#the-rule)). Each
   value is fetched (minted where it is) before the run starts; one that
-  can't be ends the run, and the agent hears why. Any token grant can be
-  named, one only its subgrants use included.
+  can't be ends the run, and the agent hears why.
 
 The time limit stays outside `bwrap`, so it still ends the whole command.
 There is no silent fallback: where `bwrap` can't make the bubble (on
@@ -2772,12 +3476,12 @@ namespaces), a confined command doesn't run and says why. Its card says
 puts in reach; the grant's page says the same. New saved commands start
 confined; one saved before confinement existed runs as you until you tick
 *Runs confined* on its form. **Mint commands still run as you**: they are
-the one place that touches your login. Ad-hoc commands (Ask to run
-commands) aren't confined.
+the one place that touches your login. Commands agents write aren't
+confined.
 
 ### What the agent hears
 
-`mwt run`, `mwt call` of a command subgrant, and `mwt wait` on either exit
+`mwt run`, `mwt call` of a command action, and `mwt wait` on either exit
 with the command's own status when it ran and its output came back: 124
 when it hit the time limit, as with `timeout`. MWT's own outcomes use
 codes commands rarely use, with a line on stderr saying which:
@@ -2822,18 +3526,20 @@ can use it. `mwt help` prints the list:
 ```
 mwt help [TOPIC]                             this list, or a guide on what only some tasks need
 mwt grants                                   every grant: id, what it is for, how to use it, state
-mwt exec GRANT_ID -- COMMAND [ARG…]          a command in the VM with a token grant's placeholders (Who uses its value)
+mwt exec CREDENTIAL -- COMMAND [ARG…]        a command in the VM speaking as a credential (Grant kinds, Credentials)
 mwt request GRANT_ID --reason "…" [--minutes 60] [--wait 60]
 mwt request --need "the access, and the host" --reason "…" [--minutes 60]
 mwt wait ID [--wait 60]                      an earlier ask, run, call, or change to MWT's items
-mwt call ID [NAME=value …] --reason "…"      a subgrant, by id (Grants and subgrants)
+mwt call ID [NAME=value …] --reason "…"      an action, by id (Grants and actions)
 mwt propose token|network --name … --for … …           a grant, saved off for you to review (Proposed grants)
 mwt propose commands --name … --for … [--param …] [--dir DIR] --reason "…" -- 'SCRIPT'
-mwt propose TOKEN_GRANT --name … --for … --method … --url … [--param …] [--header …] [--data …] --reason "…"
-                                             a subgrant, saved off for you to review (Grants and subgrants, Request subgrants)
-mwt run commands --reason "…" -- COMMAND     a command you approve (Host commands)
+mwt propose CREDENTIAL --name … --for … --method … --url … [--param …] [--header …] [--data …] --reason "…"
+                                             an action, saved off for you to review (Grants and actions, Request actions)
+mwt run --reason "…" -- COMMAND              a command you approve, no grant needed (Host commands)
 mwt host                                     your machine, as agents see it (Host commands)
 mwt why HOST[:PORT]                          which grant covers a destination, and why it isn't reached now
+mwt why URL [--method M] [--with CREDENTIAL] how a request would be decided now, sending nothing (Finding out why)
+mwt why --recent | ID                        the last decisions on this VM's requests, or one explained (Finding out why)
 mwt ports                                    the VM's servers, and where they open on your machine
 mwt mcp                                      MWT's tools over MCP, on stdio (MWT's tools for agents in the VM)
 mwt project                                  where you are in a project (Projects and handoffs)
@@ -2843,12 +3549,24 @@ mwt handoffs                                 the project's handoffs and what you
 mwt vm                                       which VM this is, and whether MWT runs it
 ```
 
-The sections named tell the rest ([Who uses its value](#who-uses-its-value),
-[Grants and subgrants](#grants-and-subgrants), [Request subgrants](#request-subgrants),
+The sections named tell the rest ([Grant kinds](#grant-kinds),
+[Credentials](#credentials), [Finding out why](#finding-out-why),
+[Grants and actions](#grants-and-actions), [Request actions](#request-actions),
 [Host commands](#host-commands), [Servers in the VM, on your machine](#servers-in-the-vm-on-your-machine),
 [MWT's tools](#mwt-tools-in-the-vm), [Projects and handoffs](#projects-and-handoffs),
 [Worktree slots](#worktree-slots), [Handoffs](#handoffs)). The others:
 
+- **`grants`** prints `/mnt/mwt/grants.md`
+  (`MWTClient.Sandbox.Instructions`): first the rule in a few lines (a use
+  needs a grant on for each resource it goes through, so a request
+  carrying a credential needs one over its host's network too; a
+  credential is used through `mwt exec CREDENTIAL`; a command the agent
+  writes needs no grant; and `mwt why --recent` when a use fails), then
+  each grant with its id, what it is for, how to use it, its state in
+  words (on or off), `- only:` its
+  [attributes](#attributes) and whether it covers requests MWT can't read,
+  its approval, and `- overlaps:` the grants it may share uses with
+  ([Overlaps](#overlaps)).
 - **`request`** asks you to turn a grant on, by id or name, for
   `--minutes` (1 to 1440, 60 by default). It shows as an activation
   approval with the agent's reason, marked unverified, and who asked (the
@@ -2856,22 +3574,29 @@ The sections named tell the rest ([Who uses its value](#who-uses-its-value),
   also a claim). It waits up to `--wait` seconds (60 by default, 0 not at
   all, 600 at most), then says the ask is still waiting, with its id, and
   exits 2; the agent comes back with `mwt wait`. The ask stays 30 minutes.
+  An ask for a grant whose resource is locked is refused at once, with
+  no card, saying only you unlock it; one for a proposal you haven't
+  reviewed makes a card that only leads to its page
+  ([Proposed grants](#proposed-grants)).
 - An ask for a grant that doesn't exist yet (`--need`) offers "Set it
   up…", which opens the add dialog; the new grant answers it and turns on.
   Asking again for the same grant joins the waiting ask; one waits per
   grant, ten in all. Turning the grant on yourself answers agents waiting
   for it.
-- **`why`** (`MWTClient.Sandbox.Why`) says, a line each, which grant
-  covers a host or an address and why the VM doesn't reach it now: the
-  firewall isolated the VM or blocks it; a token grant lists the name (a
-  request carrying its placeholder needs it on, and with the Internet off
-  every request to it does); a network grant covers it
-  and is off (with the `mwt request` to send) or lists other ports; the
-  Internet grant is off; the address is private or reserved, which the
-  Internet never opens; no grant covers it (with the `mwt request --need`
-  to send). It reads the view the network path decides from, by the same
-  rules (`Policy`), and looks up a name only when some grant names it.
-  Agents are told to run it when a lookup or a connection fails.
+- **`why HOST[:PORT]`** (`MWTClient.Sandbox.Why`) says, a line each, which
+  grant covers a host or an address and why the VM doesn't reach it now:
+  the firewall isolated the VM or blocks it; a network blocks it (asking
+  for a grant won't change that); a token grant lists the name, or its
+  credential's adapter implies it (a request carrying its placeholder
+  needs it on, and a grant over the host's network too); a network grant
+  covers it and is off (with the `mwt request` to send) or lists other
+  ports; the Internet's grant is off; the address is
+  private or reserved, which the Internet never opens; no grant covers it
+  (with the `mwt request --need` to send). It reads the view the network
+  path decides from, by the same rules (`Policy`), and looks up a name
+  only when some grant names it. Agents are told to run it when a lookup
+  or a connection fails, and `mwt why --recent` when a tool fails with a
+  bare 403 ([Finding out why](#finding-out-why)).
 - **`vm`** tells an old VM from the one MWT runs. MWT gives each VM it
   creates an id and records when, and from which image (`VM`'s `record`);
   the boot script writes the same at `/etc/mwt-vm`, which `mwt vm` sends
@@ -2880,14 +3605,18 @@ The sections named tell the rest ([Who uses its value](#who-uses-its-value),
   shells print nothing. The Overview shows the same id.
 - While the firewall has [isolated](#isolating) the VM, what acts
   (`request`, `run`, `call`, `propose`, `handoff`) is refused, saying so;
-  `grants` and `vm` still answer.
+  `grants` and `vm` still answer. While a resource is [locked](#locks),
+  what goes through it is refused (`mwt_locked`), saying asking won't
+  change it: your machine for commands, saved commands, git, syncs and
+  the workspace; MWT's tools for `mwt mcp`'s calls; a credential or a
+  network for what uses it.
 
 | Commands                                         | Exit statuses |
 | ------------------------------------------------ | ------------- |
 | `grants`, `request`, `propose`, `wait` on an ask | 0 the grant is on, 1 the ask was wrong, 2 still waiting for you, 3 declined or given up, 4 MWT isn't answering (locked or closed) |
 | `project`, `worktree`, `handoff`, `handoffs`     | 0 done, 1 not done (the reason is printed), 4 MWT isn't answering |
 | `vm`                                             | 0 this is the VM MWT runs, 1 there is no record to compare, 3 it isn't (or MWT's is stopped), 4 MWT isn't answering |
-| `run`, `call`, `wait` on either                  | the command's own status, else 120 to 123 ([Host commands](#host-commands)); a request subgrant 0 for a 2xx answer, 22 for any other |
+| `run`, `call`, `wait` on either                  | the command's own status, else 120 to 123 ([Host commands](#host-commands)); a request action 0 for a 2xx answer, 22 for any other |
 | `exec`                                           | the command's own status, 125 when `mwt` didn't run it |
 
 The protocol is one connection per ask: one line of JSON in
@@ -3132,8 +3861,8 @@ or nothing for a notification, and closes.
 
 ### Three built-in grants
 
-Built in like Ask to run commands: always there, with no value, no Edit,
-no Remove, and MWT's words. Each tool belongs to one.
+Built in like the Internet's grant: always there, over MWT's tools, with
+no value, no Edit, no Remove, and MWT's words. Each tool belongs to one.
 
 | Grant        | Tools                                  | Starts, by default   |
 | ------------ | -------------------------------------- | -------------------- |
@@ -3148,7 +3877,8 @@ no Remove, and MWT's words. Each tool belongs to one.
   `git-handoff` ([Git as grants](#git-grants)), and so do syncing the
   shared folders, `share-sync` ([Shared folders](#shared-folders)), and the
   workspace's copy onto this machine, `workspace`
-  ([The workspace](#the-workspace)).
+  ([The workspace](#the-workspace)): those are over your machine, not
+  MWT's tools, so locking your machine stops them.
 - Three, not a read grant and a write grant: adding an item can't lose
   anything, and changing one can, so they get different defaults, and each
   behaves as every grant does, with no mode of its own.
@@ -3378,8 +4108,8 @@ the VM                           your machine                  a Git server
 
 ### Git as grants
 
-What the VM does with your repositories goes through grants, built in,
-like the Internet ([Grant kinds](#grant-kinds)):
+What the VM does with your repositories goes through grants over your
+machine, built in, like the Internet's ([Grant kinds](#grant-kinds)):
 
 | Grant | What it allows | When MWT starts |
 | --- | --- | --- |
@@ -3642,7 +4372,7 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
 
 | Rule                              | Fires on                                                                                                  | Default |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------- | ------- |
-| Credential sent elsewhere         | a placeholder to a host its grant doesn't list (in a header, the target or the body), in a tunnel, or inside a DNS name | Isolate |
+| Credential sent elsewhere         | a credential's placeholder to a host no grant over it lists (in a header, the target or the body), in a tunnel, or inside a DNS name | Isolate |
 | Real credential in traffic        | a token grant's real value in what the VM sends that MWT reads, or coming back to it in an answer         | Isolate |
 | Blocked services                  | a name on the blocked list, looked up or connected to                                                     | Isolate |
 | Data in DNS names                 | a label of 50 characters or more, or 100 or more before the domain (one refused, three under a domain in 10 min isolate); over 40 names, or 1.5 KiB of names, under one domain in 10 min. Cloud providers' own domains aren't judged | Isolate |
@@ -3655,7 +4385,7 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
 | Asking again after you declined   | asking twice more, within 30 min, for a grant or a command you declined (the same command, however its spacing differs) | Alert   |
 | Reading many notes                | 100 reads of notes, diagrams or flash cards in 10 min                                                     | Alert   |
 | Minting a credential              | a request that would carry a grant's real value to an entry of the credential endpoints list: refused before its value is fetched, and the upstream never hears of it | Block   |
-| Credential entering the VM        | a command's output or a request subgrant's answer, on its way to the VM, holding something shaped like a credential ([What enters the VM](#what-enters-the-vm)). Block holds it for you; never isolates, the VM did nothing wrong | Block   |
+| Credential entering the VM        | a command's output or a request action's answer, on its way to the VM, holding something shaped like a credential ([What enters the VM](#what-enters-the-vm)). Block holds it for you; never isolates, the VM did nothing wrong | Block   |
 
 - **By behaviour and by lists you edit, not by signatures.** No rule knows
   attack tools or their command lines: those change every week and are
@@ -3692,15 +4422,15 @@ have no Block, and *Credential entering the VM* no Isolate. The defaults:
     `*.pkg.dev/v2/token`, …), as `host` or `host/path`; `*` is one segment
     of the path, the request's path may go on after the entry's, the query
     isn't read. The swap protects a grant's own value, but an answer that
-    *is* a credential would bring a new one into the VM, and no host list
-    says which endpoints those are. So *Minting a credential* refuses a
-    request that would carry a grant's value to one, request subgrants'
+    *is* a credential would bring a new one into the VM, and a grant's
+    hosts don't say which endpoints those are. So *Minting a credential* refuses a
+    request that would carry a grant's value to one, request actions'
     calls included, before the value is fetched (`mwt_credential_endpoint`);
     one with no value in it is the upstream's to answer. A grant that signs
     as a service account has `signJwt` answered by MWT instead, with a
     placeholder ([Credential endpoints MWT
     answers](#credential-endpoints-answered)). The add-grant form
-    says when a grant's hosts, or a subgrant's URL, cover an entry. A
+    says when a grant's hosts, or an action's URL, cover an entry. A
     registry pull that trades a grant's token for the registry's is refused
     too: take the entry off the list, or set the rule to Alert, for that.
   - An entry `example.com` or `*.example.com` covers that name and every
@@ -3750,7 +4480,10 @@ isolated, and both the firewall and you turn it: the firewall on a rule
 set to Isolate, you whenever you want the VM cut off
 (`MWTClient.Sandbox.firewall_isolate/1`, no question asked). Either way
 it is the same isolation (`Server.Firewall.isolate/2`, given the finding or
-`:you`), at once, in the server, in this order:
+`:you`), at once, in the server. Isolating locks every resource there is
+then, each credential, each network, your machine and MWT's tools, as
+the isolation's lock (`Server.Locks.lock_all/2`), beside any lock of yours,
+and changes no grant ([Locks](#locks)), in this order:
 
 1. The firewall records the incident: who isolated it (`by`, `:firewall`
    or `:you`), the rule and what it saw (none for yours), when, and the 30
@@ -3760,11 +4493,10 @@ it is the same isolation (`Server.Firewall.isolate/2`, given the finding or
 2. Every connection the proxy holds open is closed
    (`MWTClient.Sandbox.Connections`, a registry the connections join), new
    ones are refused, and DNS answers REFUSED to every name.
-3. Every approval waiting is refused (`mwt_isolated`), every command
-   running on your machine is stopped (TERM, then KILL), and every grant
-   that is on turns off, the Internet included; the incident keeps which,
-   as they were (`grants_on`), for the release. Forwarding the
-   VM's ports to your machine stops.
+3. Every approval waiting is refused (`mwt_isolated`), and every command
+   running on your machine is stopped (TERM, then KILL). No grant changes:
+   every decision refuses while the VM is isolated, whatever the grants
+   say. Forwarding the VM's ports to your machine stops.
 4. The agent channel refuses everything that acts: `mwt request`, `run`,
    `call`, `propose`, `handoff`, and MWT's tools over MCP. What only reads
    (`mwt grants`, `host`, `vm`, `wait`) still answers, so an agent can say
@@ -3783,14 +4515,13 @@ stop it from the incident). Nothing leaves while you do.
 
 Turning the *VM isolated* switch off releases the VM. An isolation you
 made ends at once. One the firewall made asks first, in a dialog: the
-rule and what it saw, that releasing undoes nothing the VM did, the grants
-that come back, and, for a finding with a destination, *Trust HOST from
-now on*; **Keep it isolated** leaves the switch on. Releasing ends
-the isolation and turns back on every grant that was on as it began, the
-Internet among them, as it was: until the same end, with its allowances
-and Auto-approve (`Server.Firewall.restore_grants/2`), even after a
-restart. One whose time ran out meanwhile, one removed and one to review
-stay as they are; each runs its conditions as turning it on does.
+rule and what it saw, that releasing undoes nothing the VM did, that
+isolating changed no grant, and, for a finding with a destination,
+*Trust HOST from now on*; **Keep it isolated** leaves the switch on.
+Only the isolation's locks end (`Server.Locks.unlock_all/2`): what you
+locked yourself stays locked. No grant changed, so each is as you left
+it, for the time it has left, with its allowances; one whose time ran
+out meanwhile is off.
 Releasing also starts over what the rule counted for what it fired on
 (`Firewall.forget/3`: the domain's uploads, its names, the address's
 ports, …), in the watch and in the server, before the isolation lifts:
@@ -3811,9 +4542,13 @@ The last 20 incidents stay listed, folded under the switch.
 
 - **The isolation card:** the *VM isolated* switch. Off, a line on what
   turns it on (or that the firewall is off, so only you do). On, who
-  isolated it and why, since when and how much it refused, the grants
-  releasing turns back on, and what came before (open for the firewall's
-  isolation). The past isolations fold under it.
+  isolated it and why, since when and how much it refused; what releasing
+  does: isolating locked every resource and changed no grant, and
+  releasing ends those locks, yours staying, every grant as you left it;
+  and what came before (open for the firewall's isolation). The past
+  isolations fold under it. On the Grants page's *Resources* tab, a lock
+  only the isolation holds shows *Isolated*
+  ([Locks](#locks)).
 - **Rules,** by group (*Credentials*, *Network*, *Agent and VM*), each in
   a line: its name, what sets it off in a few words, a "?" with the whole
   of it, and its action. Every action shows in the same column on every
@@ -3853,12 +4588,18 @@ notification ([Desktop notifications](#desktop-notifications)).
   open in Zed, what lands (commits, files, the diff when you ask), and the
   decision apart, kept in view: Land, Send back or Close; Undo and Reopen
   after ([Handoffs](#handoffs), [Landing](#landing)).
-- **Grants:** the catalog ([The Grants page](#the-grants-page)) and *Add
-  grant*, by type or preset ([Presets](#presets)). A grant's page
-  (`/tools/sandbox/grants/ID`): what the VM gets, the real value, the start
-  setting ([When MWT starts](#when-mwt-starts)), *Always ask me*
-  ([Always ask me](#ceiling)), *Only while…* ([Checks](#checks)), what is
-  allowed for now, its subgrants, its recent use, Edit and Remove.
+- **Grants:** three tabs, *On now*, *Resources* (each resource with its
+  lock and its grants, *Add resource*: [Locks](#locks)) and *All grants*
+  ([The Grants page](#the-grants-page)); *Try a use*
+  ([Finding out why](#finding-out-why)); *Add grant*, from a resource, by
+  type or preset ([Presets](#presets)). A resource's page: what it is,
+  its lock, a network's host limits ([Host limits](#host-lists)), its
+  grants and actions. A grant's page (`/tools/sandbox/grants/ID`): what
+  the VM gets, its resource as a link, its credential's real value, the
+  start setting ([When MWT starts](#when-mwt-starts)), its switch
+  ([On and off](#states)), *Always ask me* ([Always ask me](#ceiling)),
+  *Overlaps* ([Overlaps](#overlaps)), what is allowed for now, its recent
+  use, Edit and Remove.
 - **Activity log:** everything the VM did through MWT and the changes
   around it, so not *Proxy activity*, which it was called until
   2026-11-22. Filters (groups with their counts, words, a grant); a
@@ -3886,9 +4627,10 @@ notification ([Desktop notifications](#desktop-notifications)).
   size and how it landed; a call of MWT's tools, the item and its
   arguments; a firewall finding, the rule and what it saw, an isolation
   the events just before; a VM change, the image, the options it was made
-  with and a failure in full; a check, its script and output; a copy back,
+  with and a failure in full; a copy back,
   the files it wrote; a lookup, the addresses it got; a connection not
-  read, its address, name, protocol and why. What the agent wrote (a
+  read, its address, name, protocol and why; a request MWT refused, the
+  decision as made ([Finding out why](#finding-out-why)). What the agent wrote (a
   reason, a thread, a handoff's description, a request's own words) is a
   section of its own, shown apart as its claims. Details are words written
   when the event is logged, kept with it in the journal and read when its
@@ -3943,10 +4685,12 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
    channel hands out no real value: it reads, asks, and carries what built-in
    grants allow (fetches, handoffs, MWT's tools).
 8. Nothing in the VM can approve its own requests.
-9. Nothing the VM wrote runs on your machine unless Ask to run commands is on
-   (it starts off) and you approve that exact text, each time; what runs is the text on the card. A command subgrant
-   runs only your script, while it is on, its values as variables, never in
-   its text (`guarantees_test.exs`, `policy_test.exs`).
+9. Nothing the VM wrote runs on your machine unless you approve that exact
+   text, each time, on its card (a command an agent writes always asks,
+   and your machine locked refuses even the ask); what runs is the text on the
+   card. A command action runs only your script, while it is on, its
+   values as variables, never in its text (`guarantees_test.exs`,
+   `policy_test.exs`).
 10. Port forwarding opens nothing from the VM to your machine: connections go
     only into the VM, for ports 4100 to 4199, on the VM's own address here
     (`127.77.X.Y`).
@@ -3963,13 +4707,14 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     writable again (a real VM; `guarantees_test.exs`, `vm_live_test.exs`,
     `folder_sync_test.exs`).
 14. Whether a use goes through, asks or is refused depends only on the
-    grants, the use and the clock. For every combination of grant state,
-    allowances, host and placeholder: no placeholder goes to a host its grant
-    doesn't list, a grant off by the clock lets through and asks nothing, a
-    lapsed allowance allows nothing, a reserved address opens only for an
-    entry naming it, a command is always an ask, a grant set to *Always ask
-    me* takes no allowance, and a grant to review lets nothing through
-    (`policy_test.exs`).
+    grants, the resources' locks and limits, the use and the clock. For
+    every combination of grant state, allowances, host and placeholder:
+    with no grant on nothing goes, no placeholder goes to a host no grant
+    over its credential lists, a grant not on by the clock lets through and
+    asks nothing, a lapsed allowance allows nothing, a reserved address
+    opens only for an entry naming it, a command an agent writes is always
+    an ask, a grant set to *Always ask me* takes no allowance, and a grant
+    to review lets nothing through (`policy_test.exs`).
 15. What an approval, the log, a notification or a page shows of the VM's
     text is UTF-8 and holds nothing that doesn't show; a script that does is
     refused (`hostile_text_test.exs`).
@@ -3995,10 +4740,10 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     requests needing neither you nor a real value go on at once, and a grant
     running out still closes what it let through (`gate_test.exs`,
     `egress_revocation_test.exs`, `dns_test.exs`, `egress_bounds_test.exs`).
-22. With the Internet off, the VM reaches no public address but network
-    grants' and token grants' hosts, and DNS answers only names some grant
-    lists; turning it off closes what it let through (`gate_test.exs`,
-    `dns_test.exs`).
+22. With the Internet's grant off, the VM reaches no public address but
+    those network grants that are on list, a token grant's hosts no more
+    than any other, and DNS answers only names those grants list; turning
+    it off closes what it let through (`gate_test.exs`, `dns_test.exs`).
 23. A network grant opens an address by a name only when MWT's DNS answered
     it for a name it covers while it was on, and nothing while its way out
     doesn't carry the route (`policy_test.exs`, `dns_test.exs`,
@@ -4008,13 +4753,16 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     `host_command_channel_test.exs`), but in the one request MWT sends there
     itself for a grant that signs, whose answer stays with MWT
     (`credential_endpoint_test.exs`).
-25. For a grant only its subgrants use, nothing holding its placeholder is in
-    `/mnt/mwt`, and its placeholder opens nothing
+25. For a credential no token grant is over, one only request actions
+    use, nothing holding its placeholder is in `/mnt/mwt`
     (`credential_scope_test.exs`, `policy_test.exs`).
 26. A confined command sees none of your home but the folders you listed, none
-    of MWT's environment, and only the values of the grants it names
+    of MWT's environment, and only the values of the credentials it names,
+    each while a token grant over it that allows your machine is on
     (`host_run_test.exs`, `host_command_channel_test.exs`, `confine_test.exs`).
-27. A grant paused by *Only while…* refuses every use (`check_test.exs`).
+27. A grant saved with checks (*Only while…*, gone since 2026-11-24) keeps
+    none once MWT starts, and the activity log names each one once
+    (`saving_test.exs`).
 28. A fetch from the VM carries your committed branches and tags, and from
     `remote-origin` your remote branches as last fetched; never configuration,
     hooks, other refs, ignored files or uncommitted work, under any version
@@ -4038,7 +4786,7 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     the host its `aud` names, and only while its grant still signs as its
     account and lists that host (`credential_endpoint_test.exs`).
 34. A login's refresh never goes out, and its placeholder makes only a
-    refresh at Google's token endpoint the grant's use; an ID token's
+    refresh at Google's token endpoint its credential's; an ID token's
     placeholder holds only `iss`, `aud`, `iat`, `exp`, `email` and `hd`,
     and goes only in its header to the grant's hosts
     (`credential_endpoint_test.exs`, `credential_scope_test.exs`).
@@ -4059,9 +4807,10 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
 38. MWT's pages load images, media, fonts and scripts only from MWT; an
     image in Markdown shows as a link to its address
     (`content_security_policy_test.exs`, `markdown_test.exs`).
-39. With the Internet off, MWT connects for the VM to a token grant's host
-    only at an address its DNS answered for that name (`gate_test.exs`,
-    `egress_read_test.exs`).
+39. With the Internet's grant off, MWT connects for the VM to a host a
+    grant over part of the Internet names only at an address its DNS
+    answered for that name, and to a token grant's host only through such
+    a grant (`gate_test.exs`, `egress_read_test.exs`).
 40. A network grant that opened an address by a name lets through there
     only names MWT answered for it that the grant covers: the name in a
     ClientHello, split over records or not, and a plain HTTP request's
@@ -4083,6 +4832,40 @@ Each is checked in the suite, by the files named, or on a real VM (`mix test
     grant, a change that changes nothing included (`mwt_tools_test.exs`).
 46. MWT opens in Zed only a folder under the VM's `/work` named in plain
     characters, whatever the VM printed (`zed_test.exs`).
+47. Grants only give: a use needs, for each resource it goes through, a
+    grant that is on and covers it, a request carrying a credential one
+    over the credential and one over its host's network; within one
+    resource the most permissive grant counts and one that is off has no
+    say; across resources a use goes unasked only if each lets it through
+    unasked, and one several grants ask about makes one card naming each
+    (`policy_says_test.exs`, `credential_test.exs`, `attributes_test.exs`).
+48. A locked resource refuses every use, whatever its grants say, and
+    changes no grant; a value minted while its credential was locked
+    isn't sent; isolating and releasing the VM change no grant either
+    (`locks_test.exs`, `server_firewall_test.exs`, `server_test.exs`).
+49. A request action's call goes only with a grant on over its
+    credential (the action, or a token grant listing its host) and one
+    over its host's network, never through a locked resource or to a
+    blocked host (`action_channel_test.exs`).
+50. A login's refresh is answered without a card only while a grant over
+    its credential is on (`credential_endpoint_test.exs`).
+51. A dry run (`mwt why URL`, *Try a use*) sends nothing, and no
+    explanation holds a value, a placeholder or a control character
+    (`explain_test.exs`).
+52. An export holds a credential's stored value only when you ask for it
+    (`sandbox/transfer_test.exs`).
+53. Isolating locks every resource beside your locks, and releasing ends
+    only the isolation's (`locks_test.exs`).
+54. Of the grants over one network, the most permissive that covers a
+    host counts: a grant over a host that auto-approves lets it through
+    while one over all of the network asks; a host the network's limits
+    block is refused whatever its grants say; and a lock on the network
+    holds every grant over it (`network_test.exs`).
+55. A refused request's decision is kept with its event, and `mwt why ID`
+    gives back that decision, not one made again (`explain_test.exs`).
+56. A request action's answer reaches the VM with each value the call
+    sent (its token, ID token or signed JWT) written out as what it is
+    (`saved_request_test.exs`, `action_channel_test.exs`).
 
 <a id="decisions"></a>
 
@@ -4102,11 +4885,11 @@ history is in git.
 | 2026-11-13 | DNS goes through MWT, which logs every name, and a query aimed at another resolver gets no answer ([DNS](#dns)). |
 | 2026-11-13 | msb and the VM run in a bubble (`bwrap`), with namespaces of their own, no home folder and no network, reaching MWT over Unix sockets, since libkrun's guest reaches whatever its VMM can; on Ubuntu it is MWT's copy of bwrap, `/usr/lib/mwt/bwrap`, under an AppArmor profile the deb installs that lets what runs inside hold `CAP_NET_ADMIN` and `CAP_SETPCAP` and nothing else ([The VM runs in a bubble](#the-bubble)). |
 | 2026-11-13 | Text the VM chooses is made to show all it holds where it enters MWT, and a script for your machine that hides anything is refused rather than shown changed ([Text the VM chooses](#text-the-vm-chooses)). |
-| 2026-11-14 | Every use of a grant waits for you unless you allowed it: no rules by method or path, since what a request does depends on the API, only allowances (uses like this one, or every use, for a while) and *Auto-approve*, chosen with a duration as a grant turns on and changed while it stays on ([Ask each time or auto-approve](#ask-each-time-or-auto-approve)). |
-| 2026-11-14 | A command's text travels in the ask and is exactly what runs, its output going straight back or waiting for you as you choose, and agents send the smallest command that gets the raw data and work on it in the VM, since a card should take seconds to read ([Ask to run commands](#ask-to-run-commands)). |
+| 2026-11-14 | Every use of a grant waits for you unless you allowed it: no rules of MWT's by method or path, since what a request does depends on the API, only allowances (uses like this one, or every use, for a while) and *Auto-approve*, chosen with a duration as a grant turns on and changed while it stays on ([Ask each time or auto-approve](#ask-each-time-or-auto-approve)). |
+| 2026-11-14 | A command's text travels in the ask and is exactly what runs, its output going straight back or waiting for you as you choose, and agents send the smallest command that gets the raw data and work on it in the VM, since a card should take seconds to read ([Commands agents write](#ask-to-run-commands)). |
 | 2026-11-14 | The Overview shows what the VM uses and what it costs this machine, sampled every 5 s while it runs, the last 10 minutes in memory only ([VM monitor](#vm-monitor)). |
 | 2026-11-14 | Open in Zed brings an open folder forward (`zed --existing`), adds another to a Zed window already connected to the VM (`--reuse`), or opens a new window, never replacing a window's project, which would end the agent thread in it ([Projects and handoffs](#projects-and-handoffs)). |
-| 2026-11-15 | What you save is a subgrant, one fixed use of a grant that MWT carries out when an agent calls it by id with typed values (`mwt call`): your script on this machine under Ask to run commands, or one HTTP request MWT sends with a token grant's real value, each with a switch of its own, and agents only propose them (`mwt propose`) ([Grants and subgrants](#grants-and-subgrants)). |
+| 2026-11-15 | What you save is an action, one fixed use of a grant that MWT carries out when an agent calls it by id with typed values (`mwt call`): your script on this machine under Ask to run commands, or one HTTP request MWT sends with a token grant's real value, each with a switch of its own, and agents only propose them (`mwt propose`) ([Grants and actions](#grants-and-actions)). |
 | 2026-11-15 | Agents hand off only when you ask (`/handoff`) and leave their work uncommitted until then, so you review every change in Zed in the VM; MWT doesn't gate it, and a handoff that came too soon you close, the agent undoing its commits but keeping the work ([Handoffs](#handoffs)). |
 | 2026-11-15 | A handoff can be sent back with a note, before or after landing, which MWT says in its thread when it can reach it, and the agent's next `mwt handoff` from that branch revises the same handoff ([Handoffs](#handoffs)). |
 | 2026-11-15 | Servers in the VM on ports 4100 to 4199 open on your machine by themselves, at the VM's own address (`127.77.X.Y`, same port), over an SSH tunnel through the launcher; only that range, since forwarding every port listed each language server and test listener ([Servers in the VM, on your machine](#servers-in-the-vm-on-your-machine)). |
@@ -4133,15 +4916,11 @@ history is in git.
 | 2026-11-17 | The activity log keeps what a request MWT read carried and what came back to the VM, at most 64 KiB of each body and never the real value, so an agent's failing call can be read in MWT ([What the log keeps of a request](#exchanges)). |
 | 2026-11-17 | The firewall refuses a request carrying a grant's value to a credential endpoint, a host or path whose answer is a credential, before the value is fetched, since that answer would bring a new credential into the VM ([Rules](#rules)). |
 | 2026-11-17 | An approval is decided only on the Approvals page and answers only what its card shows: an ask joins a waiting card only when it is the very same, compared whole by SHA-256, a held request shows in full, every header shown and the placeholder's carriers named, kept in memory only, and a notification, MWT's own, only brings MWT forward on it ([Approvals](#approvals), [Desktop notifications](#desktop-notifications)). |
-| 2026-11-17 | Ask to run commands (`commands`) is built in, off and can't be removed: only while it is on may agents ask to run a command they wrote, every such run waits for your approval of its exact text on a card drawn in red, as only an agent's own command is, and nothing runs one unasked ([Ask to run commands](#ask-to-run-commands)). |
-| 2026-11-17 | Every grant and subgrant has a start setting, *Disabled* (the default), *Enabled, ask* or *Enabled, auto*, and every start of MWT begins from these, every allowance ending with the session ([When MWT starts](#when-mwt-starts)). |
-| 2026-11-17 | Each grant and subgrant has one switch, *Always ask me*, under which every use is a card you allow once, no allowance or Auto-approve covering it ([Always ask me](#ceiling)). |
-| 2026-11-17 | The Grants page is a catalog: what is enabled first and apart, in full with its controls, so you always see what the VM can use, then every grant and subgrant as a card, with a search, filters and a sort ([The Grants page](#the-grants-page)). |
-| 2026-11-17 | Token grants reach a command only through `mwt exec GRANT -- COMMAND`, with no token variable in the VM's environment or profiles and git's helper answering only for the selected grant, and a grant can keep its value for its subgrants alone, the VM then holding no placeholder of it ([Who uses its value](#who-uses-its-value)). |
+| 2026-11-17 | Each grant and action has one switch, *Always ask me*, under which every use is a card you allow once, no allowance or Auto-approve covering it ([Always ask me](#ceiling)). |
+| 2026-11-17 | The Grants page is a catalog: what is enabled first and apart, in full with its controls, so you always see what the VM can use, then every grant and action as a card, with a search, filters and a sort ([The Grants page](#the-grants-page)). |
 | 2026-11-17 | A token grant names the presentations `mwt exec` runs for it, small programs that show a placeholder the way a tool family expects (the first, a cloud metadata server, for Google Cloud grants), which hold only placeholders, so adding one is no trust decision ([Presentations](#presentations)). |
 | 2026-11-17 | A mint command is told which grant it mints for and, for a grant minted per host, which host (`MWT_HOST`), may say when its value expires, and runs as you, the one place that touches your login ([Where real values come from](#where-real-values-come-from)). |
-| 2026-11-17 | A grant can hold conditions, *Only while…*: scripts of yours, run confined, whose failure pauses it for every use, since MWT can't know whether what a grant depends on, such as a VPN, is there ([Checks](#checks)). |
-| 2026-11-17 | New command subgrants run confined, in a bubble on this machine with an empty home, your tools read-only and only the values of the token grants they name, since a script run as you had your whole home in reach ([Confined commands](#confined-commands)). |
+| 2026-11-17 | New command actions run confined, in a bubble on this machine with an empty home, your tools read-only and only the values of the token grants they name, since a script run as you had your whole home in reach ([Confined commands](#confined-commands)). |
 | 2026-11-17 | Every process of a VM's bubble runs under a seccomp filter MWT writes, refusing what a VMM never calls and kernel exploits reach for, and any new user namespace, since bwrap's `--disable-userns` would nest the sandbox where the relay's `CAP_NET_ADMIN` can't reach its network ([The VM runs in a bubble](#the-bubble)). |
 | 2026-11-17 | Every `msb` MWT runs on this machine, the launcher's included, runs confined with no KVM, and what MWT trusts of a VM (the forwarding's SSH control socket, the bubble's process id and log) sits outside the folder its bubble mounts, so a VM that broke out can neither boot itself through msb nor add listeners here ([The VM runs in a bubble](#the-bubble)). |
 | 2026-11-17 | Every git repository in a shared folder is a project and reaches the VM only as a clone of its own, never in a folder's copy; the Projects page shows those you work with now, *Open project* the rest, and a clone whose repository is gone stays in the VM until you remove it ([Projects and handoffs](#projects-and-handoffs)). |
@@ -4152,10 +4931,9 @@ history is in git.
 | 2026-11-17 | A thread works only in the slot it was opened in, takes it first even for a question, on a branch named for what you asked and based on the branch you name, and holds it until its handoff lands or is closed, a second thread there only reading ([Worktree slots](#worktree-slots)). |
 | 2026-11-17 | `mwt handoff` does every step that needs no judgment: it fetches, commits the changes to files git has, rebases onto `origin/<base>`, runs the project's checks and sends that exact commit, pinned in MWT's review store, which borrows your repository's objects, so nothing enters your repository until you land it ([Handoffs](#handoffs)). |
 | 2026-11-17 | A handoff's page is about landing, since you reviewed the work in the VM before asking for it: it lands as it is, a fast-forward to the commit its checks ran on, when the branch hasn't moved, so the clone and your repository agree, else as one commit marked untested with what came since, onto the task's base, any branch you choose or a new `mwt/` branch ([Landing](#landing)). |
-| 2026-11-18 | Agents propose whole grants (`mwt propose token`, `mwt propose network`) as well as subgrants, and what they propose is saved at once, off, never enabled on startup, tagged as proposed and to review; nothing turns it on until you accept it on its page, and declining or removing it before then tells the agent ([Proposed grants](#proposed-grants)). |
+| 2026-11-18 | Agents propose whole grants (`mwt propose token`, `mwt propose network`) as well as actions, and what they propose is saved at once, disabled, never enabled on startup, tagged as proposed and to review; nothing turns it on until you accept it on its page, and declining or removing it before then tells the agent ([Proposed grants](#proposed-grants)). |
 | 2026-11-18 | There is no YOLO mode and no file grant: nothing counts a grant as on but its own switch, and no grant hands the VM a real value. A file grant saved before is dropped as MWT starts, with its value, and Activity says which. |
-| 2026-11-18 | Releasing the VM from the firewall turns back on what was on when it was isolated, as it was, for the time it has left ([Releasing](#releasing)). |
-| 2026-11-18 | Every field of the grant form and of a grant's conditions has a *?* saying what its value means and what it is for; All grants shows six cards a page ([The Grants page](#the-grants-page)). |
+| 2026-11-18 | Every field of the grant form has a *?* saying what its value means and what it is for; All grants shows six cards a page ([The Grants page](#the-grants-page)). |
 | 2026-11-18 | Catching a handoff up with its moved branch takes a click: MWT replays its commits there itself where they apply cleanly, or sends it back to catch up with a note that is also the ask to hand off again, so its thread resolves the conflicts and hands off without another `/handoff`. A revision is measured from where its branch meets the base now, and `mwt handoff` goes on with a rebase it stopped before anything else ([Landing](#landing)). |
 | 2026-11-18 | The firewall's rules were hardened against evasion and against false alarms. A connection claiming a trusted name over TLS is spared only at an address MWT's own DNS resolved for it, so the trust can't be borrowed to tunnel out unread. Uploads are counted by domain, so spreading them across subdomains folds together. DNS-name data is weighed by bytes, not just a count; a single long name is refused rather than isolating the VM, and names under cloud providers' own domains and the reverse names of addresses are no longer mistaken for exfiltration. Credential-endpoint paths are read as the host would (percent-decoded, `.`/`..` resolved), and a protected path is caught through quotes or backslashes slipped between its letters. A horizontal sweep (many addresses on one non-web port) joins Scanning, and DNS straight to a public port 53 joins DNS around MWT. The blocked, resolver, credential-endpoint and protected-path lists grew, more credential shapes are recognised entering the VM, and new default protected paths and credential endpoints reach a saved firewall on upgrade ([Firewall](#firewall)). |
 | 2026-11-18 | One *VM isolated* switch on the Firewall page: the firewall turns it on, and so can you, to cut the VM off yourself; turning it off releases the VM, asking first, with what the firewall saw and whether to trust its destination, only when the firewall isolated it. The page is shorter: rules grouped a line each, their full text behind a "?", the lists in tabs, past isolations folded under the switch ([Isolating](#isolating), [The Firewall page](#screens-firewall)). |
@@ -4165,8 +4943,8 @@ history is in git.
 | 2026-11-21 | `agents.md` tells agents only how to work in the VM; how you like to work with agents (which decisions to bring you, how to build from building blocks) is your way of working, a text you write in Settings, empty by default, since it is your taste rather than a fact of the VM ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)). |
 | 2026-11-21 | The workspace, `~/mwt-vm`, moves files that aren't code between the VM and your machine in two halves, each written by one side only, so nothing is reconciled: `to-vm/` yours, copied in as a shared folder; `from-vm/` the VM's, copied here read-only under a grant of its own and rules that keep out what your tools act on by being there (no name starting with a dot or a dash, no link, nothing executable), since it is the first way the VM writes onto your disk without a handoff you land ([The workspace](#the-workspace)). |
 | 2026-11-21 | The metadata server is offered on every token grant whose hosts are Google's APIs, however the grant was made, and an agent may propose it (`--metadata-project`, `--metadata-account`), since it holds only placeholders and a Google grant proposed, or added without it, left Google's client libraries with no default credentials and no way to turn it on ([Presentations](#presentations)). |
-| 2026-11-22 | A credential endpoint a grant takes is answered by MWT itself rather than refused: it makes the credential with the grant's value, keeps it as a value made from the grant, going only where it was made for, and hands the VM a placeholder. The first is `signJwt`, for the service accounts a grant names, the signed JWT going only to its `aud` host; values made for one tool's request belong to one grant, since a request may carry one grant's placeholders ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
-| 2026-11-22 | A token grant may give a Google login file whose refresh MWT answers from the grant's mint, the access token its own placeholder and the ID token, when the mint prints one, a placeholder standing for the grant's current ID token, minted fresh on the way out, holding only its `iss`, `aud`, `iat`, `exp`, `email` and `hd`; values made for one tool's request belong to one grant ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
+| 2026-11-22 | A credential endpoint a grant takes is answered by MWT itself rather than refused: it makes the credential with the grant's value, keeps it as a value made from the grant, going only where it was made for, and hands the VM a placeholder. The first is `signJwt`, for the service accounts a grant names, the signed JWT going only to its `aud` host; values made for one tool's request belong to one grant, since a request may carry one credential's placeholders ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
+| 2026-11-22 | A token grant may give a Google login file whose refresh MWT answers from its credential's mint, the access token its own placeholder and the ID token, when the mint prints one, a placeholder standing for the grant's current ID token, minted fresh on the way out, holding only its `iss`, `aud`, `iat`, `exp`, `email` and `hd`; values made for one tool's request belong to one grant ([Credential endpoints MWT answers](#credential-endpoints-answered)). |
 | 2026-11-22 | A minted grant may keep each value at most N minutes, whatever its expiry says, since a service may take a token only while it is young ([Where real values come from](#where-real-values-come-from)). |
 | 2026-11-22 | What agents are told every session shrank from 34 KB to 10 KB: the rules every task needs stay in `agents.md`, and what only some tasks need (slots in detail, handing off, token grants and MWT's refusals, proposing, host commands, the workspace) moved to guides that `mwt help TOPIC` prints, which the rules name as what to read first. With your way of working and a project's own `AGENTS.md`, Codex warned of the total, and every session, subagent and approval review read all of it ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)). MWT's example way of working asks for a component per job, named for it, rather than roles people would play, and keeps only the concepts: 7.9 KB instead of 14.8 KB. |
 | 2026-11-22 | MWT reads every connection it can, the Internet's and a network grant's, so you can read what went out on your behalf: TLS ended with its CA's certificate, the request read and judged one by one, the host reached at the address the destination check approved with TLS MWT starts again. What it can't read is passed through with why; which hosts it reads is yours to set on the activity log, per host and for any other, never by a failure, since the VM would then choose what goes unread; reading adds about 0.3 ms a request on a kept connection, 1.9 ms on a new one ([Each connection](#each-connection), [Not read](#not-read), [What reading costs](#what-reading-costs)). |
@@ -4175,7 +4953,6 @@ history is in git.
 | 2026-11-22 | The VM and MWT keep six channels, each there because msb offers nothing else for its job; one channel waits for a second backend with no network card ([Channels](#channels)). |
 | 2026-11-22 | The proxy reads each protocol through a driver of its own, pure, and does everything else itself, the same for every protocol: one way out, every byte looked through and counted, each request judged as one shape its driver describes, a real value put in only where the judge says, the driver doing the replacing. A new protocol is one driver; reading through the core costs a kept request about 0.05 ms more than before. The core is TCP's, and a driver is told its transport, so a core for UDP would run the same drivers; the interface is a first draft, changed by the first protocol that doesn't fit it ([Drivers](#drivers)). |
 | 2026-11-22 | The proxy's purpose is that you see and decide what the VM does outside it at the finest grain there is, the request: each one logged with what came back and, where a grant asks, held on a card of its own, in every protocol a driver reads. Keeping credentials out of the VM is one use of that reading, not its reason, so a protocol with no credential to carry (a database you shared, whose queries you want to approve) is worth a driver too ([What it is for](#what-it-is-for), [Network](#network)). |
-| 2026-11-22 | A network grant has a host list, the Internet's included: hosts whose uses go otherwise than the grant's mode says, each Ask (every request MWT reads there waits for you, Auto-approve on the grant included, and a connection it can't read is asked about as one), Auto, or Block (refused, `mwt_host_blocked`). So the Internet can let everything through but a few hosts you check, and refuse some outright. The Internet has an approval mode like any grant, Auto-approve unless you choose otherwise, but never asks about an address alone. A use that may be for several names is held by the strictest entry for any of them ([Host lists](#host-lists)). |
 | 2026-11-22 | Plain HTTP is read, each request judged and logged; its host is the one its `Host` names, the client's word, so no placeholder goes in one, its card names the address it goes to and *Allow similar* covers that address only. HTTP/2 is read too, offered only to a client that offers no HTTP/1.1 (gRPC's): one that speaks either is read over HTTP/1.1 all the same, so HTTP/2 for it would add only risk; each stream is a request of its own, a value going only in a carrier ([Drivers](#drivers), [Each intercepted request](#each-intercepted-request)). |
 | 2026-11-22 | What the core looks through is the VM's text: HTTP/2 headers go up written again without Huffman coding, a WebSocket's frames masked with zeros (its extensions offer taken out, so nothing comes compressed), and each stream's text is looked through apart from the framing and other streams, so a value split across two frames is found. A request MWT refuses is looked through for real values too ([Drivers](#drivers)). |
 | 2026-11-22 | Two requests whose body MWT holds only the start of never share a card: what follows may differ, and one decision would let through a body nobody saw ([Approvals](#approvals)). |
@@ -4185,6 +4962,22 @@ history is in git.
 | 2026-11-22 | Landing a handoff deletes its task's branch in the VM when nothing was done on it since, taking its slot off the branch at the same commit, so task branches don't pile up; a branch with anything on it stays, and the handoff's timeline says why. Nothing sweeps the clone periodically ([After landing](#after-landing)). |
 | 2026-11-23 | You hand off work you did yourself in the VM: at a terminal, `mwt handoff` offers to make a branch of yours a task, based on the branch it came from, asks the title and opens git's editor for the notes, and finishes a task an agent left ([Handoffs](#handoffs)). |
 | 2026-11-23 | From the threat model review of 2026-11-21 (`docs/dated/`), checked again against the code: a restart of the sandbox's server after a failure puts each grant back as it was, with the firewall's counts, kept by a process of the identity's that lives as long as the unlock (`UnlockState`), rather than coming back with every grant off, which would stop an agent's work at each failure, or from saved state, which would lose a change made in the last 250 ms; only opening or unlocking MWT is a start. Git's upload-pack never speaks protocol version 2, which serves any object by id whatever the settings say; a client asking for it is answered in version 0. MWT's pages carry a Content-Security-Policy, and Markdown's images show as links, also in your own notes, since the renderer doesn't know who wrote the text. With the Internet off, a token grant's host is reached only at an address MWT's DNS gave. A proposed grant is accepted only at the revision its page showed. `e2fsck` and `resize2fs` run in a bubble. Landing runs with git-lfs's smudge off: a file stored in LFS lands as its pointer, for `git lfs pull` to fetch from your remote ([Guarantees to test](#guarantees-to-test), 35 to 46). |
+| 2026-11-24 | A grant is on, off or disabled: off refuses every use it covers, even where another grant lets it through, and disabled has no say. Every grant covering a use has a say and the strictest wins (no, then ask, then yes), so overlapping grants only narrow each other and nothing ranks one grant above another; a use carrying a credential needs a say from a grant over it. An HTTP request is one decision of the grants over its credential and the network grant it came through, and one card names every grant that asks, *Allow for a while* adding the allowance to each one left ticked. A grant you add or an agent proposes starts disabled; one saved off before gave nothing, so it is disabled now ([On, off and disabled](#states), [The rule](#the-rule), [Approvals](#approvals)). |
+| 2026-11-24 | A credential is a resource apart from the grants over it: where its value comes from, its one placeholder, how tools find it. Several token grants can be over one, each with its own hosts, attributes and approval, and its value is minted once for all; grants saved before were given one each, those minted the same way merged into one keeping their old placeholders, since the same Google login was minted four times for four purposes ([Credentials](#credentials)). |
+| 2026-11-24 | `mwt exec CREDENTIAL -- COMMAND` chooses which credential a command speaks as and decides nothing, the grants over it deciding each request at the proxy; it refuses at the start while the credential is locked or no grant over it is on, as a courtesy, not a boundary ([Grant kinds](#grant-kinds)). |
+| 2026-11-24 | Credentials, networks and your machine have locks, for when something went wrong: a locked resource refuses every use whatever its grants say and changes no grant, stops the commands running with it, holds back a value minted while it was locked, and agents can't ask for it to end. Two hold locks, each apart: you, and the isolation, which locks every resource beside your locks as the firewall isolates the VM; releasing ends only the isolation's, so every grant is as you left it and what you locked stays locked, rather than turning back on what the incident remembered. The lock switch reads on as open ([Locks](#locks), [Isolating](#isolating), [Releasing](#releasing)). |
+| 2026-11-24 | Ask to run commands is always on and always asks, with no switch, duration or start setting: nothing it allows runs without your approval of its exact text, so an off switch only stopped agents from asking. Locking your machine stops the asks; saved commands keep switches of their own ([Commands agents write](#ask-to-run-commands)). |
+| 2026-11-24 | Every grant and action has a start setting, *Disabled* (the default), *Off, refusing*, *Enabled, ask* or *Enabled, auto*, and every start of MWT begins from these, every allowance ending with the session ([When MWT starts](#when-mwt-starts)). |
+| 2026-11-24 | A token grant may narrow by attributes MWT reads (a method, a path pattern, a gRPC method, a GraphQL operation, git's direction, a GitHub repository); what MWT couldn't read counts against the use unless the grant's *Covers requests MWT can't read* is off, so an off grant can't be walked around, and agents never ask for that setting. *Allow similar, any id* covers an endpoint whatever its ids ([Attributes](#attributes), [Approvals](#approvals)). |
+| 2026-11-24 | What MWT knows of a family of credentials is an adapter (`bearer`, `github`, `google`) behind fixed extension points, shipped with MWT, never a plugin: it reads a mint, implies the hosts its endpoints need (Google's token and signing hosts, which no grant lists now), adds variables (`GOOGLE_CLOUD_PROJECT`) and attributes (a GitHub repository), and may make a value (a GitHub App's installation token from its key). A login's refresh MWT answers is no use of a grant, so it makes no card ([Adapters](#adapters), [Credential endpoints MWT answers](#credential-endpoints-answered)). |
+| 2026-11-24 | Agents find out why a use was refused or asked about from MWT, since tools hide its answer: `mwt why --recent`, `mwt why ID`, and `mwt why URL`, a dry run of the same decision that sends nothing and says so, with *Try a use* for you; what they are shown is built from a list of what may be shown, never a value, placeholder, body or the firewall's workings. A refused request keeps its decision as made with its event, its refusal naming it (`"decision"`, `"why"`), so `mwt why ID` gives back what decided then rather than deciding again with grants that changed since. Grants that may cover one use are linked by MWT from their scopes, never declared ([Finding out why](#finding-out-why), [Overlaps](#overlaps)). |
+| 2026-11-24 | An export holds the sandbox's setup as a section of its own: credentials, networks, grants and their start settings, the built-in grants' settings, your presets, host notes, way of working and the folders confined commands may read; stored values only when you tick it, minted values never, and nothing of a session. Importing merges, a differing definition coming in beside the old under a new id, to review; a credential that comes in gets placeholders made anew, since one from a file could be one of yours ([Export](#export), [docs/transfer.md](transfer.md)). |
+| 2026-11-24 | Networks are resources of their own, the Internet among them, and each entry of a host list a grant over that host of its network: Ask, on and always asking; Auto, on and auto-approving; Block, off and not askable. Every grant over a network with a say about a use speaks and the strictest wins, so a host set to Auto no longer loosens an Internet that asks, and a network grant off refuses every address it lists, the Internet's every public one. Which grant opens a connection is still the most exact one ([Networks](#networks), [Hosts of a network](#host-lists), [The rule](#the-rule)). |
+| 2026-11-24 | Checks (*Only while…*) are gone, since a network reached through an interface of its own already opens nothing while it is down, and a credential that turns out to do more than you set it up for is yours to lock. A grant saved with checks loses them as MWT starts, and the activity log names them once ("Checks removed, which no longer run: …") ([Private networks](#private-networks), [Locks](#locks)). |
+| 2026-11-24 | What was called a subgrant is an action everywhere: the pages, `mwt` (`--actions-only`, with `--subgrants-only` still accepted), the guides and the code (`Grant.action?/1`, reach `:actions`, preset `request_action`); state, presets and files saved under the old names are read under the new ([Grants and actions](#grants-and-actions)). |
+| 2026-11-24 | A request action may send the values its credential's adapter makes beside `{token}`: `{id_token}`, the ID token the Google login's mint prints, and `{signed_jwt}` or `{signed_jwt:ACCOUNT}`, a JWT Google signs as an account the grant names for the call's URL, valid an hour, so a fixed call to a service behind Identity-Aware Proxy needs no grant of its own let through without asking ([Request actions](#request-actions)). |
+| 2026-11-24 | Grants give, resources limit, since the first build's on, off and disabled and the strictest say were too confusing to set up: each grant mediates one resource (a credential, a network, your machine, MWT's tools) and is only on or off, off having no say; with no grant on nothing goes. A use needs, for each resource it goes through, a grant on that covers it (a request carrying a credential one over the credential and one over its host's network, so a token grant no longer opens its hosts with the Internet's grant off); within a resource the most permissive grant counts, across resources it goes unasked only if each lets it through unasked, and one card names every grant that asks. Holding back is the resources' job: a lock, and a network's host limits, a default and two lists, Reachable and Blocked, the most exact entry deciding, a blocked host refused whatever any grant says, so always asking about one host the Internet's grant lets through isn't expressible ([On and off](#states), [The rule](#the-rule), [Host limits](#host-lists)). |
+| 2026-11-24 | A command an agent writes needs no grant: Ask to run commands is gone, agents can always ask (`mwt run --reason … -- COMMAND`, the old ids still accepted), you approve each run, and it is refused at once while your machine is locked. Saved commands are grants over your machine, each credential they run with needing a token grant that allows your machine; request actions are grants over their credential, so a token grant only its actions used is gone. Actions sit under their resource, and the Grants page has three tabs, *On now*, *Resources* (credentials and networks added on their own, each with a page, its lock and its grants) and *All grants*, each grant linking to its resource ([Commands agents write](#ask-to-run-commands), [Grants and actions](#grants-and-actions), [The Grants page](#the-grants-page)). |
 
 <a id="later"></a>
 
@@ -4196,8 +4989,18 @@ Open: not built, or not tried yet.
   with dummy keys); an SSH agent over vsock, approval per signature.
 - **More presentations** in `mwt-present`: a container registry's credential
   helper, a Kubernetes exec credential, a `credential_process`.
-- **Finer allowances,** if asking about every use proves too much: what to
-  auto-approve or always ask, by method, path or pattern, or per provider.
+- **Finer allowances,** if asking about every use proves too much: the
+  widening steps a driver declares for *Allow similar*, beyond *any id*.
+- **The rest of the grants redesign** of 2026-11-24
+  (`docs/dated/20261124-grants_redesign.md`): always asking about one
+  host a wider grant lets through, which grants that only give can't
+  express; attributes on network grants, declared by each driver (gRPC and GraphQL
+  as drivers of their own) and compared when working out overlaps; the ID
+  token kept for a time of its own; token shapes, credential endpoints
+  and presets declared by adapters; linked grants grouped on the Grants
+  page, and a change of state saying first what it changes through them;
+  `mwt why -- curl …`; a placeholder per `mwt exec` run, so a card could
+  show the command, marked as the agent's claim.
 - **Confined ad-hoc commands,** as a choice on their card.
 - **Names beside addresses** in the activity log, from the DNS answers,
   saying when a TLS name and its address never met.
@@ -4220,9 +5023,10 @@ Open: not built, or not tried yet.
 - **Not tried yet:** the real-VM suite on MWT's own image (it uses Alpine);
   the live VPN check (a VPN name resolved, a VPN host reached, a grant's way
   out); a large repository through the clone; Claude (MWT) live in Zed.
-- **Export:** `.mwtexport` with grants (their values only if you ask, if at
-  all), settings, the VM's OptMem read through the running VM, and items'
-  versions; how the CA moves.
+- **Export:** the sandbox's credentials, networks, grants and settings
+  are in it ([Export](#export), `docs/transfer.md`); still not: the VM's
+  OptMem read through the running VM, items' versions, and how the CA
+  moves.
 - **The VM's OptMem:** its review offered in the Approvals queue, not only on
   the Memory card; seeding it with only some projects' memories.
 - **Projects:** a folder picker and the upstream branches on the Projects

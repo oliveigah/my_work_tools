@@ -1,6 +1,6 @@
 defmodule MWTClient.Sandbox.Confine do
   @moduledoc """
-  The bubble a confined command subgrant runs in, on this machine: `bwrap`,
+  The bubble a confined command action runs in, on this machine: `bwrap`,
   as the VM's own bubble is (`MWTClient.Sandbox.Bubble`), but around one
   script of yours instead of the VM.
 
@@ -16,7 +16,7 @@ defmodule MWTClient.Sandbox.Confine do
     * an empty home, on tmpfs, at your home's path; the folders of it you
       let commands read (`reads`: where your tools live), read-only, each
       with what it links to one level down;
-    * the command's folder, read-only unless the subgrant may write there;
+    * the command's folder, read-only unless the action may write there;
       one that runs in your home folder runs in the empty one;
     * the workspace (`MWTClient.Sandbox.Workspace`): its `from-vm/`
       read-only, what the VM left there, and its `to-vm/` writable, the
@@ -93,7 +93,7 @@ defmodule MWTClient.Sandbox.Confine do
       ["--chdir", spec.dir, "--"]
   end
 
-  # The command's own folder comes after, so a subgrant that runs in a half
+  # The command's own folder comes after, so an action that runs in a half
   # keeps the mode it was given there.
   defp workspace(nil), do: []
 

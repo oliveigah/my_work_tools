@@ -18,7 +18,7 @@ defmodule MWTClient.Sandbox.HostCommand do
       as running build tools in a folder the VM can write, or a script too
       long to read at a glance. Hints are never a review: a script can do
       anything its text allows;
-    * through Ask to run commands (no `:folder`), finds a saved command with the
+    * for a command the agent wrote (no `:folder`), finds a saved command with the
       same text and folder (`saved_as`), and takes the name the agent
       suggests saving it under (`suggest_save`) and what it would be for,
       said for any time it runs (`save_for`), both claims. A name needs
@@ -96,7 +96,7 @@ defmodule MWTClient.Sandbox.HostCommand do
     * `:user` - who it runs as, for the card, defaults to MWT's own user
     * `:folder` - the folder a command grant with a script of yours names;
       the command runs there, whatever the ask says
-    * `:values` - the values of a subgrant's parameters, checked
+    * `:values` - the values of an action's parameters, checked
       (`MWTClient.Sandbox.Param.check/2`), which the script reads as
       environment variables
     * `:workspace` - the workspace's folder (`MWTClient.Sandbox.Workspace`),
@@ -136,7 +136,7 @@ defmodule MWTClient.Sandbox.HostCommand do
       not (is_integer(timeout) and timeout in 1..@max_timeout) ->
         {:error, :bad_timeout}
 
-      # Through Ask to run commands: a saved command's run saves nothing.
+      # A command the agent wrote: a saved command's run saves nothing.
       suggest_save != nil and save_for == nil and is_nil(Keyword.get(opts, :folder)) ->
         {:error, :no_save_for}
 
@@ -151,7 +151,7 @@ defmodule MWTClient.Sandbox.HostCommand do
           end
 
         dir = elem(place, 1)
-        # Through Ask to run commands, a saved command with the same text and folder.
+        # A command the agent wrote: a saved command with the same text and folder.
         saved = if Keyword.get(opts, :folder), do: nil, else: saved(script, dir, grants)
 
         {:ok,
@@ -175,7 +175,7 @@ defmodule MWTClient.Sandbox.HostCommand do
              hints(script, grants, workspace, Keyword.get(opts, :copied_at)) ++
                if(saved,
                  do: [
-                   "Same as your subgrant #{saved.name}: the agent can call that one by id."
+                   "Same as your action #{saved.name}: the agent can call that one by id."
                  ],
                  else: []
                ),
@@ -432,7 +432,7 @@ defmodule MWTClient.Sandbox.HostCommand do
     for %Grant{kind: :token} = grant <- grants,
         what = covered_by(commands, script, grant),
         what != [] do
-      "#{grant.name} already covers this (#{Enum.join(what, ", ")}): the agent can run it in the VM with mwt exec #{grant.id} -- …, where you'd see each request it makes, or call a subgrant of it."
+      "#{grant.name} already covers this (#{Enum.join(what, ", ")}): the agent can run it in the VM with mwt exec #{grant.id} -- …, where you'd see each request it makes, or call an action of it."
     end
   end
 

@@ -22,11 +22,10 @@ defmodule MWTClient.Sandbox.Dns do
   one (`Grant.resolver`, reached through its way out, `Grant.anchor`),
   and the addresses in the answer are kept for it
   (`MWTClient.Sandbox.Gate.answered/4`, `addresses/2`): only those open
-  under the grant. So are the addresses of a name a grant's host list asks
-  about or blocks (`Gate.remember_listed/3`), for a connection to them to be
-  held by that entry whatever name it gives, and of a name a token grant
-  reads (`Gate.remember_read/3`): with the Internet off, its host is reached
-  only there. An answer cut short over UDP is asked again
+  under the grant. So are the addresses of a name a grant over part of a
+  network names, or any name while a network blocks hosts
+  (`Gate.remember_listed/3`), for a connection to them to be
+  held by that entry whatever name it gives. An answer cut short over UDP is asked again
   over TCP. The name and type are read for the activity log, where a name is
   logged again only after `@quiet` seconds. A message it can't read is
   dropped.
@@ -304,7 +303,6 @@ defmodule MWTClient.Sandbox.Dns do
         with {:ok, answer} <- pass_on.(resolver()) do
           Gate.remember_trusted(username, name, answer)
           Gate.remember_listed(username, name, answer)
-          Gate.remember_read(username, name, answer)
           {:ok, answer}
         end
 
@@ -334,6 +332,10 @@ defmodule MWTClient.Sandbox.Dns do
 
       {:refuse, :internet_off} ->
         note(username, seen, name, type, "Not looked up (#{type}): the Internet is off")
+        {:ok, refused(message)}
+
+      {:refuse, {:host_blocked, _network, entry}} ->
+        note(username, seen, name, type, "Not looked up (#{type}): #{entry} is blocked by you")
         {:ok, refused(message)}
     end
   catch

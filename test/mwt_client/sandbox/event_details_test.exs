@@ -158,7 +158,7 @@ defmodule MWTClient.Sandbox.EventDetailsTest do
         proposal: %{kind: :command, parent_name: "Ask to run commands", updated: false}
       }
 
-      assert Enum.any?(Approval.details(approval, "declined"), &(&1.title == "Subgrant proposed"))
+      assert Enum.any?(Approval.details(approval, "declined"), &(&1.title == "Action proposed"))
     end
 
     test "a grant: as it is, never its value; an edit, before and after" do

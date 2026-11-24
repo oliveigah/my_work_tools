@@ -99,7 +99,7 @@ defmodule MWTClient.Sandbox.Notices do
        [from(approval), HostCommand.title(approval.script), ended(run)]}
 
   defp text(%Approval{kind: :command, script_from: :grant} = approval, grant) do
-    {"#{agent(approval)} calls your subgrant #{(grant && grant.name) || approval.grant_id}",
+    {"#{agent(approval)} calls your action #{(grant && grant.name) || approval.grant_id}",
      [from(approval), reason(approval)]}
   end
 

@@ -46,7 +46,7 @@ defmodule MWTClientWeb.SandboxMwtToolsLiveTest do
 
   test "MWT's three grants are built in: shown as such, with no edit or remove",
        %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
     # MWT's own tools, all on one page of the catalog.
     view |> form("#grant-type", type: "mwt") |> render_change()
 
@@ -62,15 +62,15 @@ defmodule MWTClientWeb.SandboxMwtToolsLiveTest do
 
   test "the Internet is built in, says what it reaches, and asks each time only when set to",
        %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
     assert has_element?(view, "#grant-card-internet", "Built in")
     assert has_element?(view, "#grant-card-internet", "Every public address")
-    assert has_element?(view, "#grant-mode-internet-ask")
+    assert has_element?(view, "#grant-mode-internet--ask")
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/internet")
     assert has_element?(view, "#grant-internet", "Every public address on the internet")
     assert has_element?(view, "#grant-internet-off", "api.anthropic.com:443")
-    assert has_element?(view, "#detail-mode-internet-ask")
+    assert has_element?(view, "#detail-mode-internet--ask")
     refute has_element?(view, "#edit-grant")
     refute has_element?(view, "#grant-danger")
   end

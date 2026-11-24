@@ -1,6 +1,6 @@
-# Access: grants, subgrants, token grants, the network, MWT's answers
+# Access: grants, actions, credentials, the network, MWT's answers
 
-Read this before you first use a token grant, and when MWT refuses
+Read this before you first use a credential, and when MWT refuses
 something you need.
 
 ## Asking
@@ -13,66 +13,64 @@ ask is still waiting, keep working on what doesn't need it and run
 ask was wrong, 2 while it waits for the user, 3 when declined or given up,
 4 when MWT is locked or closed.
 
-Even with a grant on, each use (each request carrying the placeholder, each
-request to a private address, or each connection there MWT can't read)
-waits for the user's approval unless they allowed it for a while. A request can hang for minutes: wait, and don't
-retry in a loop.
+A grant gives uses of one resource: a credential, a network, the user's
+machine or MWT's tools. Off, it gives nothing. A use needs a grant that is
+on over each resource it goes through: a request with a placeholder needs
+one over the credential listing the host and one over the host's network
+(usually the Internet's). It goes unasked only if each lets it through
+unasked; otherwise it waits for the user's approval, for minutes: wait,
+and don't retry in a loop. A locked resource refuses everything, and an
+ask for a grant over it is refused at once.
 
-## Subgrants
+## Actions
 
-A subgrant is one fixed use of a grant, which MWT carries out for you when
-you call it by its id, with a value for each of its parameters:
+An action is one fixed use of a resource, which MWT carries out for you
+when you call it by its id, with a value for each of its parameters:
 
     mwt call gh-repo-view REPO_NAME=oliveigah/klife --reason "why now"
 
-`mwt grants` lists them under their grant, with their parameters. Look for
-one before anything else.
+`mwt grants` lists them under their resource, with their parameters. Look
+for one before anything else.
 
-- **You send an id and values, never a command or a request.** A subgrant
-  of Ask to run commands is the user's own script: it runs on their
-  machine, in the folder they chose, and reads your values as variables.
-  Its output comes back, with its exit status.
-- **A subgrant of a token grant is a request MWT sends itself,** with that
-  grant's real value: no tool or placeholder needed in the VM. The
-  answer's body comes back on stdout and its HTTP status on stderr; `mwt`
-  exits 0 for a 2xx answer, 22 for any other.
+- **You send an id and values, never a command or a request.** A saved
+  command is the user's own script: it runs on their machine, in the
+  folder they chose, and reads your values as variables. Its output comes
+  back, with its exit status. One that runs with a credential also needs
+  a grant over it that allows the user's machine.
+- **A request action is a request MWT sends itself,** with its
+  credential's real value: no tool or placeholder needed in the VM. It
+  also needs a grant over its host's network. The answer's body comes
+  back on stdout and its HTTP status on stderr; `mwt` exits 0 for a 2xx
+  answer, 22 for any other.
 - **It has a switch of its own.** One that is off: `mwt request ID`. The
   user approves every call, unless its line says it runs without asking.
 - **A value has a shape**, which its line says: a word (letters, digits and
   `_ . - @ : +`, in parts joined by `/`), a number, one of a list, or text.
   A value of another shape is refused before anything runs, and so is a
   value that starts with `-`.
-- **MWT never takes a command for a subgrant.** Sending a subgrant's exact
-  text through Ask to run commands is an ad-hoc command like any other, and
-  waits for the user.
+- **MWT never takes a command for an action.** Sending an action's exact
+  text with `mwt run` is a command of yours like any other, and waits for
+  the user.
 
-When you will need the same job again and no subgrant does it, propose
+When you will need the same job again and no action does it, propose
 one: `mwt help propose`.
 
-## Token grants
+## Credentials
 
-Token grants do not export credentials into the VM or ordinary shells. For
-an API call, look first for a subgrant of the grant: MWT sends that request
-for you, and nothing in the VM needs the token. Otherwise, after turning a
-token grant on, run the command that needs it with
-`mwt exec GRANT_ID -- COMMAND [ARG...]`, for example
-`mwt exec github -- gh api user`. This runs here in the VM, unlike
-`mwt run`, which asks to run on the user's machine. Shell expansion happens
-before `mwt exec`: when using a variable in a command, put it inside the
-child shell, e.g. `mwt exec github -- bash -c 'curl -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user'`.
+No credential enters the VM. For an API call, look first for an action:
+MWT sends it for you. Otherwise run the command with
+`mwt exec CREDENTIAL -- COMMAND [ARG...]` (`mwt grants` names each), e.g.
+`mwt exec github -- gh api user`. It runs here in the VM. Shell expansion
+happens first: put a variable inside the child shell, e.g. `mwt exec github -- bash -c 'curl -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/user'`.
 
-Only that command and its children receive variables such as `GH_TOKEN` or
-token-file variables. These hold placeholders, not real values. Git's MWT
-credential helper also answers only within the selected grant's command.
-MWT swaps the real value in on the way out, only toward that grant's hosts.
-A placeholder is worthless anywhere else: don't copy it, print it or send
-it elsewhere, and don't look for the real value. Run public downloads and
-other commands that need no credentials normally, without `mwt exec`.
-`mwt exec` passes the command's exit status through, and exits 125 only
-when it didn't run it (the grant is off or unknown), with a line on
-stderr. It nests: `mwt exec github -- mwt exec hex -- COMMAND` gives the
-command both. Git run outside it says, for a host a grant covers, which
-grant to run it through.
+That command and its children get placeholders (variables like
+`GH_TOKEN`, a token file, git's helper). `mwt exec` decides nothing: the
+grants decide each request by where it goes. A placeholder is worthless
+anywhere else: don't copy, print or send it, and don't look for the real
+value. Run what needs no credential without `mwt exec`. It passes the
+exit status through, and exits 125 only when it didn't run the command
+(no grant over it on, locked, unknown). It nests:
+`mwt exec github -- mwt exec hex -- COMMAND`.
 
 ## The network
 
@@ -81,15 +79,18 @@ grant to run it through.
   network grant lists resolves only while that grant is on: look it up
   after the grant turns on, not before, and connect to the address MWT
   answered.
-- Public addresses are the Internet grant's (`internet`), usually always
-  on. While it is off, only what other grants list is reached: a token
-  grant's hosts, a network grant's destinations; other connections are
-  refused or close, and DNS finds only those names. When a task needs
-  more, ask for it: `mwt request internet --reason "..."`.
+- The Internet's grant (`internet`), usually on, opens public addresses.
+  Off, only what other grants over the Internet name is reached, and DNS
+  finds only those names: a token grant's hosts need it too. When a task
+  needs more, ask for it: `mwt request internet --reason "..."`. A host the
+  user blocked on its network is refused whatever the grants say.
 - When a lookup fails or a connection is refused, run
-  `mwt why HOST[:PORT]` before anything else: it says which grant covers
-  that destination and why it isn't reached now (off, another port, the
-  Internet off, the firewall), and how to ask for it.
+  `mwt why HOST[:PORT]` before anything else: which grant covers it, why
+  it isn't reached now, and how to ask for it. `mwt why URL [--method M]
+  [--with CREDENTIAL]` decides a request without sending it, each grant's
+  say shown; `mwt why --recent` lists what was refused or asked about,
+  `mwt why ID` explains one as it was decided. A refusal names its id
+  (`"decision"`, `"why"` in its JSON).
 - MWT's firewall watches what the VM does through MWT: uploads, lookups,
   placeholders, commands you ask to run. On a sign of trouble it isolates
   the VM: connections close, lookups fail, and `mwt` refuses anything that
@@ -100,33 +101,34 @@ grant to run it through.
   reconnect.
 - Nothing you run reaches the user's machine, except `mwt`, which can only
   read the grants and the machine's description, and ask: for a grant, to
-  call or save a subgrant, or to run a command there.
+  call or save an action, or to run a command there.
 
 ## MWT's answers
 
 An HTTP error whose JSON body has `"by": "MWT agent sandbox"` comes from
 MWT, not from the service. Its `code`:
 
-- `mwt_grant_off`: the grant exists but is off. Ask for it with
+- `mwt_grant_off`: a grant it needs is off. Ask for it with
   `mwt request`.
+- `mwt_not_covered`, `mwt_locked`: no grant covers this use (propose one),
+  or the user locked what it needs (only they unlock it). Tell the user.
 - `mwt_denied_by_user`: the user refused this use. Don't retry unless
   asked; tell the user what you were trying to do.
 - `mwt_approval_timeout`: nobody answered in time. Tell the user, and try
   again when they're ready.
 - `mwt_too_many_waiting`: too many of your requests already wait for the
   user. Wait for them to decide, then try again; don't retry in a loop.
-- `mwt_placeholder_blocked`: the placeholder was sent to a host its grant
-  doesn't cover.
-- `mwt_host_blocked`: the user blocked this host on a grant's host list.
-  Every request there is refused; asking for a grant won't change it.
-  Don't work around it; tell the user if you need it.
+- `mwt_placeholder_blocked`: the placeholder was sent to a host no grant
+  over its credential lists.
+- `mwt_host_blocked`: the user blocked this host on its network. Every
+  request there is refused, whatever the grants say. Don't work around
+  it; tell the user if you need it.
 - `mwt_plain_http`: the request is plain HTTP and carries a placeholder.
   MWT puts no real value in plain HTTP: use `https://`.
 - `mwt_no_value`, `mwt_mint_failed`: the grant can't give a value right
   now. Tell the user.
-- `mwt_credential_endpoint`: the request would have sent a grant's value
-  to an endpoint whose answer is a new credential (a token exchange, key
-  creation). It wasn't sent. Tell the user if you need it.
+- `mwt_credential_endpoint`: the request would have sent a value to an
+  endpoint whose answer is a new credential. It wasn't sent.
 - `mwt_upstream_tls`: MWT couldn't make TLS with the host (a certificate
   the user's machine doesn't trust, one that expired, a client certificate
   it wants). Nothing went out. Tell the user the host.

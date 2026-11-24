@@ -14,13 +14,13 @@ defmodule MWTClient.Sandbox.Why do
 
     * the firewall isolated the VM, or blocks the destination;
     * a token grant lists the name: MWT reads connections to it, and a
-      request carrying its placeholder needs it on; with the Internet off,
-      every request to it does;
+      request carrying its placeholder needs it on; reaching the host is
+      the Internet's grant's to give, never the token grant's;
     * a network grant covers it, and is off (how to ask for it), or lists
       another port; a name it lists, which MWT answers only while the
       grant is on; its way out isn't connected (a VPN that is down);
-    * a network grant's host list (the Internet's too) blocks it, asks
-      about each request there, or lets each through;
+    * a network blocks it (`MWTClient.Sandbox.HostLimits`), or a grant
+      over part of a network names it, on or off;
     * the Internet opens it, or is off; or the address is private or
       reserved, which the Internet never opens;
     * no grant covers it, and how to ask for access.
@@ -156,29 +156,33 @@ defmodule MWTClient.Sandbox.Why do
     {reached? and blocked == [] and not listed_blocked?, blocked ++ listed ++ lines}
   end
 
-  # A name on a network grant's host list (the Internet's too): blocked,
-  # asked about, or let through, whatever the grant's mode says.
+  # A name a network blocks (`MWTClient.Sandbox.HostLimits`), whatever its
+  # grants say; and the grants over part of a network naming it, each
+  # giving it beside the network's other grants, the most permissive
+  # counting.
   defp host_lists(name, world) when is_binary(name) do
-    found =
+    name = String.downcase(name)
+    limits = Map.get(world.snapshot, :limits, %{})
+
+    blocked =
+      for {network, limits} <- limits,
+          MWTClient.Sandbox.HostLimits.blocked?(limits, name),
+          # A network blocking by default speaks only for its own names.
+          limits.default != :blocked or MWTClient.Sandbox.HostLimits.rule(limits, name) != nil,
+          do:
+            "- The network #{network} blocks it: every request there is refused, mwt_host_blocked. The user set it so: asking for a grant won't change it. Don't work around it; tell the user if you need it."
+
+    parts =
       for %Grant{kind: :network} = grant <- world.snapshot.grants,
-          rule = Policy.strictest_rule(grant, [name]),
-          do: {grant, rule}
+          MWTClient.Sandbox.Network.part?(grant),
+          names?(grant, name) do
+        if Grant.on?(grant, world.now),
+          do:
+            "- #{label(grant)} gives it and is on, as its approval says; the most permissive of the network's grants counts.",
+          else: "- #{label(grant)} would give it, and is off. " <> ask(grant)
+      end
 
-    lines =
-      Enum.map(found, fn {grant, rule} ->
-        case rule.action do
-          :block ->
-            "- #{grant.name}'s host list blocks it (#{rule.host}): every request there is refused, mwt_host_blocked. The user set it so: asking for a grant won't change it. Don't work around it; tell the user if you need it."
-
-          :ask ->
-            "- #{grant.name}'s host list asks about it (#{rule.host}): each request MWT reads there waits for the user's approval, which can take minutes; a connection MWT can't read is asked about as one."
-
-          :auto ->
-            "- #{grant.name}'s host list lets it through (#{rule.host}): each request goes without asking."
-        end
-      end)
-
-    {Enum.any?(found, fn {_grant, rule} -> rule.action == :block end), lines}
+    {blocked != [], blocked ++ parts}
   end
 
   defp host_lists(_address, _world), do: {false, []}
@@ -198,7 +202,12 @@ defmodule MWTClient.Sandbox.Why do
   # A name: token grants that list it, network grants that name it. Only
   # then is it looked up, for the addresses a network grant may cover.
   defp name(name, port, world) do
-    tokens = Enum.filter(grants(world, :token), &Policy.host_listed?(name, &1.hosts))
+    tokens =
+      Enum.filter(
+        grants(world, :token),
+        &Policy.host_listed?(name, MWTClient.Sandbox.Adapter.hosts(&1))
+      )
+
     networks = Enum.filter(grants(world, :network), &names?(&1, name))
 
     token_lines = Enum.map(tokens, &token_line(&1, world))
@@ -214,9 +223,9 @@ defmodule MWTClient.Sandbox.Why do
          ]}
 
       networks == [] ->
-        # A token grant's host is read by MWT. With the Internet off it is
-        # reached for its grants only: while one listing it is on.
-        {internet_on?(world) or Enum.any?(tokens, &live(&1, world)), token_lines}
+        # A token grant's host is read by MWT; reaching it is the
+        # Internet's grant's to give, not the token grant's.
+        {internet_on?(world), token_lines}
 
       true ->
         {reached?, network_lines} =
@@ -269,14 +278,14 @@ defmodule MWTClient.Sandbox.Why do
   defp token_line(grant, world) do
     "- #{label(grant)} lists it: MWT reads connections to it, and " <>
       cond do
-        live(grant, world) ->
-          "a request carrying its placeholder goes through it (it is on; run the tool with mwt exec #{grant.id} -- COMMAND)."
+        not internet_on?(world) ->
+          "it gives no way there: if it is public, " <> internet_words(world)
 
-        internet_on?(world) ->
-          "a request carrying its placeholder needs it on: #{ask(grant)}"
+        live(grant, world) ->
+          "a request carrying its placeholder goes through it (it is on; run the tool with mwt exec #{Grant.credential_id(grant)} -- COMMAND)."
 
         true ->
-          "with the Internet off, every request to it needs it on: #{ask(grant)}"
+          "a request carrying its placeholder needs it on: #{ask(grant)}"
       end
   end
 
@@ -365,9 +374,13 @@ defmodule MWTClient.Sandbox.Why do
         "no grant opens the Internet."
 
       internet ->
-        if live(internet, world),
-          do: "the Internet grant opens it, and is on.",
-          else: "the Internet grant opens it, and is off: #{ask(internet)}"
+        cond do
+          live(internet, world) ->
+            "the Internet grant opens it, and is on."
+
+          true ->
+            "the Internet grant would open it, and is off: #{ask(internet)}"
+        end
     end
   end
 
@@ -379,7 +392,7 @@ defmodule MWTClient.Sandbox.Why do
   end
 
   defp grants(world, kind),
-    do: Enum.filter(world.snapshot.grants, &(&1.kind == kind and not Grant.subgrant?(&1)))
+    do: Enum.filter(world.snapshot.grants, &(&1.kind == kind and not Grant.action?(&1)))
 
   defp live(grant, world), do: Grant.on?(grant, world.now)
 

@@ -1,7 +1,7 @@
 defmodule MWTClient.Sandbox.Inbound do
   @moduledoc """
   What MWT moves into the VM, looked through before it goes: the output of
-  a command run on this machine, a request subgrant's answer, the results
+  a command run on this machine, a request action's answer, the results
   of MWT's tools. `MWTClient.Sandbox.Shown` covers every way into MWT;
   this covers the ways out to the VM (see "What enters the VM" in
   `docs/agent_sandbox.md`).

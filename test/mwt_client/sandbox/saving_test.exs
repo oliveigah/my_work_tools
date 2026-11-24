@@ -86,6 +86,50 @@ defmodule MWTClient.Sandbox.SavingTest do
     assert State.restore(context.username, context.key).dropped_files == []
   end
 
+  test "a grant saved with checks loses them as MWT starts, and the log names them", context do
+    # As an MWT from before 2026-11-24 saved one: checks were a field.
+    github =
+      Map.put(
+        %MWTClient.Sandbox.Grant{
+          id: "gh-checked",
+          name: "GitHub, checked",
+          kind: :token,
+          purpose: "Read",
+          hosts: ["api.github.com"]
+        },
+        :checks,
+        [%{id: "check-1", name: "the key can't push", script: "true", on: [:enable], gates: true}]
+      )
+
+    :sys.replace_state(context.pid, fn state ->
+      state = %{state | grants: state.grants ++ [github]}
+      :ok = State.persist(state)
+      state
+    end)
+
+    saved = State.restore(context.username, context.key)
+    grant = Enum.find(saved.grants, &(&1.id == "gh-checked"))
+    refute Map.has_key?(grant, :checks)
+    assert saved.dropped_checks == [{"GitHub, checked", ["the key can't push"]}]
+
+    ref = Process.monitor(context.pid)
+
+    ExUnit.CaptureLog.capture_log(fn ->
+      GenServer.cast(context.pid, :no_handler_matches_this)
+      assert_receive {:DOWN, ^ref, :process, _, _crash}
+    end)
+
+    _ = :sys.get_state(Store.supervisor(context.username))
+
+    assert Enum.any?(
+             Sandbox.events(context.username),
+             &(&1.summary =~
+                 "Checks removed, which no longer run: GitHub, checked: the key can't push")
+           )
+
+    assert State.restore(context.username, context.key).dropped_checks == []
+  end
+
   test "a change whose save got lost is saved with the next one", context do
     %{username: username, base: base, pid: pid} = context
     one = Path.join(base, "one")

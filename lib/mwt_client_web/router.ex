@@ -54,6 +54,8 @@ defmodule MWTClientWeb.Router do
       live "/tools/sandbox/handoffs", SandboxLive, :handoffs
       live "/tools/sandbox/grants", SandboxLive, :grants
       live "/tools/sandbox/grants/:id", SandboxLive, :grant
+      live "/tools/sandbox/resources/:kind", SandboxLive, :resource
+      live "/tools/sandbox/resources/:kind/:id", SandboxLive, :resource
       live "/tools/sandbox/activity", SandboxLive, :activity
       live "/tools/sandbox/firewall", SandboxLive, :firewall
       live "/tools/sandbox/settings", SandboxLive, :settings

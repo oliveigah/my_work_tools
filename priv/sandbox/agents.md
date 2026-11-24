@@ -89,9 +89,10 @@ a slot.
 ## Access comes only from MWT
 
 This VM holds none of the user's credentials. Every service that needs a
-login, and every private network (VPN, LAN, databases), is opened by a
-grant: access the user sets up in MWT and turns on for a while. Each grant
-says what it is for, in the user's words. Grants change while you work.
+login, and every network (a VPN, a LAN, databases, and the Internet, whose
+grant is usually on), is opened by a grant: access the user sets up in
+MWT and turns on for a while. Each grant says what it is for, in the
+user's words. Grants change while you work.
 
 When something needs access you don't have, or a tool says you're not
 logged in:
@@ -114,26 +115,28 @@ logged in:
     - never ask the user to paste a token, password or key into the VM, and
       never write one into a file or a variable yourself.
 
-Look first for a **subgrant**: one fixed use of a grant, which MWT carries
-out for you when you call it by id, with a value for each parameter
+Look first for an **action**: one fixed use of a credential or of the
+user's machine, which MWT carries out for you when you call it by id, with
+a value for each parameter
 (`mwt call gh-repo-view REPO_NAME=oliveigah/klife --reason "why now"`).
-`mwt grants` lists them under their grant. You send an id and values,
+`mwt grants` lists them under their resource. You send an id and values,
 never a command or a request.
 
-A **token grant** puts no credential in the VM: run the command that needs
-it with `mwt exec GRANT_ID -- COMMAND`, which gives that command alone
-placeholders that MWT swaps for the real value on the way out, toward that
-grant's hosts only. A placeholder is worthless anywhere else: don't copy,
-print or send it elsewhere, and don't look for the real value. Before your
-first one, read `mwt help access`.
+A **credential** never enters the VM: run the command that needs it with
+`mwt exec CREDENTIAL -- COMMAND` (`mwt grants` names it), which gives that
+command its placeholders. MWT swaps them for the real value on the way out,
+where a grant over it and one over the host's network let it go. A
+placeholder is worthless anywhere else: don't copy, print or send it
+elsewhere, and don't look for the real value. Before your first one, read
+`mwt help access`.
 
 Even with a grant on, each use may wait for the user's approval, for
 minutes: wait, and never retry in a loop.
 
 **Running a command you write on the user's machine** is the last resort,
-for what no subgrant and no other grant can do (their SSH keys, a
-kubeconfig, their VPN, tools only they have): read `mwt help run` before
-you ask for one.
+for what no action and no grant can do (their SSH keys, a kubeconfig,
+their VPN, tools only they have). It needs no grant, and the user approves
+each one: read `mwt help run` before you ask for one.
 
 ## When MWT says no
 
@@ -143,7 +146,11 @@ you ask for one.
   tell them what you were trying to do.
 - `mwt_isolated`: MWT's firewall isolated this VM. Nothing leaves through
   MWT until the user releases it, and they have been told. Stop, tell them
-  what you were doing, and don't look for a way around it.
+  what you were doing, and don't look for a way around it. `mwt_locked`:
+  the user locked what it needs; only they unlock it.
+- When a tool fails with a bare 403 or "permission denied", run
+  `mwt why --recent`: tools often hide MWT's answer. `mwt why ID` explains
+  one decision and what would change it; tell the user exactly that.
 - MWT reads the HTTPS the VM sends, for the user to see, and the VM
   trusts MWT's certificate authority, so tools work as they are. A client
   that refuses MWT's certificate anyway (a CA of its own, a pinned

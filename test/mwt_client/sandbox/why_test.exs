@@ -44,9 +44,14 @@ defmodule MWTClient.Sandbox.WhyTest do
       Map.get(Keyword.get(opts, :names, %{}), name, [])
     end
 
+    # A host list's entries moved to the networks' limits and grants over
+    # their hosts, as MWT does.
+    {grants, networks} = MWTClient.Sandbox.Network.migrate(grants, [])
+    limits = Map.new(networks, &{&1.id, &1.limits})
+
     snapshot =
       grants
-      |> Policy.snapshot()
+      |> Policy.snapshot([], %{}, limits)
       |> Map.merge(%{own: [{192, 168, 1, 5}], resolve: resolve})
 
     %{
@@ -78,24 +83,29 @@ defmodule MWTClient.Sandbox.WhyTest do
     assert on =~ "and is on: each connection may wait for the user's approval"
   end
 
-  test "a host on the Internet's host list says it is blocked, or asked about" do
+  test "a host the Internet blocks says so; one a grant over part of it names, which grant" do
     rules = [
       %{host: "paste.test", action: :block},
-      %{host: "api.github.com", action: :ask}
+      %{host: "ask.test", action: :ask},
+      %{host: "api.github.com", action: :auto}
     ]
 
-    world = world([%{internet() | host_rules: rules}])
+    world = world([%{internet(:off) | host_rules: rules}])
 
-    blocked = why("paste.test", world)
-    assert blocked =~ "paste.test:443: not reached now"
-    assert blocked =~ "Internet's host list blocks it (paste.test)"
-    assert blocked =~ "mwt_host_blocked"
+    # Block and Ask entries alike: nothing that waited goes unasked.
+    for host <- ["paste.test", "ask.test"] do
+      blocked = why(host, world)
+      assert blocked =~ "#{host}:443: not reached now"
+      assert blocked =~ "The network internet blocks it"
+      assert blocked =~ "mwt_host_blocked"
+    end
 
-    asked = why("https://api.github.com/repos", world)
-    assert asked =~ "Internet's host list asks about it (api.github.com)"
-    assert asked =~ "waits for the user's approval"
+    given = why("https://api.github.com/repos", world)
 
-    refute why("example.com", world) =~ "host list"
+    assert given =~
+             "Internet: api.github.com (network grant `internet-api-github-com`) gives it and is on"
+
+    refute why("example.com", world) =~ "internet-"
   end
 
   test "a grant that lists another port says which ports it opens" do
@@ -126,7 +136,7 @@ defmodule MWTClient.Sandbox.WhyTest do
 
     off = why("93.184.216.34:443", world([internet(:off)]))
     assert off =~ "not reached now"
-    assert off =~ "the Internet grant opens it, and is off"
+    assert off =~ "the Internet grant would open it, and is off"
     assert off =~ "mwt request internet"
   end
 
@@ -140,16 +150,17 @@ defmodule MWTClient.Sandbox.WhyTest do
 
     refute_received {:resolved, _}
 
-    # With the Internet off, the host is reached for its grant only.
-    off = why("https://api.github.com/user", world([internet(:off), github(:off)]))
-    assert off =~ "api.github.com:443: not reached now"
-
-    assert off =~
-             "with the Internet off, every request to it needs it on: ask for it with mwt request github"
-
-    on = why("api.github.com", world([internet(:off), github(:on)]))
+    on = why("api.github.com", world([internet(), %{github(:on) | credential: "gh"}]))
     assert on =~ "reached now"
-    assert on =~ "mwt exec github -- COMMAND"
+    # mwt exec names the credential.
+    assert on =~ "mwt exec gh -- COMMAND"
+
+    # With the Internet's grant off, nothing gives the host's network, its
+    # own grant on or not: a token grant never opens its hosts.
+    off = why("api.github.com", world([internet(:off), github(:on)]))
+    assert off =~ "not reached now"
+    assert off =~ "the Internet grant would open it, and is off"
+    assert off =~ "mwt request internet"
   end
 
   test "a name no grant names is never looked up" do

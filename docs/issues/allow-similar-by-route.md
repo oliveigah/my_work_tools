@@ -2,7 +2,7 @@
 
 - Found: 2026-11-23, MWT 0.3.0
 - Kind: improvement
-- Status: open
+- Status: resolved by the grants redesign (2026-11-24)
 
 ## What happens
 
@@ -18,3 +18,11 @@ around was a separate grant per tool, let through without asking (see
 
 Allowances by route template or prefix (`GET host/api/*/versions/*`), or by
 method on a host (every `GET` and `HEAD`), chosen on the card.
+
+## Resolution
+
+A card offers *Allow similar, any id*: the endpoint with each id-like
+segment of its path as `*` (`MWTClient.Sandbox.Allowance.widen/1`). A
+grant can also be narrowed by path patterns and methods
+(`MWTClient.Sandbox.Attributes`), for a standing rule rather than an
+allowance.

@@ -169,7 +169,7 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     view |> element("#activity-reading-open") |> render_click()
     assert has_element?(view, "#activity-reading-read-empty")
     assert has_element?(view, "#activity-reading-unread-empty")
-    assert has_element?(view, "#activity-reading-default-every_host[aria-checked=true]")
+    assert has_element?(view, "#activity-reading-default--every_host[aria-checked=true]")
 
     # Added to a list: an address is refused, and stays in its field; a
     # host is taken, and the fields empty.
@@ -209,7 +209,7 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     view |> element("#activity-reading-unread-any-pinned-example-remove") |> render_click()
     assert MWTClient.Sandbox.reading(username).rules == []
 
-    view |> element("#activity-reading-default-token_hosts") |> render_click()
+    view |> element("#activity-reading-default--token_hosts") |> render_click()
     assert MWTClient.Sandbox.reading(username).default == :token_hosts
 
     # Closed, it is gone again; the header says hosts on neither list

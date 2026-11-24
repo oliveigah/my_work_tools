@@ -277,7 +277,7 @@ defmodule MWTClient.Sandbox do
   waits for you. Agents waiting for it hear it is on.
   """
   @spec turn_on(username(), String.t(), pos_integer() | :until_off, :ask | :all) ::
-          {:ok, Grant.t()} | {:error, :not_found | :subgrants_only | :to_review}
+          {:ok, Grant.t()} | {:error, :not_found | :actions_only | :to_review}
   def turn_on(username, id, minutes, uses \\ :ask),
     do: Server.call(username, {:turn_on, id, minutes, uses})
 
@@ -311,8 +311,8 @@ defmodule MWTClient.Sandbox do
 
   @doc """
   Changes how the uses of a grant that is on are approved: `:ask`, each
-  waits for you, or `:all`, every use goes through while it stays on. Ask
-  to run commands always asks.
+  waits for you, or `:all`, every use goes through while it stays on. One
+  set to always ask takes only `:ask`.
   """
   @spec set_mode(username(), String.t(), :ask | :all) ::
           {:ok, Grant.t()} | {:error, :not_found | :off | :every_run_asks}
@@ -320,33 +320,13 @@ defmodule MWTClient.Sandbox do
 
   @doc """
   Sets the state a grant is in when MWT starts, and puts it in that state
-  now: `:off` (disabled), `:on` (enabled until turned off, every use
-  asks) or `:auto` (enabled until turned off, every use goes through).
+  now: `:off`, `:on` (enabled until turned off, every use asks) or `:auto`
+  (enabled until turned off, every use goes through).
   `:auto` only where uses can be auto-approved.
   """
   @spec set_start(username(), String.t(), Grant.start()) ::
           {:ok, Grant.t()} | {:error, :not_found | :every_run_asks}
   def set_start(username, id, start), do: Server.call(username, {:set_start, id, start})
-
-  @doc """
-  Adds a check to a grant (`MWTClient.Sandbox.Check`), from a form's
-  fields (`name`, `script`, `enable`, `daily`, `gates`), and runs it at once.
-  """
-  @spec add_check(username(), String.t(), map()) :: {:ok, Grant.t()} | {:error, term()}
-  def add_check(username, id, attrs), do: Server.call(username, {:add_check, id, attrs})
-
-  @doc "Removes a grant's check."
-  @spec remove_check(username(), String.t(), String.t()) :: {:ok, Grant.t()} | {:error, term()}
-  def remove_check(username, id, check_id),
-    do: Server.call(username, {:remove_check, id, check_id})
-
-  @doc "Runs every check of a grant now."
-  @spec run_checks(username(), String.t()) :: :ok | {:error, :not_found}
-  def run_checks(username, id), do: Server.call(username, {:run_checks, id})
-
-  @doc "How each of a grant's checks went last, and whether it runs now, by check id."
-  @spec checks(username(), String.t()) :: map()
-  def checks(username, id), do: Server.call(username, {:checks, id})
 
   @doc """
   Sets whether a grant always asks (`Grant.ceiling/1`): `:ask`, every use
@@ -360,14 +340,12 @@ defmodule MWTClient.Sandbox do
 
   @doc """
   The firewall (`MWTClient.Sandbox.Firewall`): its settings and incidents,
-  how much it refused since it isolated the VM, and the grants a release
-  turns back on. Its findings are in the activity log (`events/2`, the
+  and how much it refused since it isolated the VM. Its findings are in the activity log (`events/2`, the
   `firewall` group), read by whoever shows them, never by the server.
   """
   @spec firewall(username()) :: %{
           firewall: MWTClient.Sandbox.Firewall.t(),
-          refused: non_neg_integer(),
-          restorable: [String.t()]
+          refused: non_neg_integer()
         }
   def firewall(username), do: Server.call(username, :firewall)
 
@@ -384,15 +362,40 @@ defmodule MWTClient.Sandbox do
   def reading_set(username, change), do: Server.call(username, {:reading_set, change})
 
   @doc """
-  Changes a network grant's host list (`MWTClient.Sandbox.Grant`'s
-  `host_rules`, the Internet's included): `{:put, host, :ask | :auto |
-  :block}` or `{:remove, host}`. `{:ok, grant}`, or `{:error, message}` for
-  a host that can't be an entry, or a grant that isn't a network grant.
+  Changes a network's limits, the hosts the VM may never reach there
+  (`MWTClient.Sandbox.HostLimits`): `{:default, :reachable | :blocked}`,
+  `{:put, host, blocked?}` or `{:remove, host}`. `{:ok, network}`, or
+  `{:error, message}` for a host that can't be an entry.
   """
-  @spec host_rule_set(username(), String.t(), tuple()) ::
-          {:ok, MWTClient.Sandbox.Grant.t()} | {:error, String.t()}
-  def host_rule_set(username, grant_id, change),
-    do: Server.call(username, {:host_rule_set, grant_id, change})
+  @spec limits_set(username(), String.t(), tuple()) ::
+          {:ok, MWTClient.Sandbox.Network.t()} | {:error, String.t()}
+  def limits_set(username, network_id, change),
+    do: Server.call(username, {:limits_set, network_id, change})
+
+  @doc """
+  Adds a resource from its form's fields: `:credential` (its name, words,
+  where its value comes from and how tools find it, and the value when
+  pasted) or `:network` (its name, words, destinations, DNS server and
+  interface). `{:ok, resource}` or `{:error, errors}` by field.
+  """
+  @spec create_resource(username(), :credential | :network, map()) ::
+          {:ok, struct()} | {:error, map()}
+  def create_resource(username, kind, attrs) when kind in [:credential, :network],
+    do: Server.call(username, {:create_resource, kind, attrs})
+
+  @doc "Changes a credential or a network from its form (`create_resource/3`)."
+  @spec update_resource(username(), MWTClient.Sandbox.Resource.id(), map()) ::
+          {:ok, struct()} | {:error, map() | :not_found | :built_in}
+  def update_resource(username, resource, attrs),
+    do: Server.call(username, {:update_resource, resource, attrs})
+
+  @doc """
+  Removes a credential or a network, with every grant over it. The
+  Internet, your machine and MWT's tools are built in, and stay.
+  """
+  @spec delete_resource(username(), MWTClient.Sandbox.Resource.id()) ::
+          :ok | {:error, :not_found | :built_in}
+  def delete_resource(username, resource), do: Server.call(username, {:delete_resource, resource})
 
   @doc """
   The credential endpoints a grant's value is refused at
@@ -422,16 +425,17 @@ defmodule MWTClient.Sandbox do
   def firewall_set(username, change), do: Server.call(username, {:firewall_set, change})
 
   @doc """
-  Isolates the VM yourself, as the firewall would on a finding: `:error`
-  when it already is isolated.
+  Isolates the VM yourself, as the firewall would on a finding, locking
+  every resource as the isolation's (`Server.Locks`): `:error` when it
+  already is isolated.
   """
   @spec firewall_isolate(username()) :: :ok | :error
   def firewall_isolate(username), do: Server.call(username, :firewall_isolate)
 
   @doc """
-  Ends the VM's isolation, whoever isolated it; with `trust?`, the
-  incident's destination joins the trusted list. The grants that were on as
-  it was isolated turn back on.
+  Ends the VM's isolation, whoever isolated it, and the isolation's locks;
+  yours stay. With `trust?`, the incident's destination joins the trusted
+  list. No grant changes either way.
   """
   @spec firewall_release(username(), boolean()) :: :ok | :error
   def firewall_release(username, trust?),
@@ -441,9 +445,37 @@ defmodule MWTClient.Sandbox do
   @spec firewall_seen(username()) :: :ok
   def firewall_seen(username), do: Server.cast(username, :firewall_seen)
 
-  @doc "Turns a grant off. Requests waiting on it are refused."
+  @doc """
+  Turns a grant off: it gives nothing from now, its time and allowances
+  gone. Requests waiting on it are refused.
+  """
   @spec turn_off(username(), String.t()) :: {:ok, Grant.t()} | {:error, :not_found}
   def turn_off(username, id), do: Server.call(username, {:turn_off, id})
+
+  @doc """
+  How a request to `url` would be decided now, carrying the credential
+  `credential` (its id) or none: each grant's say, the locks, the result
+  and what would change it (`MWTClient.Sandbox.Explain`). Sends nothing,
+  and keeps nothing of what it was given.
+  """
+  @spec explain_request(username(), String.t(), String.t() | nil, String.t() | nil) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def explain_request(username, url, method, credential),
+    do: Server.call(username, {:explain_request, url, method, credential})
+
+  @doc """
+  Locks a resource the VM reaches through MWT (`MWTClient.Sandbox.Resource`):
+  `{:credential, id}`, `{:network, id}`, `:machine`, your machine, where
+  saved commands, git and the shared folders are carried out, or `:mwt`,
+  MWT's tools. Every use of it is refused, whatever its grants say, until
+  you unlock it; agents can't ask for that. No grant changes.
+  """
+  @spec lock(username(), MWTClient.Sandbox.Resource.id()) :: :ok | {:error, :not_found}
+  def lock(username, resource), do: Server.call(username, {:lock, resource})
+
+  @doc "Unlocks a resource you locked (`lock/2`)."
+  @spec unlock(username(), MWTClient.Sandbox.Resource.id()) :: :ok | {:error, :not_found}
+  def unlock(username, resource), do: Server.call(username, {:unlock, resource})
 
   @doc """
   Lets every use of an `on` grant through without asking, for `minutes` or
@@ -478,8 +510,8 @@ defmodule MWTClient.Sandbox do
 
   @doc """
   Changes a grant from its form's fields, checked as when it was added. It
-  keeps its id, placeholder, value, kind, the grant it sits under and its
-  state. Ask to run commands is built in and can't be changed.
+  keeps its id, placeholder, value, kind, the resource it is over and its
+  state. The built-in grants can't be changed.
   """
   @spec update_grant(username(), String.t(), map()) ::
           {:ok, Grant.t()} | {:error, :not_found | :built_in | %{atom() => String.t()}}
@@ -489,7 +521,16 @@ defmodule MWTClient.Sandbox do
   @spec set_value(username(), String.t(), String.t()) :: :ok | {:error, :not_found | :minted}
   def set_value(username, id, value), do: Server.call(username, {:set_value, id, value})
 
-  @doc "Removes a grant. Requests waiting on it are refused. Ask to run commands is built in, and stays."
+  @doc """
+  Pastes or replaces a stored credential's value: every grant over it, and
+  its actions, use it from now. `{:error, :minted}` for one a command mints.
+  """
+  @spec set_credential_value(username(), String.t(), String.t()) ::
+          :ok | {:error, :not_found | :minted | :empty}
+  def set_credential_value(username, id, value),
+    do: Server.call(username, {:set_credential_value, id, value})
+
+  @doc "Removes a grant. Requests waiting on it are refused. Built-in grants stay; its resource stays."
   @spec delete_grant(username(), String.t()) :: :ok | {:error, :not_found | :built_in}
   def delete_grant(username, id), do: Server.call(username, {:delete_grant, id})
 
@@ -530,8 +571,8 @@ defmodule MWTClient.Sandbox do
     do: Server.call(username, {:decide, approval_id, decision})
 
   @doc """
-  Notes that the command a run through Ask to run commands asked for is now the
-  saved command `grant_id`, which you just added from its card. The card
+  Notes that the command an agent wrote and asked to run is now the saved
+  command `grant_id`, which you just added from its card. The card
   says so, and the agent hears to run it by name next time.
   """
   @spec command_saved(username(), String.t(), String.t()) :: :ok | {:error, :not_found}

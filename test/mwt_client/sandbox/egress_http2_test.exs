@@ -213,7 +213,7 @@ defmodule MWTClient.Sandbox.EgressHttp2Test do
     ca: ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :ask})
+    {:ok, _} = Sandbox.set_mode(username, "internet", :ask)
     conn = client(proxy, ca)
     {conn, first} = request(conn, "GET", "/first")
     {conn, second} = request(conn, "GET", "/second")
@@ -263,12 +263,12 @@ defmodule MWTClient.Sandbox.EgressHttp2Test do
     refute answer.body =~ "real_value_0123456789"
   end
 
-  test "a host blocked on the Internet's list refuses a gRPC call in gRPC's words", %{
+  test "a host the Internet blocks refuses a gRPC call in gRPC's words", %{
     username: username,
     ca: ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :block})
+    {:ok, _} = Sandbox.limits_set(username, "internet", {:put, "example.com", true})
     conn = client(proxy, ca)
 
     {conn, ref} =
@@ -284,7 +284,7 @@ defmodule MWTClient.Sandbox.EgressHttp2Test do
     assert answer.status == 200
     assert {"grpc-status", "7"} in answer.headers
     assert {_, message} = List.keyfind(answer.headers, "grpc-message", 0)
-    assert message =~ "example.com is blocked on Internet"
+    assert message =~ "example.com is blocked on internet (example.com)"
   end
 
   test "flow control holds both ways: a large upload and a large answer", %{

@@ -25,7 +25,7 @@ defmodule MWTClient.Sandbox.HostRun do
     * in MWT's environment without MWT's and the BEAM's own variables
       (`scrubbed?/1`), which a command such as `env` would otherwise print,
       nor `BASH_ENV`, and with the job's `env` added: the values of a
-      subgrant's parameters, and the workspace;
+      action's parameters, and the workspace;
     * stdout and stderr together; the first and last 32 KiB are kept, and
       what's between is cut and counted. Output is made valid UTF-8, so it
       can be shown and sent as text.
@@ -234,7 +234,7 @@ defmodule MWTClient.Sandbox.HostRun do
     end
   end
 
-  # The values of a subgrant's parameters, which its script reads as
+  # The values of an action's parameters, which its script reads as
   # variables: the script's text stays as you saved it.
   defp given(values),
     do: for({name, value} <- values, do: {String.to_charlist(name), String.to_charlist(value)})

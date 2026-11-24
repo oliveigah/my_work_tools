@@ -493,6 +493,44 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
     end
 
     @tag :tmp_dir
+    test "a refresh is answered without a card, its token endpoint implied, while a grant over it is on",
+         %{username: username, tmp_dir: dir} do
+      for n <- 1..2, do: File.write!(Path.join(dir, "id-#{n}"), id_token(n))
+      count = Path.join(dir, "count")
+
+      # Its hosts don't list Google's token endpoint: the google adapter
+      # implies it for a login file. It asks about every use, and still a
+      # refresh, which sends nothing, goes without a card.
+      {:ok, grant} =
+        Sandbox.create_grant(username, %{
+          "kind" => "token",
+          "name" => "CLI, asking",
+          "purpose" => "The internal CLI",
+          "hosts" => "svc.example.com",
+          "source" => "minted",
+          "present_login" => "true",
+          "present_metadata" => "true",
+          "present_project" => "my-project",
+          "present_email" => "sa@my-project.iam.gserviceaccount.com",
+          "mint" =>
+            ~s[echo x >> '#{count}'; n=$(wc -l < '#{count}' | tr -d ' '); printf '{"value": "ya29.minted-%s", "id_token": "%s", "expires_in": 3600}' "$n" "$(cat '#{dir}/id-'"$n")"]
+        })
+
+      {:ok, grant} = Sandbox.turn_on(username, grant.id, 60, :ask)
+      assert {:answer, 200, _json} = Gate.authorize(username, refresh(grant))
+      assert Sandbox.snapshot(username).waiting == []
+
+      # mwt exec gives clients the project as well.
+      dir = :sys.get_state(Store.whereis(Server, username)) |> Server.State.inbox_dir()
+      script = File.read!(Path.join([dir, "grant-env", grant.credential <> ".sh"]))
+      assert script =~ "GOOGLE_CLOUD_PROJECT='my-project'"
+
+      # Off, the refresh is refused.
+      {:ok, _} = Sandbox.turn_off(username, grant.id)
+      assert {:deny, 403, _} = Gate.authorize(username, refresh(grant))
+    end
+
+    @tag :tmp_dir
     test "a refresh of the login is answered from the mint; the ID token goes in its own header, fresh",
          %{username: username, tmp_dir: dir} do
       for n <- 1..2, do: File.write!(Path.join(dir, "id-#{n}"), id_token(n))

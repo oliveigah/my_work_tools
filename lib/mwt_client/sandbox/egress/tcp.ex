@@ -142,7 +142,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
          {from_client, from_server, link} <- opening(client, rest, target, reach, options) do
       first = first(from_client)
       sni = with {:tls, hello} <- first, do: hello.name, else: (_ -> nil)
-      under = if reach == :read_only, do: :read_only, else: elem(reach, 1)
+      under = elem(reach, 1)
 
       core = %{
         username: username,
@@ -239,8 +239,8 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   ## The destination
 
   # Asks whether the VM may connect there (`MWTClient.Sandbox.Gate`):
-  # `{:ok, {:open, grant_id}}`, `{:ok, :read_only}` (only a token grant's host, read by
-  # MWT, while the Internet is off), or a refusal. An answer that comes at
+  # `{:ok, {:open, grant_id}}`, `{:ok, {:asking, grant_id}}`, or a
+  # refusal. An answer that comes at
   # once is passed on as it is: 200, or 403, which the VM sees as
   # "connection refused". A destination waiting for your approval takes
   # longer than microsandbox waits for a CONNECT, so then the 200 goes out
@@ -283,13 +283,11 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     with :ok <- Gate.held_by(username, grant), do: {:ok, {:asking, grant}}
   end
 
-  defp reach(_username, :read_only), do: {:ok, :read_only}
   defp reach(_username, {:deny, reason}), do: {:deny, reason}
 
   defp established(client),
     do: :gen_tcp.send(client, "HTTP/1.1 200 Connection Established\r\n\r\n")
 
-  defp anchor(_username, :read_only), do: nil
   defp anchor(username, {_open_or_asking, grant}), do: Gate.anchor(username, grant)
 
   ## The first bytes
@@ -301,21 +299,6 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   # connects and takes the first bytes from either side, instead of making
   # the server's greeting wait. `link` is the connection made on the way,
   # if any.
-  #
-  # A connection only a token grant's host may use is read or closed, never
-  # passed through: MWT connects nowhere for it before the client spoke.
-  defp opening(client, rest, _target, :read_only, _options) do
-    case rest do
-      "" ->
-        case :gen_tcp.recv(client, 0, @server_first) do
-          {:ok, data} -> {complete_record(client, data), "", nil}
-          {:error, reason} -> {:error, reason}
-        end
-
-      rest ->
-        {complete_record(client, rest), "", nil}
-    end
-  end
 
   # A network grant's connection that waits for you: nothing is connected to
   # before you decide, so a client that stays quiet (a server that greets
@@ -725,8 +708,6 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
       denied -> denied
     end
   end
-
-  defp asked(_username, :read_only, _ip, _port, _sni, _why), do: :ok
 
   # The VM's client gave up on TLS with MWT's certificate, so nothing went
   # out: logged by name, since the next try fails the same way and only

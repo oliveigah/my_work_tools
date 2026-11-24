@@ -948,7 +948,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
         <label for="host-reads" class="flex items-center gap-1.5 pt-1 text-xs font-medium text-ink">
           Folders confined commands may read
           <.help id="host-reads-help" label="About these folders">
-            A confined subgrant runs in a bubble with an empty home: these folders of yours are the only ones it sees, read-only, each with what it links to. Where your tools live. One a line; leave it empty for those your login shell's PATH runs tools from.
+            A confined action runs in a bubble with an empty home: these folders of yours are the only ones it sees, read-only, each with what it links to. Where your tools live. One a line; leave it empty for those your login shell's PATH runs tools from.
           </.help>
         </label>
         <.input

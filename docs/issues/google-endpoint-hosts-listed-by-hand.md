@@ -2,7 +2,7 @@
 
 - Found: 2026-11-23, MWT 0.3.0
 - Kind: improvement
-- Status: open
+- Status: resolved by the grants redesign (2026-11-24)
 
 ## What happens
 
@@ -30,3 +30,10 @@ Imply them: a login file implies the token endpoint, and `--sign-as` the
 signing host, each shown on the grant's page for what it is ("Login
 refreshes, answered by MWT", "Signs as …") rather than in the host list. Or
 keep the checks, and fill the host in when the option is set.
+
+## Resolution
+
+The google adapter (`MWTClient.Sandbox.Adapter.Google`) implies its own
+endpoints: Google's token endpoint for a grant with a login file, IAM
+Credentials for one that signs. A grant no longer lists them, and the form
+no longer asks it to.

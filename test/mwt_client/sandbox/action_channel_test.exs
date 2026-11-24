@@ -1,15 +1,15 @@
-defmodule MWTClient.Sandbox.SubgrantChannelTest do
+defmodule MWTClient.Sandbox.ActionChannelTest do
   @moduledoc """
-  Subgrants end to end, through the `mwt` command in the VM: called by id,
-  a request subgrant sent by MWT, and grants and subgrants edited after.
+  Actions end to end, through the `mwt` command in the VM: called by id,
+  a request action sent by MWT, and grants and actions edited after.
   """
   use MWTClient.MwtCommandCase, async: true
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.Grant
 
-  describe "a subgrant, called by id" do
-    defp subgrant(context, attrs \\ %{}) do
+  describe "an action, called by id" do
+    defp action(context, attrs \\ %{}) do
       {:ok, grant} =
         Sandbox.create_grant(
           context.username,
@@ -29,16 +29,13 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
       grant
     end
 
-    test "is a subgrant of Ask to run commands, with a switch of its own", context do
-      grant = subgrant(context)
-      built_in = Enum.find(Sandbox.snapshot(context.username).grants, &Grant.ask_to_run?/1)
+    test "is an action over your machine, with a switch of its own", context do
+      grant = action(context)
 
-      assert grant.parent == built_in.id and Grant.subgrant?(grant)
+      assert Grant.resource(grant) == :machine and Grant.action?(grant)
       assert [%{name: "WORD", shape: :word}, %{name: "TIMES", shape: :number}] = grant.params
       assert grant.state == :off
 
-      # Its grant off, it still runs once it is on itself.
-      {:ok, _} = Sandbox.turn_off(context.username, built_in.id)
       {:ok, _} = Sandbox.turn_on(context.username, grant.id, 60, :ask)
 
       asking =
@@ -62,7 +59,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
 
     test "a call is checked before it waits: every value given, known, and of its shape",
          context do
-      grant = subgrant(context)
+      grant = action(context)
       {:ok, _} = Sandbox.turn_on(context.username, grant.id, 60, :all)
 
       for {args, says} <- [
@@ -90,7 +87,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
       marker = Path.join(context.project, "pwned")
 
       grant =
-        subgrant(context, %{
+        action(context, %{
           "name" => "note",
           "script" => ~s(echo "note: $NOTE"),
           "params" => "NOTE: text: the note"
@@ -108,7 +105,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
     end
 
     test "always on runs without a card, with its values in the log", context do
-      grant = subgrant(context)
+      grant = action(context)
       {:ok, grant} = Sandbox.set_start(context.username, grant.id, :auto)
       assert grant.state == :on and grant.start == :auto and Grant.auto_approved?(grant)
 
@@ -124,14 +121,14 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
     end
 
     test "off, it is refused, and says how to ask for it", context do
-      subgrant(context)
+      action(context)
       assert {output, 122} = mwt(context, ["call", "say", "WORD=a", "TIMES=1", "--reason", "r"])
       assert output =~ "say is off"
       assert output =~ "mwt request say"
     end
 
     test "takes an id, never a command or a name", context do
-      grant = subgrant(context)
+      grant = action(context)
       {:ok, _} = Sandbox.turn_on(context.username, grant.id, 60, :all)
 
       # A call sends no text.
@@ -140,27 +137,26 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
 
       assert output =~ "a call sends no command"
 
-      # Ask to run commands is no subgrant, and takes no values.
+      # The id commands of the agent's own went under is no action: a
+      # command the agent writes is run, not called.
       assert {output, 122} = mwt(context, ["call", "commands", "--reason", "r"])
-      assert output =~ "commands is no subgrant"
+      assert output =~ ~s[mwt run --reason "..." -- COMMAND]
 
       # Its name, in another case, names nothing.
       assert {output, 122} = mwt(context, ["call", "Say", "WORD=a", "TIMES=1", "--reason", "r"])
-      assert output =~ "No subgrant has the id Say"
+      assert output =~ "No action has the id Say"
     end
 
-    test "an ad-hoc command with a subgrant's exact text still waits, like any other", context do
-      grant = subgrant(context, %{"name" => "plain", "script" => "echo plain", "params" => ""})
+    test "an ad-hoc command with an action's exact text still waits, like any other", context do
+      grant = action(context, %{"name" => "plain", "script" => "echo plain", "params" => ""})
       {:ok, _} = Sandbox.set_start(context.username, grant.id, :auto)
 
       asking =
         Task.async(fn ->
-          mwt(context, ["run", "commands", "--reason", "r", "--", "echo plain"],
-            cd: context.project
-          )
+          mwt(context, ["run", "--reason", "r", "--", "echo plain"], cd: context.project)
         end)
 
-      # Never recognised as the subgrant: a card, with a hint naming it.
+      # Never recognised as the action: a card, with a hint naming it.
       approval = command(context.username)
       assert approval.script_from == :agent and approval.status == :waiting
       :ok = Sandbox.decide(context.username, approval.id, :decline)
@@ -193,7 +189,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
     end
   end
 
-  describe "a request subgrant" do
+  describe "a request action" do
     alias MWTClient.Sandbox.{SavedRequest, Server}
     alias MWTClient.Vault.Store
 
@@ -223,8 +219,8 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
           Map.merge(
             %{
               "kind" => "request",
-              "preset" => "request_subgrant",
-              "parent" => "github",
+              "preset" => "request_action",
+              "credential" => "github",
               "name" => "pr view",
               "purpose" => "Shows a pull request",
               "method" => "GET",
@@ -268,8 +264,8 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
          context do
       grant = github(context)
       sub = pr_view(context)
-      assert sub.parent == grant.id and sub.kind == :request and sub.state == :off
-      # The token grant stays off: the subgrant has a switch of its own.
+      assert sub.credential == grant.id and sub.kind == :request and sub.state == :off
+      # The token grant stays off: the action has a switch of its own.
       {:ok, _} = Sandbox.turn_on(context.username, sub.id, 60, :ask)
       service(context)
 
@@ -304,6 +300,56 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
 
       assert Enum.any?(summaries, &(&1 =~ "HTTP 200"))
       refute Enum.any?(summaries, &(&1 =~ @value))
+    end
+
+    test "sends the ID token its credential's mint printed, where its headers say", context do
+      mint =
+        ~s(echo '{"value": "ya29.real0123456789", "id_token": "idtok-real-0123456789", "expires_in": 1800}')
+
+      # A Google credential: its mint prints an ID token beside the token.
+      {:ok, google} =
+        Sandbox.create_grant(context.username, %{
+          "kind" => "token",
+          "preset" => "google",
+          "name" => "PM",
+          "purpose" => "Policy management, as me",
+          "hosts" => "pm.example.run.app",
+          "env" => "PM_TOKEN",
+          "signs_as" => "agent@p.iam.gserviceaccount.com",
+          "source" => "minted",
+          "mint" => mint
+        })
+
+      {:ok, sub} =
+        Sandbox.create_grant(context.username, %{
+          "kind" => "request",
+          "preset" => "request_action",
+          "credential" => google.id,
+          "name" => "policies",
+          "purpose" => "Lists the policies",
+          "method" => "GET",
+          "url" => "https://pm.example.run.app/policies",
+          "headers" => "Authorization: Bearer {token}\nX-User-Assertion: {id_token}"
+        })
+
+      {:ok, _} = Sandbox.turn_on(context.username, sub.id, 60, :ask)
+      test = self()
+
+      Req.Test.stub(SavedRequest, fn conn ->
+        send(test, {:assertion, Plug.Conn.get_req_header(conn, "x-user-assertion")})
+        Plug.Conn.send_resp(conn, 200, "idtok-real-0123456789")
+      end)
+
+      :ok = Req.Test.allow(SavedRequest, self(), Store.whereis(Server, context.username))
+
+      asking = Task.async(fn -> mwt(context, ["call", sub.id, "--reason", "list them"]) end)
+      approval = command(context.username)
+      assert approval.script =~ "X-User-Assertion: [PM's ID token]"
+      :ok = Sandbox.decide(context.username, approval.id, {:run, :send})
+      assert {output, 0} = Task.await(asking, 10_000)
+      assert_received {:assertion, ["idtok-real-0123456789"]}
+      assert output =~ "[PM's ID token]"
+      refute output =~ "idtok-real"
     end
 
     test "another grant's value is written out of an answer in every form; a key in it waits",
@@ -355,36 +401,33 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
       assert output =~ "PRIVATE KEY"
     end
 
-    test "goes through with a grant only its subgrants use, which the VM can't ask for",
+    test "goes by the most permissive of itself and the token grants listing its host, while its network gives the host",
          context do
       grant = github(context)
-
-      {:ok, _} =
-        Sandbox.update_grant(context.username, grant.id, %{
-          "name" => "GitHub",
-          "purpose" => "The GitHub API",
-          "hosts" => "api.github.com, github.com",
-          "reach" => "subgrants"
-        })
-
       sub = pr_view(context)
-      {:ok, _} = Sandbox.set_start(context.username, sub.id, :auto)
       service(context)
+      call = ["call", "pr-view", "REPO=o/r", "PR=3", "--reason", "r"]
 
-      assert {output, 0} =
-               mwt(context, ["call", "pr-view", "REPO=o/r", "PR=3", "--reason", "r"],
-                 stderr: false
-               )
-
-      assert output =~ ~s("number": 7)
+      # The action off, a token grant over its credential listing the host
+      # gives the call.
+      {:ok, _} = Sandbox.turn_on(context.username, grant.id, 60, :all)
+      assert {_output, 0} = mwt(context, call, stderr: false)
       assert_received {:sent, "GET", "/repos/o/r/pulls/3", "", ["Bearer " <> @value], ""}
 
-      {output, 1} = mwt(context, ["request", grant.id, "--reason", "push"])
-      assert output =~ "is only for its subgrants"
+      # The token grant asks, the action auto-approves: the most permissive
+      # counts, and it goes unasked.
+      {:ok, _} = Sandbox.set_mode(context.username, grant.id, :ask)
+      {:ok, _} = Sandbox.set_start(context.username, sub.id, :auto)
+      assert {_output, 0} = mwt(context, call, stderr: false)
+      assert Sandbox.snapshot(context.username).waiting == []
+      assert_received {:sent, "GET", "/repos/o/r/pulls/3", "", _, ""}
 
-      {output, 0} = mwt(context, ["grants"])
-      assert output =~ "for its subgrants only"
-      assert output =~ "use: only through its subgrants"
+      # With the Internet off, nothing gives api.github.com: refused, unsent.
+      {:ok, _} = Sandbox.turn_off(context.username, "internet")
+      assert {output, code} = mwt(context, call)
+      assert code in [121, 122]
+      assert output =~ "mwt request internet"
+      refute_received {:sent, _, _, _, _, _}
     end
 
     test "a call to a credential endpoint is refused before it waits or runs", context do
@@ -483,13 +526,16 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
       assert Jason.decode!(body) == %{"body" => text}
     end
 
-    test "is refused when its token grant no longer lists the host, and goes with its grant",
+    test "stays under its credential, and goes, whatever becomes of the token grant over it",
          context do
       grant = github(context)
       sub = pr_view(context)
       {:ok, _} = Sandbox.set_start(context.username, sub.id, :auto)
+      service(context)
+      call = ["call", "pr-view", "REPO=o/r", "PR=1", "--reason", "r"]
 
-      # The grant edited to send its token elsewhere only.
+      # The grant edited to list another host only: the action gives the
+      # credential's use itself.
       {:ok, _} =
         Sandbox.update_grant(context.username, grant.id, %{
           "name" => "GitHub",
@@ -498,26 +544,25 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
           "env" => "GH_TOKEN"
         })
 
-      assert {output, 122} =
-               mwt(context, ["call", "pr-view", "REPO=o/r", "PR=1", "--reason", "r"])
+      assert {_output, 0} = mwt(context, call, stderr: false)
 
-      assert output =~ "no longer lists the host"
-
+      # Removed, the grant leaves its credential, its value and its actions.
       :ok = Sandbox.delete_grant(context.username, grant.id)
-      refute Enum.any?(Sandbox.snapshot(context.username).grants, &(&1.id == sub.id))
+      assert Enum.any?(Sandbox.snapshot(context.username).grants, &(&1.id == sub.id))
+      assert {_output, 0} = mwt(context, call, stderr: false)
+      assert_received {:sent, "GET", "/repos/o/r/pulls/1", "", ["Bearer " <> @value], ""}
     end
 
-    test "a template that could send the token elsewhere, or let a value move it, is refused",
+    test "a template that could let a value move the token, or send it in the clear, is refused",
          context do
       github(context)
 
       for {attrs, field, says} <- [
-            {%{"url" => "https://evil.example/x"}, :url, "sends its token only to"},
             {%{"url" => "https://$HOST/x", "params" => "HOST: word: h"}, :url, "host is fixed"},
             {%{"url" => "http://api.github.com/x", "params" => ""}, :url, "HTTPS only"},
             {%{"headers" => "Accept: application/json"}, :headers, "Say where the token goes"},
             {%{"headers" => "Authorization: Bearer {token}\nX-Pr: $PR"}, :headers, "fixed"},
-            {%{"parent" => "commands"}, :parent, "under a token grant"}
+            {%{"credential" => "nope"}, :credential, "pick one"}
           ] do
         assert {:error, errors} =
                  Sandbox.create_grant(
@@ -525,7 +570,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
                    Map.merge(
                      %{
                        "kind" => "request",
-                       "parent" => "github",
+                       "credential" => "github",
                        "name" => "x",
                        "purpose" => "x",
                        "method" => "GET",
@@ -541,7 +586,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
       end
     end
 
-    test "an agent proposes one under its token grant; accepting it answers with its id",
+    test "an agent proposes one over its token grant's credential; accepting it answers with its id",
          context do
       github(context)
 
@@ -568,10 +613,10 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
         end)
 
       ask = waiting(context.username, &(&1.kind == :activation))
-      assert %{kind: :request, parent_name: "GitHub"} = ask.proposal
+      assert %{kind: :request, parent_name: "github"} = ask.proposal
 
       sub = Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == ask.grant_id))
-      assert %Grant{kind: :request, method: "GET", parent: "github"} = sub
+      assert %Grant{kind: :request, method: "GET", credential: "github"} = sub
       assert Grant.to_review?(sub)
 
       # Without --header, the headers the service expects, the token in place.
@@ -582,7 +627,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
       assert output =~ "accepted it as pr-view"
       assert output =~ "mwt call pr-view REPO=… PR=…"
 
-      # A proposal that would send the token elsewhere never waits.
+      # A proposal that would send the token in the clear never waits.
       assert {output, 1} =
                mwt(context, [
                  "propose",
@@ -592,17 +637,17 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
                  "--for",
                  "y",
                  "--url",
-                 "https://evil.example/collect",
+                 "http://api.github.com/collect",
                  "--reason",
                  "r"
                ])
 
-      assert output =~ "sends its token only to"
+      assert output =~ "HTTPS only"
     end
   end
 
   describe "editing" do
-    test "keeps a subgrant's id, state and start, and checks the change as when it was added",
+    test "keeps an action's id, state and start, and checks the change as when it was added",
          context do
       {:ok, sub} =
         Sandbox.create_grant(context.username, %{
@@ -625,7 +670,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
           "dir" => context.project
         })
 
-      assert %{id: "say", name: "shout", start: :auto, state: :on, parent: "commands"} = edited
+      assert %{id: "say", name: "shout", start: :auto, state: :on} = edited
       assert edited.script == ~s(echo "$WORD!")
       assert Grant.auto_approved?(edited)
 
@@ -642,8 +687,7 @@ defmodule MWTClient.Sandbox.SubgrantChannelTest do
                })
 
       assert message =~ "doesn't read WORD"
-      built_in = Enum.find(Sandbox.snapshot(context.username).grants, &Grant.ask_to_run?/1)
-      assert {:error, :built_in} = Sandbox.update_grant(context.username, built_in.id, %{})
+      assert {:error, :built_in} = Sandbox.update_grant(context.username, "internet", %{})
       assert {:error, :not_found} = Sandbox.update_grant(context.username, "nope", %{})
     end
 

@@ -9,7 +9,6 @@ defmodule MWTClient.Sandbox.ServerNotificationsTest do
   alias MWTClient.Notifications
   alias MWTClient.Notifications.Center
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.Grant
   alias MWTClient.Sandbox.Server
 
   setup do
@@ -102,16 +101,11 @@ defmodule MWTClient.Sandbox.ServerNotificationsTest do
   test "a command shows while it waits, and again when its output waits for you", %{
     username: username
   } do
-    # Ask to run commands, the escape hatch, is built in.
-    grant = Enum.find(Sandbox.snapshot(username).grants, &Grant.ask_to_run?/1)
-
-    {:ok, _} = Sandbox.turn_on(username, grant.id, :until_off, :ask)
-
+    # A command the agent wrote needs no grant: it asks you, always.
     {:ok, approval} =
       Server.call(
         username,
-        {:request_command,
-         %{grant: "commands", script: "echo hi", timeout: 10, reason: "check", agent: "claude"}}
+        {:request_command, %{script: "echo hi", timeout: 10, reason: "check", agent: "claude"}}
       )
 
     assert %{summary: "Claude asks to run a command it wrote, on this machine"} =

@@ -75,7 +75,7 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     {:ok, sub} =
       Sandbox.create_grant(context.username, %{
         "kind" => "request",
-        "parent" => token.id,
+        "credential" => token.credential,
         "name" => "who",
         "purpose" => "Who am I",
         "method" => "GET",
@@ -101,7 +101,7 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     refute ran.run.output =~ "SECRET"
   end
 
-  test "turning a subgrant off refuses the run waiting for it", context do
+  test "turning an action off refuses the run waiting for it", context do
     grant = peek(context)
     card = call(context.username, grant.id)
 
@@ -113,7 +113,7 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     assert {refused.status, refused.decision, refused.run} == {:denied, :grant_off, nil}
   end
 
-  test "removing a confined subgrant refuses its waiting run: nothing runs as you", context do
+  test "removing a confined action refuses its waiting run: nothing runs as you", context do
     grant = peek(context)
     card = call(context.username, grant.id)
 
@@ -123,7 +123,7 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     assert %{decision: :grant_off, run: nil} = final(context.username, card.id)
   end
 
-  test "a subgrant's time running out refuses the run waiting for it", context do
+  test "an action's time running out refuses the run waiting for it", context do
     grant = peek(context)
     card = call(context.username, grant.id)
     server = Store.whereis(Server, context.username)
@@ -145,7 +145,7 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     assert %{decision: :grant_off} = final(context.username, card.id)
   end
 
-  test "an edit of what a subgrant runs refuses its waiting runs; a new name keeps them",
+  test "an edit of what an action runs refuses its waiting runs; a new name keeps them",
        context do
     grant = peek(context)
     kept = call(context.username, grant.id)
@@ -196,18 +196,14 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     assert {refused.decision, refused.run} == {:changed, nil}
   end
 
-  test "a call whose host its grant dropped is refused at Run, before any mint", context do
+  test "a call whose host its network no longer gives is refused at Run, before any mint",
+       context do
     marker = Path.join(context.base, "minted")
-    {token, sub} = token(context, "touch #{marker}; exit 1")
+    {_token, sub} = token(context, "touch #{marker}; exit 1")
     card = call(context.username, sub.id)
 
-    {:ok, _} =
-      Sandbox.update_grant(context.username, token.id, %{
-        "name" => "Svc",
-        "purpose" => "A service",
-        "hosts" => "other.localhost",
-        "mint" => "touch #{marker}; exit 1"
-      })
+    # Its URL's host is on the Internet, whose grant you turn off.
+    {:ok, _} = Sandbox.turn_off(context.username, "internet")
 
     assert waiting?(context.username, card.id)
     :ok = Sandbox.decide(context.username, card.id, {:run, :send})
@@ -215,7 +211,7 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     refute File.exists?(marker)
   end
 
-  test "turning a request subgrant off refuses its waiting call", context do
+  test "turning a request action off refuses its waiting call", context do
     marker = Path.join(context.base, "minted")
     {_token, sub} = token(context, "touch #{marker}; exit 1")
     card = call(context.username, sub.id)
@@ -226,7 +222,7 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     refute File.exists?(marker)
   end
 
-  test "a call is sent only if its subgrant still allows it once the value is at hand",
+  test "a call is sent only if its action still allows it once the value is at hand",
        context do
     go = Path.join(context.base, "go")
     # A mint that takes as long as the test needs: until `go` exists.
@@ -236,13 +232,13 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     card = call(context.username, sub.id)
     :ok = Sandbox.decide(context.username, card.id, {:run, :send})
 
-    # Running: its mint is under way. You turn the subgrant off meanwhile.
+    # Running: its mint is under way. You turn the action off meanwhile.
     {:ok, _} = Sandbox.turn_off(context.username, sub.id)
     File.write!(go, "")
 
     sent = final(context.username, card.id)
     assert sent.run.state == :done
-    assert sent.run.error =~ "no longer allows it"
+    assert sent.run.error =~ "a grant it needs no longer gives it"
     assert is_nil(sent.run.status)
   end
 end

@@ -52,7 +52,7 @@ defmodule MWTClient.Sandbox.Server.Values do
   """
   def forward(state, grant, request, from) do
     made = carried_made(state, request)
-    own? = Placeholder.in?(request.headers, grant.placeholder)
+    own? = Enum.any?(Grant.placeholders(grant), &Placeholder.in?(request.headers, &1))
     id_token? = Enum.any?(made, &(&1.source == :id_token))
 
     if made_stale = Enum.find(made, &(not Made.covered?(&1, state.grants, State.now()))) do
@@ -94,6 +94,9 @@ defmodule MWTClient.Sandbox.Server.Values do
   defp with_result({:ok, _fetched}, value), do: {:ok, value}
   defp with_result(failed, _value), do: failed
 
+  @doc "The ID token the grant's mint printed with the value at hand, or nil."
+  def id_token_of(state, grant, host), do: id_token(state, grant, host)
+
   # The ID token the grant's mint printed with the value at hand, or nil.
   defp id_token(state, grant, host) do
     case Map.get(state, :id_tokens, %{})[mint_key(grant, host)] do
@@ -104,8 +107,15 @@ defmodule MWTClient.Sandbox.Server.Values do
 
   defp put_values(state, grant, request, from, result, made, id_token) do
     with_live(state, grant, request, from, result, fn state, grant, value ->
+      # The credential's placeholder, and any it had before a merge.
       own =
-        if value, do: [{grant.name, grant.placeholder, value, Grant.carriers(grant)}], else: []
+        if value,
+          do:
+            for(
+              placeholder <- Grant.placeholders(grant),
+              do: {grant.name, placeholder, value, Grant.carriers(grant)}
+            ),
+          else: []
 
       made_values =
         for m <- made do
@@ -229,6 +239,11 @@ defmodule MWTClient.Sandbox.Server.Values do
         GenServer.reply(from, isolated())
         state
 
+      {_result, {:locked, resource}} ->
+        {event, _observation, answer} = refusal({:locked, resource, grant}, request)
+        GenServer.reply(from, answer)
+        State.log(state, event)
+
       {_result, :off} ->
         GenServer.reply(
           from,
@@ -278,17 +293,30 @@ defmodule MWTClient.Sandbox.Server.Values do
   # The grant as it is when its value is at hand, which a mint makes
   # later than the decision: `{:ok, grant}` while it still lets this
   # request go (on, by the clock, and listing its host), `:off`
-  # once it doesn't, `:isolated` while the firewall holds the VM. A value
-  # never goes out after the grant's turn-off was taken (QA M6).
+  # once it doesn't, `:isolated` while the firewall holds the VM,
+  # `{:locked, resource}` once you locked its credential. A value never
+  # goes out after the grant's turn-off or the lock was taken (QA M6).
   defp still(state, %Grant{id: id}, request) do
     grant = Enum.find(state.grants, &(&1.id == id))
 
     cond do
-      Firewall.isolated?(state) -> :isolated
-      is_nil(grant) -> :off
-      not Grant.on?(grant, State.now()) -> :off
-      not Policy.host_listed?(request.host, grant.hosts) -> :off
-      true -> {:ok, grant}
+      Firewall.isolated?(state) ->
+        :isolated
+
+      is_nil(grant) ->
+        :off
+
+      Map.has_key?(Map.get(state, :locks, %{}), Grant.resource(grant)) ->
+        {:locked, Grant.resource(grant)}
+
+      not Grant.on?(grant, State.now()) ->
+        :off
+
+      not Policy.host_listed?(request.host, MWTClient.Sandbox.Adapter.hosts(grant)) ->
+        :off
+
+      true ->
+        {:ok, grant}
     end
   end
 
@@ -323,11 +351,7 @@ defmodule MWTClient.Sandbox.Server.Values do
   # What the rest of a request to `host` must not carry: any real value, and
   # the placeholder of a grant that doesn't list the host.
   defp out(state, host) do
-    elsewhere =
-      for %Grant{kind: :token, placeholder: placeholder} = grant <- state.grants,
-          is_binary(placeholder),
-          not Policy.host_listed?(host, grant.hosts),
-          do: {{:placeholder, grant.name}, [placeholder]}
+    elsewhere = Policy.placeholders_elsewhere(state.grants, host)
 
     made_elsewhere =
       for {placeholder, made} <- Map.get(state, :made, %{}),
@@ -391,10 +415,14 @@ defmodule MWTClient.Sandbox.Server.Values do
     stored = state.values || %{}
     minted = Map.get(state, :minted) || %{}
 
-    for %Grant{kind: :token, id: id} = grant <- state.grants,
-        value <- grant_values(stored, minted, id),
+    # One per credential: every grant over it has the same value.
+    for %Grant{kind: :token} = grant <- Enum.uniq_by(state.grants, &credential_key/1),
+        value <- grant_values(stored, minted, Grant.credential_id(grant)),
         do: {grant, value}
   end
+
+  defp credential_key(%Grant{kind: :token} = grant), do: {:credential, Grant.credential_id(grant)}
+  defp credential_key(%Grant{id: id}), do: {:grant, id}
 
   defp grant_values(stored, minted, id) do
     case Map.get(stored, id) do
@@ -421,7 +449,8 @@ defmodule MWTClient.Sandbox.Server.Values do
   def fetch(state, grant, host, k), do: with_value(state, grant, host, k)
 
   defp with_value(state, %Grant{source: :stored} = grant, _host, k) do
-    case Map.fetch(state.values || %{}, grant.id) do
+    # Kept under the credential's id: every grant over it uses the one value.
+    case Map.fetch(state.values || %{}, Grant.credential_id(grant)) do
       {:ok, value} when is_binary(value) -> k.(state, {:ok, value})
       _ -> k.(state, {:error, :no_value})
     end
@@ -440,7 +469,7 @@ defmodule MWTClient.Sandbox.Server.Values do
 
       _none ->
         variables =
-          [{"MWT_GRANT", grant.id}] ++
+          [{"MWT_GRANT", Grant.credential_id(grant)}] ++
             if(grant.mint_per == :host and is_binary(host), do: [{"MWT_HOST", host}], else: [])
 
         keep_ms = grant.keep_minutes && grant.keep_minutes * 60_000
@@ -449,8 +478,14 @@ defmodule MWTClient.Sandbox.Server.Values do
         # ends after an edit changed that keeps nothing (`Machine.finished/3`).
         made = Grant.how_made(grant)
 
+        # The credential's adapter reads what the mint prints
+        # (`MWTClient.Sandbox.Adapter`).
+        adapter = MWTClient.Sandbox.Adapter.of(grant)
+
         state
-        |> State.task({:mint, key}, fn -> command |> mint(variables) |> kept_at_most(keep_ms) end)
+        |> State.task({:mint, key}, fn ->
+          command |> mint(variables, adapter, grant) |> kept_at_most(keep_ms)
+        end)
         |> Map.update!(:minting, &Map.put(&1, key, [k]))
         |> Map.update(:mint_made, %{key => made}, &Map.put(&1, key, made))
     end
@@ -469,25 +504,26 @@ defmodule MWTClient.Sandbox.Server.Values do
   end
 
   @doc """
-  Where a minted value is kept: under the grant's id, or, for a grant
+  Where a minted value is kept: under its credential's id
+  (`Grant.credential_id/1`), so every grant over it uses one mint, or,
   minted per host (`Grant.mint_per`), under `{id, host}`.
   """
-  def mint_key(%Grant{id: id, mint_per: :host}, host) when is_binary(host),
-    do: {id, String.downcase(host)}
+  def mint_key(%Grant{mint_per: :host} = grant, host) when is_binary(host),
+    do: {Grant.credential_id(grant), String.downcase(host)}
 
-  def mint_key(%Grant{id: id}, _host), do: id
+  def mint_key(%Grant{} = grant, _host), do: Grant.credential_id(grant)
 
   # The command is told which grant, and, minted per host, which host its
   # value is for. It prints the bare value, or a JSON object with `value`
   # and, when it knows, `expires_in` seconds: kept until a minute before
   # then, or for 10 minutes.
-  defp mint(command, variables) do
+  defp mint(command, variables, adapter, grant) do
     case MWTClient.Executable.cmd("timeout", ["30", "bash", "-lc", command],
            stderr_to_stdout: false,
            env: HostRun.home_env() ++ variables
          ) do
       {output, 0} ->
-        output |> String.trim() |> minted()
+        MWTClient.Sandbox.Adapter.made(adapter, grant, String.trim(output), DateTime.utc_now())
 
       {_output, status} ->
         {:error, "the command exited with #{status}"}
@@ -599,6 +635,40 @@ defmodule MWTClient.Sandbox.Server.Values do
   end
 
   @doc """
+  `refusal/2`, with the decision kept: the event is given its id now, and
+  how the request was decided (`MWTClient.Sandbox.Explain.record/2`, from
+  `world`, what the decision read), and the answer names that id, so
+  `mwt why ID` gives back what decided then rather than deciding again.
+  """
+  def kept_refusal(reason, request, world) do
+    case refusal(reason, request) do
+      {%{} = event, observation, {:deny, status, body}} ->
+        id = MWTClient.Sandbox.Event.new_id()
+
+        section =
+          MWTClient.Sandbox.Explain.record_section(
+            MWTClient.Sandbox.Explain.record(request, world)
+          )
+
+        event =
+          event
+          |> Map.put(:id, id)
+          |> Map.update(:details, [section], &((&1 || []) ++ [section]))
+
+        body =
+          body
+          |> Jason.decode!()
+          |> Map.merge(%{"decision" => id, "why" => "mwt why #{id}"})
+          |> Jason.encode!()
+
+        {event, observation, {:deny, status, body}}
+
+      unkept ->
+        unkept
+    end
+  end
+
+  @doc """
   A request `MWTClient.Sandbox.Policy` refused, as `{event, observation,
   answer}`: what the log says (or nil), what the firewall hears (or nil),
   and the proxy's answer. The same wherever it was decided.
@@ -633,10 +703,61 @@ defmodule MWTClient.Sandbox.Server.Values do
      deny(
        403,
        "mwt_grant_off",
-       "The Internet is off, and no grant that is on lists #{request.host}. " <>
+       "No grant that is on over the Internet covers #{request.host}: the Internet's grant is off. " <>
          "Ask for it with: mwt request internet --reason \"...\"",
        nil
      )}
+  end
+
+  def refusal({:outside, network}, request) when is_binary(network) do
+    title = Describe.request(request).title
+
+    {request_event(request, nil, :refused, "#{title} · no grant over #{network} covers it"), nil,
+     deny(
+       403,
+       "mwt_not_covered",
+       "No grant over the network #{network} covers #{request.host}. Ask the user for one that " <>
+         "does (mwt request --need \"...\"), or run mwt why --recent.",
+       nil
+     )}
+  end
+
+  def refusal({:outside, grant}, request) do
+    title = Describe.request(request).title
+
+    {request_event(request, grant, :refused, "#{title} · no grant over its network covers it"),
+     nil,
+     deny(
+       403,
+       "mwt_not_covered",
+       "No grant over #{grant.name}'s network covers #{request.host}: #{grant.name} covers only " <>
+         "#{Enum.join(grant.scope || grant.destinations, ", ")}. Ask the user for one that does " <>
+         "(mwt request --need \"...\"), or run mwt why --recent.",
+       grant
+     )}
+  end
+
+  def refusal({:uncovered, grant}, request) do
+    title = Describe.request(request).title
+    only = MWTClient.Sandbox.Attributes.words(grant.attributes || %{})
+
+    {request_event(request, grant, :refused, "#{title} · no grant over its credential covers it"),
+     nil,
+     deny(
+       403,
+       "mwt_not_covered",
+       "No grant over #{Grant.credential_id(grant)} covers this use: #{grant.name} covers only #{only}. " <>
+         "Ask the user for one that does (mwt request --need \"...\"), or run mwt why --recent.",
+       grant
+     )}
+  end
+
+  def refusal({:locked, resource, grant}, request) do
+    title = Describe.request(request).title
+    words = MWTClient.Sandbox.Resource.locked_words(resource)
+
+    {request_event(request, grant, :refused, "#{title} · locked by you"), nil,
+     deny(403, "mwt_locked", words <> " Tell the user what you were doing.", grant)}
   end
 
   def refusal(:multiple_grants, _request) do
@@ -684,59 +805,40 @@ defmodule MWTClient.Sandbox.Server.Values do
      )}
   end
 
-  def refusal({:subgrants_only, grant}, request) do
+  def refusal({:grant_off, grant}, request) do
+    title = Describe.request(request).title
+
+    message =
+      "No grant that is on gives this; #{grant.name} would, and is off. " <>
+        "Ask for it with: mwt request #{grant.id} --reason \"...\""
+
     {request_event(
        request,
        grant,
        :refused,
-       "#{grant.name} placeholder · its value is only for its subgrants"
-     ), nil,
-     deny(
-       403,
-       "mwt_subgrants_only",
-       "#{grant.name}'s value is only for its subgrants, requests MWT sends itself: " <>
-         "mwt call ID. mwt grants lists them under #{grant.name}.",
-       grant
-     )}
+       "#{title} · #{grant.name} would give it, and is off"
+     ), nil, deny(403, "mwt_grant_off", message, grant)}
   end
 
-  def refusal({:check_failing, grant, why}, request) do
-    {request_event(request, grant, :refused, "#{grant.name} paused: #{why}"), nil,
-     deny(
-       403,
-       "mwt_check_failing",
-       "#{grant.name} is paused: #{why}. Tell the user; " <>
-         "asking for the grant won't help until that changes.",
-       grant
-     )}
-  end
+  def refusal({:host_blocked, network, entry}, request) do
+    blocked =
+      case entry do
+        :default -> "isn't among the hosts the user lets the VM reach on #{network}"
+        entry -> "is blocked on #{network} (#{entry})"
+      end
 
-  def refusal({:grant_off, grant}, request) do
-    title = Describe.request(request).title
-
-    {request_event(request, grant, :refused, "#{title} · #{grant.name} is off"), nil,
-     deny(
-       403,
-       "mwt_grant_off",
-       "#{grant.name} is off. Ask for it with: mwt request #{grant.id} --reason \"...\"",
-       grant
-     )}
-  end
-
-  def refusal({:host_blocked, grant, entry}, request) do
     {request_event(
        request,
-       grant,
+       nil,
        :blocked,
-       MWTClient.Sandbox.Gate.blocked_words(grant, entry, request.host)
+       MWTClient.Sandbox.Gate.blocked_words(network, entry, request.host)
      ), nil,
      deny(
        403,
        "mwt_host_blocked",
-       "#{request.host} is blocked on #{grant.name} (#{entry}): the user set it so, and MWT " <>
-         "refuses every request to it. Asking for a grant won't change that; tell the user " <>
-         "if you need it.",
-       grant
+       "#{request.host} #{blocked}: the user set it so, and MWT refuses every request to it. " <>
+         "Asking for a grant won't change that; tell the user if you need it.",
+       nil
      )}
   end
 
@@ -811,7 +913,7 @@ defmodule MWTClient.Sandbox.Server.Values do
       summary: summary,
       host: request.host,
       port: Map.get(request, :port, 443),
-      grant_id: grant.id,
+      grant_id: grant && grant.id,
       method: request.method,
       path: request.path,
       exchange_id: Map.get(request, :exchange)

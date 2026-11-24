@@ -1,20 +1,20 @@
 defmodule MWTClient.Sandbox.ProposalChannelTest do
   @moduledoc """
-  What an agent proposes through the `mwt` command in the VM: a subgrant of
-  a grant, or a grant, waiting for your review.
+  What an agent proposes through the `mwt` command in the VM: an action
+  over a resource, or a grant, waiting for your review.
   """
   use MWTClient.MwtCommandCase, async: true
 
   alias MWTClient.Sandbox
   alias MWTClient.Sandbox.{Channel, Grant}
 
-  describe "a subgrant an agent proposes" do
+  describe "an action an agent proposes" do
     defp propose(context, extra \\ []) do
       mwt(
         context,
         [
           "propose",
-          "commands",
+          "machine",
           "--name",
           "repo view",
           "--for",
@@ -32,19 +32,16 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
 
     test "is saved at once, off and to review; accepting it on its page answers with its id",
          context do
-      # Nothing has to be on.
-      built_in = Enum.find(Sandbox.snapshot(context.username).grants, &Grant.ask_to_run?/1)
-      {:ok, _} = Sandbox.turn_off(context.username, built_in.id)
-
+      # Nothing has to be on: it is a saved command, over your machine.
       asking = Task.async(fn -> propose(context) end)
       ask = waiting(context.username, &(&1.kind == :activation))
       assert ask.title == "Review repo view"
-      assert %{kind: :command, parent_name: "Ask to run commands", updated: false} = ask.proposal
+      assert %{kind: :command, parent_name: "Your machine", updated: false} = ask.proposal
 
       grant = proposed(context.username, ask.grant_id)
 
       assert %Grant{
-               parent: parent,
+               kind: :command,
                name: "repo view",
                purpose: "Shows a repository",
                script: ~s(echo "viewing $REPO_NAME"),
@@ -54,7 +51,7 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
                proposal: %{agent: "claude", reason: "I look at several", reviewed_at: nil}
              } = grant
 
-      assert parent == built_in.id
+      assert Grant.resource(grant) == :machine
       assert Grant.to_review?(grant)
       # Confined, as one you add starts.
       assert grant.confined
@@ -107,7 +104,7 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
       revise = fn script ->
         mwt(context, [
           "propose",
-          "commands",
+          "machine",
           "--name",
           "repo view",
           "--for",
@@ -158,7 +155,7 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
       assert {output, 2} =
                mwt(context, [
                  "propose",
-                 "commands",
+                 "machine",
                  "--name",
                  "Repo View",
                  "--for",
@@ -204,7 +201,7 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
       :ok = Sandbox.decide(context.username, ask.id, :decline)
       assert {output, 3} = Task.await(asking)
       assert output =~ "declined it, and the proposal is removed"
-      refute Enum.any?(Sandbox.snapshot(context.username).grants, &Grant.subgrant?/1)
+      refute Enum.any?(Sandbox.snapshot(context.username).grants, &Grant.action?/1)
     end
 
     test "removed from its page before review, the agent hears it was declined", context do
@@ -217,15 +214,15 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
 
     test "is refused before it waits when it is no function the user could read", context do
       for {args, says} <- [
-            {["propose", "commands", "--for", "x", "--reason", "r", "--", "echo a"], "Name it"},
-            {["propose", "commands", "--name", "x", "--reason", "r", "--", "echo a"],
+            {["propose", "machine", "--for", "x", "--reason", "r", "--", "echo a"], "Name it"},
+            {["propose", "machine", "--name", "x", "--reason", "r", "--", "echo a"],
              "Say what it does"},
-            {["propose", "commands", "--name", "x", "--for", "y", "--", "echo a"], "Say why"},
-            {["propose", "commands", "--name", "x", "--for", "y", "--reason", "r"],
+            {["propose", "machine", "--name", "x", "--for", "y", "--", "echo a"], "Say why"},
+            {["propose", "machine", "--name", "x", "--for", "y", "--reason", "r"],
              "Give the script"},
             {[
                "propose",
-               "commands",
+               "machine",
                "--name",
                "x",
                "--for",
@@ -239,7 +236,7 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
              ], "doesn't read WORD"},
             {[
                "propose",
-               "commands",
+               "machine",
                "--name",
                "x",
                "--for",
@@ -252,10 +249,10 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
                ~s(echo "$LD_PRELOAD")
              ], "already means something"},
             {["propose", "nope", "--name", "x", "--for", "y", "--reason", "r", "--", "echo a"],
-             "No grant is called"},
+             ~s[Nothing is called "nope"]},
             {[
                "propose",
-               "commands",
+               "machine",
                "--name",
                "x",
                "--for",
@@ -451,12 +448,8 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
         )
       end
 
-      # Signing sends the grant's value to IAM Credentials, which it must
-      # list: refused, naming the option.
-      assert {output, 1} = propose.([])
-      assert output =~ "--sign-as: Signing sends the grant's value to iamcredentials"
-
-      assert {_output, 2} = propose.(["--host", "*.googleapis.com"])
+      # Signing's host is the google adapter's own: implied, not listed.
+      assert {_output, 2} = propose.([])
 
       grant =
         Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "internal-service"))

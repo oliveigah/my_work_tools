@@ -50,14 +50,16 @@ defmodule MWTClient.Sandbox.Server.Tools do
           "#{grant.name} is off, so #{use.tool} can't run. Ask the user to turn it on: " <>
             ~s(mwt request #{grant.id} --reason "what you are about to do and why")}, state}
 
-      {:refuse, {:check_failing, grant, why}} ->
-        state =
-          State.log(state, event(grant, :refused, "#{MwtTools.about(use).title} · paused", use))
-
-        {{:error, "#{grant.name} is paused: #{why}. Tell the user."}, state}
-
       {:refuse, :no_mwt_grant} ->
         {{:error, "MWT has no grant for #{use.tool}. Tell the user."}, state}
+
+      {:refuse, {:locked, _resource, grant}} ->
+        state =
+          State.log(state, event(grant, :refused, "#{MwtTools.about(use).title} · locked", use))
+
+        {{:error,
+          MWTClient.Sandbox.Resource.locked_words(:machine) <>
+            " Tell the user what you were doing."}, state}
 
       {:allow, grant, allowance, about} ->
         case if(use.grant == :read, do: Firewall.observe(state, :read), else: {:pass, state}) do

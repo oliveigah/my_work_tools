@@ -2,7 +2,7 @@
 
 - Found: 2026-11-23, MWT 0.3.0
 - Kind: improvement
-- Status: open
+- Status: resolved by the grants redesign (2026-11-24)
 
 ## What happens
 
@@ -41,3 +41,9 @@ grant is off. Cards stay where a real value leaves: the API calls, and
 *Allow similar* on the first refresh card of each grant: the endpoint is
 always `POST oauth2.googleapis.com/token`, so one allowance covers every
 later refresh until the grant turns off.
+
+## Resolution
+
+A refresh MWT answers itself is no use of a grant: it goes without a
+card while a grant over the credential is on, and is refused otherwise
+(`MWTClient.Sandbox.Policy`, the `refresh?` branch).

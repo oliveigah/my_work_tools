@@ -1,17 +1,16 @@
 defmodule MWTClient.Sandbox.Presets do
   @moduledoc """
   What the add dialog offers: the grant types, and presets that fill a
-  type's form for tools whose details are known. A command grant has two
-  types: Ask to run commands, the escape hatch, built in (`:command`), where
-  agents write the text, and a saved command, your own script
-  (`:saved_command`), which is the one you add.
+  type's form for tools whose details are known. A command grant is a
+  saved command, your own script (`:saved_command`): a command an agent
+  writes needs no grant.
 
   A preset is a JSON file (since 2026-11-17): MWT's own under
   `priv/sandbox/presets/`, yours in the identity's folder (`dir/1`). It
   fills the form's fields (`grant`), with fields of yours to fill first
   (`fill`, each `{name}` in them), and can carry what the form doesn't: a
-  token grant's default request headers for its subgrants, the tools it
-  serves, checks and subgrants. Everything it gives is copied onto the
+  token grant's default request headers for its actions, the tools it
+  serves, and actions. Everything it gives is copied onto the
   grant: nothing in MWT looks at which preset made it again.
 
   The VM-side details come from the checks of 2026-11-11: `gh` sends
@@ -64,30 +63,16 @@ defmodule MWTClient.Sandbox.Presets do
       fields: %{}
     },
     %{
-      id: :command,
-      kind: :command,
-      name: "Ask to run commands",
-      icon: "hero-command-line",
-      blurb:
-        "Built in: while on, agents may ask to run a command they write here. You approve every run.",
-      guide: [
-        "For the job no other grant does: something only this machine has, such as your SSH keys, a kubeconfig or your VPN. The work goes to the value, and only its output goes back.",
-        "Agents write the text and send it. Keep it off, and turn it on for a task.",
-        "Every run shows on a card and waits for you. When one is worth keeping, save it from its card as a subgrant."
-      ],
-      fields: %{}
-    },
-    %{
       id: :saved_command,
       kind: :command,
-      name: "Command subgrant",
+      name: "Saved command",
       icon: "hero-bookmark-square",
       blurb:
-        "Your own script, in your folder, under Ask to run commands. Agents call it by id, and send no text.",
+        "Your own script, in your folder, run on your machine. Agents call it by id, and send no text.",
       guide: [
         "Write the script as you would type it. Agents can run only this text, in the folder you name, and send nothing of their own.",
         "What varies between calls is a parameter: the script reads it as a variable, \"$NAME\", and an agent gives a value of the shape you set. Keep them few, and each as narrow as works.",
-        "It has a switch of its own: enabled for a time or on startup, asking each time or auto-approved, while Ask to run commands stays disabled.",
+        "It has a switch of its own: on for a time or on startup, asking each time or auto-approved.",
         "Keep it small: let it fetch what the agent needs, and let the agent do the rest in the VM."
       ],
       fields: %{}
@@ -107,9 +92,9 @@ defmodule MWTClient.Sandbox.Presets do
       fields: %{}
     },
     %{
-      id: :request_subgrant,
+      id: :request_action,
       kind: :request,
-      name: "Request subgrant",
+      name: "Request action",
       icon: "hero-paper-airplane",
       blurb:
         "One request MWT sends itself with this grant's real value. Agents call it by id, and send only values.",
@@ -243,8 +228,8 @@ defmodule MWTClient.Sandbox.Presets do
              ),
            request_headers: text(json["request_headers"]),
            tools: Enum.filter(List.wrap(json["tools"]), &is_binary/1),
-           checks: Enum.filter(List.wrap(json["checks"]), &is_map/1),
-           subgrants: Enum.filter(List.wrap(json["subgrants"]), &is_map/1)
+           # `subgrants` in a preset written before actions were called so.
+           actions: Enum.filter(List.wrap(json["actions"] || json["subgrants"]), &is_map/1)
          }}
     end
   end
@@ -305,6 +290,23 @@ defmodule MWTClient.Sandbox.Presets do
     end
   end
 
+  @doc """
+  Whether `name` may name a preset file of yours: a plain JSON file name,
+  no folder in it, nothing that reads as an option.
+
+      iex> MWTClient.Sandbox.Presets.file_name?("github-app.json")
+      true
+      iex> MWTClient.Sandbox.Presets.file_name?("../x.json")
+      false
+  """
+  @spec file_name?(String.t()) :: boolean()
+  def file_name?(name) when is_binary(name),
+    do:
+      Regex.match?(~r/\A[a-z0-9][a-z0-9._-]{0,80}\.json\z/, name) and
+        not String.contains?(name, "..")
+
+  def file_name?(_name), do: false
+
   @doc "Looks a type or preset up by the string a form sends, yours included when `username` is given."
   @spec find(String.t(), String.t() | nil) :: {:ok, t()} | :error
   def find(id, username \\ nil) when is_binary(id) do
@@ -314,15 +316,12 @@ defmodule MWTClient.Sandbox.Presets do
     end
   end
 
-  @doc "The type itself, for a grant's kind; for a command, Ask to run commands."
+  @doc "The type itself, for a grant's kind."
   @spec type(MWTClient.Sandbox.Grant.kind()) :: t()
   def type(kind), do: Enum.find(@types, &(&1.kind == kind))
 
-  @doc "A grant's own type: a command grant with a script is a saved command."
+  @doc "A grant's own type."
   @spec type_of(MWTClient.Sandbox.Grant.t()) :: t()
-  def type_of(%{kind: :command, script: script}) when is_binary(script),
-    do: Enum.find(@types, &(&1.id == :saved_command))
-
   def type_of(%{kind: kind}), do: type(kind)
 
   @doc """
@@ -342,7 +341,7 @@ defmodule MWTClient.Sandbox.Presets do
   @spec kind_name(MWTClient.Sandbox.Grant.kind()) :: String.t()
   def kind_name(kind), do: type(kind).name
 
-  @doc "What a grant is, by its own type: a saved command is not Ask to run commands."
+  @doc "What a grant is, by its own type."
   @spec type_name(MWTClient.Sandbox.Grant.t()) :: String.t()
   def type_name(grant), do: type_of(grant).name
 end

@@ -11,12 +11,10 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     sign_in(conn)
   end
 
-  # An agent asking to run `script` through a command grant, and waiting up
-  # to 10 s for the answer.
+  # An agent asking to run `script`, a command it wrote, which needs no
+  # grant, and waiting up to 10 s for the answer. `commands` is the id the
+  # agent's commands had when they went through a grant, still taken.
   defp ask(username, script, attrs \\ %{}) do
-    # Ask to run commands, the escape hatch, is built in.
-    {:ok, _} = Sandbox.turn_on(username, "commands", :until_off, :ask)
-
     ask =
       Map.merge(
         %{
@@ -65,7 +63,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     |> render_submit()
 
     # sudo fails without a terminal; what matters is that it ran and answered.
-    assert {:ok, %{status: :allowed, run: %{state: :done, exit: exit}}, %{id: "commands"}} =
+    assert {:ok, %{status: :allowed, run: %{state: :done, exit: exit}}, nil} =
              Task.await(task, 11_000)
 
     assert is_integer(exit)
@@ -89,7 +87,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
     view |> element("#decline-ask-#{approval.id}") |> render_click()
 
-    assert {:ok, %{status: :denied, decision: :decline, run: nil}, %{id: "commands"}} =
+    assert {:ok, %{status: :denied, decision: :decline, run: nil}, nil} =
              Task.await(task)
   end
 
@@ -115,8 +113,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
 
     view |> element("#send-output-#{approval.id}") |> render_click()
 
-    assert {:ok, %{status: :allowed, decision: :send_output, run: %{output: "the-output\n"}},
-            %{id: "commands"}} =
+    assert {:ok, %{status: :allowed, decision: :send_output, run: %{output: "the-output\n"}}, nil} =
              Task.await(task, 11_000)
 
     assert has_element?(view, "#decided-#{approval.id}", "you sent the output")
@@ -134,7 +131,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     assert has_element?(view, "#running-#{approval.id}", "sleep 30")
     view |> element("#stop-command-#{approval.id}") |> render_click()
 
-    assert {:ok, %{run: %{state: :done, stopped: true}}, %{id: "commands"}} =
+    assert {:ok, %{run: %{state: :done, stopped: true}}, nil} =
              Task.await(task, 11_000)
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox")
@@ -165,7 +162,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     assert has_element?(view, "#host-notes-error", "4,000")
   end
 
-  test "a command through Ask to run commands is saved from its card, which still waits", %{
+  test "a command an agent wrote is saved from its card, which still waits", %{
     conn: conn,
     username: username
   } do
@@ -269,7 +266,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
 
     view |> element("#simpler-#{approval.id}") |> render_click()
 
-    assert {:ok, %{status: :denied, decision: :simpler, run: nil}, %{id: "commands"}} =
+    assert {:ok, %{status: :denied, decision: :simpler, run: nil}, nil} =
              Task.await(task)
 
     until(fn -> has_element?(view, "#decided-#{approval.id}") end)
@@ -302,7 +299,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
 
     # Your own script: named, with what it's for, and calmer.
     assert has_element?(view, "#approval-#{approval.id}[data-command=saved]")
-    assert has_element?(view, "#approval-kind-#{approval.id}", "Subgrant")
+    assert has_element?(view, "#approval-kind-#{approval.id}", "Action")
     assert has_element?(view, "#approval-#{approval.id} h3", "Pods")
     assert has_element?(view, "#approval-purpose-#{approval.id}", "List pods")
     assert has_element?(view, "#approval-trust-#{approval.id}", "The agent sent no text")
@@ -318,7 +315,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     Task.await(task)
   end
 
-  test "asked to turn on, Ask to run commands only lets the agent ask; a saved command can auto-approve",
+  test "asked to turn on, a saved command can auto-approve; an agent's own command needs no grant",
        %{conn: conn, username: username} do
     {:ok, _} =
       Sandbox.create_grant(username, %{
@@ -331,12 +328,6 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
 
     {:ok, _} = Sandbox.turn_off(username, "pods")
 
-    {:ok, any} =
-      Server.call(
-        username,
-        {:request_access, %{grant: "commands", minutes: 60, reason: "r", agent: "claude"}}
-      )
-
     {:ok, saved} =
       Server.call(
         username,
@@ -345,9 +336,8 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
 
-    assert has_element?(view, "#activation-asks-only-#{any.id}", "you approve every run")
-    refute has_element?(view, "#activation-uses-#{any.id}")
     assert has_element?(view, "#activation-uses-#{saved.id}-all")
+    refute Enum.any?(Sandbox.snapshot(username).grants, &(&1.id == "commands"))
 
     view
     |> form("#activation-form-#{saved.id}", ask: %{minutes: "60", uses: "all"})

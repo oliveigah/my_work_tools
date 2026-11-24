@@ -1,6 +1,6 @@
 defmodule MWTClient.Sandbox.ParamTest do
   @moduledoc """
-  A subgrant's parameters: how they are written, which values each shape
+  An action's parameters: how they are written, which values each shape
   takes, and what a script must do with them.
   """
   use ExUnit.Case, async: true
@@ -121,7 +121,7 @@ defmodule MWTClient.Sandbox.ParamTest do
       assert Param.explain({:missing, repo}) =~ "REPO=value"
     end
 
-    test "a subgrant with none takes none" do
+    test "an action with none takes none" do
       assert Param.check([], %{}) == {:ok, []}
       assert Param.check([], nil) == {:ok, []}
       assert {:error, {:unknown, "A"}} = Param.check([], %{"A" => "b"})

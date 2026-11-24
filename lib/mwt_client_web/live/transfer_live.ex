@@ -214,6 +214,24 @@ defmodule MWTClientWeb.TransferLive do
         </.help>
       </p>
 
+      <label class="flex cursor-pointer items-start gap-2">
+        <input type="hidden" name="export[values]" value="false" />
+        <input
+          type="checkbox"
+          name="export[values]"
+          id="export-values"
+          value="true"
+          checked={@form[:values].value in ["true", true]}
+          class="mt-0.5 size-3.5 cursor-pointer accent-accent"
+        />
+        <span class="text-xs text-ink">
+          Include stored credential values
+          <span class="block text-[10px] leading-4 text-faint">
+            The values you pasted for the agent sandbox's credentials. Off, the file holds how each is set up, and you paste the values again where you import it. Minted values never travel: they come from logins on the machine that mints them.
+          </span>
+        </span>
+      </label>
+
       <.error_line :if={@error} id="export-error" message={@error} />
 
       <div class="flex flex-wrap items-center gap-2 border-t border-line-soft pt-3">
@@ -559,7 +577,7 @@ defmodule MWTClientWeb.TransferLive do
          |> assign(:export_error, nil)
          |> assign(:export_form, to_export_form(%{"path" => path}))
          |> start_async(:export, fn ->
-           with :ok <- Transfer.export(username, path) do
+           with :ok <- Transfer.export(username, path, values: params["values"] == "true") do
              case File.stat(path) do
                {:ok, %File.Stat{size: size}} -> {:ok, %{path: path, size: size}}
                {:error, reason} -> {:error, {:file, reason}}

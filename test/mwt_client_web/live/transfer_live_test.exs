@@ -61,7 +61,8 @@ defmodule MWTClientWeb.TransferLiveTest do
                 %{summary: "1 request"},
                 %{summary: "No diagrams"},
                 %{summary: "No notes"},
-                %{summary: "No flash cards"}
+                %{summary: "No flash cards"},
+                %{summary: "0 grants, 0 credentials"}
               ]
             }} = Transfer.read(username, path)
   end

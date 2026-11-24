@@ -18,22 +18,23 @@ defmodule MWTClient.Sandbox.CommandRefusedChannelTest do
     id
   end
 
-  test "a run asked through Ask to run commands is refused once the grant is off", context do
+  test "a command the agent wrote is refused once you lock your machine while it waits",
+       context do
     marker = Path.join(context.project, "ran-after-off")
 
-    id =
-      asked(context, ["run", "commands", "--reason", "r", "--wait", "0", "--", "touch #{marker}"])
+    id = asked(context, ["run", "--reason", "r", "--wait", "0", "--", "touch #{marker}"])
 
-    {:ok, _} = Sandbox.turn_off(context.username, "commands")
+    # No grant gives it, so none can be turned off: the lock stops it.
+    :ok = Sandbox.lock(context.username, :machine)
     assert {:error, :not_waiting} = Sandbox.decide(context.username, id, {:run, :send})
 
     {output, 121} = mwt(context, ["wait", id, "--wait", "5"])
-    assert output =~ "It didn't run: commands no longer allowed it"
+    assert output =~ "It didn't run"
     refute output =~ "declined"
     refute File.exists?(marker)
   end
 
-  test "a confined subgrant removed while its call waits doesn't run", context do
+  test "a confined action removed while its call waits doesn't run", context do
     {:ok, grant} =
       Sandbox.create_grant(context.username, %{
         "kind" => "command",
@@ -52,7 +53,7 @@ defmodule MWTClient.Sandbox.CommandRefusedChannelTest do
     assert output =~ "It didn't run: #{grant.id} no longer allowed it"
   end
 
-  test "a subgrant edited while its call waits: the agent hears it changed", context do
+  test "an action edited while its call waits: the agent hears it changed", context do
     attrs = %{
       "kind" => "command",
       "name" => "hello",
@@ -80,7 +81,8 @@ defmodule MWTClient.Sandbox.CommandRefusedChannelTest do
     approval = %Approval{
       id: "run-unknown",
       kind: :command,
-      grant_id: "commands",
+      grant_id: nil,
+      script_from: :agent,
       title: "make serve",
       script: "make serve",
       status: :allowed,

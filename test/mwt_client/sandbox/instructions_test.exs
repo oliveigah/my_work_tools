@@ -386,26 +386,23 @@ defmodule MWTClient.Sandbox.InstructionsTest do
 
     text = Instructions.grants([github, vpn], ~U[2026-11-12 12:00:00Z])
     assert text =~ "## GitHub"
-    assert text =~ "id: `github` · Token or API key · on until 13:00 UTC (60 min left)"
+
+    assert text =~
+             "id: `github` · Token or API key over the credential `github` · on until 13:00 UTC (60 min left)"
+
     assert text =~ "for: Push to my repos"
     assert text =~ "$GH_TOKEN, /mnt/mwt/tokens/github"
     assert text =~ "only to api.github.com, github.com"
     assert text =~ "git over HTTPS to api.github.com, github.com"
     assert text =~ "each request waits for the user's approval"
+    assert text =~ "id: `vpn` · Network access over the network `vpn`"
     assert text =~ "connect directly to 10.0.0.0/8:443"
     assert text =~ "everything through it goes without asking for now"
     refute text =~ "ghp_placeholder"
     assert Instructions.grants([], ~U[2026-11-12 12:00:00Z]) =~ "No grants yet."
   end
 
-  test "subgrants are listed under their grant, with how to call them; Ask to run commands says to keep it small" do
-    any = %Grant{
-      id: "commands",
-      name: "Ask to run commands",
-      kind: :command,
-      purpose: "Escape hatch"
-    }
-
+  test "actions are listed under their resource, with how to call them; a command you write asks" do
     saved =
       for name <- ~w(pods logs) do
         %Grant{
@@ -415,7 +412,6 @@ defmodule MWTClient.Sandbox.InstructionsTest do
           purpose: "Show #{name}",
           script: "kubectl get #{name} -n \"$NAMESPACE\"",
           dir: "/home/me",
-          parent: "commands",
           params: [
             %Param{name: "NAMESPACE", shape: {:one_of, ["web", "jobs"]}, about: "the namespace"}
           ],
@@ -423,23 +419,47 @@ defmodule MWTClient.Sandbox.InstructionsTest do
         }
       end
 
-    text = Instructions.grants([any | saved], ~U[2026-11-12 12:00:00Z])
-    assert text =~ "id: `commands` · Ask to run commands · off"
-    assert text =~ "-- COMMAND. The escape hatch"
-    assert text =~ "Send the smallest command that gets what you need"
-    assert text =~ "propose it as a subgrant instead: mwt propose"
+    github = %Grant{
+      id: "github",
+      name: "GitHub",
+      kind: :token,
+      purpose: "The API",
+      credential: "github",
+      hosts: ["api.github.com"]
+    }
+
+    view = %Grant{
+      id: "gh-repo",
+      name: "Repository",
+      kind: :request,
+      purpose: "View a repository",
+      credential: "github",
+      method: "GET",
+      url: "https://api.github.com/repos/$REPO",
+      params: [%Param{name: "REPO", shape: :word, about: "the repository"}]
+    }
+
+    text = Instructions.grants([view | saved] ++ [github], ~U[2026-11-12 12:00:00Z])
+    # A command the agent writes asks every time: kept small.
+    assert text =~ "always ask to run a command you write, and the user approves every"
+    assert text =~ "send the smallest command that gets what"
+    assert text =~ "mwt help run"
     assert text =~ ~s(mwt call ID NAME=value --reason "why now")
 
-    # Under their grant: how to call each, its state, what it is for, and
-    # each parameter with its shape.
+    # Under their resource: how to call each, its state, what it is for,
+    # and each parameter with its shape.
+    assert text =~ "Actions over the user's machine"
+
     assert text =~ """
              - `mwt call pods NAMESPACE=…` · on until the user turns it off · Show pods
                - NAMESPACE is one of: web, jobs. It is: the namespace
              - `mwt call logs NAMESPACE=…` · on until the user turns it off · Show logs
            """
 
-    [_before, under] = String.split(text, "## Ask to run commands", parts: 2)
-    assert under =~ "mwt call pods"
+    # A request action sits under its credential, after the grants over it.
+    [_before, credential] = String.split(text, "## GitHub", parts: 2)
+    assert credential =~ "Actions over the credential `github`"
+    assert credential =~ "`mwt call gh-repo REPO=…` · off"
 
     # What it is for, not its script.
     refute text =~ "## pods"
@@ -449,7 +469,7 @@ defmodule MWTClient.Sandbox.InstructionsTest do
   test "the guides say to keep commands small and to transform in the VM" do
     guides = Instructions.guides()
     assert guides["run"] =~ "Bring the raw output back and do the rest here in the VM"
-    # Subgrants come first: called by id, proposed with their design in mind.
+    # Actions come first: called by id, proposed with their design in mind.
     assert Instructions.text() =~ "mwt call gh-repo-view REPO_NAME=oliveigah/klife"
     assert Instructions.text() =~ ~r/You send an id and values,\s+never a command/
     assert guides["propose"] =~ "mwt propose commands"

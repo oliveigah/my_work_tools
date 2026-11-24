@@ -78,6 +78,11 @@ defmodule MWTClient.Transfer.Archive do
       ),
       do: decode(header, payload, opener, @mdt_verifier, &from_mdt/1)
 
+  # This version's magic, cut short inside its header: damaged, not newer.
+  def decode(<<magic::binary-size(9), @version, _rest::binary>>, _opener)
+      when magic in [@magic, @mdt_magic],
+      do: {:error, :damaged}
+
   def decode(<<magic::binary-size(9), _newer, _rest::binary>>, _opener)
       when magic in [@magic, @mdt_magic],
       do: {:error, :unsupported_version}

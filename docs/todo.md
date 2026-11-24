@@ -15,6 +15,42 @@ Tools that mint Google credentials themselves, set aside on 2026-11-19,
 were built on 2026-11-22: see "Credential endpoints MWT answers" in
 `docs/agent_sandbox.md`.
 
+## What the grants redesign left open
+
+Set aside on 2026-11-24, once the redesign
+([20261124-grants_redesign.md](dated/20261124-grants_redesign.md)) was
+built. What is built is in [agent_sandbox.md](agent_sandbox.md); what is
+not, each with what it would take:
+
+- **Attributes on network grants**: a path, a method, on a grant over a
+  network, as grants over credentials have.
+- **An ID token's age apart from its access token's**
+  ([one-login-many-grants](issues/one-login-many-grants.md)): grants kept
+  for different times (`keep_minutes`) stay separate credentials, so the
+  login is minted once for each. Minting again only when a request
+  carries the ID token and the one kept is older would let them merge.
+- **Adapters own their token shapes and credential endpoints.** The
+  scanner's shapes (`Inbound`) and the firewall's credential endpoints
+  (`Firewall`'s `@mints`) are still lists of their own, not each adapter's.
+- **The import's preview describes the file, not the merge**: a grant
+  the same as yours still shows under *Starts on*, a stored credential
+  you have under *Arrives without a value*
+  ([transfer.md](transfer.md)).
+- **A token grant from an export of before credentials** keeps the
+  file's placeholder on merge: making placeholders anew covers
+  credentials only. Exports from now on always name a credential.
+
+The second pass of the same day (grants give, resources limit) leaves:
+
+- **Always ask for one host** the Internet's grant lets through isn't
+  expressible: within one resource the most permissive grant counts, so
+  a grant over that host that asks changes nothing while the Internet's
+  auto-approves. Block the host, or put the Internet on Ask and
+  auto-approve the hosts you trust. For the same reason a host list's Ask
+  entries became Blocked entries, so nothing that waited for you goes
+  unasked: a host you used to be asked about is refused until you take it
+  off the list.
+
 ## Conflicts in shared folders' copies
 
 Set aside on 2026-11-18. Shared folders reach the VM one way, read-only
@@ -129,21 +165,22 @@ whose tokens come from a login (a username and a password, or an API key,
 exchanged at its auth endpoint for a short-lived bearer) then has three
 ways today, none good: the password lives outside MWT for the mint to read
 (a keyring, a file), with nothing on MWT's side showing it; a request
-subgrant logs in, and its answer brings the token into the VM (stopped by
+action logs in, and its answer brings the token into the VM (stopped by
 `:credential_inbound`); or you mint by hand and paste the token, again
 whenever it expires.
 
-The idea: **a mint that names the grants it takes**, as a command
-subgrant's `with` does (Confined commands in `docs/agent_sandbox.md`):
-the password is a token grant of its own, stored in your vault, and the
-token grant's mint gets its value under that grant's variable, in the
-environment, never the arguments.
+The idea: **a mint that names the credentials it takes**, as a saved
+command's `with` does (Confined commands in `docs/agent_sandbox.md`):
+the password is a credential of its own, stored in your vault, and the
+other credential's mint gets its value under that credential's variable,
+in the environment, never the arguments.
 
 What it would take:
 
-- **A grant that reaches only mints** (and subgrants): never the VM, the
-  way `--subgrants-only` keeps one out of it today; a reach of its own, so
-  its page says what uses it.
+- **A grant that lets a mint use a credential**: a credential no token
+  grant is over gives the VM nothing already; the mint would need a grant
+  over it of its own, as saved commands need a token grant that allows
+  your machine, so the credential's page says what uses it.
 - **Values fetched first**: a stored value, or one minted itself, before
   the mint runs; a chain is allowed, a cycle refused when the grant is
   saved; one that can't be fetched fails the mint, and the agent hears
@@ -202,10 +239,10 @@ for*), whether or not a credential rides it. Left:
   name is known only once its head is read, so a host set as Not read is
   read all the same over plain HTTP (with reading only token grants'
   hosts, none is).
-- **A host list knows names, not addresses**: an agent that has a blocked
+- **Host limits know names, not addresses**: an agent that has a blocked
   host's address from somewhere other than MWT's DNS, and reaches it with
   another name or none over what MWT can't read, isn't recognised (*Host
-  lists* in `docs/agent_sandbox.md`). Shortcuts are also left: "Ask for
+  limits* in `docs/agent_sandbox.md`). Shortcuts are also left: "Block
   this host" from a line of the activity log, "auto-approve this host"
   on a card.
 - **The answer held for you** before the agent gets it, on a network
@@ -229,7 +266,7 @@ are many.
 The idea: **MWT masks what comes back, and unmasks what goes out**.
 
 - **Answers masked**: every answer MWT reads (every host it can, since
-  2026-11-22), and every command or subgrant output, is scanned for patterns
+  2026-11-22), and every command or action output, is scanned for patterns
   (an id, with and without punctuation, validated by its check digits so
   that any 11 digits don't match; an email; a phone), and each match is
   replaced by a token, `mwt:cpf:Xb3k…`.
@@ -452,8 +489,8 @@ what is left:
   id and settle another's message (`agent_threads.ex`), and a handoff's
   note goes to the thread id its ask claimed. Inside the VM's own trust,
   but one process there can take the notes you send another.
-- **Isolation and a request subgrant's call under way**: an isolation stops
-  running commands, not a request subgrant's call already sent
+- **Isolation and a request action's call under way**: an isolation stops
+  running commands, not a request action's call already sent
   (`server/host_runs.ex`).
 - **Who made an item**: notes, diagrams, flash cards and HTTP samples the
   VM adds carry nothing that marks them as the VM's. Agents on this

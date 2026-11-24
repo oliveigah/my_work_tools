@@ -14,15 +14,18 @@ defmodule MWTClient.Sandbox.Inbox do
       (`MWTClient.Sandbox.JavaTrust`), which the image points every JVM at;
     * `profile.sh`, `bashrc.sh`, `env.sh` - the shell's tool paths,
       interactive defaults (no credential exports);
-    * `grant-env/<id>.sh` - a token grant's environment, loaded only by
-      `mwt exec <id> -- COMMAND` while that grant is on;
+    * `grant-env/<credential>.sh` - a credential's environment, loaded only
+      by `mwt exec <credential> -- COMMAND` while a grant over it is on
+      and it isn't locked; one for a grant's own id, where it differs,
+      says which credential to name;
     * `bin/mwt` - the command agents ask MWT for access with
       (`MWTClient.Sandbox.Channel`);
-    * `bin/git-credential`, `git/<id>` - the hosts a selected token grant
-      answers git for; ordinary git commands get no MWT credential;
-    * `tokens/<grant>` - each token grant's placeholder, as a file;
-    * `logins/<grant>.json` - a Google login file, for a token grant that
-      presents one (`login_file/1`): placeholders only;
+    * `bin/git-credential`, `git/<credential>` - the hosts a selected
+      credential answers git for; ordinary git commands get no MWT
+      credential;
+    * `tokens/<credential>` - each credential's placeholder, as a file;
+    * `logins/<credential>.json` - a Google login file, for a credential
+      that presents one (`login_file/1`): placeholders only;
     * `AGENTS.md`, `grants.md` - what agents are told, and the grants as they
       are now;
     * `guides/<topic>.md` - what only some tasks need, which `mwt help
@@ -151,32 +154,50 @@ defmodule MWTClient.Sandbox.Inbox do
       present -> put_changed(dir, "bin/mwt-present", Files.read!(present), 0o755)
     end
 
-    # A grant only its subgrants use leaves nothing in the VM: no
-    # placeholder, no variable, no file; `mwt exec` names its subgrants.
-    {only_subgrants, tokens} =
-      grants |> Enum.filter(&(&1.kind == :token)) |> Enum.split_with(&Grant.subgrants_only?/1)
+    tokens = Enum.filter(grants, &(&1.kind == :token))
+
+    # What the VM gets is each credential's (`MWTClient.Sandbox.Credential`),
+    # once, whatever number of grants are over it: `mwt exec CREDENTIAL`
+    # names it. Each grant over it holds the same copy of its fields.
+    credentials = Enum.group_by(tokens, &Grant.credential_id/1)
+    locked = Keyword.get(opts, :locked, MapSet.new())
 
     # Older images/profiles source this file. Leave it inert, rather than
     # removing it while an old shell is starting.
-    put_changed(dir, "env.sh", "# Credentials are scoped to mwt exec GRANT -- COMMAND.\n")
+    put_changed(dir, "env.sh", "# Credentials are scoped to mwt exec CREDENTIAL -- COMMAND.\n")
 
     hold(
       dir,
       "grant-env",
-      Map.new(tokens, fn grant ->
+      Map.new(credentials, fn {id, [first | _] = over} ->
         script =
-          if Grant.on?(grant) do
-            env_script([grant]) <> present_script(grant)
-          else
-            "echo 'mwt: this token grant is off. Run mwt request #{grant.id} --reason \"...\"' >&2\nreturn 125\n"
+          cond do
+            MapSet.member?(locked, id) ->
+              "echo 'mwt: #{id} is locked by the user: nothing it holds goes anywhere until they unlock it. Tell them what you were doing.' >&2\nreturn 125\n"
+
+            Enum.any?(over, &Grant.on?/1) ->
+              env_script([first]) <> present_script(first)
+
+            true ->
+              asks = Enum.map_join(over, " or ", &"mwt request #{&1.id}")
+
+              "echo 'mwt: no grant over #{id} is on. Ask for one: #{asks} --reason \"...\"' >&2\nreturn 125\n"
           end
 
-        {grant.id <> ".sh", {script, 0o644}}
+        {id <> ".sh", {script, 0o644}}
       end)
+      # A grant's own id, where it isn't its credential's: `mwt exec` names
+      # the credential, and says so.
       |> Map.merge(
-        Map.new(only_subgrants, fn grant ->
-          {grant.id <> ".sh", {subgrants_only_script(grant, grants), 0o644}}
-        end)
+        for grant <- tokens,
+            id = Grant.credential_id(grant),
+            grant.id != id,
+            not Map.has_key?(credentials, grant.id),
+            into: %{} do
+          {grant.id <> ".sh",
+           {"echo 'mwt: #{grant.id} is a grant over the credential #{id}: run mwt exec #{id} -- COMMAND. The grants decide where its requests go.' >&2\nreturn 125\n",
+            0o644}}
+        end
       )
     )
 
@@ -185,18 +206,25 @@ defmodule MWTClient.Sandbox.Inbox do
     hold(
       dir,
       "git",
-      for grant <- tokens, hosts = Grant.git_hosts(grant), hosts != [], into: %{} do
-        {grant.id, {Enum.join(hosts, "\n") <> "\n", 0o644}}
+      for {id, over} <- credentials,
+          hosts = over |> Enum.flat_map(&Grant.git_hosts/1) |> Enum.uniq(),
+          hosts != [],
+          into: %{} do
+        {id, {Enum.join(hosts, "\n") <> "\n", 0o644}}
       end
     )
 
-    hold(dir, "tokens", Map.new(tokens, &{&1.id, {&1.placeholder, 0o644}}))
+    hold(
+      dir,
+      "tokens",
+      Map.new(credentials, fn {id, [first | _]} -> {id, {first.placeholder, 0o644}} end)
+    )
 
     hold(
       dir,
       "logins",
-      for grant <- tokens, Grant.login_placeholder(grant), into: %{} do
-        {grant.id <> ".json", {login_file(grant), 0o644}}
+      for {id, [first | _]} <- credentials, Grant.login_placeholder(first), into: %{} do
+        {id <> ".json", {login_file(first), 0o644}}
       end
     )
 
@@ -236,7 +264,8 @@ defmodule MWTClient.Sandbox.Inbox do
     for %Grant{kind: :token} = grant <- grants,
         pair <-
           Enum.map(grant.env, &{&1, grant.placeholder}) ++
-            Enum.map(grant.file_env, &{&1, Grant.token_file(grant)}),
+            Enum.map(grant.file_env, &{&1, Grant.token_file(grant)}) ++
+            MWTClient.Sandbox.Adapter.of(grant).env(grant),
         do: pair
   end
 
@@ -306,18 +335,6 @@ defmodule MWTClient.Sandbox.Inbox do
   end
 
   defp shell_word(text), do: "'" <> String.replace(text, "'", ~S('\'')) <> "'"
-
-  # What `mwt exec` says for a grant only its subgrants use: there is
-  # nothing to run with, and which subgrants to call instead.
-  defp subgrants_only_script(grant, grants) do
-    calls =
-      case Grant.subgrants(grants, grant) do
-        [] -> "It has none yet: ask the user to add one."
-        subgrants -> "Call one of them: " <> Enum.map_join(subgrants, ", ", &"mwt call #{&1.id}")
-      end
-
-    "echo 'mwt: #{grant.id} is only for its subgrants, which MWT sends itself: the VM holds nothing of it. #{calls}' >&2\nreturn 125\n"
-  end
 
   defp env_script(grants) do
     lines = for {var, value} <- env(grants), do: "export #{var}='#{value}'\n"

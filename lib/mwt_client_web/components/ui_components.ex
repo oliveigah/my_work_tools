@@ -32,7 +32,7 @@ defmodule MWTClientWeb.UIComponents do
       title={@label}
       class={[
         "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border transition-colors duration-200",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50",
         cond do
           not @on -> "border-line bg-deep hover:border-muted"
           @tone == :bad -> "border-bad/70 bg-bad"

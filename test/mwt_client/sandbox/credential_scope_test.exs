@@ -147,46 +147,34 @@ defmodule MWTClient.Sandbox.CredentialScopeTest do
         ] do
       Inbox.write(context.inbox, [grant], "")
       assert {message, 125} = exec(context, ["github", "--", "echo", "must not run"])
-      assert message =~ "grant is off"
+      assert message =~ "no grant over"
       refute message =~ "must not run"
     end
 
     Inbox.write(context.inbox, [], "")
     assert {message, 125} = exec(context, ["github", "--", "echo", "must not run"])
-    assert message =~ "no token grant"
+    assert message =~ "no credential"
     refute File.exists?(Path.join(context.inbox, "grant-env/github.sh"))
   end
 
-  test "a grant a gating check holds off is not exported, whatever its switch says", context do
-    [github, other] = context.grants
-    # As the server's live_grants shows a grant its check holds off.
-    Inbox.write(context.inbox, [%{github | state: :off, held_by: "the VPN is up"}, other], "")
-    assert {message, 125} = exec(context, ["github", "--", "echo", "must not run"])
-    assert message =~ "grant is off"
-    assert {"ran\n", 0} = exec(context, ["other", "--", "echo", "ran"])
-  end
-
-  test "a grant only its subgrants use leaves nothing in the VM; mwt exec names its subgrants",
-       context do
-    only = %{context.github | reach: :subgrants}
-
+  test "a credential only actions use leaves nothing in the VM: mwt exec finds none", context do
     call = %Grant{
       id: "pr-view",
       name: "pr view",
       kind: :request,
-      parent: "github",
+      state: :on,
+      credential: "github",
       method: "GET",
       url: "https://api.github.com/x"
     }
 
-    Inbox.write(context.inbox, [only, call], "")
+    Inbox.write(context.inbox, [call], "")
     refute File.exists?(Path.join(context.inbox, "tokens/github"))
     refute File.exists?(Path.join(context.inbox, "git/github"))
-    refute File.read!(Path.join(context.inbox, "grant-env/github.sh")) =~ only.placeholder
+    refute File.exists?(Path.join(context.inbox, "grant-env/github.sh"))
 
     assert {message, 125} = exec(context, ["github", "--", "echo", "must not run"])
-    assert message =~ "github is only for its subgrants"
-    assert message =~ "mwt call pr-view"
+    assert message =~ "no credential"
     refute message =~ "must not run"
   end
 
@@ -299,7 +287,7 @@ defmodule MWTClient.Sandbox.CredentialScopeTest do
           ["github", "--help", "false"]
         ] do
       assert {message, 125} = exec(context, args)
-      assert message =~ "mwt exec GRANT_ID -- COMMAND"
+      assert message =~ "mwt exec CREDENTIAL -- COMMAND"
     end
   end
 

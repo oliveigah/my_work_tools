@@ -92,15 +92,33 @@ defmodule MWTClient.Sandbox.PolicyTest do
   end
 
   describe "a connection" do
-    test "to a public address goes under the Internet while it is on, whatever the others" do
-      internet = %{Grant.internet() | state: :on, allowances: [allowance(:all, nil)]}
+    test "to a public address goes under the grant on that names it more exactly, else the Internet" do
+      internet = internet_on()
 
       for one <- connection_cases(@public) do
-        assert {:allow, %Grant{internet: true}, _allowance, about} =
-                 decide_connection(one, [internet])
+        alone = decide_connection(one)
 
-        assert about.pattern == "#{:inet.ntoa(one.ip)}:#{one.port}"
+        case decide_connection(one, [internet]) do
+          # A grant on that opens it names it more exactly than the
+          # Internet's, and answers as it would alone.
+          answer when elem(alone, 0) in [:allow, :ask] ->
+            assert answer == alone, inspect(one)
+
+          # Off, or not opening it, a grant has no say.
+          answer ->
+            assert {:allow, %Grant{internet: true}, _allowance, about} = answer
+            assert about.pattern == "#{:inet.ntoa(one.ip)}:#{one.port}"
+        end
       end
+
+      off = %{
+        ip: hd(@public),
+        port: 443,
+        grant: network_grant(:off, nil, ["93.184.216.0/24"], [])
+      }
+
+      assert {:allow, %Grant{internet: true}, _allowance, _about} =
+               decide_connection(off, [internet])
     end
 
     test "an address in this machine's own networks is never public, whatever its range" do
@@ -120,13 +138,16 @@ defmodule MWTClient.Sandbox.PolicyTest do
                Policy.decide(snapshot, {:connection, {93, 184, 215, 14}, 443}, @now)
     end
 
-    test "to a public address with the Internet off opens only for a network grant listing it" do
+    test "to a public address with the Internet's grant off opens only for a network grant listing it" do
       internet = Grant.internet()
 
       for one <- connection_cases(@public) do
         case decide_connection(one, [internet]) do
-          {:refuse, reason} ->
-            assert reason == :internet_off
+          # Refused, naming the grant to turn on: the one naming it most
+          # exactly, the Internet's when no other does.
+          {:refuse, {:grant_off, grant}} ->
+            assert grant in [one.grant, internet]
+            assert Grant.state_at(grant, @now) == :off
 
           answer ->
             assert kind(answer) in [:allow, :ask]
@@ -142,9 +163,21 @@ defmodule MWTClient.Sandbox.PolicyTest do
 
       assert opens.(["0.0.0.0/0"]) == :ask
       assert opens.(["93.184.216.0/24:443"]) == :ask
-      assert opens.(["93.184.216.0/24:22"]) == {:refuse, :internet_off}
-      assert opens.([]) == {:refuse, :internet_off}
-      # No Internet grant at all is the Internet off.
+      assert opens.(["93.184.216.0/24:22"]) == {:refuse, :grant_off}
+      assert opens.([]) == {:refuse, :grant_off}
+
+      # Off, the Internet's grant has no say: another grant that opens a
+      # public address opens it.
+      listed = %{
+        ip: hd(@public),
+        port: 443,
+        grant: network_grant(:on, nil, ["93.184.216.0/24"], [])
+      }
+
+      assert {:ask, %Grant{id: "lan"}, _about} = decide_connection(listed, [internet])
+
+      # With no Internet grant at all, a public address is the Internet's,
+      # off.
       assert decide_connection(%{
                ip: hd(@public),
                port: 443,
@@ -176,7 +209,7 @@ defmodule MWTClient.Sandbox.PolicyTest do
       # Off by the clock, it lets nothing through.
       over = %{internet | expires_at: @earlier}
 
-      assert {:refuse, :internet_off} =
+      assert {:refuse, {:grant_off, %Grant{internet: true}}} =
                Policy.decide(snapshot([over]), {:connection, hd(@public), 443}, @now)
     end
 
@@ -188,13 +221,24 @@ defmodule MWTClient.Sandbox.PolicyTest do
         assert opened? == named?,
                "#{:inet.ntoa(one.ip)}:#{one.port} with #{inspect(one.grant.destinations)}, on: #{one.on?}"
 
-        unless opened?, do: assert(decide_connection(one) == {:refuse, :reserved})
+        refused =
+          if Grant.state_at(one.grant, @now) == :off and
+               names_exactly?(one.grant.destinations, one.ip, one.port),
+             do: {:refuse, {:grant_off, one.grant}},
+             else: {:refuse, :reserved}
+
+        unless opened?, do: assert(decide_connection(one) == refused)
       end
     end
 
     test "to a private range opens only while a network grant listing it is on" do
       for one <- connection_cases(@private) do
         case decide_connection(one) do
+          {:refuse, {:grant_off, grant}} ->
+            assert grant == one.grant
+            assert Grant.state_at(grant, @now) == :off
+            assert grant.destinations != []
+
           {:refuse, reason} ->
             assert reason == :private
 
@@ -315,7 +359,7 @@ defmodule MWTClient.Sandbox.PolicyTest do
     test "a name answered while the grant is off still opens nothing" do
       ip = {10, 9, 8, 7}
       facts = %{answered: %{ip => ["git.corp.example"]}}
-      assert {:refuse, :private} = decide_at(corp(state: :off), ip, 443, facts)
+      assert {:refuse, {:grant_off, %{id: "corp"}}} = decide_at(corp(state: :off), ip, 443, facts)
     end
 
     test "a way out of its own: open only while the address is routed through it" do
@@ -387,11 +431,11 @@ defmodule MWTClient.Sandbox.PolicyTest do
       assert {:ask, %{id: "range"}, _} = decide.([range])
       assert {:ask, %{id: "address"}, _} = decide.([range, address])
 
-      # On a tie, the one that would ask: an allowance never decides which.
+      # On a tie, the one that lets it through: grants only give.
       allowed = %{wild | id: "allowed", allowances: [allowance(:all, nil)]}
 
       for grants <- [[allowed, wild], [wild, allowed]] do
-        assert {:ask, %{id: "wild"}, _} = decide.(grants)
+        assert {:allow, %{id: "allowed"}, _, _} = decide.(grants)
       end
     end
 
@@ -429,64 +473,85 @@ defmodule MWTClient.Sandbox.PolicyTest do
 
   ## Commands
 
-  defp command_grant(state, expires_at, script, allowances) do
+  defp command_grant(state, expires_at, allowances) do
     %Grant{
       id: "deploy",
       name: "Deploy",
       kind: :command,
       state: state,
       expires_at: expires_at,
-      script: script,
-      dir: script && "/srv/app",
+      script: "make deploy",
+      dir: "/srv/app",
       allowances: allowances
     }
   end
 
+  # What names the agent's own command: no id, or one Ask to run commands
+  # had.
+  @own_ids ["", "commands", "any-command"]
+
   defp command_cases do
     for {state, expires_at, on?} <- @states,
-        script <- [nil, "make deploy"],
-        allowances <- [[], [allowance(:all, nil)], [allowance("run abc", @later)]],
-        named <- [nil, "", "deploy", "DEPLOY", " Deploy ", "nope", "github", 42, %{"a" => 1}],
+        allowances <- [
+          [],
+          [allowance(:all, nil)],
+          [allowance("run deploy", @later)],
+          [allowance("run deploy", @earlier)],
+          [allowance("run abc", @later)]
+        ],
+        named <-
+          [nil, "", "deploy", "DEPLOY", " Deploy ", "nope", "commands", "any-command", 42, %{}],
         sent <- [nil, "", "   ", "rm -rf ~", 42] do
       %{
-        grant: command_grant(state, expires_at, script, allowances),
+        grant: command_grant(state, expires_at, allowances),
         on?: on?,
-        ask: %{grant: named, script: sent, reason: "because"}
+        ask: %{grant: named, script: sent, reason: "because"},
+        named: if(is_binary(named), do: String.trim(named), else: ""),
+        sent?: is_binary(sent) and String.trim(sent) != ""
       }
     end
   end
 
   describe "a command" do
-    test "is never let through unasked, whatever allowances its grant carries" do
+    test "gets the one answer the rules give, in every combination" do
       for one <- command_cases() do
+        expected =
+          cond do
+            # The agent's own: no grant gives it, you approve each one.
+            one.named in @own_ids and one.sent? -> :ask
+            one.named in @own_ids -> {:refuse, :name_a_grant}
+            # A saved command by its exact id: a name is not enough.
+            one.named != "deploy" -> {:refuse, :no_such_grant}
+            one.sent? -> {:refuse, :fixed_script}
+            not one.on? -> {:refuse, :grant_off}
+            covered?(one.grant.allowances, "run deploy", @now) -> :allow
+            true -> :ask
+          end
+
         answer = Policy.decide(snapshot([one.grant]), {:command, one.ask}, @now)
-        # The compiler works this one out by itself: the clause for commands
-        # has no way to answer anything else.
-        assert elem(answer, 0) in [:ask, :refuse], inspect(one)
+        assert kind(answer) == expected, inspect(one)
       end
     end
 
-    test "is asked about only when the agent names a command grant, by its exact id, that is on by the clock" do
-      for one <- command_cases() do
-        answer = Policy.decide(snapshot([one.grant]), {:command, one.ask}, @now)
-
-        # Its id, not its name: "DEPLOY" and "Deploy" name nothing.
-        named? = is_binary(one.ask.grant) and String.trim(one.ask.grant) == "deploy"
-
-        if kind(answer) == :ask do
-          assert named? and one.on?, inspect(one)
-        end
-
-        if named? and not one.on?, do: assert(kind(answer) == {:refuse, :grant_off})
+    test "the agent writes is asked about, with nothing of a grant's, whatever grants allow" do
+      for one <- command_cases(), one.named in @own_ids, one.sent? do
+        assert Policy.decide(snapshot([one.grant]), {:command, one.ask}, @now) ==
+                 {:ask, nil, %{script: nil, dir: nil, pattern: nil}}
       end
     end
 
-    test "of a grant with your own script never takes text from the agent" do
-      for one <- command_cases(), one.grant.script != nil do
+    test "saved never takes text from the agent: its card shows your script" do
+      for one <- command_cases(), one.named == "deploy" do
         case Policy.decide(snapshot([one.grant]), {:command, one.ask}, @now) do
           {:ask, _grant, about} ->
-            assert about == %{script: "make deploy", dir: "/srv/app"}
-            refute is_binary(one.ask.script) and String.trim(one.ask.script) != ""
+            assert Map.take(about, [:script, :dir, :pattern]) ==
+                     %{script: "make deploy", dir: "/srv/app", pattern: "run deploy"}
+
+            refute one.sent?
+
+          {:allow, _grant, _allowance, about} ->
+            assert about.script == "make deploy"
+            refute one.sent?
 
           {:refuse, _reason} ->
             :ok
@@ -494,7 +559,7 @@ defmodule MWTClient.Sandbox.PolicyTest do
       end
     end
 
-    test "runs nowhere when no command grant exists, whatever else does" do
+    test "saved is given by no grant of another type" do
       others = [
         token_grant(:on, nil, ["api.example.com"], [allowance(:all, nil)]),
         network_grant(:on, nil, ["0.0.0.0/0"], [allowance(:all, nil)]),
@@ -502,9 +567,56 @@ defmodule MWTClient.Sandbox.PolicyTest do
       ]
 
       for one <- command_cases() do
-        assert Policy.decide(snapshot(others), {:command, one.ask}, @now) ==
-                 {:refuse, :no_command_grant}
+        answer = Policy.decide(snapshot(others), {:command, one.ask}, @now)
+
+        if one.named in @own_ids and one.sent?,
+          do: assert(kind(answer) == :ask),
+          else: assert(match?({:refuse, _}, answer), inspect(one))
       end
+    end
+
+    test "is refused at once while your machine is locked, the agent's own included" do
+      deploy = command_grant(:on, nil, [allowance(:all, nil)])
+      locked = Map.put(snapshot([deploy]), :locks, %{machine: %{you: @now}})
+
+      assert {:refuse, {:locked, :machine, nil}} =
+               Policy.decide(locked, {:command, %{grant: nil, script: "ls"}}, @now)
+
+      assert {:refuse, {:locked, :machine, %Grant{id: "deploy"}}} =
+               Policy.decide(locked, {:command, %{grant: "deploy", script: nil}}, @now)
+    end
+
+    test "saved runs with a credential only where a token grant on over it allows your machine" do
+      deploy = %{command_grant(:on, nil, [allowance(:all, nil)]) | with: ["github"]}
+
+      token = %{
+        token_grant(:on, nil, ["api.example.com"], [allowance(:all, nil)])
+        | machine: true
+      }
+
+      run = {:command, %{grant: "deploy", script: nil}}
+      decide = fn grants -> Policy.decide(snapshot([deploy | grants]), run, @now) end
+
+      assert {:allow, %Grant{id: "github"}, _, %{through: ["deploy"]}} = decide.([token])
+
+      # Not allowing your machine, or off, it gives nothing there.
+      assert {:refuse, {:not_on_machine, "github", nil}} =
+               decide.([%{token | machine: false}])
+
+      assert {:refuse, {:not_on_machine, "github", %Grant{id: "github"}}} =
+               decide.([%{token | state: :off}])
+
+      # Asking, one card names both, the credential's first.
+      assert {:ask, %Grant{id: "github"}, about} = decide.([%{token | allowances: []}])
+      assert about.asking == ["github"]
+      assert about.through == ["deploy"]
+
+      # Its credential locked, refused.
+      locked =
+        Map.put(snapshot([deploy, token]), :locks, %{{:credential, "github"} => %{you: @now}})
+
+      assert {:refuse, {:locked, {:credential, "github"}, %Grant{id: "github"}}} =
+               Policy.decide(locked, run, @now)
     end
   end
 
@@ -519,7 +631,7 @@ defmodule MWTClient.Sandbox.PolicyTest do
     defp decide_with(one),
       do:
         Policy.decide(
-          snapshot([one.grant, other_token_grant()]),
+          snapshot([one.grant, other_token_grant(), internet_on()]),
           {:request, one.request},
           @now
         )
@@ -591,8 +703,6 @@ defmodule MWTClient.Sandbox.PolicyTest do
 
       assert Grant.ceilings(Grant.internet()) == [:allow]
       assert Grant.ceiling(%{Grant.internet() | ceiling: :ask}) == :allow
-      assert Grant.ceilings(Grant.ask_to_run()) == [:ask]
-      assert Grant.ceiling(%{Grant.ask_to_run() | ceiling: :allow}) == :ask
     end
 
     test "a grant saved with YOLO's ceiling, or none, now takes allowances; one that YOLO couldn't open asks" do
@@ -606,7 +716,7 @@ defmodule MWTClient.Sandbox.PolicyTest do
   end
 
   describe "a grant to review" do
-    test "is never on, starts only disabled, and no use goes through it" do
+    test "is never on, starts only off, and no use goes through it" do
       proposal = %{agent: "Claude", thread: nil, reason: "r", minutes: 60, at: @now}
 
       grant = %{
@@ -630,72 +740,17 @@ defmodule MWTClient.Sandbox.PolicyTest do
     end
   end
 
-  describe "a request with the Internet off" do
-    test "with no placeholder, it reaches a token grant's host only while a grant listing it is on" do
-      for {state, expires_at, on?} <- @states, hosts <- @listed, host <- @hosts do
-        grant = token_grant(state, expires_at, hosts, [])
+  describe "a request with no placeholder" do
+    test "goes by its network alone: a token grant listing its host gives nothing" do
+      for {state, expires_at, _on?} <- @states, hosts <- @listed, host <- @hosts do
+        grant = token_grant(state, expires_at, hosts, [allowance(:all, nil)])
         request = request(host, {"GET", "/repos/a/b"}, :none)
-        listed? = host_listed?(host, hosts)
+        decide = fn grants -> Policy.decide(snapshot(grants), {:request, request}, @now) end
 
-        read_only =
-          Policy.decide(snapshot([grant]), {:request, Map.put(request, :under, :read_only)}, @now)
-
-        under_internet =
-          Policy.decide(snapshot([grant]), {:request, Map.put(request, :under, "internet")}, @now)
-
-        cond do
-          listed? and on? -> assert read_only == :pass
-          listed? -> assert read_only == {:refuse, {:grant_off, grant}}
-          true -> assert read_only == {:refuse, :internet_off}
-        end
-
-        # The Internet on, the host is the Internet's: no grant needed.
-        assert under_internet == :pass
+        assert decide.([grant]) == {:refuse, {:outside, "internet"}}
+        assert decide.([grant, Grant.internet()]) == {:refuse, {:grant_off, Grant.internet()}}
+        assert decide.([grant, internet_on()]) == :pass
       end
-    end
-
-    test "a check holding the grant off says so, and another grant listing the host opens it" do
-      grant = token_grant(:on, nil, ["api.example.com"], [])
-      request = Map.put(request("api.example.com", {"GET", "/x"}, :none), :under, :read_only)
-
-      failing = Map.put(snapshot([grant]), :failing, %{"github" => "the VPN is down"})
-
-      assert {:refuse, {:check_failing, ^grant, "the VPN is down"}} =
-               Policy.decide(failing, {:request, request}, @now)
-
-      # Hex lists *.example.com and is on.
-      assert :pass =
-               Policy.decide(
-                 %{failing | grants: [grant, other_token_grant()]},
-                 {:request, request},
-                 @now
-               )
-    end
-  end
-
-  describe "a grant only its subgrants use" do
-    test "its placeholder opens nothing; sent elsewhere it is still a leak" do
-      grant = %{
-        token_grant(:on, nil, ["api.example.com"], [allowance(:all, nil)])
-        | reach: :subgrants
-      }
-
-      request = request("api.example.com", {"GET", "/repos/a/b"}, :bearer)
-
-      assert {:refuse, {:subgrants_only, ^grant}} =
-               Policy.decide(snapshot([grant]), {:request, request}, @now)
-
-      elsewhere = request("evil.test", {"GET", "/x"}, :bearer)
-
-      assert {:refuse, {:wrong_host, _}} =
-               Policy.decide(snapshot([grant]), {:request, elsewhere}, @now)
-    end
-
-    test "its hosts aren't read, and it has nothing to turn on" do
-      grant = %{token_grant(:off, nil, ["api.example.com"], []) | reach: :subgrants}
-      refute Policy.reads?([grant], "api.example.com")
-      assert Policy.reads?([%{grant | reach: :vm}], "api.example.com")
-      assert Grant.starts(grant) == [:off]
     end
   end
 

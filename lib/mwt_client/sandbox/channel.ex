@@ -68,6 +68,7 @@ defmodule MWTClient.Sandbox.Channel do
     AgentThread,
     AgentThreads,
     Approval,
+    Explain,
     Gate,
     Grant,
     GitTransport,
@@ -341,7 +342,7 @@ defmodule MWTClient.Sandbox.Channel do
   (`MWTClient.Sandbox.Shown`), since most of it ends on an approval. A
   script is the exception: it runs as it was sent or not at all, so it is
   left as it is here and checked in `MWTClient.Sandbox.HostCommand`. So are
-  the `values` of a call, a map of texts checked against the subgrant's
+  the `values` of a call, a map of texts checked against the action's
   parameters (`MWTClient.Sandbox.Param`); `params`, `headers` and what a
   proposed grant lists (`hosts`, `env`, `file_env`, `carriers`,
   `signs_as`, `destinations`) are lists of texts.
@@ -850,6 +851,47 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp reply("host", _ask, username), do: {0, Server.call(username, :host_text)}
 
+  # The last decisions on this VM's requests, and one of them by id
+  # (`MWTClient.Sandbox.Explain`): its own uses only, since it started.
+  defp reply("why", %{"recent" => true}, username) do
+    with %{} = view <- Gate.view(username),
+         %{vm: vm, waiting: waiting} <- Server.call(username, :snapshot) do
+      since = Map.get(vm, :started_at)
+      events = MWTClient.Sandbox.events(username, %{since: since, limit: 500})
+      _ = view
+      {0, Explain.recent(events, waiting, view.grants, since)}
+    else
+      _ -> {4, "MWT is locked or closing. Ask the user to unlock it."}
+    end
+  end
+
+  defp reply("why", %{"target" => "event-" <> _ = id}, username),
+    do: explain_decision(username, MWTClient.Sandbox.event(username, id))
+
+  defp reply("why", %{"target" => "approval-" <> _ = id}, username) do
+    %{waiting: waiting, history: history} = Server.call(username, :snapshot)
+    explain_decision(username, Enum.find(waiting ++ history, &(&1.id == id)))
+  end
+
+  # A request not made yet, decided as it would be now: sends nothing.
+  defp reply("why", %{"target" => "http" <> _ = url} = ask, username) do
+    case explain_world(username) do
+      nil ->
+        {4, "MWT is locked or closing. Ask the user to unlock it."}
+
+      world ->
+        case Explain.request(
+               String.slice(url, 0, 2000),
+               text_or_nil(ask["method"]),
+               text_or_nil(ask["with"]),
+               world
+             ) do
+          {:ok, answer} -> {0, answer}
+          {:error, message} -> {1, message}
+        end
+    end
+  end
+
   # Which grant covers a destination, and why the VM doesn't reach it now
   # (`MWTClient.Sandbox.Why`): read from the view the network path decides
   # from, without asking the server.
@@ -862,7 +904,7 @@ defmodule MWTClient.Sandbox.Channel do
         world = %{
           snapshot:
             view.grants
-            |> Policy.snapshot()
+            |> Policy.snapshot([], Map.get(view, :locks, %{}), Map.get(view, :limits, %{}))
             |> Map.put(:answered, Gate.answered_map(username)),
           firewall: view.firewall,
           isolated: Gate.isolated?(username, view),
@@ -1060,7 +1102,7 @@ defmodule MWTClient.Sandbox.Channel do
     end
   end
 
-  # A subgrant, called by its id with a value for each parameter: MWT runs
+  # An action, called by its id with a value for each parameter: MWT runs
   # the user's own script, and the agent sends no text.
   defp reply("call", ask, username) do
     request = %{
@@ -1082,24 +1124,24 @@ defmodule MWTClient.Sandbox.Channel do
 
       {:error, :no_script} ->
         {@run_wrong,
-         ~s[#{ask["grant"]} is no subgrant: it takes the command you write. ] <>
+         ~s[#{ask["grant"]} is no action: it takes the command you write. ] <>
            ~s[Run one with: mwt run #{ask["grant"]} --reason "..." -- COMMAND]}
 
       {:error, {:no_such_grant, _ids}} ->
         {@run_wrong,
-         "No subgrant has the id #{ask["grant"]}. mwt grants lists them under their grant, " <>
+         "No action has the id #{ask["grant"]}. mwt grants lists them under their grant, " <>
            "with how to call each; the id is exact."}
 
       {:error, :no_command_grant} ->
         {@run_wrong,
-         "No subgrant has the id #{ask["grant"]}. mwt grants lists them under their grant."}
+         "No action has the id #{ask["grant"]}. mwt grants lists them under their grant."}
 
       {:error, reason} ->
         {@run_wrong, run_refusal(reason)}
     end
   end
 
-  # A grant an agent proposes: a token or network grant, or a subgrant.
+  # A grant an agent proposes: a token or network grant, or an action.
   # MWT saves it at once, off, for the user to review on its page; the
   # agent waits as for an ask for a grant, which accepting it answers.
   defp reply("propose", ask, username) do
@@ -1127,7 +1169,6 @@ defmodule MWTClient.Sandbox.Channel do
       id_token_header: ask["id_token_header"],
       metadata_project: ask["metadata_project"],
       metadata_account: ask["metadata_account"],
-      subgrants_only: ask["subgrants_only"] == true,
       destinations: List.wrap(ask["destinations"]),
       resolver: ask["resolver"],
       anchor: ask["via"],
@@ -1167,7 +1208,7 @@ defmodule MWTClient.Sandbox.Channel do
 
     case Server.call(username, {:request_command, request}) do
       {:ok, approval} ->
-        username |> await(approval.id, wait(ask)) |> renamed(ask, approval.grant_id)
+        await(username, approval.id, wait(ask))
 
       {:error, reason} ->
         {@run_wrong, run_refusal(reason)}
@@ -1188,10 +1229,10 @@ defmodule MWTClient.Sandbox.Channel do
 
     case Server.call(username, {:request_access, request}) do
       {:ok, approval} ->
-        username |> await(approval.id, wait(ask)) |> renamed(ask, approval.grant_id)
+        await(username, approval.id, wait(ask))
 
       {:already_on, grant} ->
-        renamed({0, "#{grant.name} is already on #{until(grant)}. #{uses(grant)}"}, ask, grant.id)
+        {0, "#{grant.name} is already on #{until(grant)}. #{uses(grant)}"}
 
       {:error, reason} ->
         {1, refusal(reason, ask)}
@@ -1387,24 +1428,6 @@ defmodule MWTClient.Sandbox.Channel do
   defp ago(minutes) when minutes < 48 * 60, do: "#{div(minutes, 60)} h ago"
   defp ago(minutes), do: "#{div(minutes, 1440)} days ago"
 
-  # An agent that asked by the id Ask to run commands had before it was
-  # built in hears the one it has now.
-  defp renamed(result, %{"grant" => asked}, id) when is_binary(id) and asked != id do
-    if asked == Grant.former_ask_to_run_id() do
-      note = "#{asked} is called #{id} now (Ask to run commands): use that id from now on."
-
-      case result do
-        {status, "", output} -> {status, "mwt: " <> note, output}
-        {status, text, output} -> {status, text <> " " <> note, output}
-        {status, text} -> {status, text <> "\n" <> note}
-      end
-    else
-      result
-    end
-  end
-
-  defp renamed(result, _ask, _id), do: result
-
   defp await(username, id, seconds) do
     ms = seconds * 1_000
 
@@ -1448,7 +1471,7 @@ defmodule MWTClient.Sandbox.Channel do
   # command now.
   defp ran(%Approval{saved_as: id} = approval) when is_binary(id) do
     saved =
-      "It is the user's subgrant #{id} now: next time, call it by id with " <>
+      "It is the user's action #{id} now: next time, call it by id with " <>
         ~s[mwt call #{id} --reason "..." and send no command (mwt grants shows its parameters).]
 
     case ran_once(approval) do
@@ -1460,7 +1483,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp ran(approval), do: ran_once(approval)
 
-  # A request subgrant's answer: its body back, its status on stderr.
+  # A request action's answer: its body back, its status on stderr.
   defp ran_once(%Approval{
          status: :allowed,
          call: %{host: host},
@@ -1553,6 +1576,12 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp ran_once(%Approval{status: :denied, decision: :isolated}),
     do: {@run_not_done, @isolated}
+
+  defp ran_once(%Approval{status: :denied, decision: :locked}),
+    do:
+      {@run_not_done,
+       "It didn't run: the user locked what it reaches (their machine, or a credential it runs " <>
+         "with) while it waited. Asking won't change that: tell the user what you were doing."}
 
   defp ran_once(%Approval{status: :denied, decision: :simpler}),
     do:
@@ -1673,10 +1702,10 @@ defmodule MWTClient.Sandbox.Channel do
   defp refusal(:firewall, _ask),
     do: "MWT's firewall refused this ask. The user has been told."
 
-  defp refusal({:subgrants_only, id}, _ask),
+  defp refusal({:locked, resource}, _ask),
     do:
-      "#{id} is only for its subgrants, requests MWT sends itself: there is nothing of it to turn on. " <>
-        "mwt grants lists them under it; call one with mwt call ID, or ask for one that is off with mwt request ID."
+      MWTClient.Sandbox.Resource.locked_words(resource) <>
+        " Asking for a grant over it changes nothing: don't work around it; tell the user what you were doing."
 
   defp refusal(:unknown_grant, ask) do
     """
@@ -1713,11 +1742,11 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp proposal_refusal(:unknown_grant, ask),
     do:
-      ~s[No grant is called "#{ask["grant"]}". A new grant is mwt propose token ... or mwt propose network ...; a command to run on the user's machine is a subgrant of Ask to run commands: mwt propose commands ... See mwt help.]
+      ~s[Nothing is called "#{ask["grant"]}". A new grant is mwt propose token ... or mwt propose network ...; a request action is proposed over a credential: mwt propose CREDENTIAL ...; a command to run on the user's machine is a saved command: mwt propose machine ... See mwt help.]
 
-  defp proposal_refusal({:no_subgrants, name}, _ask),
+  defp proposal_refusal({:no_actions, name}, _ask),
     do:
-      "#{name} takes no subgrants. A new grant is mwt propose token ... or mwt propose network ...; a command to run on the user's machine is a subgrant of Ask to run commands: mwt propose commands ..."
+      "#{name} takes no actions: only a credential (request actions) and the user's machine (saved commands) do. A new grant is mwt propose token ... or mwt propose network ...; a command to run on the user's machine is a saved command: mwt propose machine ..."
 
   defp proposal_refusal(:no_name, _ask),
     do: ~s[Name it: --name NAME, a few words that say what it does, like "gh repo view".]
@@ -1749,20 +1778,21 @@ defmodule MWTClient.Sandbox.Channel do
       Param.explain(problem) <>
         ~s[\nCall it as: #{Grant.signature(grant)} --reason "why now"]
 
-  defp run_refusal({:check_failing, name, why}),
-    do: "#{name} is paused: #{why}. Tell the user; asking for it won't help until that changes."
-
   defp run_refusal({:credential_endpoint, host, entry}),
     do:
       "#{host} is a credential endpoint on the firewall's list (#{entry}): its answer would be a new credential in the VM, so MWT doesn't send there. Tell the user if you need it."
 
-  defp run_refusal({:wrong_host, name}),
+  defp run_refusal({:takes_no_values, _id}),
     do:
-      "Its grant, #{name}, no longer lists the host it sends to. Tell the user: they can edit the subgrant or the grant."
+      ~s[A command you write takes no values: mwt run --reason "..." -- COMMAND. Values go to an action: mwt call ID NAME=value.]
 
-  defp run_refusal({:takes_no_values, id}),
+  defp run_refusal({:not_on_machine, credential, nil}),
     do:
-      ~s[#{id} takes the command you write, not values: mwt run #{id} --reason "..." -- COMMAND. Values go to a subgrant: mwt call ID NAME=value.]
+      "It runs with the credential #{credential}, and no grant over it allows the user's machine. Tell the user: a token grant over #{credential} can allow it."
+
+  defp run_refusal({:not_on_machine, credential, %Grant{} = grant}),
+    do:
+      ~s[It runs with the credential #{credential}: #{grant.name} would allow it on the user's machine, and is off. Ask for it with: mwt request #{grant.id} --reason "..."]
 
   defp run_refusal(:no_reason),
     do:
@@ -1782,22 +1812,19 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp run_refusal(:no_save_for),
     do:
-      ~s[--suggest-save needs --save-for "what it does", in words for any time it runs, not this one: they become the subgrant's description. --reason stays why you need it now.]
+      ~s[--suggest-save needs --save-for "what it does", in words for any time it runs, not this one: they become the action's description. --reason stays why you need it now.]
 
   defp run_refusal(:bad_timeout),
     do: "--timeout is from 1 to #{elem(HostCommand.timeouts(), 1)} seconds."
 
-  defp run_refusal(:no_command_grant),
+  defp run_refusal({:name_a_grant, _ids}),
     do:
-      ~s[No grant lets you run a command on the user's machine. If a job needs one, describe it: mwt request --need "run ... on your machine" --reason "why"]
-
-  defp run_refusal({:name_a_grant, ids}),
-    do:
-      "Name the command grant: mwt run GRANT --reason ... The command grants: #{Enum.join(ids, ", ")}."
+      ~s[Give the command after --: mwt run --reason "..." -- COMMAND. A saved command is called by id: mwt call ID --reason "..."]
 
   defp run_refusal({:no_such_grant, ids}),
     do:
-      "No command grant by that name. The command grants: #{Enum.join(ids, ", ")}. See: mwt grants"
+      "No saved command by that id. The saved commands: #{Enum.join(ids, ", ")}. " <>
+        ~s[A command you write needs none: mwt run --reason "..." -- COMMAND. See: mwt grants]
 
   defp run_refusal({:grant_off, id}),
     do: ~s[#{id} is off. Ask for it with: mwt request #{id} --reason "..."]
@@ -1807,6 +1834,11 @@ defmodule MWTClient.Sandbox.Channel do
       ~s[#{id} runs the user's own script: send no command. Call it with: mwt call #{id} --reason "..."]
 
   defp run_refusal(:isolated), do: @isolated
+
+  defp run_refusal({:locked, resource, _grant}),
+    do:
+      MWTClient.Sandbox.Resource.locked_words(resource) <>
+        " Tell the user what you were doing; asking won't change it."
 
   defp run_refusal(:firewall),
     do: "MWT's firewall refused this command. The user has been told; don't send it again."
@@ -1820,4 +1852,43 @@ defmodule MWTClient.Sandbox.Channel do
       _ -> @default_wait
     end
   end
+
+  # One decision of this VM's, explained, or why it can't be.
+  defp explain_decision(username, decision) do
+    case explain_world(username) do
+      nil ->
+        {4, "MWT is locked or closing. Ask the user to unlock it."}
+
+      world ->
+        case Explain.decision(decision, world) do
+          {:ok, answer} -> {0, answer}
+          {:error, message} -> {1, message}
+        end
+    end
+  end
+
+  # What an explanation reads: the view the network path decides from.
+  defp explain_world(username) do
+    case Gate.view(username) do
+      nil ->
+        nil
+
+      view ->
+        %{
+          snapshot:
+            Policy.snapshot(
+              view.grants,
+              Map.get(view, :made, []),
+              Map.get(view, :locks, %{}),
+              Map.get(view, :limits, %{})
+            ),
+          isolated: Gate.isolated?(username, view),
+          now: DateTime.utc_now()
+        }
+    end
+  end
+
+  # A value the VM sent as text, or nil for anything else.
+  defp text_or_nil(value) when is_binary(value), do: value
+  defp text_or_nil(_other), do: nil
 end

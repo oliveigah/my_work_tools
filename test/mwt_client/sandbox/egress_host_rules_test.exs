@@ -1,10 +1,11 @@
 defmodule MWTClient.Sandbox.EgressHostRulesTest do
   @moduledoc """
-  A network grant's host list, the Internet's included: a host set to Ask
-  has each request MWT reads held on a card of its own, and a connection
-  MWT can't read asked about as one; Block refuses each; Auto lets each
-  through while the grant itself asks each time. Hosts no entry names go
-  as the grant's mode says.
+  A network's hosts, the Internet's included: a host its limits block is
+  refused, each request MWT reads and each connection it can't, whatever
+  the grants say; a grant over one host, auto-approving, lets it through
+  while the grant over the whole network asks, and the most permissive
+  counts, so a grant over a host that asks holds nothing the Internet lets
+  through.
   """
   use ExUnit.Case, async: true
 
@@ -142,48 +143,59 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     end)
   end
 
-  test "a host set to Ask holds each request on a card, while the rest go as before", %{
+  # A grant over one host of the Internet.
+  defp host_grant(username, host) do
+    {:ok, grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "network",
+        "network" => "internet",
+        "name" => "Example",
+        "purpose" => "A host I trust",
+        "destinations" => host
+      })
+
+    grant
+  end
+
+  test "with the Internet asking, a grant over a host you trust lets it through unasked", %{
     username: username,
     ca: ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "*.example.com", :ask})
+    {:ok, _} = Sandbox.set_mode(username, "internet", :ask)
+    trusted = host_grant(username, "example.com")
+    assert trusted.network == "internet" and trusted.scope == ["example.com"]
 
+    # Off, it has no say: the Internet asks.
     {:ok, tls} = tls(proxy, [ca], ["http/1.1"])
-    answer = Task.async(fn -> get(tls, "/held") end)
-
+    answer = Task.async(fn -> get(tls, "/asked") end)
     approval = waiting(username)
     assert approval.kind == :request
     assert approval.grant_id == "internet"
-    assert approval.host_entry == "*.example.com"
-    assert {"Asks you", "*.example.com is set to Ask on Internet"} in approval.facts
     refute_received {:host_got, _}
+    :ok = Sandbox.decide(username, approval.id, :deny)
+    assert Task.await(answer) =~ "HTTP/1.1 403"
 
-    :ok = Sandbox.decide(username, approval.id, :allow_once)
-    assert Task.await(answer) =~ "/held"
-    assert_receive {:host_got, "GET /held " <> _}
+    # On and auto-approving, the most permissive counts.
+    {:ok, _} = Sandbox.turn_on(username, trusted.id, 60, :all)
+    {:ok, tls} = tls(proxy, [ca], ["http/1.1"])
+    assert get(tls, "/free") =~ "/free"
+    assert Sandbox.snapshot(username).waiting == []
+    assert_receive {:host_got, "GET /free " <> _}
   end
 
-  test "Auto-approve on the grant doesn't cover a host set to Ask; Allow similar does", %{
+  test "a grant over a host that always asks holds nothing the Internet lets through", %{
     username: username,
     ca: ca,
     proxy: proxy
   } do
-    # The Internet starts auto-approved; the entry asks all the same.
-    assert MWTClient.Sandbox.Grant.auto_approved?(
-             Enum.find(Sandbox.snapshot(username).grants, &(&1.id == "internet"))
-           )
+    asking = host_grant(username, "example.com")
+    {:ok, _} = Sandbox.set_ceiling(username, asking.id, :ask)
+    {:ok, _} = Sandbox.turn_on(username, asking.id, 60, :ask)
 
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :ask})
-
+    # Grants only give: the Internet, auto-approving, lets it through.
     {:ok, tls} = tls(proxy, [ca], ["http/1.1"])
-    first = Task.async(fn -> get(tls, "/repeat") end)
-    :ok = Sandbox.decide(username, waiting(username).id, {:allow, :similar, 60})
-    assert Task.await(first) =~ "/repeat"
-
-    # The same endpoint again goes without a card.
-    {:ok, tls} = tls(proxy, [ca], ["http/1.1"])
-    assert get(tls, "/repeat") =~ "/repeat"
+    assert get(tls, "/free") =~ "/free"
     assert Sandbox.snapshot(username).waiting == []
   end
 
@@ -192,7 +204,7 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     ca: ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :block})
+    {:ok, _} = Sandbox.limits_set(username, "internet", {:put, "example.com", true})
 
     {:ok, tls} = tls(proxy, [ca], ["http/1.1"])
     answer = get(tls, "/out")
@@ -200,38 +212,32 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     assert answer =~ "mwt_host_blocked"
     refute_received {:host_got, _}
 
-    assert %{outcome: :blocked, summary: "example.com is blocked on Internet (example.com)" <> _} =
-             event(username, &(&1.outcome == :blocked))
+    assert %{
+             outcome: :blocked,
+             summary: "example.com is blocked on internet (example.com) · blocked by you"
+           } = event(username, &(&1.outcome == :blocked))
   end
 
-  test "Auto lets a host through while the Internet asks each time", %{
+  test "a grant over a host doesn't reach a host its network blocks", %{
     username: username,
     ca: ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.set_mode(username, "internet", :ask)
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :auto})
+    trusted = host_grant(username, "example.com")
+    {:ok, _} = Sandbox.turn_on(username, trusted.id, 60, :all)
+    {:ok, _} = Sandbox.limits_set(username, "internet", {:put, "example.com", true})
 
     {:ok, tls} = tls(proxy, [ca], ["http/1.1"])
-    assert get(tls, "/free") =~ "/free"
-    assert Sandbox.snapshot(username).waiting == []
-
-    # Taken off, it asks as the Internet now does.
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:remove, "example.com"})
-    {:ok, tls} = tls(proxy, [ca], ["http/1.1"])
-    answer = Task.async(fn -> get(tls, "/asked") end)
-    approval = waiting(username)
-    assert approval.host_entry == nil
-    :ok = Sandbox.decide(username, approval.id, :deny)
-    assert Task.await(answer) =~ "HTTP/1.1 403"
+    assert get(tls, "/out") =~ "mwt_host_blocked"
+    refute_received {:host_got, _}
   end
 
-  test "a connection MWT can't read is asked about as one when its host is set to Ask", %{
+  test "a connection MWT can't read is asked about as one while the Internet asks", %{
     username: username,
     host_ca: host_ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :ask})
+    {:ok, _} = Sandbox.set_mode(username, "internet", :ask)
 
     # Offering only a protocol no driver speaks, it isn't read: the
     # connection is the card.
@@ -239,7 +245,7 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     approval = waiting(username)
     assert approval.kind == :connection
     assert approval.title =~ "Connect to example.com"
-    assert {"Asks you", "example.com is set to Ask on Internet"} in approval.facts
+    assert approval.grant_id == "internet"
     refute_received {:tunnel_target, _}
 
     :ok = Sandbox.decide(username, approval.id, :allow_once)
@@ -252,7 +258,7 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     host_ca: host_ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :block})
+    {:ok, _} = Sandbox.limits_set(username, "internet", {:put, "example.com", true})
     assert {:error, _closed} = tls(proxy, [host_ca], ["imap"])
     refute_received {:tunnel_target, _}
 
@@ -265,7 +271,7 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     ca: ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :block})
+    {:ok, _} = Sandbox.limits_set(username, "internet", {:put, "example.com", true})
 
     # A database or a queue over TLS: MWT ends the TLS, reads no HTTP in it,
     # and holds the connection as one it can't read.
@@ -284,7 +290,7 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     ca: ca,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :block})
+    {:ok, _} = Sandbox.limits_set(username, "internet", {:put, "example.com", true})
 
     # Servers skip the empty line (RFC 9112 2.2) and serve what follows.
     tls = bare_tls(proxy, ca)
@@ -294,7 +300,9 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     refute_received {:host_got, _}
   end
 
-  test "a network grant's form keeps its host list when saved", %{username: username} do
+  test "a network grant's form leaves its network's limits as they are", %{
+    username: username
+  } do
     {:ok, grant} =
       Sandbox.create_grant(username, %{
         "kind" => "network",
@@ -303,7 +311,7 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
         "destinations" => "*.corp.example:443"
       })
 
-    {:ok, _} = Sandbox.host_rule_set(username, grant.id, {:put, "prod.corp.example", :ask})
+    {:ok, _} = Sandbox.limits_set(username, grant.network, {:put, "prod.corp.example", true})
 
     {:ok, edited} =
       Sandbox.update_grant(username, grant.id, %{
@@ -313,30 +321,30 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
       })
 
     assert edited.name == "Corp VPN"
-    assert edited.host_rules == [%{host: "prod.corp.example", action: :ask}]
+    network = Enum.find(Sandbox.snapshot(username).networks, &(&1.id == grant.network))
+    assert network.limits.rules == [%{host: "prod.corp.example", blocked?: true}]
   end
 
-  test "only a network grant has a host list, and an entry is a host name", %{
-    username: username
-  } do
-    assert {:error, "Only a network grant has a host list."} =
-             Sandbox.host_rule_set(username, "commands", {:put, "example.com", :ask})
+  test "only a network has limits, and an entry is a host name", %{username: username} do
+    assert {:error, "No such network."} =
+             Sandbox.limits_set(username, "mwt-read", {:put, "example.com", true})
 
     assert {:error, "10.0.0.5 is an address" <> _} =
-             Sandbox.host_rule_set(username, "internet", {:put, "10.0.0.5", :block})
+             Sandbox.limits_set(username, "internet", {:put, "10.0.0.5", true})
 
-    assert {:error, _} =
-             Sandbox.host_rule_set(username, "internet", {:put, "example.com", :maybe})
+    assert {:error, _} = Sandbox.limits_set(username, "internet", {:put, "example.com", :maybe})
 
-    {:ok, grant} =
-      Sandbox.host_rule_set(username, "internet", {:put, "https://API.Example.com/v1", :ask})
+    # The host the entry names, and the names under it.
+    {:ok, network} =
+      Sandbox.limits_set(username, "internet", {:put, "https://API.Example.com/v1", true})
 
-    assert grant.host_rules == [%{host: "api.example.com", action: :ask}]
+    assert network.limits.rules == [%{host: "api.example.com", blocked?: true}]
 
-    {:ok, grant} = Sandbox.host_rule_set(username, "internet", {:put, "api.example.com", :block})
-    assert grant.host_rules == [%{host: "api.example.com", action: :block}]
+    # Set again, it moves to the other list: a host is on one at most.
+    {:ok, network} = Sandbox.limits_set(username, "internet", {:put, "api.example.com", false})
+    assert network.limits.rules == [%{host: "api.example.com", blocked?: false}]
 
-    assert MWTClient.Sandbox.Instructions.usage(grant) =~
-             "api.example.com: blocked, every request there refused"
+    {:ok, network} = Sandbox.limits_set(username, "internet", {:remove, "api.example.com"})
+    assert network.limits.rules == []
   end
 end

@@ -20,7 +20,7 @@ MWTClient.NestedVirtHelpers.fake_host!(nested_virt_root, :allowed)
 # The `:vm` tests boot a real VM: they need KVM, bwrap, MWT's runtime in
 # priv/microsandbox (scripts/install-runtime.sh in the agent sandbox) and the
 # internet; `mix test --only vm` runs them.
-# The `:bwrap` tests run a command in the bubble a confined subgrant runs
+# The `:bwrap` tests run a command in the bubble a confined action runs
 # in (`MWTClient.Sandbox.Confine`), which needs bwrap and user namespaces.
 exclude = if MWTClient.DBusDaemon.available?(), do: [:bench, :vm], else: [:bench, :vm, :dbus]
 exclude = if MWTClient.Sandbox.Confine.available() == :ok, do: exclude, else: [:bwrap | exclude]

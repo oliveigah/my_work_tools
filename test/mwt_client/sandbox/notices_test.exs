@@ -110,7 +110,7 @@ defmodule MWTClient.Sandbox.NoticesTest do
     saved = %{run | script_from: :grant, grant_id: "tests"}
     grant = %MWTClient.Sandbox.Grant{id: "tests", name: "Run the tests", kind: :command}
 
-    assert %{summary: "Codex calls your subgrant Run the tests", body: body} =
+    assert %{summary: "Codex calls your action Run the tests", body: body} =
              Notices.approval(saved, grant, @now)
 
     refute body =~ "mix test"

@@ -171,24 +171,54 @@ defmodule MWTClientWeb.SandboxLive.Components do
     """
   end
 
+  @doc """
+  A resource, by name, as a link to its page (`MWTClient.Sandbox.Resource`):
+  the credential, network, machine or MWT's tools a grant mediates. `bare`
+  drops the frame, for inside a line of text.
+  """
+  attr :resource, :any, required: true
+  attr :name, :string, required: true
+  attr :id, :string, default: nil
+  attr :bare, :boolean, default: false
+
+  def resource_chip(assigns) do
+    ~H"""
+    <.link
+      navigate={MWTClient.Sandbox.Resource.path(@resource)}
+      id={@id}
+      title={"#{MWTClient.Sandbox.Resource.kind_words(@resource)}: #{@name}"}
+      class={[
+        "relative z-10 inline-flex min-w-0 items-center gap-1 transition-colors hover:text-accent",
+        if(@bare,
+          do: "text-muted",
+          else:
+            "rounded border border-line bg-deep px-1.5 py-0.5 text-[10px] font-medium text-muted hover:border-accent/40"
+        )
+      ]}
+    >
+      <.icon name={resource_icon(@resource)} class="size-3 shrink-0" />
+      <span class="truncate">{@name}</span>
+    </.link>
+    """
+  end
+
+  @doc "The icon for a kind of resource."
+  def resource_icon({:credential, _id}), do: "hero-key-micro"
+  def resource_icon({:network, _id}), do: "hero-globe-alt-micro"
+  def resource_icon(:machine), do: "hero-computer-desktop-micro"
+  def resource_icon(:mwt), do: "hero-document-text-micro"
+
   @doc "What the VM ends up holding for a grant, in two words and a colour."
   attr :grant, Grant, required: true
 
   def exposure(assigns) do
     ~H"""
     <span
-      :if={@grant.kind == :token and not Grant.subgrants_only?(@grant)}
+      :if={@grant.kind == :token}
       class="inline-flex items-center gap-1 rounded border border-ok/30 bg-ok-soft/30 px-1.5 py-0.5 text-[10px] font-medium text-ok-strong"
       title="The VM only has a placeholder. MWT swaps in the real value on the way out."
     >
       <.icon name="hero-shield-check-micro" class="size-3" /> Placeholder only
-    </span>
-    <span
-      :if={Grant.subgrants_only?(@grant)}
-      class="inline-flex items-center gap-1 rounded border border-ok/30 bg-ok-soft/30 px-1.5 py-0.5 text-[10px] font-medium text-ok-strong"
-      title="The VM holds nothing of it: only the requests saved under it, which MWT sends itself, use its value."
-    >
-      <.icon name="hero-lock-closed-micro" class="size-3" /> Subgrants only
     </span>
     <span
       :if={@grant.kind == :network}
@@ -561,7 +591,12 @@ defmodule MWTClientWeb.SandboxLive.Components do
     """
   end
 
-  @doc "A small segmented control; the option matching `value` reads as chosen."
+  @doc """
+  A small segmented control; the option matching `value` reads as chosen.
+  Each option's id is the control's, `--`, and its value: a control's id
+  may end in an id of yours (a grant's), and ids MWT gives never hold
+  `--`, so no option's id can be another element's.
+  """
   attr :id, :string, required: true
   attr :options, :list, required: true, doc: "`{value, label}` pairs"
   attr :value, :any, required: true
@@ -590,7 +625,7 @@ defmodule MWTClientWeb.SandboxLive.Components do
       <%= for {value, label} <- @options do %>
         <span
           :if={value in @unavailable}
-          id={"#{@id}-#{value}"}
+          id={"#{@id}--#{value}"}
           aria-disabled="true"
           title={"Not an action this one takes: #{label}"}
           class={[
@@ -603,7 +638,7 @@ defmodule MWTClientWeb.SandboxLive.Components do
         <button
           :if={value not in @unavailable}
           type="button"
-          id={"#{@id}-#{value}"}
+          id={"#{@id}--#{value}"}
           role="radio"
           aria-checked={to_string(to_string(value) == to_string(@value))}
           phx-click={JS.push(@event, value: Map.put(@values, @name, value))}

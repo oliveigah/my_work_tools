@@ -184,14 +184,24 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       # A grant that always asks takes no allowance: once is all. Nothing
       # is similar to a use MWT couldn't describe (no pattern).
       {:allow, scope, duration} ->
-        (scope == :all or (scope == :similar and approval.pattern != nil)) and
+        (scope == :all or (scope == :similar and approval.pattern != nil) or
+           (scope == :ids and MWTClient.Sandbox.Allowance.widen(approval.pattern) != nil)) and
           duration?(duration, :grant) and not always_asks?(state, approval)
+
+      # Only some of the card's grants, those you left ticked.
+      {:allow, scope, duration, ids} ->
+        is_list(ids) and ids != [] and Enum.all?(ids, &(&1 in Approval.grant_ids(approval))) and
+          fits?(approval, {:allow, scope, duration}, state)
 
       :deny ->
         true
 
       :deny_and_turn_off ->
         true
+
+      # Turning off the one of the card's grants you chose.
+      {:deny_and_turn_off, id} ->
+        id in Approval.grant_ids(approval)
 
       _other ->
         false
@@ -205,11 +215,17 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     end
   end
 
+  # Any grant the card answers for that always asks takes no allowance,
+  # and leaves the card with Allow once.
   defp always_asks?(state, approval) do
-    case Enum.find(state.grants, &(&1.id == approval.grant_id)) do
-      %Grant{} = grant -> Grant.ceiling(grant) == :ask
-      nil -> false
-    end
+    approval
+    |> Approval.grant_ids()
+    |> Enum.any?(fn id ->
+      case Enum.find(state.grants, &(&1.id == id)) do
+        %Grant{} = grant -> Grant.ceiling(grant) == :ask
+        nil -> false
+      end
+    end)
   end
 
   defp duration?(minutes, _open) when is_integer(minutes) and minutes > 0, do: true
@@ -240,7 +256,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     |> settle(approval, :allowed, {:set_up, grant_id})
     |> then(fn state ->
       # One you set to be enabled on startup is enabled already, as you chose.
-      if grant.start == :off,
+      if not Grants.starts_on?(grant.start),
         do: Grants.turn_on(state, grant, minutes, :ask, " · asked by #{approval.agent}"),
         else: state
     end)
@@ -291,36 +307,65 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     |> State.log(event_for(approval, :allowed, "you allowed once"))
   end
 
-  def decide(state, approval, {:allow, scope, duration}) do
-    case Enum.find(state.grants, &(&1.id == approval.grant_id)) do
-      nil ->
+  def decide(state, approval, {:allow, scope, duration}),
+    do: decide(state, approval, {:allow, scope, duration, Approval.grant_ids(approval)})
+
+  def decide(state, approval, {:allow, scope, duration, ids}) do
+    case for(id <- ids, grant = Enum.find(state.grants, &(&1.id == id)), do: grant) do
+      [] ->
         decide(state, approval, :allow_once)
 
-      # This card goes by your decision; the allowance then settles the
-      # others it would have let through (`Policy.settles?/3`), which may
-      # leave out some it doesn't cover, such as a host its host list
-      # asks about.
-      grant ->
-        pattern = if scope == :all, do: :all, else: approval.pattern
-        how = if scope == :all, do: "every use", else: "similar"
+      # This card goes by your decision; the allowance, added to each grant
+      # you left ticked, then settles the others it would have let through
+      # (`Policy.settles?/3`), which may leave out some it doesn't cover,
+      # such as a host its host list asks about.
+      grants ->
+        pattern =
+          case scope do
+            :all -> :all
+            :ids -> MWTClient.Sandbox.Allowance.widen(approval.pattern)
+            :similar -> approval.pattern
+          end
 
-        state
-        |> settle(approval, :allowed, {:allow, scope, duration})
-        |> answer_waiters(approval, :allow)
-        |> State.log(
-          event_for(approval, :allowed, "you allowed #{how} #{State.duration_words(duration)}")
-        )
-        |> Grants.allow(grant, pattern, duration)
-        |> State.log(%{
-          outcome: :grant,
-          summary:
-            if(scope == :all,
-              do: "#{grant.name}: every use allowed #{State.duration_words(duration)}",
-              else:
-                "#{grant.name}: uses like “#{approval.title}” allowed #{State.duration_words(duration)}"
-            ),
-          grant_id: grant.id
-        })
+        how =
+          case scope do
+            :all -> "every use"
+            :ids -> "similar, any id"
+            :similar -> "similar"
+          end
+
+        state =
+          state
+          |> settle(approval, :allowed, {:allow, scope, duration})
+          |> answer_waiters(approval, :allow)
+          |> State.log(
+            event_for(
+              approval,
+              :allowed,
+              "you allowed #{how} #{State.duration_words(duration)}" <>
+                if(length(grants) > 1,
+                  do: ", on #{Enum.map_join(grants, ", ", & &1.name)}",
+                  else: ""
+                )
+            )
+          )
+
+        Enum.reduce(grants, state, fn grant, state ->
+          grant = Enum.find(state.grants, &(&1.id == grant.id)) || grant
+
+          state
+          |> Grants.allow(grant, pattern, duration)
+          |> State.log(%{
+            outcome: :grant,
+            summary:
+              if(scope == :all,
+                do: "#{grant.name}: every use allowed #{State.duration_words(duration)}",
+                else:
+                  "#{grant.name}: uses like “#{approval.title}” allowed #{State.duration_words(duration)}"
+              ),
+            grant_id: grant.id
+          })
+        end)
     end
   end
 
@@ -331,21 +376,24 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     |> State.log(event_for(approval, :denied, "you denied"))
   end
 
-  def decide(state, approval, :deny_and_turn_off) do
+  def decide(state, approval, :deny_and_turn_off),
+    do: decide(state, approval, {:deny_and_turn_off, approval.grant_id})
+
+  def decide(state, approval, {:deny_and_turn_off, id}) do
     state =
       state
       |> settle(approval, :denied, :deny_and_turn_off)
       |> answer_waiters(approval, {:deny, :by_you})
       |> State.log(event_for(approval, :denied, "you denied"))
 
-    case Enum.find(state.grants, &(&1.id == approval.grant_id)) do
+    case Enum.find(state.grants, &(&1.id == id)) do
       nil ->
         state
 
       grant ->
         state
         |> settle_waiting(grant.id, :grant_off)
-        |> State.replace_grant(%{grant | state: :off, expires_at: nil, allowances: []})
+        |> State.replace_grant(Grant.put_down(grant))
         |> State.log(%{
           outcome: :grant,
           summary: "#{grant.name} turned off from an approval",
@@ -420,7 +468,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       |> settle(approval, :allowed, decision)
       |> State.log(HostRuns.command_event(approval, how))
 
-    # A request subgrant's call is a request MWT sends, not a script; a
+    # A request action's call is a request MWT sends, not a script; a
     # confined one runs once the values of the grants it names are at hand.
     cond do
       approval.call ->
@@ -464,7 +512,11 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     Enum.reduce(waiters, state, fn
       # The agent hears of the grant as it is for it now.
       {from, {:await, _ref}}, acc ->
-        GenServer.reply(from, {:ok, settled, State.live_grant(acc, approval.grant_id)})
+        GenServer.reply(
+          from,
+          {:ok, settled, Enum.find(acc.grants, &(&1.id == approval.grant_id))}
+        )
+
         acc
 
       {from, :connection}, acc ->
@@ -489,8 +541,37 @@ defmodule MWTClient.Sandbox.Server.Approvals do
         end
 
       {from, {:request, request}}, acc ->
+        # The grant whose value the request carries, whichever grant the
+        # card was asked for.
+        credential = Enum.find(acc.grants, &(&1.id == Map.get(request, :credential)))
+        grant = credential || grant
+
         case {outcome, grant} do
+          # A card a network grant led, with no credential in the request.
+          {:allow, %Grant{kind: :network}} ->
+            GenServer.reply(
+              from,
+              {:forward, Values.replace([]), Values.scan(acc, request.host)}
+            )
+
+            approval
+            |> Approval.grant_ids()
+            |> Enum.reduce(acc, &State.used(&2, &1))
+            |> State.log(%{
+              outcome: :read,
+              summary: "Read by MWT, no credential in it",
+              host: request.host,
+              port: Map.get(request, :port, 443),
+              grant_id: approval.grant_id,
+              method: request.method,
+              path: request.path,
+              exchange_id: Map.get(request, :exchange)
+            })
+
           {:allow, %Grant{}} ->
+            acc =
+              Enum.reduce(Approval.grant_ids(approval) -- [grant.id], acc, &State.used(&2, &1))
+
             Values.let_through(acc, grant, request, from)
 
           {denied, _grant} ->
@@ -509,6 +590,16 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     do: Values.deny(403, "mwt_grant_off", "The grant turned off while this waited.", grant)
 
   defp refusal({:deny, :isolated}, _grant), do: Values.isolated()
+
+  defp refusal({:deny, :locked}, grant),
+    do:
+      Values.deny(
+        403,
+        "mwt_locked",
+        MWTClient.Sandbox.Resource.locked_words(MWTClient.Sandbox.Grant.resource(grant)) <>
+          " Tell the user what you were doing.",
+        grant
+      )
 
   defp refusal(_denied, grant),
     do: Values.deny(403, "mwt_denied_by_user", "The user denied this request.", grant)
@@ -546,11 +637,13 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       wanted != "" and is_nil(grant) ->
         {:error, :unknown_grant}
 
-      grant && Grant.subgrants_only?(grant) ->
-        {:error, {:subgrants_only, grant.id}}
+      # Its resource locked: nothing it gives would go, and the lock is
+      # the user's alone.
+      grant && Map.has_key?(Map.get(state, :locks, %{}), Grant.resource(grant)) ->
+        {:error, {:locked, Grant.resource(grant)}}
 
       grant && Grant.on?(grant) ->
-        {:already_on, State.live_grant(state, grant.id)}
+        {:already_on, Enum.find(state.grants, &(&1.id == grant.id))}
 
       length(waiting) >= @max_waiting_activations and
           not Enum.any?(waiting, &(&1.pattern == pattern)) ->
@@ -586,7 +679,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   @doc """
   A grant an agent proposes (`mwt propose`), checked as the add form
   checks yours (`MWTClient.Sandbox.Proposal`): a token or network grant,
-  or a subgrant of a grant that takes them. Returns the grant to save
+  or an action of a grant that takes them. Returns the grant to save
   (off, disabled on startup, to review), the ask the agent waits on, and
   the proposal of the same name it replaces, still to review, or nil.
   Nothing is saved here.
@@ -623,7 +716,13 @@ defmodule MWTClient.Sandbox.Server.Approvals do
              existing = Enum.reject(state.grants, &(previous && &1.id == previous.id)),
              attrs = Proposal.attrs(target, place(state, target, ask), preset),
              {:ok, grant, _value} <-
-               refused(Grants.build_grant(attrs, existing, preset: preset, proposal: true)) do
+               refused(
+                 Grants.build_grant(attrs, existing,
+                   preset: preset,
+                   proposal: true,
+                   credentials: Map.get(state, :credentials, [])
+                 )
+               ) do
           said = %{agent: agent, thread: Approval.thread(ask), reason: reason, minutes: minutes}
 
           grant = %{
@@ -648,8 +747,8 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     end
   end
 
-  # A command subgrant is its script: none, and there is nothing to read.
-  defp script_given({:under, %Grant{kind: :command}}, ask) do
+  # A command action is its script: none, and there is nothing to read.
+  defp script_given({:over, :machine, _over}, ask) do
     if ask |> Map.get(:script) |> State.to_text() |> String.trim() == "",
       do: {:error, :no_script},
       else: :ok
@@ -673,16 +772,18 @@ defmodule MWTClient.Sandbox.Server.Approvals do
 
   defp proposed_preset(_state, _target, _ask), do: {:ok, nil}
 
-  # The proposal of the same name, under the same grant, still to review:
-  # proposing again changes it.
+  # The proposal of the same name, over the same resource, still to
+  # review: proposing again changes it.
   defp previous(state, target, name) do
-    parent = with {:under, %Grant{id: id}} <- target, do: id
-    parent = if is_binary(parent), do: parent, else: nil
+    same? =
+      case target do
+        {:over, resource, _over} -> &(Grant.action?(&1) and Grant.resource(&1) == resource)
+        {:new, kind} -> &(&1.kind == kind and not Grant.action?(&1))
+      end
 
     Enum.find(
       state.grants,
-      &(Grant.to_review?(&1) and &1.parent == parent and
-          String.downcase(&1.name) == String.downcase(name))
+      &(Grant.to_review?(&1) and same?.(&1) and String.downcase(&1.name) == String.downcase(name))
     )
   end
 
@@ -694,9 +795,9 @@ defmodule MWTClient.Sandbox.Server.Approvals do
 
   defp room(_state, _previous), do: :ok
 
-  # A command subgrant runs in the folder the agent names, as this
+  # A command action runs in the folder the agent names, as this
   # machine has it: a shared folder's path, or your home folder.
-  defp place(state, {:under, %Grant{kind: :command}}, ask) do
+  defp place(state, {:over, :machine, _over}, ask) do
     asked = ask |> Map.get(:dir) |> State.to_text() |> String.trim()
     shares = state.settings.shares ++ HostCommand.halves(ShareSync.root(state))
     dir = asked |> HostCommand.place(shares, System.user_home!()) |> elem(1)
@@ -711,7 +812,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   # The ask the agent waits on: answered once you accept the grant and it
   # turns on; declining it removes the proposal.
   defp proposal_ask(grant, target, said, previous) do
-    parent_name = with {:under, %Grant{name: name}} <- target, do: name
+    parent_name = with {:over, _resource, %{name: name}} <- target, do: name
 
     %Approval{
       id: "ask-" <> State.unique(),
@@ -819,12 +920,22 @@ defmodule MWTClient.Sandbox.Server.Approvals do
         grant_id,
         decision,
         kinds \\ [:request, :connection, :tool, :command]
-      ) do
+      ),
+      do:
+        settle_waiting_where(
+          state,
+          &(grant_id in Approval.grant_ids(&1) and &1.kind in kinds),
+          decision
+        )
+
+  @doc """
+  Refuses every use, command or call still waiting to run that `picks?`
+  picks, as `settle_waiting/4` does for a grant's: for what waits on no
+  grant, as the commands agents write, when your machine is locked.
+  """
+  def settle_waiting_where(state, picks?, decision) do
     state.approvals
-    |> Enum.filter(
-      &(&1.status == :waiting and &1.grant_id == grant_id and &1.kind in kinds and
-          &1.stage == :run)
-    )
+    |> Enum.filter(&(&1.status == :waiting and &1.stage == :run and picks?.(&1)))
     |> Enum.reduce(state, fn approval, acc ->
       acc
       |> settle(approval, :denied, decision)
@@ -835,6 +946,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
 
   defp refused_words(%Approval{kind: :command}, decision), do: HostRuns.refused_words(decision)
   defp refused_words(_approval, :changed), do: "its grant was edited"
+  defp refused_words(_approval, :locked), do: "you locked what it reaches"
   defp refused_words(_approval, _decision), do: "its grant turned off"
 
   @doc """

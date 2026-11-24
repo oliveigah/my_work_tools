@@ -9,7 +9,8 @@ defmodule MWTClient.Sandbox.Server.Grants do
 
   alias MWTClient.Sandbox.{
     Allowance,
-    CredentialEndpoint,
+    Approval,
+    Credential,
     Destinations,
     Dns,
     Grant,
@@ -46,14 +47,26 @@ defmodule MWTClient.Sandbox.Server.Grants do
       do: State.timer({:expire_allowance, grant.id, allowance.id}, allowance.until)
 
     # Only what it would have let through, asked now: never a use a host
-    # list holds for asking, nor an add past the hour's limit.
+    # list holds for asking, nor an add past the hour's limit. A card that
+    # answers for several grants settles once every one of them would let
+    # its use through.
     now = State.now()
 
     state =
       state.approvals
       |> Enum.filter(fn other ->
-        other.status == :waiting and other.grant_id == grant.id and
-          Policy.settles?(other, allowance, now)
+        other.status == :waiting and grant.id in Approval.grant_ids(other) and
+          Policy.settles?(other, allowance, now) and
+          Enum.all?(Approval.grant_ids(other) -- [grant.id], fn id ->
+            case Enum.find(state.grants, &(&1.id == id)) do
+              %Grant{} = g ->
+                Grant.ceiling(g) != :ask and
+                  Enum.any?(g.allowances, &Policy.settles?(other, &1, now))
+
+              nil ->
+                true
+            end
+          end)
       end)
       |> Enum.reduce(state, fn other, acc ->
         how = if pattern == :all, do: "every use", else: "similar"
@@ -100,8 +113,17 @@ defmodule MWTClient.Sandbox.Server.Grants do
            "proposal changed by #{grant.proposal.agent}"}
       end
 
+    grant =
+      if grant.kind == :token,
+        do: %{grant | credential: grant.credential || grant.id},
+        else: grant
+
     state
-    |> State.change(:grants, fn _ -> grants end)
+    |> State.change(:grants, fn _ ->
+      Enum.map(grants, &if(&1.id == grant.id, do: grant, else: &1))
+    end)
+    |> put_credential_of(grant)
+    |> put_network_of(grant)
     |> State.log(%{
       outcome: :grant,
       summary: "#{grant.name} #{words} · to review",
@@ -131,11 +153,12 @@ defmodule MWTClient.Sandbox.Server.Grants do
   end
 
   @doc """
-  Removes a grant and its subgrants, with their values and what waited on
-  them; `summary` is what the log says.
+  Removes a grant, with what waited on it and what was made from it;
+  `summary` is what the log says. Its resource stays: a resource goes only
+  when you remove it (`MWTClient.Sandbox.Server.Resources.delete/2`).
   """
   def delete(state, %Grant{id: id} = grant, summary) do
-    gone = [id | state.grants |> Grant.subgrants(grant) |> Enum.map(& &1.id)]
+    gone = [id]
 
     # One still to review: the agent waiting on it hears you declined it.
     state =
@@ -158,10 +181,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
         :tool,
         :command
       ])
-      |> Map.update!(:values, fn values ->
-        Map.reject(values, fn {key, _} -> key == id or match?({^id, _part}, key) end)
-      end)
-      |> forget_values(id)
+      |> Map.update(:made, %{}, &MWTClient.Sandbox.Made.drop_grant(&1, id))
     end)
     |> State.change(:grants, &Enum.reject(&1.grants, fn g -> g.id in gone end))
     # Gone from the state, so the grant as it was goes with the event.
@@ -169,6 +189,105 @@ defmodule MWTClient.Sandbox.Server.Grants do
     |> State.write_inbox()
     |> State.changed()
   end
+
+  @doc """
+  Keeps a token grant's credential in step with it: what the grant says of
+  how its value is made and shown (`Credential.copied/0`) is its
+  credential's, and every grant over that credential gets it too
+  (`Credential.attach_all/2`). One with no credential yet gets one of its
+  own, under its id. Name, words, lock and earlier placeholders stay the
+  credential's.
+  """
+  def put_credential_of(state, %Grant{kind: :token} = grant) do
+    id = Grant.credential_id(grant)
+    credentials = Map.get(state, :credentials, [])
+
+    credential =
+      case Enum.find(credentials, &(&1.id == id)) do
+        nil ->
+          %{Credential.of_grant(grant) | id: id}
+
+        existing ->
+          fields =
+            Map.take(Map.from_struct(grant), Credential.copied() -- [:aliases, :login_aliases])
+
+          struct(existing, fields)
+      end
+
+    credentials =
+      if Enum.any?(credentials, &(&1.id == id)),
+        do: Enum.map(credentials, &if(&1.id == id, do: credential, else: &1)),
+        else: credentials ++ [credential]
+
+    state
+    |> Map.put(:credentials, credentials)
+    |> State.change(:grants, &Credential.attach_all(&1.grants, credentials))
+  end
+
+  # A request action takes its credential's fields as it is added or
+  # edited, as the grants over that credential do: how its value is made.
+  def put_credential_of(state, %Grant{kind: :request}) do
+    credentials = Map.get(state, :credentials, [])
+    State.change(state, :grants, &Credential.attach_all(&1.grants, credentials))
+  end
+
+  def put_credential_of(state, _grant), do: state
+
+  @doc """
+  The network a network grant just added or edited is over, made or
+  brought up to date (`MWTClient.Sandbox.Network`): one over all of it
+  says what the network is (its destinations, DNS server and interface);
+  one over part of it keeps its destinations as its scope. The Internet is
+  MWT's: no grant changes it. Every grant over the network takes its
+  fields again.
+  """
+  def put_network_of(state, %Grant{kind: :network} = grant) do
+    alias MWTClient.Sandbox.Network
+
+    id = Network.id_of(grant)
+    networks = Map.get(state, :networks, [])
+    existing = Enum.find(networks, &(&1.id == id))
+
+    network =
+      cond do
+        Network.part?(grant) and existing ->
+          existing
+
+        Network.part?(grant) ->
+          %{Network.of_grant(grant) | id: id, destinations: grant.destinations}
+
+        existing && existing.internet ->
+          existing
+
+        existing ->
+          %{
+            existing
+            | destinations: grant.destinations,
+              resolver: grant.resolver,
+              anchor: grant.anchor
+          }
+
+        true ->
+          %{Network.of_grant(grant) | id: id}
+      end
+
+    networks =
+      if existing,
+        do: Enum.map(networks, &if(&1.id == id, do: network, else: &1)),
+        else: networks ++ [network]
+
+    # One over part of the network takes what its form lists as its scope.
+    state =
+      if Network.part?(grant),
+        do: State.replace_grant(state, %{grant | scope: grant.destinations, network: id}),
+        else: State.replace_grant(state, %{grant | network: id})
+
+    state
+    |> Map.put(:networks, networks)
+    |> State.change(:grants, &Network.attach_all(&1.grants, networks))
+  end
+
+  def put_network_of(state, _grant), do: state
 
   @doc """
   Drops what MWT minted for a grant (each host's too), the ID tokens its
@@ -200,7 +319,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
   def edited(state, %Grant{id: id} = before, %Grant{} = updated) do
     state =
       if Grant.how_made(before) != Grant.how_made(updated),
-        do: forget_values(state, id),
+        do: forget_values(state, Grant.credential_id(updated)),
         else: state
 
     if Grant.definition(before) != Grant.definition(updated),
@@ -214,11 +333,8 @@ defmodule MWTClient.Sandbox.Server.Grants do
   """
   def turn_on(state, nil, _minutes, _uses, _why), do: state
 
-  # Only for its subgrants: nothing of it to turn on.
-  def turn_on(state, %Grant{kind: :token, reach: :subgrants}, _minutes, _uses, _why), do: state
-
   def turn_on(state, grant, minutes, uses, why) do
-    # Ask to run commands always asks, and a file has no uses to approve.
+    # One that always asks takes no Auto-approve.
     uses = if Grant.auto_approvable?(grant), do: uses, else: :ask
 
     grant = %{grant | state: :on, expires_at: expires_at(minutes), minutes: minutes}
@@ -236,9 +352,6 @@ defmodule MWTClient.Sandbox.Server.Grants do
       })
       |> State.write_inbox()
       |> State.changed()
-      # Its checks run as it turns on; until a gating one passes, it is
-      # paused (`MWTClient.Sandbox.Server.Checks`).
-      |> MWTClient.Sandbox.Server.Checks.run(grant, :enable)
 
     if uses == :all, do: allow(state, grant, :all, :grant), else: state
   end
@@ -303,19 +416,17 @@ defmodule MWTClient.Sandbox.Server.Grants do
 
   @doc """
   Puts every grant in the state its `start` setting names, as MWT starts:
-  disabled, or enabled until turned off, every use asking (`:on`) or going
-  through (`:auto`). Nothing a session left carries over: no time left, no
+  off, or on until turned off, every use asking (`:on`) or going through
+  (`:auto`). Nothing a session left carries over: no time left, no
   allowance.
   """
   def start(grants), do: Enum.map(grants, &started/1)
 
   defp started(%Grant{} = grant) do
-    grant = %{grant | state: :off, expires_at: nil, allowances: []}
-
     case start_of(grant) do
-      :off -> grant
-      :on -> %{grant | state: :on, minutes: :until_off}
-      :auto -> %{grant | state: :on, minutes: :until_off, allowances: [always()]}
+      :off -> Grant.put_down(grant)
+      :on -> %{Grant.put_down(grant) | state: :on, minutes: :until_off}
+      :auto -> %{Grant.put_down(grant) | state: :on, minutes: :until_off, allowances: [always()]}
     end
   end
 
@@ -324,10 +435,13 @@ defmodule MWTClient.Sandbox.Server.Grants do
   defp start_of(%Grant{start: start} = grant) do
     cond do
       start in Grant.starts(grant) -> start
-      start == :auto -> :on
+      start == :auto and :on in Grant.starts(grant) -> :on
       true -> :off
     end
   end
+
+  @doc "Whether a start setting leaves the grant on as MWT starts."
+  def starts_on?(start), do: start in [:on, :auto]
 
   defp always, do: %Allowance{id: "allowance-" <> State.unique(), pattern: :all, until: nil}
 
@@ -338,13 +452,13 @@ defmodule MWTClient.Sandbox.Server.Grants do
   """
   def set_start(state, %Grant{} = grant, start) do
     words = %{
-      off: "disabled",
+      off: "off",
       on: "enabled, every use asking",
       auto: "enabled, every use auto-approved"
     }
 
     state =
-      if start == :off and grant.state == :on,
+      if not starts_on?(start) and grant.state == :on,
         do: Approvals.settle_waiting(state, grant.id, :grant_off),
         else: state
 
@@ -353,21 +467,15 @@ defmodule MWTClient.Sandbox.Server.Grants do
     state =
       state
       |> State.replace_grant(updated)
-      |> then(
-        &if(start == :off,
-          do: &1,
-          else: MWTClient.Sandbox.Server.Checks.run(&1, updated, :enable)
-        )
-      )
       |> State.log(%{
         outcome: :grant,
         summary: "#{grant.name}: #{words[start]}, from now and each time MWT starts",
         grant_id: grant.id
       })
       |> then(fn state ->
-        # Enabled now: that answers the agents waiting for it. Disabled
-        # answers nobody.
-        if start == :off,
+        # Enabled now: that answers the agents waiting for it. Off or
+        # disabled answers nobody.
+        if not starts_on?(start),
           do: state,
           else:
             Approvals.settle_activations(
@@ -458,7 +566,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
         {updated, summary} = fun.(grant)
 
         state =
-          if grant.state == :on and updated.state == :off,
+          if grant.state == :on and updated.state != :on,
             do: Approvals.settle_waiting(state, id, :grant_off),
             else: state
 
@@ -474,13 +582,11 @@ defmodule MWTClient.Sandbox.Server.Grants do
   end
 
   @doc """
-  The grants with Ask to run commands, the escape hatch, in them, as MWT
-  makes it: every identity has it, built in and off. The one an identity
-  already has (once called Any command, or one you added before it was
-  built in) keeps its state and is given MWT's id, name and words.
+  The grants with the built-in ones in them, as MWT makes them: MWT's
+  tools and the Internet's. Those an identity already has keep how they
+  are, with MWT's names and words.
   """
-  def with_built_in(grants),
-    do: grants |> put_built_in() |> put_mwt_tools() |> put_internet() |> adopt()
+  def with_built_in(grants), do: grants |> put_mwt_tools() |> put_internet()
 
   # The Internet: every identity has one, always on as it starts. One an
   # identity has keeps how it is; its name and words are MWT's.
@@ -525,61 +631,6 @@ defmodule MWTClient.Sandbox.Server.Grants do
     end)
   end
 
-  # A saved command is a subgrant of Ask to run commands: those saved
-  # before subgrants are moved under it. A subgrant whose grant is gone
-  # goes with it.
-  defp adopt(grants) do
-    %Grant{id: built_in} = Enum.find(grants, &Grant.ask_to_run?/1)
-    ids = MapSet.new(grants, & &1.id)
-
-    grants
-    |> Enum.map(fn grant ->
-      if Grant.saved_command?(grant) and is_nil(grant.parent),
-        do: %{grant | parent: built_in},
-        else: grant
-    end)
-    |> Enum.filter(&(is_nil(&1.parent) or MapSet.member?(ids, &1.parent)))
-  end
-
-  defp put_built_in(grants) do
-    built_in = Grant.ask_to_run()
-
-    case Enum.find_index(grants, &Grant.ask_to_run?/1) do
-      nil ->
-        id =
-          if Enum.any?(grants, &(&1.id == built_in.id)),
-            do: grant_id(built_in.name, grants),
-            else: built_in.id
-
-        grants ++ [%{built_in | id: id}]
-
-      index ->
-        List.update_at(grants, index, fn grant ->
-          others = List.delete_at(grants, index)
-          id = if Enum.any?(others, &(&1.id == built_in.id)), do: grant.id, else: built_in.id
-          %{grant | id: id, name: built_in.name, purpose: built_in.purpose, preset: nil}
-        end)
-    end
-  end
-
-  @doc """
-  An agent's ask, with Ask to run commands' id for the one that grant had
-  before (`Grant.former_ask_to_run_id/0`), unless a grant has that id now: an
-  agent that read it before the rename goes on working, and hears the new
-  one.
-  """
-  def former_id(grants, %{grant: id} = ask) when is_binary(id) do
-    with true <- id == Grant.former_ask_to_run_id(),
-         false <- Enum.any?(grants, &(&1.id == id)),
-         %Grant{id: built_in} <- Enum.find(grants, &Grant.ask_to_run?/1) do
-      %{ask | grant: built_in}
-    else
-      _same -> ask
-    end
-  end
-
-  def former_id(_grants, ask), do: ask
-
   @doc """
   A grant from a form's fields, with its real value when the form carried one, or the errors by field.
 
@@ -589,7 +640,9 @@ defmodule MWTClient.Sandbox.Server.Grants do
   def build_grant(attrs, existing, opts \\ []) do
     kind = Enum.find(Grant.kinds(), &(Atom.to_string(&1) == attrs["kind"]))
     editing? = Keyword.get(opts, :editing, false)
-    valueless? = editing? or Keyword.get(opts, :proposal, false)
+
+    valueless? =
+      editing? or Keyword.get(opts, :proposal, false) or Keyword.get(opts, :valueless, false)
 
     # The preset that filled the form, when one did: given by the server,
     # which knows yours too, or one of MWT's own.
@@ -618,20 +671,20 @@ defmodule MWTClient.Sandbox.Server.Grants do
       purpose = String.trim(attrs["purpose"] || "")
       minted? = kind == :token and attrs["source"] == "minted"
 
-      {destinations, destination_error} = destinations(attrs["destinations"], kind)
+      # Over a network you have, none listed is all of it.
+      over_network? = kind == :network and attrs["network"] not in [nil, ""]
+
+      {destinations, destination_error} =
+        destinations(attrs["destinations"], kind, over_network?)
 
       script = if(kind == :command, do: command_script(attrs["script"]))
-      # A saved command: your own script, which agents call by id. It is a
-      # subgrant of Ask to run commands.
-      saved? = kind == :command and (script != nil or attrs["preset"] == "saved_command")
+      # A saved command: your own script, which agents call by id.
+      saved? = kind == :command
 
-      # A request subgrant: a request MWT sends with a token grant's value.
-      parent =
-        cond do
-          saved? -> Enum.find(existing, &Grant.ask_to_run?/1)
-          kind == :request -> Enum.find(existing, &(&1.id == attrs["parent"]))
-          true -> nil
-        end
+      # A request action: a request MWT sends with a credential's value.
+      credential =
+        if kind == :request,
+          do: Enum.find(Keyword.get(opts, :credentials, []), &(&1.id == attrs["credential"]))
 
       {params, param_error} =
         case (saved? or kind == :request) && Param.parse(attrs["params"]) do
@@ -640,8 +693,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
           {:error, message} -> {[], message}
         end
 
-      start = Enum.find([:on, :auto], :off, &(Atom.to_string(&1) == attrs["start"]))
-      only_subgrants? = kind == :token and attrs["reach"] == "subgrants"
+      start = Enum.find([:on, :auto, :off], :off, &(Atom.to_string(&1) == attrs["start"]))
 
       grant = %Grant{
         id: grant_id(name, existing),
@@ -650,16 +702,15 @@ defmodule MWTClient.Sandbox.Server.Grants do
         preset: preset,
         purpose: purpose,
         placeholder: if(kind == :token, do: placeholder(attrs["prefix"])),
-        presents: if(kind == :token and not only_subgrants?, do: presents(attrs), else: %{}),
+        presents: if(kind == :token, do: presents(attrs), else: %{}),
         resolver:
           if(kind == :network, do: blank_to_nil(String.trim(State.to_text(attrs["resolver"])))),
         anchor:
           if(kind == :network, do: blank_to_nil(String.trim(State.to_text(attrs["anchor"])))),
-        reach: if(only_subgrants?, do: :subgrants, else: :vm),
-        env: if(kind == :token and not only_subgrants?, do: list(attrs["env"]), else: []),
-        file_env:
-          if(kind == :token and not only_subgrants?, do: list(attrs["file_env"]), else: []),
-        git: kind == :token and not only_subgrants? and attrs["git"] in ["true", "on"],
+        env: if(kind == :token, do: list(attrs["env"]), else: []),
+        file_env: if(kind == :token, do: list(attrs["file_env"]), else: []),
+        git: kind == :token and attrs["git"] in ["true", "on"],
+        machine: kind == :token and attrs["machine"] in ["true", "on"],
         hosts:
           if(kind == :token, do: Enum.map(list(attrs["hosts"]), &String.downcase/1), else: []),
         carriers:
@@ -670,7 +721,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
         destinations: destinations,
         script: script,
         dir: if(kind == :command, do: command_dir(attrs["dir"])),
-        parent: parent && parent.id,
+        credential: credential && credential.id,
         params: params,
         confined: saved? and attrs["confined"] in ["true", "on"],
         with: if(saved?, do: list(attrs["with"]), else: []),
@@ -690,17 +741,62 @@ defmodule MWTClient.Sandbox.Server.Grants do
           if(minted? and attrs["mint_per"] in ["host", "true", "on"], do: :host, else: :grant),
         keep_minutes: if(minted?, do: keep_minutes(attrs["keep_minutes"])),
         signs_as:
-          if(kind == :token and not only_subgrants?,
+          if(kind in [:token, :request],
             do: attrs["signs_as"] |> list() |> Enum.map(&String.downcase/1) |> Enum.uniq(),
             else: []
+          ),
+        covers_unread: attrs["covers_unread"] not in ["false", false],
+        # A GitHub App's installation token, made by the github adapter from
+        # the key the mint prints (`MWTClient.Sandbox.Adapter.GitHub`).
+        app:
+          if(minted? and text_given?(attrs["app_id"]) and text_given?(attrs["installation_id"]),
+            do: %{
+              app_id: String.trim(attrs["app_id"]),
+              installation_id: String.trim(attrs["installation_id"])
+            }
           )
       }
 
+      # Narrowed beyond its hosts (`MWTClient.Sandbox.Attributes`): a token
+      # grant only.
+      {grant, attribute_error} =
+        case kind == :token && MWTClient.Sandbox.Attributes.parse(attrs["attributes"]) do
+          {:ok, attributes} -> {%{grant | attributes: attributes}, nil}
+          {:error, message} -> {grant, message}
+          _other -> {grant, nil}
+        end
+
       errors = grant_errors(grant, attrs, destination_error, saved?, existing, valueless?)
+      errors = if attribute_error, do: Map.put(errors, :attributes, attribute_error), else: errors
+
+      errors =
+        case grant.app do
+          %{app_id: app_id, installation_id: installation} ->
+            if Regex.match?(~r/\A[A-Za-z0-9.]{1,64}\z/, app_id) and
+                 Regex.match?(~r/\A\d{1,18}\z/, installation),
+               do: errors,
+               else:
+                 Map.put(
+                   errors,
+                   :mint,
+                   "A GitHub App's id is letters and digits (Iv23li… or 123456), its installation's id digits."
+                 )
+
+          nil ->
+            errors
+        end
 
       errors =
         if kind == :request and param_error == nil,
-          do: Map.merge(SavedRequest.errors(Map.from_struct(grant), params, parent), errors),
+          do:
+            Map.merge(
+              SavedRequest.errors(
+                Map.from_struct(grant),
+                params,
+                credential && Credential.attach(grant, credential)
+              ),
+              errors
+            ),
           else: errors
 
       errors = if param_error, do: Map.put(errors, :params, param_error), else: errors
@@ -726,13 +822,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
                 grant
                 | icon: found.icon,
                   request_headers: found.request_headers,
-                  cli_tools: found.tools,
-                  checks:
-                    for(
-                      {attrs, n} <- Enum.with_index(found.checks, 1),
-                      {:ok, check} <- [MWTClient.Sandbox.Check.new(stringed(attrs), "check-#{n}")],
-                      do: check
-                    )
+                  cli_tools: found.tools
               },
               else: grant
 
@@ -748,6 +838,8 @@ defmodule MWTClient.Sandbox.Server.Grants do
     end
   end
 
+  defp text_given?(value), do: is_binary(value) and String.trim(value) != ""
+
   # A login file's refresh placeholder never changes while the file stays:
   # a tool that read it keeps working.
   defp kept_login(%{login: login} = presents, %{login: %{refresh: refresh}}),
@@ -755,31 +847,37 @@ defmodule MWTClient.Sandbox.Server.Grants do
 
   defp kept_login(presents, _before), do: presents
 
-  # A parameter named like a variable a grant it runs with sets.
+  # A parameter named like a variable a credential it runs with sets.
   defp with_clash(%Grant{with: []}, _existing), do: nil
 
   defp with_clash(grant, existing) do
     variables =
       for %Grant{kind: :token} = other <- existing,
-          other.id in grant.with,
+          Grant.credential_id(other) in grant.with,
           variable <- other.env ++ other.file_env,
           do: variable
 
     Enum.find_value(grant.params, &(&1.name in variables and &1.name))
   end
 
+  # Whether a token grant is over the credential `id`: one a saved command
+  # may run with.
+  defp credential_named?(existing, id),
+    do: Enum.any?(existing, &(&1.kind == :token and Grant.credential_id(&1) == id))
+
   defp stringed(map), do: Map.new(map, fn {key, value} -> {to_string(key), value} end)
 
   @doc """
-  Adds the subgrants a preset carries under `grant`, each checked as its
-  form would be; one that doesn't pass is left out, and the log says so.
+  Adds the actions a preset carries beside `grant`, over its resource,
+  each checked as its form would be; one that doesn't pass is left out,
+  and the log says so.
   """
-  def add_preset_subgrants(state, grant, preset, fill \\ %{})
+  def add_preset_actions(state, grant, preset, fill \\ %{})
 
-  def add_preset_subgrants(state, _grant, nil, _fill), do: state
+  def add_preset_actions(state, _grant, nil, _fill), do: state
 
-  def add_preset_subgrants(state, grant, preset, fill) do
-    Enum.reduce(preset.subgrants, state, fn attrs, state ->
+  def add_preset_actions(state, grant, preset, fill) do
+    Enum.reduce(preset.actions, state, fn attrs, state ->
       kind = if grant.kind == :token, do: "request", else: "command"
 
       attrs =
@@ -795,11 +893,14 @@ defmodule MWTClient.Sandbox.Server.Grants do
         end
         |> Map.merge(%{
           "kind" => kind,
-          "parent" => grant.id,
-          "preset" => if(kind == "request", do: "request_subgrant", else: "saved_command")
+          "credential" => Grant.credential_id(grant),
+          "preset" => if(kind == "request", do: "request_action", else: "saved_command")
         })
 
-      case build_grant(attrs, state.grants, preset: nil) do
+      case build_grant(attrs, state.grants,
+             preset: nil,
+             credentials: Map.get(state, :credentials, [])
+           ) do
         {:ok, sub, _value} ->
           state
           |> State.change(:grants, &(&1.grants ++ [sub]))
@@ -813,7 +914,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
           State.log(state, %{
             outcome: :grant,
             summary:
-              "#{attrs["name"]}, a subgrant #{preset.name} carries, was left out: " <>
+              "#{attrs["name"]}, an action #{preset.name} carries, was left out: " <>
                 (errors |> Map.values() |> Enum.join(" ")),
             grant_id: grant.id
           })
@@ -841,7 +942,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
     end
   end
 
-  # A request subgrant's body: JSON, or nil for none.
+  # A request action's body: JSON, or nil for none.
   defp request_body(text) do
     case text |> State.to_text() |> String.replace("\r\n", "\n") |> String.trim() do
       "" -> nil
@@ -852,12 +953,12 @@ defmodule MWTClient.Sandbox.Server.Grants do
   @doc """
   A grant changed from its form: what you can change of it, checked as when
   it was added. It keeps its id, so agents still find it, its placeholder
-  and value, its kind and the grant it sits under, its host list, and its
-  state: on or off, for as long, asking or not, and the state it starts
-  in, which its page changes. Ask to run commands and MWT's tools are built in, and
+  and value, its kind and the resource it is over, and its state: on or
+  off, for as long, asking or not, and the state it starts in, which its
+  page changes. The Internet's grant and MWT's tools are built in, and
   can't be changed.
   """
-  def edit_grant(%Grant{} = grant, attrs, grants) do
+  def edit_grant(%Grant{} = grant, attrs, grants, credentials \\ []) do
     if Grant.built_in?(grant) do
       {:error, :built_in}
     else
@@ -865,14 +966,18 @@ defmodule MWTClient.Sandbox.Server.Grants do
         Map.merge(attrs, %{
           "kind" => Atom.to_string(grant.kind),
           "preset" => edit_preset(grant),
-          "parent" => grant.parent,
+          "credential" => grant.credential,
           "start" => Atom.to_string(grant.start),
           "prefix" => "",
           "source" => if(match?({:minted, _}, grant.source), do: "minted", else: "stored"),
           "mint_per" => Map.get(attrs, "mint_per", Atom.to_string(grant.mint_per))
         })
 
-      case build_grant(attrs, List.delete(grants, grant), editing: true, preset: nil) do
+      case build_grant(attrs, List.delete(grants, grant),
+             editing: true,
+             preset: nil,
+             credentials: credentials
+           ) do
         {:ok, built, _value} ->
           {:ok,
            %{
@@ -881,13 +986,17 @@ defmodule MWTClient.Sandbox.Server.Grants do
                preset: grant.preset,
                placeholder: grant.placeholder,
                presents: kept_login(built.presents, grant.presents),
-               parent: grant.parent,
+               credential: grant.credential,
+               network: grant.network,
+               scope: grant.scope,
+               aliases: grant.aliases,
+               login_aliases: grant.login_aliases,
+               app: built.app || grant.app,
                start: grant.start,
                ceiling: grant.ceiling,
                icon: grant.icon,
                request_headers: grant.request_headers,
                cli_tools: grant.cli_tools,
-               checks: grant.checks,
                host_rules: grant.host_rules,
                proposal: grant.proposal,
                state: grant.state,
@@ -905,7 +1014,7 @@ defmodule MWTClient.Sandbox.Server.Grants do
   end
 
   defp edit_preset(%Grant{kind: :command}), do: "saved_command"
-  defp edit_preset(%Grant{kind: :request}), do: "request_subgrant"
+  defp edit_preset(%Grant{kind: :request}), do: "request_action"
   defp edit_preset(%Grant{preset: nil, kind: kind}), do: Atom.to_string(kind)
   defp edit_preset(%Grant{preset: preset}), do: to_string(preset)
 
@@ -941,9 +1050,6 @@ defmodule MWTClient.Sandbox.Server.Grants do
     token? = grant.kind == :token
     variables = grant.env ++ grant.file_env
 
-    any_command =
-      Enum.find(existing, &(&1.kind == :command and is_nil(&1.script) and &1.id != grant.id))
-
     [
       {:name, grant.name == "", "Give it a name you'll recognise on an approval."},
       {:purpose, grant.purpose == "",
@@ -970,22 +1076,14 @@ defmodule MWTClient.Sandbox.Server.Grants do
        "A whole number of minutes, from 1 to 1440, or empty to keep it as the mint says."},
       {:signs_as, not Enum.all?(grant.signs_as, &Regex.match?(@account, &1)),
        "Name each service account by its email: name@project.iam.gserviceaccount.com."},
-      # MWT sends the grant's value there itself to sign, and a value goes
-      # only where its grant lists.
-      {:signs_as,
-       grant.signs_as != [] and
-         not Policy.host_listed?(CredentialEndpoint.sign_host(), grant.hosts),
-       "Signing sends the grant's value to #{CredentialEndpoint.sign_host()}: list it among the hosts, or *.googleapis.com."},
+      # Signing's host, and the token endpoint a login file is refreshed
+      # at, are the google adapter's own: implied, not listed
+      # (`MWTClient.Sandbox.Adapter.Google.implied_hosts/1`).
       {:present_id_header,
        Map.has_key?(grant.presents, :login) and grant.presents.login.header != "" and
          (not Regex.match?(@header, grant.presents.login.header) or
             grant.presents.login.header in @framing),
        "A header's name: letters, digits and dashes, like X-Id-Token. Empty sends it as the grant's own value goes."},
-      # MWT answers the refresh there, and the VM's request goes there.
-      {:present_login,
-       Map.has_key?(grant.presents, :login) and
-         not Policy.host_listed?(CredentialEndpoint.token_host(), grant.hosts),
-       "The login file is refreshed at #{CredentialEndpoint.token_host()}: list it among the hosts, or *.googleapis.com."},
       {:present_project,
        Map.has_key?(grant.presents, :metadata) and
          not Regex.match?(~r/\A[a-z][a-z0-9-]{4,62}\z/, grant.presents.metadata.project),
@@ -997,11 +1095,8 @@ defmodule MWTClient.Sandbox.Server.Grants do
       {:destinations, grant.kind == :network and destination_error != nil, destination_error},
       {:mint, match?({:minted, ""}, grant.source),
        "Enter the command that prints a short-lived token."},
-      {:name, grant.kind == :command and not saved? and any_command != nil,
-       "#{any_command && any_command.name} is built in and takes any command. " <>
-         "Turn it on when a task needs it, or add a subgrant."},
       {:script, saved? and is_nil(grant.script),
-       "Write the script agents may run. To let them write their own, turn on Ask to run commands."},
+       "Write the script agents may run. They can always ask to run one of their own, which you approve each time."},
       {:script,
        grant.kind == :command and byte_size(grant.script || "") > HostCommand.max_script(),
        "The script is over #{div(HostCommand.max_script(), 1024)} KiB."},
@@ -1011,22 +1106,17 @@ defmodule MWTClient.Sandbox.Server.Grants do
       {:dir, grant.kind == :command and grant.script != nil and is_nil(grant.dir),
        "Say which folder your script runs in."},
       {:with, grant.with != [] and not grant.confined,
-       "Only a confined command runs with a grant's real value: tick Runs confined."},
+       "Only a confined command runs with a credential's real value: tick Runs confined."},
+      {:with, Enum.any?(grant.with, &(not credential_named?(existing, &1))),
+       "Name credentials by their id: " <>
+         Enum.join(Enum.reject(grant.with, &credential_named?(existing, &1)), ", ") <>
+         " isn't one a token grant is over."},
       {:with,
        Enum.any?(
-         grant.with,
-         &(not Enum.any?(existing, fn other -> other.id == &1 and other.kind == :token end))
+         existing,
+         &(&1.kind == :token and Grant.credential_id(&1) in grant.with and &1.mint_per == :host)
        ),
-       "Name token grants by their id: " <>
-         Enum.join(
-           Enum.reject(grant.with, fn id ->
-             Enum.any?(existing, &(&1.id == id and &1.kind == :token))
-           end),
-           ", "
-         ) <> " isn't one."},
-      {:with,
-       Enum.any?(existing, &(&1.id in grant.with and &1.kind == :token and &1.mint_per == :host)),
-       "A grant minted per host can't be named here: a script has no single host to mint it for."},
+       "A credential minted per host can't be named here: a script has no single host to mint it for."},
       {:with, with_clash(grant, existing) != nil,
        "#{with_clash(grant, existing)} is both a parameter and a variable of a grant it runs with. Rename the parameter."},
       {:dir, grant.kind == :command and grant.dir != nil and not File.dir?(grant.dir),
@@ -1041,11 +1131,14 @@ defmodule MWTClient.Sandbox.Server.Grants do
     |> Map.new(fn {field, _failed?, message} -> {field, message} end)
   end
 
-  defp destinations(text, kind) do
+  defp destinations(text, kind, over_network?) do
     entries = list(text)
 
     cond do
       kind != :network ->
+        {[], nil}
+
+      entries == [] and over_network? ->
         {[], nil}
 
       entries == [] ->
@@ -1101,6 +1194,13 @@ defmodule MWTClient.Sandbox.Server.Grants do
     Map.merge(metadata, login)
   end
 
+  @doc """
+  A new placeholder in the shape of `like`, an existing one: the same
+  prefix (`ghp_`, `ya29.mwt`), new random characters.
+  """
+  def fresh_placeholder(like) when is_binary(like),
+    do: placeholder(String.slice(like, 0, max(String.length(like) - 40, 0)))
+
   # Placeholders look like the real thing where a client checks the format
   # (`ghp_` for GitHub), and are long and random, so finding one in a header
   # is unambiguous.
@@ -1155,10 +1255,10 @@ defmodule MWTClient.Sandbox.Server.Grants do
       MapSet.new()
     else
       now = State.now()
-      failing = State.held(state)
+      locks = Map.get(state, :locks, %{})
 
       for grant <- state.grants,
-          not Map.has_key?(failing, grant.id),
+          not Map.has_key?(locks, Grant.resource(grant)),
           Grant.on?(grant, now),
           into: MapSet.new(),
           do: grant.id
@@ -1223,10 +1323,10 @@ defmodule MWTClient.Sandbox.Server.Grants do
         grant.state == :on and not Grant.on?(grant, at) ->
           state
           |> Approvals.settle_waiting(grant.id, :grant_off)
-          |> State.replace_grant(%{grant | state: :off, expires_at: nil, allowances: []})
+          |> State.replace_grant(Grant.put_down(grant))
           |> State.log(%{
             outcome: :grant,
-            summary: "#{grant.name} turned off: its time ran out",
+            summary: "#{grant.name} off: its time ran out",
             grant_id: grant.id
           })
           |> State.write_inbox()

@@ -188,8 +188,7 @@ defmodule MWTClient.Sandbox.Egress.Driver do
       to the other in `detect/2`;
     * `name` - the host the client named (TLS's SNI), or nil;
     * `ip`, `port` - where it goes, as the destination check approved;
-    * `under` - the grant it went under, or `:read_only` while only a token
-      grant's hosts may be reached;
+    * `under` - the grant it went under;
     * `tls?` - whether MWT ended the VM's TLS. If so, the link to the host
       is TLS too, started again by MWT and verified for `name`, and the
       bytes the driver sees both ways are decrypted;
@@ -213,7 +212,7 @@ defmodule MWTClient.Sandbox.Egress.Driver do
           name: String.t() | nil,
           ip: :inet.ip_address(),
           port: :inet.port_number(),
-          under: String.t() | :read_only | nil,
+          under: String.t() | nil,
           tls?: boolean(),
           alpn: String.t() | nil,
           first: side(),

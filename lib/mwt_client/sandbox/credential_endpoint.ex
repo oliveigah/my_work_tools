@@ -149,7 +149,8 @@ defmodule MWTClient.Sandbox.CredentialEndpoint do
           {:error, "mwt_bad_request",
            "MWT answers only a refresh (grant_type=refresh_token) of #{grant.name}'s login."}
 
-        form["refresh_token"] != Grant.login_placeholder(grant) ->
+        # Its credential's login, or one it had before a merge.
+        form["refresh_token"] not in [Grant.login_placeholder(grant) | grant.login_aliases || []] ->
           {:error, "mwt_bad_request",
            "The refresh is for another login than #{grant.name}'s: use its login file, #{Grant.login_file(grant)}."}
 
@@ -229,7 +230,7 @@ defmodule MWTClient.Sandbox.CredentialEndpoint do
   end
 
   @doc """
-  The request MWT sends itself, as a request subgrant's call
+  The request MWT sends itself, as a request action's call
   (`MWTClient.Sandbox.SavedRequest.send/4`), the grant's value where
   `{token}` is.
   """

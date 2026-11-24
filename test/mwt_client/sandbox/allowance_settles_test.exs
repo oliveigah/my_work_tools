@@ -2,9 +2,9 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
   @moduledoc """
   An allowance added while cards wait settles only what it would have let
   through, had it been there when they were asked: *Allow every use* and
-  Auto-approve never a host its grant's host list asks about, nor an add
-  of MWT's tools past the hour's limit. The card you decide goes by your
-  decision.
+  Auto-approve every card of its grant, *Allow similar* only those like
+  the one decided, none a grant that always asks nor an add of MWT's
+  tools past the hour's limit. The card you decide goes by your decision.
   """
   use ExUnit.Case, async: true
 
@@ -45,7 +45,7 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
   defp still_waiting?(username, id),
     do: Enum.any?(Sandbox.snapshot(username).waiting, &(&1.id == id))
 
-  defp corp(username) do
+  defp corp(username, ceiling \\ :allow) do
     {:ok, corp} =
       Sandbox.create_grant(username, %{
         "kind" => "network",
@@ -54,12 +54,12 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
         "destinations" => "*.corp.example:443"
       })
 
+    {:ok, _} = Sandbox.set_ceiling(username, corp.id, ceiling)
     {:ok, _} = Sandbox.turn_on(username, corp.id, 60, :ask)
-    {:ok, _} = Sandbox.host_rule_set(username, corp.id, {:put, "admin.corp.example", :ask})
     corp
   end
 
-  test "Allow every use on one card leaves the card a host list holds for asking",
+  test "Allow every use on one card settles the others its grant asked about",
        %{username: username} do
     corp = corp(username)
     wiki = held(username, request("wiki.corp.example", "/page", corp.id))
@@ -67,50 +67,48 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
 
     wiki_card = waiting_for(username, "wiki.corp.example")
     admin_card = waiting_for(username, "admin.corp.example")
-    assert admin_card.host_entry == "admin.corp.example"
+    assert admin_card.grant_id == corp.id
 
     :ok = Sandbox.decide(username, wiki_card.id, {:allow, :all, 60})
     assert {:ok, _} = Task.await(wiki)
+    assert {:ok, _} = Task.await(admin)
+    refute still_waiting?(username, admin_card.id)
+  end
 
-    # Still its own card, which only you decide.
+  test "Allow similar settles only the cards like the one decided", %{username: username} do
+    corp = corp(username)
+    first = held(username, request("wiki.corp.example", "/page", corp.id))
+    card = waiting_for(username, "wiki.corp.example")
+    admin = held(username, request("admin.corp.example", "/delete-everything", corp.id))
+    admin_card = waiting_for(username, "admin.corp.example")
+
+    :ok = Sandbox.decide(username, card.id, {:allow, :similar, 60})
+    assert {:ok, _} = Task.await(first)
     assert still_waiting?(username, admin_card.id)
+
     :ok = Sandbox.decide(username, admin_card.id, :deny)
     assert {:deny, 403, body} = Task.await(admin)
     assert body =~ "mwt_denied_by_user"
   end
 
-  test "Auto-approve and Enabled, auto leave a waiting host-list Ask card", %{username: username} do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :ask})
-    {:ok, _} = Sandbox.set_mode(username, "internet", :ask)
-
-    asking = held(username, request("example.com", "/held", "internet"))
-    card = waiting_for(username, "example.com")
-    assert card.host_entry == "example.com"
-
-    {:ok, _} = Sandbox.set_mode(username, "internet", :all)
-    assert still_waiting?(username, card.id)
-
-    corp = corp(username)
-    admin = held(username, request("admin.corp.example", "/", corp.id))
-    admin_card = waiting_for(username, "admin.corp.example")
-    {:ok, _} = Sandbox.set_start(username, corp.id, :auto)
-    assert still_waiting?(username, admin_card.id)
-
-    # Allow similar still settles it, as it would a new one.
-    :ok = Sandbox.decide(username, card.id, {:allow, :similar, 60})
-    assert {:ok, "internet"} = Task.await(asking)
-    :ok = Sandbox.decide(username, admin_card.id, :allow_once)
-    assert {:ok, _} = Task.await(admin)
-  end
-
-  test "the card you decide goes, whatever its allowance covers of others", %{username: username} do
+  test "Auto-approve settles what its grant asked about", %{username: username} do
     corp = corp(username)
     admin = held(username, request("admin.corp.example", "/", corp.id))
     card = waiting_for(username, "admin.corp.example")
 
-    # Every use, chosen on the card itself (the page offers it only on
-    # others): that one goes; the allowance covers the host no further.
-    :ok = Sandbox.decide(username, card.id, {:allow, :all, 60})
+    {:ok, _} = Sandbox.set_mode(username, corp.id, :all)
+    assert {:ok, _} = Task.await(admin)
+    refute still_waiting?(username, card.id)
+  end
+
+  test "a grant that always asks takes no allowance: the card goes once, and the host asks again",
+       %{username: username} do
+    corp = corp(username, :ask)
+    admin = held(username, request("admin.corp.example", "/", corp.id))
+    card = waiting_for(username, "admin.corp.example")
+
+    assert {:error, _} = Sandbox.decide(username, card.id, {:allow, :all, 60})
+    :ok = Sandbox.decide(username, card.id, :allow_once)
     assert {:ok, _} = Task.await(admin)
 
     again = held(username, request("admin.corp.example", "/", corp.id))

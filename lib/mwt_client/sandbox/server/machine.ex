@@ -755,9 +755,6 @@ defmodule MWTClient.Sandbox.Server.Machine do
     |> check()
   end
 
-  def finished(state, {:check, grant_id, check_id}, result),
-    do: MWTClient.Sandbox.Server.Checks.finished(state, {grant_id, check_id}, result)
-
   # `key` is the grant's id, or `{id, host}` for one minted per host
   # (`Values.mint_key/2`). A value is kept until it stops being fresh, and
   # the ID token the mint printed beside it, if any, as long: one never
@@ -843,7 +840,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
   defp how_made_now(state, key) do
     id = with {id, _host} <- key, do: id
 
-    case Enum.find(state.grants, &(&1.id == id)) do
+    case Enum.find(state.grants, &(&1.kind == :token and Grant.credential_id(&1) == id)) do
       nil -> nil
       grant -> Grant.how_made(grant)
     end

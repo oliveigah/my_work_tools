@@ -11,7 +11,6 @@ defmodule MWTClient.Sandbox.HostileTextTest do
   use ExUnit.Case, async: true
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.Grant
 
   alias MWTClient.Sandbox.{
     Channel,
@@ -284,11 +283,7 @@ defmodule MWTClient.Sandbox.HostileTextTest do
       %{username: username} = MWTClient.VaultHelpers.unlocked_identity("hostile")
       server = GenServer.whereis(Store.via(MWTClient.Sandbox.Server, username))
 
-      # Ask to run commands, the escape hatch, is built in.
-      grant = Enum.find(Sandbox.snapshot(username).grants, &Grant.ask_to_run?/1)
-
-      {:ok, _} = Sandbox.turn_on(username, grant.id, :until_off, :ask)
-
+      # A command the agent writes needs no grant: each one asks.
       # Straight at the server, as if the channel had let them through.
       junk = [%{"a" => 1}, ["x"], 1.5, 7, true, nil, <<255>>]
 
@@ -367,11 +362,7 @@ defmodule MWTClient.Sandbox.HostileTextTest do
     test "is refused through the channel before anything waits for you, and as a grant's own" do
       %{username: username} = MWTClient.VaultHelpers.unlocked_identity("hostile")
 
-      # Ask to run commands, the escape hatch, is built in.
-      grant = Enum.find(Sandbox.snapshot(username).grants, &Grant.ask_to_run?/1)
-
-      {:ok, _} = Sandbox.turn_on(username, grant.id, :until_off, :ask)
-
+      # A command the agent writes needs no grant: each one asks.
       ask =
         Channel.read(
           Jason.encode!(%{

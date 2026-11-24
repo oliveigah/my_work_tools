@@ -378,6 +378,8 @@ defmodule MWTClient.Sandbox.DnsTest do
       refute_received {:corp_resolver, _}
       refute_received {:resolver_udp, _}
 
+      # A new grant starts off: a name of its network still isn't sent to
+      # the Internet's resolver.
       assert {"git.corp.example", "Not looked up (A): Corp is off"} in blocked(username)
 
       {:ok, _} = Sandbox.turn_on(username, "corp", :until_off, :all)

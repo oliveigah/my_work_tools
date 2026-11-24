@@ -2,15 +2,14 @@
 
 Read this before you ask to run one.
 
-The last resort, for what no subgrant and no other grant can do: a job that
+The last resort, for what no action and no grant can do: a job that
 needs the user's SSH keys, a kubeconfig, a signing key, their VPN, or tools
-only their machine has. Use another grant whenever one fits: through it the
+only their machine has. Use a grant whenever one fits: through it the
 user sees what each request does, while a command shows only its text.
 
-It goes through **Ask to run commands** (id `commands`), the escape hatch,
-built in: you write the text, as below. Only while it is on can you ask at
-all (`mwt request commands` when it is off), and the user reads and
-approves every run, on a card.
+It needs no grant: you may always ask. You write the text, as below, and
+the user reads and approves every run, on a card; none runs unattended.
+While the user's machine is locked, an ask is refused at once.
 
 So keep the command the smallest that gets what you need:
 
@@ -28,8 +27,8 @@ So keep the command the smallest that gets what you need:
 1. Run `mwt host` (or read `/mnt/mwt/host.md`) first: OS, architecture,
    shell, shared folders and tools there. Don't probe the machine with
    commands to find out.
-2. Ask: `mwt run commands --reason "what it does, and why it must run there" -- COMMAND ARGS`,
-   or pass a script on stdin (`mwt run commands --reason "..." <<'EOF' ... EOF`).
+2. Ask: `mwt run --reason "what it does, and why it must run there" -- COMMAND ARGS`,
+   or pass a script on stdin (`mwt run --reason "..." <<'EOF' ... EOF`).
    Options go before the `--`. The user approves the exact text, once,
    and it runs as them with `bash -lc`.
 3. Where it runs: `--dir`, by default your current directory. Shared folders
@@ -37,11 +36,11 @@ So keep the command the smallest that gets what you need:
    once it ends, MWT syncs that folder's copy, so what it wrote there
    reaches yours; `mwt sync PATH` waits for that. Anything else runs in the
    user's home folder.
-4. Prefer text the user can read to a script file: `mwt run commands -- ./x.sh` runs
+4. Prefer text the user can read to a script file: `mwt run -- ./x.sh` runs
    whatever the file holds when they click, and the card says so.
 5. When you expect to run the same again, don't run it ad hoc: propose it
-   as a subgrant (`mwt help propose`), then call it. The user can also
-   save a run as a subgrant from its card; `mwt run` then says its id:
+   as a saved command (`mwt help propose`), then call it. The user can also
+   save a run as an action from its card; `mwt run` then says its id:
    call that one next time.
 6. `--timeout` is the time limit in seconds (120 by default, 3600 at most).
    `mwt` waits up to `--wait` seconds (60) for it to be approved and run;

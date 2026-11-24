@@ -81,7 +81,6 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
     <.isolation
       firewall={@firewall}
       refused={@view.refused}
-      restorable={Map.get(@view, :restorable, [])}
       vm={@vm}
       now={@now}
     />
@@ -98,7 +97,6 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
     <.release_dialog
       :if={@releasing and not is_nil(@firewall.isolated)}
       incident={@firewall.isolated}
-      restorable={Map.get(@view, :restorable, [])}
     />
     """
   end
@@ -107,7 +105,6 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
 
   attr :firewall, Firewall, required: true
   attr :refused, :integer, required: true
-  attr :restorable, :list, default: [], doc: "the grants releasing turns back on, by name"
   attr :vm, :any, required: true
   attr :now, DateTime, required: true
 
@@ -223,7 +220,7 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
       <div :if={@incident} class="space-y-3 border-t border-bad/20 px-5 py-3">
         <p id="firewall-restorable" class="flex items-start gap-2 text-[11px] leading-4 text-muted">
           <.icon name="hero-key-micro" class="mt-px size-3.5 shrink-0 text-faint" />
-          <span>{back_words(@restorable)}</span>
+          <span>{release_words()}</span>
         </p>
 
         <details
@@ -316,12 +313,9 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
     """
   end
 
-  defp back_words([]), do: "No grant was on when it was isolated: turn on what you want again."
-
-  defp back_words(names),
+  defp release_words,
     do:
-      "Releasing turns back on, for the time they have left, the grants that were on: " <>
-        Enum.join(names, ", ") <> "."
+      "Isolating locked every network, credential and your machine, and changed no grant. Releasing ends those locks: what you locked yourself stays locked, and every grant is as you left it."
 
   defp released_words(:release), do: "Released"
   defp released_words(:trust), do: "Released, trusted"
@@ -329,7 +323,6 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
   ## Releasing an isolation the firewall made
 
   attr :incident, :map, required: true
-  attr :restorable, :list, required: true
 
   defp release_dialog(assigns) do
     assigns =
@@ -380,7 +373,7 @@ defmodule MWTClientWeb.SandboxLive.Firewall do
           <p class="text-xs leading-5 text-muted">
             Releasing doesn't undo what it saw. Whatever did it may still be running in the VM: release it once you know what happened, from what came before and the activity log.
           </p>
-          <p class="text-[11px] leading-4 text-muted">{back_words(@restorable)}</p>
+          <p class="text-[11px] leading-4 text-muted">{release_words()}</p>
           <div
             :if={@trust}
             id="firewall-release-trust"

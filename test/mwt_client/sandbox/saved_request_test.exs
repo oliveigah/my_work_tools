@@ -1,6 +1,6 @@
 defmodule MWTClient.Sandbox.SavedRequestTest do
   @moduledoc """
-  A request subgrant's template: what it may hold, and the request a call
+  A request action's template: what it may hold, and the request a call
   builds from it, each value encoded for where it goes.
   """
   use ExUnit.Case, async: true
@@ -9,11 +9,13 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
 
   doctest SavedRequest
 
+  # A request action with its credential attached.
   @github %Grant{
-    id: "github",
-    name: "GitHub",
-    kind: :token,
-    hosts: ["api.github.com", "github.com", "*.githubusercontent.com"]
+    id: "github-repo",
+    name: "GitHub: a repository",
+    kind: :request,
+    credential: "github",
+    preset: "github"
   }
 
   defp params!(text) do
@@ -50,12 +52,10 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
   end
 
   describe "the URL" do
-    test "goes over HTTPS to a host the grant lists, written out, on its usual port" do
+    test "goes over HTTPS to a host written out, on its usual port" do
       for {url, says} <- [
             {"", "Write the URL"},
             {"http://api.github.com/repos/$REPO", "HTTPS only"},
-            {"https://evil.example/$REPO", "sends its token only to api.github.com"},
-            {"https://api.github.com.evil.example/$REPO", "sends its token only to"},
             {"https://*.githubusercontent.com/$REPO", "Write the host out in full"},
             {"https://api.github.com:8443/$REPO", "usual HTTPS port"},
             {"https://user:pass@api.github.com/$REPO", "Leave the user and password out"},
@@ -65,8 +65,9 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
         assert message =~ says, url
       end
 
-      # A wildcard host covers a name written out under it.
+      # Any host: reaching it is a network grant's to give, on each call.
       assert errors(%{url: "https://raw.githubusercontent.com/$REPO/main/README.md"}) == %{}
+      assert errors(%{url: "https://evil.example/$REPO"}) == %{}
       assert errors(%{url: "https://api.github.com:443/repos/$REPO"}) == %{}
     end
 
@@ -99,6 +100,55 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
       assert message =~ "MWT writes Host itself"
 
       assert %{headers: _} = errors(%{headers: [{"Bad Name", "{token}"}]})
+    end
+
+    test "may carry the ID token and a signed JWT of a Google credential that makes them" do
+      google = %Grant{
+        id: "pm-policies",
+        name: "PM: policies",
+        kind: :request,
+        credential: "pm",
+        preset: "google",
+        signs_as: ["agent@p.iam.gserviceaccount.com"]
+      }
+
+      check = fn headers, over ->
+        SavedRequest.errors(
+          %{
+            method: "GET",
+            url: "https://pm.example.run.app/policies",
+            headers: headers,
+            body: nil
+          },
+          [],
+          over
+        )
+      end
+
+      both = [{"Authorization", "Bearer {signed_jwt}"}, {"X-User-Assertion", "{id_token}"}]
+      assert check.(both, google) == %{}
+
+      assert check.(
+               [{"Authorization", "Bearer {signed_jwt:agent@p.iam.gserviceaccount.com}"}],
+               google
+             ) ==
+               %{}
+
+      assert %{headers: message} =
+               check.(
+                 [{"Authorization", "Bearer {signed_jwt:other@p.iam.gserviceaccount.com}"}],
+                 google
+               )
+
+      assert message =~ "isn't an account the action signs as"
+
+      two = %{google | signs_as: ["a@p.iam.gserviceaccount.com", "b@p.iam.gserviceaccount.com"]}
+      assert %{headers: message} = check.([{"Authorization", "Bearer {signed_jwt}"}], two)
+      assert message =~ "name one"
+
+      # GitHub's makes neither.
+      assert %{headers: message} = check.([{"X-User", "{id_token}"}], @github)
+      assert message =~ "Google login"
     end
   end
 
@@ -134,15 +184,14 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
     assert message =~ "doesn't use PR"
   end
 
-  test "it sits under a token grant" do
-    assert %{parent: _} =
-             SavedRequest.errors(template(%{}), params!("REPO: word: r"), %Grant{
-               id: "x",
-               name: "x",
-               kind: :network
+  test "it sends with a credential" do
+    assert %{credential: _} =
+             SavedRequest.errors(template(%{}), params!("REPO: word: r"), %{
+               @github
+               | credential: nil
              })
 
-    assert %{parent: _} = SavedRequest.errors(template(%{}), params!("REPO: word: r"), nil)
+    assert %{credential: _} = SavedRequest.errors(template(%{}), params!("REPO: word: r"), nil)
   end
 
   describe "a call's request" do
@@ -152,7 +201,7 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
           id: "req",
           name: "req",
           kind: :request,
-          parent: "github",
+          credential: "github",
           method: "GET",
           headers: [{"Authorization", "Bearer {token}"}]
         },
@@ -201,6 +250,17 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
                "milestone" => 7,
                "labels" => [title]
              }
+    end
+
+    test "as text shows each value by what it is" do
+      shown =
+        SavedRequest.shown_value(
+          "Bearer {signed_jwt} {id_token} {signed_jwt:a@p.iam.gserviceaccount.com}",
+          "PM"
+        )
+
+      assert shown ==
+               "Bearer [a JWT signed as PM's account] [PM's ID token] [a JWT signed as a@p.iam.gserviceaccount.com]"
     end
 
     test "as text shows the token as the grant's name, never a value" do
@@ -255,6 +315,29 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
       # It stopped at the chunk past what it keeps: 17 of 64 came.
       assert run.bytes == 17 * 16 * 1024
       assert run.cut == run.bytes - 256 * 1024
+    end
+
+    test "puts each value in its header and writes each out of the answer" do
+      call = %{
+        @call
+        | headers: [{"authorization", "Bearer {signed_jwt}"}, {"x-user-assertion", "{id_token}"}]
+      }
+
+      Req.Test.stub(SavedRequest, fn conn ->
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer jwt-real-0123"]
+        assert Plug.Conn.get_req_header(conn, "x-user-assertion") == ["id-real-0123"]
+        Plug.Conn.send_resp(conn, 200, "echo jwt-real-0123 id-real-0123")
+      end)
+
+      run =
+        SavedRequest.send(
+          call,
+          %{token: "ya29.real", id_token: "id-real-0123", jwts: %{one: "jwt-real-0123"}},
+          "PM",
+          30
+        )
+
+      assert run.output == "echo [a JWT signed as PM's account] [PM's ID token]"
     end
 
     test "small answers come back whole" do

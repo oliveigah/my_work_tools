@@ -325,7 +325,8 @@ defmodule MWTClient.Sandbox.Server.State do
   Writes the VM's inbox again from the grants as they are: placeholders, files, instructions, the host's description.
   """
   def write_inbox(state) do
-    Inbox.write(inbox_dir(state), live_grants(state), ca_pem(state),
+    Inbox.write(inbox_dir(state), state.grants, ca_pem(state),
+      locked: locked_credentials(state),
       way_of_working: state.settings.way_of_working,
       workspace: MWTClient.Sandbox.Server.ShareSync.root(state)
     )
@@ -338,6 +339,19 @@ defmodule MWTClient.Sandbox.Server.State do
       )
 
       state
+  end
+
+  @doc """
+  The ids of the credentials locked now: by you, or all of them while the
+  VM is isolated.
+  """
+  def locked_credentials(state) do
+    isolated? = match?(%{isolated: %{}}, Map.get(state, :firewall))
+
+    for %{id: id} <- Map.get(state, :credentials, []),
+        isolated? or Map.has_key?(Map.get(state, :locks, %{}), {:credential, id}),
+        into: MapSet.new(),
+        do: id
   end
 
   @doc """
@@ -391,6 +405,9 @@ defmodule MWTClient.Sandbox.Server.State do
     saved = %{
       version: 1,
       grants: state.grants,
+      credentials: Map.get(state, :credentials, []),
+      networks: Map.get(state, :networks, []),
+      locks: Map.get(state, :locks, %{}),
       values: state.values,
       settings: state.settings,
       ca: state.ca,
@@ -432,7 +449,8 @@ defmodule MWTClient.Sandbox.Server.State do
     case Documents.load(username, @document, @legacy_file, key, :sandbox) do
       {:ok, %{version: 1} = saved} ->
         saved
-        |> Map.update!(:grants, fn grants -> Enum.map(grants, &Grant.upgrade/1) end)
+        |> drop_checks()
+        |> Map.update!(:grants, &Grant.upgrade_all/1)
         |> drop_file_grants()
         |> Map.update(:builds, [], fn builds ->
           Enum.map(builds, &struct(Build, Map.from_struct(&1)))
@@ -534,9 +552,6 @@ defmodule MWTClient.Sandbox.Server.State do
       # The ids of the grants live after the last message: one that leaves
       # closes what it let through (`MWTClient.Sandbox.Server.Grants.close_ended/1`).
       live: MapSet.new(),
-      # The checks running now, as {grant_id, check_id}
-      # (`MWTClient.Sandbox.Server.Checks`).
-      checking: MapSet.new(),
       # What the network path's view was last published from
       # (`MWTClient.Sandbox.Gate.publish/1`), and its version.
       gate: nil,
@@ -550,7 +565,6 @@ defmodule MWTClient.Sandbox.Server.State do
     Allowance,
     Approval,
     Build,
-    MWTClient.Sandbox.Check,
     MWTClient.Sandbox.Firewall,
     Grant,
     Handoff,
@@ -591,13 +605,29 @@ defmodule MWTClient.Sandbox.Server.State do
 
     restruct = fn module -> &struct(module, Map.delete(&1, :__struct__)) end
 
+    credentials =
+      Enum.map(Map.get(state, :credentials, []), &MWTClient.Sandbox.Credential.upgrade/1)
+
+    {grants, networks} =
+      state.grants
+      |> Enum.map(&Grant.upgrade/1)
+      |> Enum.reject(&(&1.kind == :file))
+      |> MWTClient.Sandbox.Server.Grants.with_built_in()
+      |> MWTClient.Sandbox.Network.migrate(
+        Enum.map(Map.get(state, :networks, []), &MWTClient.Sandbox.Network.upgrade/1)
+      )
+
+    {grants, credentials} = MWTClient.Sandbox.Credential.migrate(grants, credentials)
+
+    state =
+      state
+      |> Map.put(:credentials, credentials)
+      |> Map.put(:networks, networks)
+      |> Map.put(:locks, MWTClient.Sandbox.Server.Locks.upgrade(Map.get(state, :locks)))
+
     %{
       state
-      | grants:
-          state.grants
-          |> Enum.map(&Grant.upgrade/1)
-          |> Enum.reject(&(&1.kind == :file))
-          |> MWTClient.Sandbox.Server.Grants.with_built_in(),
+      | grants: grants,
         approvals: Enum.map(state.approvals, restruct.(Approval)),
         settings:
           state.settings
@@ -631,6 +661,21 @@ defmodule MWTClient.Sandbox.Server.State do
   # File grants are gone (2026-11-18): each handed the VM a real value no
   # switch could take back. One saved before is dropped with its value;
   # `dropped_files` names them, for the server to log once it starts.
+  # Checks (*Only while…*) are gone: a grant saved with some keeps none, and
+  # MWT names them once (`dropped_checks`), so you can see what no longer
+  # runs.
+  defp drop_checks(saved) do
+    dropped =
+      for grant <- saved.grants,
+          checks = Map.get(grant, :checks) || [],
+          checks != [],
+          do: {grant.name, Enum.map(checks, &Map.get(&1, :name, "a check"))}
+
+    saved
+    |> Map.update!(:grants, fn grants -> Enum.map(grants, &Map.delete(&1, :checks)) end)
+    |> Map.update(:dropped_checks, dropped, &(&1 ++ dropped))
+  end
+
   defp drop_file_grants(saved) do
     {files, grants} = Enum.split_with(saved.grants, &(&1.kind == :file))
     ids = Enum.map(files, & &1.id)
@@ -663,36 +708,18 @@ defmodule MWTClient.Sandbox.Server.State do
 
   @doc """
   What `MWTClient.Sandbox.Policy` decides from, as the state is now: the
-  grants, and the grants a gating check holds off.
+  grants, the values made from them and the locks.
   """
   def policy(state) do
     made = state |> Map.get(:made, %{}) |> Map.values()
-    MWTClient.Sandbox.Policy.snapshot(state.grants, held(state), made)
+
+    MWTClient.Sandbox.Policy.snapshot(
+      state.grants,
+      made,
+      Map.get(state, :locks, %{}),
+      Map.new(Map.get(state, :networks, []), &{&1.id, &1.limits})
+    )
   end
-
-  @doc """
-  The grants as the VM should see them: each as its own switch says,
-  except one a gating check holds off, which is off for the VM and says
-  why (`held_by`).
-  """
-  @spec live_grants(map()) :: [Grant.t()]
-  def live_grants(state) do
-    failing = held(state)
-
-    Enum.map(state.grants, fn grant ->
-      case Map.get(failing, grant.id) do
-        nil -> grant
-        why -> %{grant | state: :off, expires_at: nil, held_by: why}
-      end
-    end)
-  end
-
-  @doc "One grant as the VM should see it (`live_grants/1`), or nil."
-  @spec live_grant(map(), String.t() | nil) :: Grant.t() | nil
-  def live_grant(state, id), do: Enum.find(live_grants(state), &(&1.id == id))
-
-  @doc "The grants a gating check holds off now, each with why. Every use of one is refused."
-  def held(state), do: MWTClient.Sandbox.Server.Checks.failing(state)
 
   @doc """
   A short id not used before in this run.

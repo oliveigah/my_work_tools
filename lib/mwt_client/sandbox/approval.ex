@@ -7,18 +7,22 @@ defmodule MWTClient.Sandbox.Approval do
       (`need`). `minutes` is how long it asked for, `reason` its own words.
     * **use** - a request carrying a grant's placeholder (`kind: :request`),
       held by the proxy, or a connection through a network grant
-      (`kind: :connection`).
+      (`kind: :connection`). A request may go through more than one
+      resource, each given by a grant of its own
+      (`MWTClient.Sandbox.Policy`): when more than one asks, one card
+      answers for all of them, `grant_id` first, then `also`, each named
+      on the card. Your answer goes to each.
     * **command** (`kind: :command`) - an agent asks to run `script` on the
       host, in `dir`, for at most `timeout` seconds. It waits twice when you
       choose to see the output first: for your go-ahead (`stage: :run`), and
       once it ran, for you to release the output (`stage: :output`). `run`
       holds how the run went (`t:run/0`). `script_from` says whose text it
-      is: the agent's, through Ask to run commands, or the grant's, a saved command.
-      Through Ask to run commands, `suggest_save` is the name the agent suggests
+      is: the agent's, which needs no grant (`grant_id` nil), or the grant's,
+      a saved command. The agent's, `suggest_save` is the name it suggests
       saving it under and `save_for` what it would be for, in words for any
       time it runs (the `reason` is for this run), and `saved_as` the saved
       command that runs the same text, once you saved it or when one
-      already did. A call of a subgrant by id carries `values`: one for
+      already did. A call of an action by id carries `values`: one for
       each of its parameters, checked, in their order; the script reads
       them as environment variables.
 
@@ -30,7 +34,7 @@ defmodule MWTClient.Sandbox.Approval do
       it is let through by allowances: *Allow similar* covers changes to
       the same item.
 
-  A call of a request subgrant is a command approval too, with `call`: the
+  A call of a request action is a command approval too, with `call`: the
   request MWT sends with its token grant's value, built from your template
   and the agent's values (`MWTClient.Sandbox.SavedRequest`), shown in full
   as text in `script`. Its run's `status` is the answer's HTTP status.
@@ -44,7 +48,7 @@ defmodule MWTClient.Sandbox.Approval do
   changed meanwhile is refused (`decision: :changed`), never run with the
   old script under the new grant.
 
-  An activation with a `proposal` is an agent proposing a subgrant: the
+  An activation with a `proposal` is an agent proposing an action: the
   grant it would sit under (`parent`), its `name`, what it is for
   (`purpose`), its `params`, and what it does: for a command (`kind:
   :command`) the `script`, the folder (`dir`) and the `hints` MWT worked
@@ -106,6 +110,7 @@ defmodule MWTClient.Sandbox.Approval do
     stage: :run,
     script_from: :agent,
     values: [],
+    also: [],
     facts: [],
     claims: [],
     hints: [],
@@ -193,7 +198,7 @@ defmodule MWTClient.Sandbox.Approval do
           error: String.t() | nil
         }
 
-  @typedoc "A subgrant as an agent proposes it."
+  @typedoc "An action as an agent proposes it."
   @type proposal :: %{
           kind: :command | :request,
           parent: String.t(),
@@ -214,6 +219,7 @@ defmodule MWTClient.Sandbox.Approval do
           id: String.t(),
           kind: kind(),
           grant_id: String.t() | nil,
+          also: [String.t()],
           title: String.t(),
           method: String.t() | nil,
           host: String.t() | nil,
@@ -335,6 +341,20 @@ defmodule MWTClient.Sandbox.Approval do
   def digest_text(term), do: term |> digest() |> Base.encode16(case: :lower)
 
   @doc """
+  The ids of every grant the card answers for: its own first, then the
+  others that asked about the same use (`also`).
+
+      iex> alias MWTClient.Sandbox.Approval
+      iex> now = ~U[2026-11-24 12:00:00Z]
+      iex> card = %Approval{id: "c", kind: :request, title: "GET h/", requested_at: now, deadline: now}
+      iex> Approval.grant_ids(%{card | grant_id: "a", also: ["b"]})
+      ["a", "b"]
+  """
+  @spec grant_ids(t()) :: [String.t()]
+  def grant_ids(%__MODULE__{grant_id: nil, also: also}), do: also
+  def grant_ids(%__MODULE__{grant_id: id, also: also}), do: [id | also]
+
+  @doc """
   Whether this is a use of a grant (a request, a connection, or a call of
   MWT's tools) rather than an ask.
   """
@@ -364,7 +384,7 @@ defmodule MWTClient.Sandbox.Approval do
   What an event about this approval says when its line opens
   (`MWTClient.Sandbox.EventDetails`): what was asked and how it was
   decided (`how`, in words), the command and how it ran, the tool call or
-  the subgrant proposed, what MWT worked out, and apart, what the agent
+  the action proposed, what MWT worked out, and apart, what the agent
   wrote. Never a command's output: only its size and what was found in it.
   """
   @spec details(t(), String.t() | nil) :: MWTClient.Sandbox.EventDetails.t()
@@ -396,12 +416,12 @@ defmodule MWTClient.Sandbox.Approval do
     ])
   end
 
-  defp kind_words(%{kind: :activation, proposal: %{}}), do: "A subgrant proposed"
+  defp kind_words(%{kind: :activation, proposal: %{}}), do: "An action proposed"
   defp kind_words(%{kind: :activation}), do: "A grant to turn on, or access to set up"
   defp kind_words(%{kind: :request}), do: "A request carrying a grant's placeholder"
   defp kind_words(%{kind: :connection}), do: "A connection through a network grant"
   defp kind_words(%{kind: :tool}), do: "A call of MWT's tools"
-  defp kind_words(%{kind: :command, call: %{}}), do: "A request subgrant, sent by MWT"
+  defp kind_words(%{kind: :command, call: %{}}), do: "A request action, sent by MWT"
   defp kind_words(%{kind: :command}), do: "A command on your machine"
 
   defp request_line(%{kind: kind, method: method, host: host, path: path})
@@ -418,7 +438,7 @@ defmodule MWTClient.Sandbox.Approval do
       {"Whose text",
        if(approval.script_from == :grant,
          do: "a saved command of the grant",
-         else: "the agent's, through Ask to run commands"
+         else: "the agent's, written by it"
        )},
       {"Saved command", approval.saved_as},
       {"Values",
@@ -479,7 +499,7 @@ defmodule MWTClient.Sandbox.Approval do
   defp proposal_section(proposal) do
     get = &Map.get(proposal, &1)
 
-    EventDetails.section("Subgrant proposed", [
+    EventDetails.section("Action proposed", [
       {"Name", get.(:name)},
       {"Under", get.(:parent_name)},
       {"For", get.(:purpose)},

@@ -12,7 +12,7 @@ defmodule MWTClient.MwtCommandCase do
   import ExUnit.Assertions, only: [flunk: 1]
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.{Channel, Grant}
+  alias MWTClient.Sandbox.Channel
 
   using do
     quote do
@@ -50,17 +50,10 @@ defmodule MWTClient.MwtCommandCase do
     File.chmod!(Path.join(bin, "socat"), 0o755)
     on_exit(fn -> MWTClient.TestFolders.remove!(base) end)
 
-    context =
-      "commands"
-      |> MWTClient.VaultHelpers.unlocked_identity()
-      |> Map.merge(%{bin: bin, project: project})
-
-    # Commands go through a command grant: here one that takes any text.
-    # Ask to run commands, the escape hatch, is built in.
-    grant = Enum.find(Sandbox.snapshot(context.username).grants, &Grant.ask_to_run?/1)
-
-    {:ok, _} = Sandbox.turn_on(context.username, grant.id, :until_off, :ask)
-    context
+    # A command an agent writes needs no grant: each run asks.
+    "commands"
+    |> MWTClient.VaultHelpers.unlocked_identity()
+    |> Map.merge(%{bin: bin, project: project})
   end
 
   @doc """

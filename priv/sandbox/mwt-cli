@@ -29,18 +29,19 @@ mwt - ask MWT, the user's control panel, for access
   mwt grants
       Every grant: its id, what it is for, how to use it, whether it is on.
 
-  mwt exec GRANT_ID -- COMMAND [ARG...]
-      Run a command here in the VM with that token grant's placeholders.
-      Only this command and its children get the credential environment.
-      The grant must be on; every authenticated request still goes through
-      the proxy's approval rules. Arguments, stdin and exit status pass
-      through unchanged. This does not run anything on the user's machine.
-      When mwt doesn't run the command (the grant is off or unknown, or the
-      use is wrong) it exits 125, as env and timeout do, with a line on
+  mwt exec CREDENTIAL -- COMMAND [ARG...]
+      Run a command here in the VM speaking as that credential: it gets the
+      credential's placeholders (variables, token file, git's helper). It
+      decides nothing: the grants over the credential decide each request
+      the command sends, at the proxy, by where it goes. A grant over it
+      must be on. Arguments, stdin and exit status pass through unchanged.
+      This does not run anything on the user's machine. When mwt doesn't
+      run the command (no grant over it is on, it is locked or unknown, or
+      the use is wrong) it exits 125, as env and timeout do, with a line on
       stderr; any other status is the command's own. Nested, as in
       mwt exec github -- mwt exec hex -- COMMAND, the command gets both.
-      For an API call, look for a subgrant of the grant first (mwt call):
-      MWT sends it for you, and nothing in the VM needs the token.
+      For an API call, look for an action first (mwt call): MWT sends it
+      for you, and nothing in the VM needs the token.
 
   mwt request GRANT_ID --reason "what you are about to do" [--minutes 60] [--wait 60]
       Ask the user to turn a grant on (by id or name). Waits up to --wait
@@ -58,6 +59,18 @@ mwt - ask MWT, the user's control panel, for access
       another port, the Internet is off, no grant covers it, or the
       firewall refused it. Run it when a lookup or a connection fails. It
       never looks up a name no grant covers.
+
+  mwt why URL [--method GET] [--with CREDENTIAL]
+      How a request would be decided now, sending nothing: every grant
+      with a say about it and what each says (the strictest wins), the
+      locks, the result, and what would change it.
+
+  mwt why --recent
+  mwt why ID
+      The last decisions on this VM's requests (refused, asked, waiting,
+      timed out), each with an id; with an id, that one explained. Run it
+      when a tool fails with a bare 403 or "permission denied": tools
+      often hide MWT's answer.
 
   mwt sync [PATH]
       Bring the copies of the user's shared folders up to date from their
@@ -79,12 +92,12 @@ mwt - ask MWT, the user's control panel, for access
       the same port. Other ports stay in the VM. Give the user the URL.
 
   mwt call ID [NAME=value ...] --reason "why now" [--timeout 120] [--wait 60]
-      Call a subgrant: one fixed use of a grant, which MWT carries out for
+      Call an action: one fixed use of a grant, which MWT carries out for
       you. mwt grants lists them under their grant, with their parameters.
       You send its id and a value for each parameter, never a command or a
-      request. A command subgrant runs the user's own script on their
+      request. A command action runs the user's own script on their
       machine with your values as variables, and its output comes back. A
-      request subgrant is a request MWT sends with a token grant's real
+      request action is a request MWT sends with a token grant's real
       value: the answer's body comes back on stdout, its HTTP status on
       stderr, and mwt exits 0 for a 2xx answer, 22 for any other. Look for
       one first. The user approves every call, unless its line says it runs
@@ -101,10 +114,11 @@ mwt - ask MWT, the user's control panel, for access
   it for the person approving it: the narrowest access that does the job,
   a name that says what it is, --for in words for any time it is used.
 
-  mwt propose token --name NAME --for "what it is for" --host HOST [--host ...] [--env VAR ...] [--file-env VAR ...] [--carrier HEADER ...] [--git] [--mint 'COMMAND' [--keep-minutes N]] [--sign-as ACCOUNT ...] [--login-file [--id-token-header HEADER]] [--metadata-project PROJECT [--metadata-account EMAIL]] [--subgrants-only] [--preset ID] --reason "why you need it"
+  mwt propose token --name NAME --for "what it is for" --host HOST [--host ...] [--env VAR ...] [--file-env VAR ...] [--carrier HEADER ...] [--git] [--mint 'COMMAND' [--keep-minutes N]] [--sign-as ACCOUNT ...] [--login-file [--id-token-header HEADER]] [--metadata-project PROJECT [--metadata-account EMAIL]] [--preset ID] --reason "why you need it"
       Example: mwt propose token --name "GitHub, read-only, klife" --for "gh and git over HTTPS, reading oliveigah/klife" --preset github --reason "..."
-      Propose a token grant: a secret MWT keeps and swaps into requests to
-      the hosts it lists (*.example.com for its subdomains), in the
+      Propose a token grant: a credential MWT keeps and swaps into requests
+      to the hosts it lists (*.example.com for its subdomains); reaching
+      those hosts is a network grant's to give (the Internet's). In the
       Authorization header unless --carrier names others. The VM gets a
       placeholder in each --env variable, and the path of a file holding it
       in each --file-env one, only under mwt exec. --git lets git's
@@ -127,8 +141,7 @@ mwt - ask MWT, the user's control panel, for access
       default credentials instead of reading a token file: it serves the
       placeholder as the access token of PROJECT, and --metadata-account
       names the service account it reports (empty for the default one).
-      --subgrants-only keeps it out of the VM: only its request subgrants
-      use it. --preset starts from one of the user's presets (github,
+      --preset starts from one of the user's presets (github,
       google, hex, or theirs), whose fields you override. Say in --for what the token should be allowed to do: the user
       creates it, as narrow as the service allows, and pastes it as they
       review it.
@@ -144,9 +157,9 @@ mwt - ask MWT, the user's control panel, for access
 
   mwt propose commands --name NAME --for "what it does, any time it runs" [--param 'NAME:shape:what it is' ...] [--dir DIR] --reason "why you need it" [--minutes 60] [--wait 60] -- 'SCRIPT'
       Example: mwt propose commands --name "gh repo view" --for "Shows a GitHub repository: description, default branch, visibility" --param 'REPO_NAME:word:the repository, as owner/name' --reason "..." -- 'gh repo view "$REPO_NAME"'
-      Propose a subgrant, when you expect to need the same job again: a
-      script under Ask to run commands (id commands), which you then call
-      by id. The script reads each parameter as a variable, "$NAME", and is
+      Propose a saved command, when you expect to need the same job again:
+      a script of the user's machine (mwt propose machine is the same),
+      which you then call by id. The script reads each parameter as a variable, "$NAME", and is
       otherwise fixed. A shape is word (letters, digits and _ . - @ : +, in
       parts joined by /), number, date, time, decimal, text, or the values
       it may take as a|b|c. The user reads it once and may let it run
@@ -157,28 +170,28 @@ mwt - ask MWT, the user's control panel, for access
       nothing to be on. They may change it before accepting it: the answer
       says its id and how to call it.
 
-  mwt propose TOKEN_GRANT --name NAME --for "what it does, any time it runs" --method GET --url 'https://HOST/path/$NAME' [--param 'NAME:shape:what it is' ...] [--header 'Name: value' ...] [--data 'JSON'] --reason "why you need it"
+  mwt propose CREDENTIAL --name NAME --for "what it does, any time it runs" --method GET --url 'https://HOST/path/$NAME' [--param 'NAME:shape:what it is' ...] [--header 'Name: value' ...] [--data 'JSON'] --reason "why you need it"
       Example: mwt propose github --name "pr view" --for "Shows a pull request of a GitHub repository, as JSON" --param 'REPO:word:the repository, as owner/name' --param 'PR:number:the pull request' --method GET --url 'https://api.github.com/repos/$REPO/pulls/$PR' --reason "..."
-      Propose a request subgrant of a token grant: one HTTP request MWT
-      sends itself with that grant's real value, so it needs no tool or
-      placeholder in the VM. The host is fixed, and one the grant lists;
+      Propose a request action over a credential (by its id, the one mwt
+      exec takes, or a token grant's over it): one HTTP request MWT sends
+      itself with its real value, so it needs no tool or placeholder in
+      the VM. The host is fixed, and reaching it takes a network grant;
       parameters go in the path or the query, or as a whole JSON value in
       --data ("$TITLE"), never inside a longer text. Headers are fixed;
       without --header, MWT uses the ones that service expects, with the
       token in place. Called, its answer's body comes back on stdout, its
       HTTP status on stderr, and mwt exits 0 for a 2xx answer, 22 for any
-      other. Design it as a command subgrant: one job, read-only unless
+      other. Design it as a command action: one job, read-only unless
       changing something is its job.
 
-  mwt run commands --reason "why it must run on the user's machine" [--dir DIR] [--timeout 120] [--wait 60] -- COMMAND [ARG...]
-  mwt run commands --reason "..." [options] <<'EOF'
+  mwt run --reason "why it must run on the user's machine" [--dir DIR] [--timeout 120] [--wait 60] -- COMMAND [ARG...]
+  mwt run --reason "..." [options] <<'EOF'
   script
   EOF
       Ask the user to run a command you write on their machine, as them,
-      outside this VM. Last resort: call a subgrant, or use another grant,
-      when one can do it. Ask to run commands (id commands), the escape
-      hatch, built in: only while it is on may you ask (mwt request
-      commands), and the user reads and approves every run. Send the
+      outside this VM. Last resort: call an action, or use another grant,
+      when one can do it. It needs no grant: you may always ask, and the
+      user reads and approves every run; none runs unattended. Send the
       smallest command that gets what you need, one the user can read at a
       glance: bring the raw output back and filter, parse or transform it
       here in the VM. --dir defaults to the current directory; outside a
@@ -910,13 +923,13 @@ if [ "$command" = exec ]; then
   token_grant=${1:-}
   case $token_grant in
     '' | *[!a-zA-Z0-9_-]*)
-      echo 'mwt: use mwt exec GRANT_ID -- COMMAND [ARG...]' >&2
+      echo 'mwt: use mwt exec CREDENTIAL -- COMMAND [ARG...]' >&2
       exit 125
       ;;
   esac
   shift
   if [ "${1:-}" != -- ] || [ $# -lt 2 ]; then
-    echo 'mwt: use mwt exec GRANT_ID -- COMMAND [ARG...]' >&2
+    echo 'mwt: use mwt exec CREDENTIAL -- COMMAND [ARG...]' >&2
     exit 125
   fi
   shift
@@ -924,7 +937,7 @@ if [ "$command" = exec ]; then
   token_inbox=$(cd -- "$(dirname -- "$0")/.." && pwd -P) || exit 125
   token_env=$token_inbox/grant-env/$token_grant.sh
   if [ ! -r "$token_env" ]; then
-    echo "mwt: no token grant '$token_grant'. See mwt grants." >&2
+    echo "mwt: no credential '$token_grant'. See mwt grants." >&2
     exit 125
   fi
   # shellcheck source=/dev/null
@@ -954,8 +967,8 @@ wrong=1
 [ "$command" = run ] && wrong=122
 [ "$command" = call ] && wrong=122
 
-grant="" need="" reason="" minutes=60 wait=60 id="" dir="" timeout=120 timeout_given="" title="" body="" onto="" from="" suggest_save="" save_for="" no_checks="" name="" purpose="" method="" url="" data="" watch=0
-preset="" mint="" keep_minutes="" metadata_project="" metadata_account="" resolver="" via="" git=false login_file=false id_token_header="" subgrants_only=false
+grant="" need="" reason="" minutes=60 wait=60 id="" dir="" timeout=120 timeout_given="" title="" body="" onto="" from="" suggest_save="" save_for="" no_checks="" name="" purpose="" method="" url="" data="" watch=0 with_credential="" recent=""
+preset="" mint="" keep_minutes="" metadata_project="" metadata_account="" resolver="" via="" git=false login_file=false id_token_header=""
 headers=()
 params=()
 hosts=()
@@ -1030,7 +1043,6 @@ while [ $# -gt 0 ]; do
     --metadata-project=*) metadata_project=${1#*=}; shift ;;
     --metadata-account) metadata_account=${2-}; shift 2 || shift ;;
     --metadata-account=*) metadata_account=${1#*=}; shift ;;
-    --subgrants-only) subgrants_only=true; shift ;;
     --destination) destinations+=("${2-}"); shift 2 || shift ;;
     --destination=*) destinations+=("${1#*=}"); shift ;;
     --resolver) resolver=${2-}; shift 2 || shift ;;
@@ -1040,6 +1052,9 @@ while [ $# -gt 0 ]; do
     --timeout) timeout=$(number --timeout "${2-}" "$wrong") || exit "$wrong"; timeout_given=1; shift 2 || shift ;;
     --timeout=*) timeout=$(number --timeout "${1#*=}" "$wrong") || exit "$wrong"; timeout_given=1; shift ;;
     --watch) watch=1; shift ;;
+    --with) with_credential=${2-}; shift 2 || shift ;;
+    --with=*) with_credential=${1#*=}; shift ;;
+    --recent) recent=1; shift ;;
     -h | --help) usage; exit 0 ;;
     --)
       shift
@@ -1055,12 +1070,12 @@ while [ $# -gt 0 ]; do
         # The one word before -- is the command grant; the command comes
         # after --, so a typo is never run as a command.
         if [ -n "$grant" ]; then
-          echo "mwt: put the command after --: mwt run GRANT --reason \"...\" -- COMMAND" >&2
+          echo "mwt: put the command after --: mwt run --reason \"...\" -- COMMAND" >&2
           exit 122
         fi
         grant=$1
       elif [ "$command" = call ]; then
-        # The first word is the subgrant's id; the rest are its values.
+        # The first word is the action's id; the rest are its values.
         if [ -z "$grant" ]; then
           grant=$1
         else
@@ -1092,11 +1107,14 @@ case $command in
     send '{"command":"host"}'
     ;;
   why)
-    if [ -z "$grant" ]; then
-      echo "mwt: name a host or an address: mwt why HOST[:PORT]" >&2
+    if [ -n "${recent:-}" ]; then
+      send '{"command":"why","recent":true}'
+    elif [ -z "$grant" ]; then
+      echo "mwt: name what to explain: mwt why HOST[:PORT], mwt why URL [--method M] [--with CREDENTIAL], mwt why ID, or mwt why --recent" >&2
       exit 1
+    else
+      send "{\"command\":\"why\",\"target\":$(json "$grant"),\"method\":$(json "${method:-}"),\"with\":$(json "${with_credential:-}")}"
     fi
-    send "{\"command\":\"why\",\"target\":$(json "$grant")}"
     ;;
   sync)
     # The path as this VM has it: a shared folder's copy is at the same path
@@ -1146,7 +1164,7 @@ case $command in
     ;;
   call)
     if [ -z "$grant" ]; then
-      echo "mwt: name the subgrant: mwt call ID NAME=value --reason \"...\". See: mwt grants" >&2
+      echo "mwt: name the action: mwt call ID NAME=value --reason \"...\". See: mwt grants" >&2
       exit 122
     fi
     if [ ${#words[@]} -gt 0 ]; then
@@ -1178,14 +1196,14 @@ case $command in
       echo "mwt: give the script as one argument in single quotes, so its \$NAME stay as they are: -- 'gh repo view \"\$REPO_NAME\"'. Or send it on stdin." >&2
       exit 1
     elif [ -n "$url" ] || [ -t 0 ] || ! read -r -t 0; then
-      # A request subgrant has a URL and no script.
+      # A request action has a URL and no script.
       script=""
     else
       script=$(cat)
     fi
     bytes=$(printf '%s' "$script" | LC_ALL=C wc -c)
     if [ "$bytes" -gt "$max_script" ]; then
-      echo "mwt: the script is over 16 KiB, far more than the user can review. A subgrant is a script they read at a glance." >&2
+      echo "mwt: the script is over 16 KiB, far more than the user can review. An action is a script they read at a glance." >&2
       exit 1
     fi
     sent=""
@@ -1205,7 +1223,7 @@ case $command in
     identify
     [ -z "$dir" ] && dir=$PWD
     dir=$( (cd "$dir" 2>/dev/null && pwd -P) || printf '%s' "$dir")
-    send "{\"command\":\"propose\",\"grant\":$(json "$grant"),\"name\":$(json "$name"),\"for\":$(json "$purpose"),\"script\":$(json "$script"),\"params\":[${listed#,}],\"dir\":$(json "$dir"),\"method\":$(json "$method"),\"url\":$(json "$url"),\"headers\":[${sent#,}],\"data\":$(json "$data"),\"preset\":$(json "$preset"),\"hosts\":$(json_list ${hosts[@]+"${hosts[@]}"}),\"env\":$(json_list ${envs[@]+"${envs[@]}"}),\"file_env\":$(json_list ${file_envs[@]+"${file_envs[@]}"}),\"carriers\":$(json_list ${carriers[@]+"${carriers[@]}"}),\"git\":$git,\"mint\":$(json "$mint"),\"keep_minutes\":$(json "$keep_minutes"),\"signs_as\":$(json_list ${signs_as[@]+"${signs_as[@]}"}),\"login_file\":$login_file,\"id_token_header\":$(json "$id_token_header"),\"metadata_project\":$(json "$metadata_project"),\"metadata_account\":$(json "$metadata_account"),\"subgrants_only\":$subgrants_only,\"destinations\":$(json_list ${destinations[@]+"${destinations[@]}"}),\"resolver\":$(json "$resolver"),\"via\":$(json "$via"),\"reason\":$(json "$reason"),\"minutes\":$minutes,\"wait\":$wait,$(identity)}"
+    send "{\"command\":\"propose\",\"grant\":$(json "$grant"),\"name\":$(json "$name"),\"for\":$(json "$purpose"),\"script\":$(json "$script"),\"params\":[${listed#,}],\"dir\":$(json "$dir"),\"method\":$(json "$method"),\"url\":$(json "$url"),\"headers\":[${sent#,}],\"data\":$(json "$data"),\"preset\":$(json "$preset"),\"hosts\":$(json_list ${hosts[@]+"${hosts[@]}"}),\"env\":$(json_list ${envs[@]+"${envs[@]}"}),\"file_env\":$(json_list ${file_envs[@]+"${file_envs[@]}"}),\"carriers\":$(json_list ${carriers[@]+"${carriers[@]}"}),\"git\":$git,\"mint\":$(json "$mint"),\"keep_minutes\":$(json "$keep_minutes"),\"signs_as\":$(json_list ${signs_as[@]+"${signs_as[@]}"}),\"login_file\":$login_file,\"id_token_header\":$(json "$id_token_header"),\"metadata_project\":$(json "$metadata_project"),\"metadata_account\":$(json "$metadata_account"),\"destinations\":$(json_list ${destinations[@]+"${destinations[@]}"}),\"resolver\":$(json "$resolver"),\"via\":$(json "$via"),\"reason\":$(json "$reason"),\"minutes\":$minutes,\"wait\":$wait,$(identity)}"
     ;;
   wait)
     if [ -z "$id" ]; then

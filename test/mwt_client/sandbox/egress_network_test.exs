@@ -187,6 +187,113 @@ defmodule MWTClient.Sandbox.EgressNetworkTest do
 
   defp get(path), do: "GET #{path} HTTP/1.1\r\nHost: svc.corp.example\r\n\r\n"
 
+  # A token grant for the corp service, whose placeholder the request carries.
+  defp token_grant(username, uses) do
+    {:ok, grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "Datalake",
+        "purpose" => "The datalake's token",
+        "hosts" => "svc.corp.example",
+        "env" => "DATALAKE_TOKEN",
+        "value" => "real-datalake-token-0123456789"
+      })
+
+    {:ok, grant} = Sandbox.turn_on(username, grant.id, 60, uses)
+    grant
+  end
+
+  defp get_with(path, placeholder),
+    do:
+      "GET #{path} HTTP/1.1\r\nHost: svc.corp.example\r\nAuthorization: Bearer #{placeholder}\r\n\r\n"
+
+  describe "a request two grants cover" do
+    test "asks once, on one card naming both, and your answer goes to each", %{
+      username: username,
+      ca: ca
+    } do
+      service = https_service()
+      network = network_grant(username, service, :ask)
+      token = token_grant(username, :ask)
+      tls = tls(proxy(username, service), service, ca)
+
+      :ok = :ssl.send(tls, get_with("/rows", token.placeholder))
+      approval = waiting(username)
+      assert approval.grant_id == token.id
+      assert approval.also == [network.id]
+      assert {"Asking", "Datalake, Corp"} in approval.facts
+      assert {"Through", "Corp"} in approval.facts
+
+      :ok = Sandbox.decide(username, approval.id, :allow_once)
+      assert SandboxProxy.read_answer(tls, :ssl) =~ "/rows"
+      assert_receive {:service_got, head}
+      assert head =~ "real-datalake-token-0123456789"
+
+      # Allowing similar adds the allowance to both: the next one like it
+      # goes without a card. A request with a value in it closes its
+      # connection, so each goes on one of its own.
+      tls = tls(proxy(username, service), service, ca)
+      :ok = :ssl.send(tls, get_with("/rows", token.placeholder))
+      approval = waiting(username)
+      :ok = Sandbox.decide(username, approval.id, {:allow, :similar, 60})
+      assert SandboxProxy.read_answer(tls, :ssl) =~ "200 OK"
+
+      grants = Sandbox.snapshot(username).grants
+      assert [_] = Enum.find(grants, &(&1.id == token.id)).allowances
+      assert [_] = Enum.find(grants, &(&1.id == network.id)).allowances
+
+      tls = tls(proxy(username, service), service, ca)
+      :ok = :ssl.send(tls, get_with("/rows", token.placeholder))
+      assert SandboxProxy.read_answer(tls, :ssl) =~ "200 OK"
+      assert Sandbox.snapshot(username).waiting == []
+    end
+
+    test "asks for the network grant alone when the token grant lets it through", %{
+      username: username,
+      ca: ca
+    } do
+      service = https_service()
+      network = network_grant(username, service, :ask)
+      token = token_grant(username, :all)
+      tls = tls(proxy(username, service), service, ca)
+
+      :ok = :ssl.send(tls, get_with("/rows", token.placeholder))
+      approval = waiting(username)
+      assert approval.grant_id == network.id
+      assert approval.also == []
+      assert {"Let through by", "Datalake"} in approval.facts
+
+      :ok = Sandbox.decide(username, approval.id, :allow_once)
+      assert SandboxProxy.read_answer(tls, :ssl) =~ "/rows"
+      assert_receive {:service_got, head}
+      assert head =~ "real-datalake-token-0123456789"
+    end
+
+    test "is refused when the network grant is off, though the token grant lets it through", %{
+      username: username,
+      ca: ca
+    } do
+      service = https_service()
+      network = network_grant(username, service, :all)
+      token = token_grant(username, :all)
+      tls = tls(proxy(username, service), service, ca)
+
+      :ok = :ssl.send(tls, get_with("/first", token.placeholder))
+      assert SandboxProxy.read_answer(tls, :ssl) =~ "/first"
+
+      # Off, nothing gives the network: the connection the token grant
+      # would use is refused too.
+      {:ok, _} = Sandbox.turn_off(username, network.id)
+
+      {:ok, socket} =
+        :gen_tcp.connect(~c"127.0.0.1", proxy(username, service), [:binary, active: false])
+
+      :ok = :gen_tcp.send(socket, "CONNECT 127.0.0.1:#{service} HTTP/1.1\r\n\r\n")
+      assert {:ok, "HTTP/1.1 403" <> _} = :gen_tcp.recv(socket, 0, 5_000)
+      assert Enum.find(Sandbox.snapshot(username).grants, &(&1.id == token.id)).state == :on
+    end
+  end
+
   describe "a service MWT reads" do
     test "each request is a card of its own, in full; no card for the connection", %{
       username: username,

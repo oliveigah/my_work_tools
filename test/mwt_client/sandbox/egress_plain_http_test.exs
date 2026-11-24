@@ -159,7 +159,7 @@ defmodule MWTClient.Sandbox.EgressPlainHttpTest do
     username: username,
     proxy: proxy
   } do
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "example.com", :ask})
+    {:ok, _} = Sandbox.set_mode(username, "internet", :ask)
     answer = Task.async(fn -> get(proxy, "/held") end)
 
     approval = waiting(username)
@@ -174,11 +174,11 @@ defmodule MWTClient.Sandbox.EgressPlainHttpTest do
     assert Task.await(answer) =~ "/held"
   end
 
-  test "a host list holds it by the strictest of its Host and the names answered for its address",
+  test "a blocked host refuses it by its Host or by any name answered for its address",
        %{username: username, proxy: proxy} do
     # The VM looked up paste.test, then claims another name to its address.
     :ok = Gate.answered(username, "paste.test", [{93, 184, 216, 34}], 60)
-    {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "paste.test", :block})
+    {:ok, _} = Sandbox.limits_set(username, "internet", {:put, "paste.test", true})
 
     answer = get(proxy, "/out", [{"host", "harmless.test"}])
     assert answer =~ "HTTP/1.1 403"

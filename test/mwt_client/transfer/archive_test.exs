@@ -114,6 +114,11 @@ defmodule MWTClient.Transfer.ArchiveTest do
     assert Archive.decode(:crypto.strong_rand_bytes(64), opener) == {:error, :not_an_export}
   end
 
+  test "a file cut short inside its header is damaged, not newer", %{key: key, archive: archive} do
+    cut = binary_part(archive, 0, 16)
+    assert Archive.decode(cut, {:open, &Vault.open(key, &1)}) == {:error, :damaged}
+  end
+
   test "a newer format is refused rather than misread", %{key: key, archive: archive} do
     <<"MWTEXPORT", 1, rest::binary>> = archive
 

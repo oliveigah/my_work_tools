@@ -45,6 +45,12 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   attr :now, DateTime, required: true
   attr :focus, :string, default: nil, doc: "the approval a desktop notification opened"
 
+  attr :credentials, :list,
+    default: [],
+    doc: "the credentials, to name the resources grants are over"
+
+  attr :networks, :list, default: [], doc: "the networks, to name the resources grants are over"
+
   def page(assigns) do
     ~H"""
     <.page_header id="approvals-header" title="Approvals">
@@ -73,6 +79,9 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
           :for={approval <- @waiting}
           approval={approval}
           grant={approval.grant_id && @grants[approval.grant_id]}
+          others={for id <- approval.also, grant = @grants[id], do: grant}
+          credentials={@credentials}
+          networks={@networks}
           marks={@marks}
           now={@now}
           focused={approval.id == @focus}
@@ -113,6 +122,13 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   @doc "One waiting approval, of any type."
   attr :approval, Approval, required: true
   attr :grant, :any, required: true
+
+  attr :others, :list,
+    default: [],
+    doc: "the other grants that asked about the same use, which the card answers for too"
+
+  attr :credentials, :list, default: []
+  attr :networks, :list, default: []
   attr :marks, :list, default: []
   attr :now, DateTime, required: true
 
@@ -316,6 +332,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
 
   attr :approval, Approval, required: true
   attr :grant, :any, required: true
+  attr :others, :list, default: [], doc: "the other grants the card answers for"
   attr :allow, :string, default: "Allow once"
   attr :similar, :string, default: nil, doc: "what allowing similar covers; nil when not offered"
   attr :similar_detail, :string, default: nil
@@ -338,7 +355,10 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     </button>
 
     <details
-      :if={(@similar || (@grant && is_nil(@approval.host_entry))) && not always_asks?(@grant)}
+      :if={
+        (@similar || (@grant && is_nil(@approval.host_entry))) && not always_asks?(@grant) &&
+          not Enum.any?(@others, &always_asks?/1)
+      }
       id={"allow-more-#{@approval.id}"}
       class="group relative"
     >
@@ -357,16 +377,36 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
           scope="similar"
           label={@similar}
           grant={@grant}
+          others={@others}
         >
           <span class={@similar_pattern && "font-mono text-[10px] text-ink"}>{@similar_detail}</span>
+        </.allow_scope>
+        <.allow_scope
+          :if={@similar && MWTClient.Sandbox.Allowance.widen(@approval.pattern)}
+          id={"allow-ids-#{@approval.id}"}
+          approval={@approval}
+          scope="ids"
+          label={"#{@similar}, any id"}
+          grant={@grant}
+          others={@others}
+        >
+          <span class="font-mono text-[10px] text-ink">
+            {MWTClient.Sandbox.Allowance.widen(@approval.pattern)}
+          </span>
         </.allow_scope>
         <.allow_scope
           :if={@grant && is_nil(@approval.host_entry)}
           id={"allow-all-#{@approval.id}"}
           approval={@approval}
           scope="all"
-          label={"Every use of #{@grant.name}"}
+          label={
+            if(@others == [],
+              do: "Every use of #{@grant.name}",
+              else: "Every use of each grant ticked"
+            )
+          }
           grant={@grant}
+          others={@others}
         >
           {@every}
         </.allow_scope>
@@ -386,16 +426,30 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       Deny
     </button>
     <button
-      :if={@grant}
+      :if={@grant && @others == []}
       type="button"
       id={"deny-off-#{@approval.id}"}
       phx-click="decide"
       phx-value-id={@approval.id}
       phx-value-decision="deny_and_turn_off"
-      title={"Deny, and turn #{@grant.name} off so nothing else uses it"}
+      title={"Deny, and turn #{@grant.name} off so it refuses what it covers"}
       class="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-bad transition-colors hover:bg-bad-soft/40"
     >
       <.icon name="hero-no-symbol-micro" class="size-3.5" /> Deny and turn off
+    </button>
+    <%!-- A card several grants asked for: you choose which one turns off. --%>
+    <button
+      :for={grant <- if(@grant && @others != [], do: [@grant | @others], else: [])}
+      type="button"
+      id={"deny-off-#{@approval.id}-#{grant.id}"}
+      phx-click="decide"
+      phx-value-id={@approval.id}
+      phx-value-decision="deny_and_turn_off"
+      phx-value-grant={grant.id}
+      title={"Deny, and turn #{grant.name} off so it refuses what it covers"}
+      class="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-bad transition-colors hover:bg-bad-soft/40"
+    >
+      <.icon name="hero-no-symbol-micro" class="size-3.5" /> Deny, turn {grant.name} off
     </button>
     """
   end
@@ -410,9 +464,54 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   attr :scope, :string, required: true
   attr :label, :string, required: true
   attr :grant, :any, required: true
+  attr :others, :list, default: [], doc: "the other grants the card answers for"
   slot :inner_block, required: true
 
-  # One scope an allowance can cover, with how long it lasts.
+  # One scope an allowance can cover, with how long it lasts. On a card
+  # several grants asked for, it names each grant it adds the allowance
+  # to, all ticked: what you untick gets none, and asks again.
+  defp allow_scope(%{others: [_ | _]} = assigns) do
+    ~H"""
+    <form id={@id} phx-submit="allow_on_grants" class="px-3 py-2.5">
+      <input type="hidden" name="approval" value={@approval.id} />
+      <input type="hidden" name="scope" value={@scope} />
+      <p class="text-xs font-medium text-ink">{@label}</p>
+      <p class="mt-0.5 break-words text-[11px] leading-4 text-muted">{render_slot(@inner_block)}</p>
+      <fieldset class="mt-2 space-y-1">
+        <legend class="text-[10px] font-semibold uppercase tracking-wide text-faint">
+          Added to
+        </legend>
+        <label
+          :for={grant <- [@grant | @others]}
+          id={"#{@id}-grant-#{grant.id}"}
+          class="flex cursor-pointer items-center gap-2 text-[11px] text-ink"
+        >
+          <input
+            type="checkbox"
+            name="grants[]"
+            value={grant.id}
+            checked
+            class="size-3.5 accent-[var(--color-ok)]"
+          />
+          {grant.name}
+        </label>
+      </fieldset>
+      <div class="mt-2 flex flex-wrap gap-1">
+        <button
+          :for={{value, label} <- [{"10", "10 min"}, {"60", "1 h"}, {"grant", "While it's on"}]}
+          type="submit"
+          name="minutes"
+          value={value}
+          id={"#{@id}-#{value}"}
+          class="inline-flex cursor-pointer items-center rounded-md border border-line bg-deep/60 px-2 py-1 text-[11px] font-medium text-ink transition-colors hover:border-ok/50 hover:bg-ok-soft/40 hover:text-ok-strong"
+        >
+          {label}
+        </button>
+      </div>
+    </form>
+    """
+  end
+
   defp allow_scope(assigns) do
     ~H"""
     <div id={@id} class="px-3 py-2.5">
@@ -450,6 +549,54 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
 
   ## Uses
 
+  attr :approval, Approval, required: true
+
+  attr :grants, :list,
+    required: true,
+    doc: "every grant that asks about the use, the card's first"
+
+  attr :credentials, :list, required: true
+  attr :networks, :list, required: true
+
+  # A use that goes through more than one resource needs a grant over
+  # each, and here more than one asks: each is named with its resource,
+  # and the card answers for all of them.
+  defp needs(assigns) do
+    ~H"""
+    <div
+      id={"approval-needs-#{@approval.id}"}
+      class="mb-3 rounded-lg border border-warn/35 bg-warn-soft/20 px-3 py-2.5 text-xs"
+    >
+      <p class="font-medium text-ink">
+        It needs {length(@grants)} grants, one over each resource it goes through, and each asks:
+      </p>
+      <ul class="mt-1.5 space-y-1">
+        <li
+          :for={grant <- @grants}
+          id={"approval-needs-#{@approval.id}-#{grant.id}"}
+          class="flex flex-wrap items-center gap-1.5 text-muted"
+        >
+          <.icon name="hero-key-micro" class="size-3.5 text-warn" />
+          <.link
+            navigate={~p"/tools/sandbox/grants/#{grant.id}"}
+            class="font-medium text-ink hover:text-accent"
+          >
+            {grant.name}
+          </.link>
+          over
+          <.resource_chip
+            resource={Grant.resource(grant)}
+            name={MWTClient.Sandbox.Resource.name(Grant.resource(grant), @credentials, @networks)}
+          />
+        </li>
+      </ul>
+      <p class="mt-1.5 text-[11px] text-muted">
+        Your answer is for all of them: Allow once lets this use through; Allow for a while adds an allowance to each.
+      </p>
+    </div>
+    """
+  end
+
   defp use_card(assigns) do
     approval = assigns.approval
     request? = approval.kind == :request and is_map(approval.request)
@@ -464,7 +611,9 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     <.shell approval={@approval} now={@now} focused={@focused}>
       <:tile><.grant_tile icon={Presets.icon(@grant)} on={true} /></:tile>
       <:meta>
-        <span class="font-medium text-ink/80">{(@grant && @grant.name) || "Removed grant"}</span>
+        <span class="font-medium text-ink/80">
+          {Enum.map_join([@grant | @others], " + ", &((&1 && &1.name) || "Removed grant"))}
+        </span>
         <.dot />
         <span>{if @approval.kind == :connection, do: "Connection", else: "Request"}</span>
         <.retries
@@ -488,6 +637,13 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         </span>
       </:subtitle>
 
+      <.needs
+        :if={@grant && @others != []}
+        approval={@approval}
+        grants={[@grant | @others]}
+        credentials={@credentials}
+        networks={@networks}
+      />
       <.request_detail
         :if={@request?}
         id={@approval.id}
@@ -500,6 +656,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         <.use_choices
           approval={@approval}
           grant={@grant}
+          others={@others}
           similar={
             @approval.pattern &&
               if(@approval.kind == :connection,
@@ -776,7 +933,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       <:meta>
         <.command_kind id={"approval-kind-#{@approval.id}"} saved={@saved?} />
         <.help :if={not @saved?} id={"command-help-#{@approval.id}"} label="About ad-hoc commands">
-          Ask to run commands never auto-approves: every command an agent writes asks, and only this full card runs it. Save one you trust as a subgrant, to be called by id.
+          A command an agent writes needs no grant, and never auto-approves: every one asks, and only this full card runs it. Save one you trust as a saved command, to be called by id.
         </.help>
         <.asked_by approval={@approval} />
         <span
@@ -968,7 +1125,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         name={if(@saved, do: "hero-bookmark-square-micro", else: "hero-exclamation-triangle-micro")}
         class="size-3"
       />
-      {if(@saved, do: "Subgrant", else: "Ad-hoc command")}
+      {if(@saved, do: "Action", else: "Ad-hoc command")}
     </span>
     """
   end
@@ -1411,14 +1568,6 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
                 options={[{"ask", "Ask each time"}, {"all", "Auto-approve"}]}
                 checked={if(Grant.default_uses(@grant) == :all, do: "all", else: "ask")}
               />
-              <span
-                :if={Grant.ask_to_run?(@grant)}
-                id={"activation-asks-only-#{@approval.id}"}
-                class="inline-flex items-center gap-1 text-[11px] text-warn-strong"
-              >
-                <.icon name="hero-hand-raised-micro" class="size-3.5" />
-                It only lets the agent ask: you approve every run
-              </span>
               <button
                 type="submit"
                 id={"turn-on-ask-#{@approval.id}"}
@@ -1450,8 +1599,8 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   attr :approval, Approval, required: true
   attr :primary, :boolean, default: false
 
-  # Saves a command run through Ask to run commands as a subgrant: the add
-  # dialog, filled in from the card. The card keeps waiting.
+  # Saves a command the agent wrote as a saved command: the add dialog,
+  # filled in from the card. The card keeps waiting.
   defp save_button(assigns) do
     ~H"""
     <button
@@ -1459,7 +1608,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       id={"save-command-#{@approval.id}#{if @primary, do: "-suggested"}"}
       phx-click="save_command"
       phx-value-id={@approval.id}
-      title="Save it as a subgrant: agents then call it by id, without the escape hatch. Turn what varies into parameters. This card still waits."
+      title="Save it as an action: agents then call it by id, without the escape hatch. Turn what varies into parameters. This card still waits."
       class={[
         "inline-flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
         if(@primary,
@@ -1469,7 +1618,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         )
       ]}
     >
-      <.icon name="hero-bookmark-square-micro" class="size-3.5" /> Save as a subgrant
+      <.icon name="hero-bookmark-square-micro" class="size-3.5" /> Save as an action
     </button>
     """
   end

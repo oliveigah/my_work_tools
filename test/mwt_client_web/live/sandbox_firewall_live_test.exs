@@ -51,10 +51,10 @@ defmodule MWTClientWeb.SandboxFirewallLiveTest do
     assert has_element?(view, "#sandbox-nav-firewall[aria-current=page]")
     assert has_element?(view, "#firewall-isolated[aria-checked=false]")
     assert has_element?(view, "#firewall-group-credentials #firewall-rule-credential_leak")
-    assert has_element?(view, "#firewall-action-credential_leak-isolate[aria-checked=true]")
+    assert has_element?(view, "#firewall-action-credential_leak--isolate[aria-checked=true]")
     # An action a rule can't take is shown, not offered.
-    assert has_element?(view, "#firewall-action-cpu_hog-block[aria-disabled=true]")
-    refute has_element?(view, "#firewall-action-cpu_hog-block[role=radio]")
+    assert has_element?(view, "#firewall-action-cpu_hog--block[aria-disabled=true]")
+    refute has_element?(view, "#firewall-action-cpu_hog--block[role=radio]")
     refute has_element?(view, "#firewall-incidents")
     assert has_element?(view, "#firewall-findings-empty")
 
@@ -64,8 +64,8 @@ defmodule MWTClientWeb.SandboxFirewallLiveTest do
       assert has_element?(view, "#firewall-list-form-#{list}")
     end
 
-    view |> element("#firewall-action-dns_bypass-alert") |> render_click()
-    assert has_element?(view, "#firewall-action-dns_bypass-alert[aria-checked=true]")
+    view |> element("#firewall-action-dns_bypass--alert") |> render_click()
+    assert has_element?(view, "#firewall-action-dns_bypass--alert[aria-checked=true]")
 
     assert MWTClient.Sandbox.Firewall.action(Sandbox.firewall(username).firewall, :dns_bypass) ==
              :alert
@@ -88,7 +88,7 @@ defmodule MWTClientWeb.SandboxFirewallLiveTest do
     view |> element("#firewall-list-reset-trusted") |> render_click()
     assert "*.anthropic.com" in Sandbox.firewall(username).firewall.trusted
 
-    view |> element("#firewall-enabled-false") |> render_click()
+    view |> element("#firewall-enabled--false") |> render_click()
     assert has_element?(view, "#firewall-off")
   end
 
@@ -106,7 +106,7 @@ defmodule MWTClientWeb.SandboxFirewallLiveTest do
     assert has_element?(view, "#firewall-isolation-title", "Credential sent elsewhere")
     assert has_element?(view, "#firewall-incident-summary", "paste.example.net")
     assert has_element?(view, "#firewall-incident-events")
-    assert has_element?(view, "#firewall-restorable", "GitHub")
+    assert has_element?(view, "#firewall-restorable", "changed no grant")
 
     # Turning the switch off asks first, saying what the firewall saw.
     view |> element("#firewall-isolated") |> render_click()

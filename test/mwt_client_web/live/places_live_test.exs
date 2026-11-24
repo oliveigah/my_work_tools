@@ -39,10 +39,10 @@ defmodule MWTClientWeb.PlacesLiveTest do
   end
 
   test "the sandbox keeps its filters and searches", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
     view |> element("#grant-search") |> render_change(%{"term" => "github"})
 
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
     assert has_element?(view, ~s(#grant-search-term[value="github"]))
     assert has_element?(view, "#clear-grant-search")
   end

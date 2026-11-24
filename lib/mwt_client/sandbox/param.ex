@@ -1,7 +1,7 @@
 defmodule MWTClient.Sandbox.Param do
   @moduledoc """
-  One parameter of a subgrant: what an agent fills in when it calls the
-  subgrant by id (`mwt call ID NAME=value`). See "Grants and subgrants" in
+  One parameter of an action: what an agent fills in when it calls the
+  action by id (`mwt call ID NAME=value`). See "Grants and actions" in
   `docs/agent_sandbox.md`.
 
   A parameter has a `name`, in capitals; a `shape`, which says what a value
@@ -18,7 +18,7 @@ defmodule MWTClient.Sandbox.Param do
   | `:text`            | anything that shows, not starting with `-`                    |
 
 
-  A command subgrant reads its parameters as environment variables: the
+  A command action reads its parameters as environment variables: the
   script runs exactly as saved, and a value never becomes part of its
   text. So a name can't be one the environment already gives a meaning to
   (`reserved?/1`), and every parameter has to appear in the script
@@ -68,7 +68,7 @@ defmodule MWTClient.Sandbox.Param do
     EDITOR VISUAL PAGER TERM TMPDIR TZ LANG USER SHELL PWD OLDPWD)
   @reserved_prefixes ~w(BASH_ LD_ DYLD_ GIT_ SSH_ LC_ MWT_)
 
-  @doc "The most parameters a subgrant takes."
+  @doc "The most parameters an action takes."
   @spec max() :: pos_integer()
   def max, do: @max_params
 
@@ -99,7 +99,7 @@ defmodule MWTClient.Sandbox.Param do
       if length(params) > @max_params,
         do:
           {:error,
-           "At most #{@max_params} parameters. One that needs more is more than one subgrant."},
+           "At most #{@max_params} parameters. One that needs more is more than one action."},
         else: {:ok, params}
     end
   end

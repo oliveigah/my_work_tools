@@ -20,5 +20,5 @@ export PATH
 export ZED_FILE_WATCHER_MODE=poll
 export ZED_FILE_WATCHER_POLL_MS=5000
 
-# Credentials are supplied only by `mwt exec GRANT -- COMMAND`. Exporting
+# Credentials are supplied only by `mwt exec CREDENTIAL -- COMMAND`. Exporting
 # them here would also make editors and public downloaders authenticate.

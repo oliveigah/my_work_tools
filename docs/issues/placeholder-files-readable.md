@@ -2,7 +2,7 @@
 
 - Found: 2026-11-23, MWT 0.3.0
 - Kind: documentation
-- Status: open
+- Status: resolved by the grants redesign (2026-11-24)
 
 ## What happens
 
@@ -21,3 +21,10 @@ the wording suggests that the files are what keeps it safe.
 Say what `mwt exec` decides, which credentials a command starts with, and
 where the protection is: placeholders are worthless outside MWT, and MWT
 checks every request that carries one.
+
+## Resolution
+
+`mwt exec` now names a credential and says what it is: it chooses which
+credential a command speaks as and decides nothing; a grant over the
+credential listing the host, and one over the host's network, decide each
+request. `mwt grants`, the access guide and the CLI's help say so.

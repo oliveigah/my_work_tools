@@ -64,8 +64,141 @@ defmodule MWTClientWeb.SandboxLiveTest do
     {task, approval}
   end
 
-  # The grants you added: all but Ask to run commands, which is built in.
+  # The grants you added: all but the built-in ones.
   defp added(username), do: Enum.reject(Sandbox.snapshot(username).grants, &Grant.built_in?/1)
+
+  test "a request two grants ask about is one card: an allowance goes to each grant ticked, and you choose which to turn off",
+       %{conn: conn, username: username} do
+    grant = github(username)
+
+    {:ok, network} =
+      Sandbox.create_grant(username, %{
+        "kind" => "network",
+        "name" => "GitHub's network",
+        "purpose" => "Where GitHub lives",
+        "destinations" => "github.com:443"
+      })
+
+    {:ok, _} = Sandbox.turn_on(username, network.id, 60)
+
+    hold = fn ->
+      request = %{
+        host: "github.com",
+        method: "GET",
+        path: "/oliveigah/klife",
+        under: network.id,
+        headers: [{"host", "github.com"}, {"authorization", "token #{grant.placeholder}"}],
+        body: ""
+      }
+
+      Task.async(fn -> Server.call(username, {:authorize, request}, :infinity) end)
+    end
+
+    task = hold.()
+    approval = wait_for(username, :request)
+    assert approval.grant_id == grant.id and approval.also == [network.id]
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
+    assert has_element?(view, "#approval-facts-#{approval.id}", "GitHub, GitHub's network")
+    # It goes through two resources, and the grant over each asks: the card
+    # names both, each with its resource.
+    assert has_element?(view, "#approval-needs-#{approval.id}", "It needs 2 grants")
+    assert has_element?(view, "#approval-needs-#{approval.id}-#{grant.id}", "GitHub")
+
+    assert has_element?(
+             view,
+             "#approval-needs-#{approval.id}-#{network.id} a[href='/tools/sandbox/resources/network/#{network.id}']"
+           )
+
+    assert has_element?(view, "#allow-similar-#{approval.id}-grant-#{grant.id} input[checked]")
+    assert has_element?(view, "#allow-similar-#{approval.id}-grant-#{network.id} input[checked]")
+    assert has_element?(view, "#deny-off-#{approval.id}-#{network.id}")
+    refute has_element?(view, "#deny-off-#{approval.id}")
+
+    # Only the network grant left ticked: the token grant gets nothing.
+    render_submit(view, "allow_on_grants", %{
+      "approval" => approval.id,
+      "scope" => "similar",
+      "minutes" => "60",
+      "grants" => [network.id]
+    })
+
+    assert {:forward, _, _} = Task.await(task)
+    grants = Sandbox.snapshot(username).grants
+    assert [_] = Enum.find(grants, &(&1.id == network.id)).allowances
+    assert [] = Enum.find(grants, &(&1.id == grant.id)).allowances
+
+    # The next asks the token grant alone; denying, you turn the network
+    # grant off.
+    task = hold.()
+    approval = wait_for(username, :request)
+    assert approval.grant_id == grant.id and approval.also == []
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
+    view |> element("#deny-off-#{approval.id}") |> render_click()
+    assert {:deny, 403, _} = Task.await(task)
+    assert Enum.find(Sandbox.snapshot(username).grants, &(&1.id == grant.id)).state == :off
+  end
+
+  test "Try a use decides a request without sending it; a grant's page lists what it overlaps",
+       %{conn: conn, username: username} do
+    github = github(username)
+
+    {:ok, _} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "GitHub everywhere",
+        "purpose" => "Everything on GitHub",
+        "hosts" => "*.github.com",
+        "credential" => github.credential
+      })
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+
+    view
+    |> form("#try-use-form",
+      try: %{url: "https://api.github.com/user", method: "GET", with: github.credential}
+    )
+    |> render_submit()
+
+    assert has_element?(view, "#try-use-result", "The credential #{github.credential}")
+    assert has_element?(view, "#try-use-result", "The network internet")
+    assert has_element?(view, "#try-use-result", "GitHub (github)")
+    refute render(view) =~ github.placeholder
+
+    view |> form("#try-use-form", try: %{url: "nonsense"}) |> render_submit()
+    assert has_element?(view, "#try-use-error")
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{github.id}")
+    assert has_element?(view, "#grant-overlaps", "GitHub everywhere")
+    assert has_element?(view, "#grant-overlaps", "api.github.com")
+  end
+
+  test "a card offers to allow similar requests whatever their ids, and that allowance covers the next",
+       %{conn: conn, username: username} do
+    grant = github(username)
+
+    hold = fn path ->
+      request = %{
+        host: "api.github.com",
+        method: "GET",
+        path: path,
+        headers: [{"host", "api.github.com"}, {"authorization", "token #{grant.placeholder}"}],
+        body: ""
+      }
+
+      Task.async(fn -> Server.call(username, {:authorize, request}, :infinity) end)
+    end
+
+    task = hold.("/repos/o/r/pulls/3")
+    approval = wait_for(username, :request)
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
+    assert has_element?(view, "#allow-ids-#{approval.id}", "/repos/o/r/pulls/*")
+    view |> element("#allow-ids-#{approval.id}-60") |> render_click()
+    assert {:forward, _, _} = Task.await(task)
+
+    # Another pull request goes without a card.
+    assert {:forward, _, _} = Task.await(hold.("/repos/o/r/pulls/7"))
+  end
 
   test "every page renders behind the sidebar", %{conn: conn} do
     for {path, selector} <- [
@@ -176,7 +309,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#detail-ceiling", "Always asks")
     assert has_element?(view, "#grant-ceiling-words", "allowed once")
 
-    {:ok, catalog, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, catalog, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
 
     assert has_element?(
              catalog,
@@ -223,83 +356,93 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#grant-detail-stripe", "Test-mode charges")
     assert has_element?(view, "#grant-exec-stripe", "mwt exec stripe -- COMMAND")
     # Off, it says how it would turn on: for how long, and how uses are approved.
-    assert has_element?(view, "#detail-mode-stripe-ask[aria-checked=true]")
+    assert has_element?(view, "#detail-mode-stripe--ask[aria-checked=true]")
     assert [%{placeholder: "sk_test_" <> _}] = added(username)
-    assert has_element?(view, "#grant-value-card")
-    refute has_element?(view, "#grant-no-value")
+    # Its value is its credential's, replaced on the credential's page.
+    assert has_element?(view, "#grant-value-of", "Stripe")
     refute render(view) =~ "sk_test_real-value"
 
-    view |> form("#grant-value-form", value: %{value: "sk_test_2"}) |> render_submit()
-    assert has_element?(view, "#notices", "Value replaced")
-    assert Sandbox.snapshot(username).values["stripe"]
-  end
-
-  @tag :bwrap
-  test "a grant's conditions are added on its page, run, and pause it when they fail", %{
-    conn: conn,
-    username: username
-  } do
-    grant = github(username, false)
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
-    assert has_element?(view, "#grant-checks", "None:")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/resources/credential/stripe")
+    assert has_element?(view, "#credential-source", "Stored in your vault")
+    refute render(view) =~ "sk_test_real-value"
 
     view
-    |> form("#add-check-form", check: %{name: "the VPN is up", script: "exit 1"})
+    |> form("#credential-value-form", value: %{credential: "stripe", value: "sk_test_2"})
     |> render_submit()
 
-    assert has_element?(view, "#grant-checks", "the VPN is up")
-
-    Enum.find_value(1..300, fn _ ->
-      match?([%{result: %{}, running?: false}], Map.values(Sandbox.checks(username, grant.id))) ||
-        (Process.sleep(20) && nil)
-    end)
-
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
-    [check] = Enum.find(Sandbox.snapshot(username).grants, &(&1.id == grant.id)).checks
-    assert has_element?(view, "#check-status-#{check.id}", "Failed")
-    assert has_element?(view, "#detail-held", "Paused")
-
-    view |> element("#remove-check-#{check.id}") |> render_click()
-    refute has_element?(view, "#check-#{check.id}")
-    refute has_element?(view, "#detail-held")
+    assert has_element?(view, "#notices", "Value saved")
+    assert Sandbox.snapshot(username).credential_values["stripe"]
   end
 
-  test "a token grant only its subgrants use: the form hides what the VM would hold", %{
-    conn: conn,
-    username: username
-  } do
+  test "a grant over a credential you have takes only its scope; the credential shows among the resources, with its lock",
+       %{conn: conn, username: username} do
+    github = github(username)
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=resources")
+    assert has_element?(view, "#resource-credential-#{github.credential}", "mwt exec github")
+    assert has_element?(view, "#resource-machine")
+
+    view |> element("#add-grant") |> render_click()
+    view |> element("#type-token") |> render_click()
+    assert has_element?(view, "#grant-credential option[value=#{github.credential}]")
+
+    view
+    |> form("#add-grant-form", grant: %{credential: github.credential})
+    |> render_change()
+
+    # Its value and how tools find it are the credential's.
+    refute has_element?(view, "#grant-value")
+    refute has_element?(view, "#grant-env")
+
+    view
+    |> form("#add-grant-form",
+      grant: %{
+        credential: github.credential,
+        name: "GitHub uploads",
+        purpose: "Release assets",
+        hosts: "uploads.github.com"
+      }
+    )
+    |> render_submit()
+
+    uploads = Enum.find(added(username), &(&1.name == "GitHub uploads"))
+    assert uploads.credential == github.credential and uploads.placeholder == github.placeholder
+
+    # Locked from its row: refused, grants unchanged; unlocked again.
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=resources")
+    # Open, its switch is on; locked, off, with a badge saying so.
+    assert has_element?(view, "#lock-credential-#{github.credential}[aria-checked=true]")
+    view |> element("#lock-credential-#{github.credential}") |> render_click()
+    assert has_element?(view, "#lock-credential-#{github.credential}[aria-checked=false]")
+    assert has_element?(view, "#lock-credential-#{github.credential}-locked", "Locked")
+    assert Map.has_key?(Sandbox.snapshot(username).locks, {:credential, github.credential})
+    view |> element("#lock-machine") |> render_click()
+    assert Map.has_key?(Sandbox.snapshot(username).locks, :machine)
+    view |> element("#lock-credential-#{github.credential}") |> render_click()
+    refute Map.has_key?(Sandbox.snapshot(username).locks, {:credential, github.credential})
+  end
+
+  test "a token grant may allow your machine, for the saved commands that run with its credential",
+       %{conn: conn, username: username} do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
     view |> element("#add-grant") |> render_click()
     view |> element("#type-token") |> render_click()
-    assert has_element?(view, "#grant-reach-vm[checked]")
-    assert has_element?(view, "#token-more")
-
-    view |> form("#add-grant-form", grant: %{reach: "subgrants"}) |> render_change()
-    refute has_element?(view, "#token-more")
-    refute has_element?(view, "input[name='grant[env]']")
-    assert has_element?(view, "#grant-reach-words")
+    refute has_element?(view, "#grant-reach")
+    assert has_element?(view, "#grant-machine:not([checked])")
 
     view
     |> form("#add-grant-form",
       grant: %{
         name: "Billing API",
-        purpose: "Only the invoice lookups saved under it",
+        purpose: "Invoice lookups, and the billing script",
         hosts: "api.billing.example",
-        reach: "subgrants",
+        machine: "true",
         value: "real"
       }
     )
     |> render_submit()
 
     assert_patch(view, ~p"/tools/sandbox/grants/billing-api")
-    assert has_element?(view, "#grant-subgrants-only-billing-api")
-    refute has_element?(view, "#detail-switch-billing-api")
-    refute has_element?(view, "#grant-start")
-    assert [%{reach: :subgrants, state: :off}] = added(username)
-
-    {:ok, catalog, _html} = live(conn, ~p"/tools/sandbox/grants")
-    assert has_element?(catalog, "#grant-card-billing-api", "Subgrants only")
-    refute has_element?(catalog, "#grant-switch-billing-api")
+    assert [%{machine: true, state: :off}] = added(username)
   end
 
   test "a grant is switched on for the duration picked, and off again", %{
@@ -307,16 +450,14 @@ defmodule MWTClientWeb.SandboxLiveTest do
     username: username
   } do
     grant = github(username, false)
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
 
-    view |> element("#grant-duration-#{grant.id}-15") |> render_click()
+    view |> element("#grant-duration-#{grant.id}--15") |> render_click()
     before_switch = DateTime.utc_now() |> DateTime.truncate(:second)
     view |> element("#grant-switch-#{grant.id}") |> render_click()
     after_switch = DateTime.utc_now() |> DateTime.truncate(:second)
-    # Enabled, it is in Enabled, and stays where it was in All grants.
-    assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
+    # On, it stays where it was in All grants, and is in On now.
     assert has_element?(view, "#grants-all #grant-card-#{grant.id}")
-    assert has_element?(view, "#enabled-switch-#{grant.id}[aria-checked=true]")
     assert has_element?(view, "#grant-switch-#{grant.id}[aria-checked=true]")
     active = Enum.find(Sandbox.snapshot(username).grants, &(&1.id == grant.id))
 
@@ -328,22 +469,28 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert DateTime.compare(active.expires_at, DateTime.add(before_switch, 15 * 60)) != :lt
     assert DateTime.compare(active.expires_at, DateTime.add(after_switch, 15 * 60)) != :gt
 
+    view |> element("#grants-tab-on") |> render_click()
+    assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
+    assert has_element?(view, "#enabled-row-#{grant.id} #enabled-over-#{grant.id}", "GitHub")
+    assert has_element?(view, "#enabled-switch-#{grant.id}[aria-checked=true]")
     view |> element("#enabled-switch-#{grant.id}") |> render_click()
     refute has_element?(view, "#enabled-row-#{grant.id}")
+
+    view |> element("#grants-tab-all") |> render_click()
     assert has_element?(view, "#grants-all #grant-card-#{grant.id}")
     assert has_element?(view, "#grant-switch-#{grant.id}[aria-checked=false]")
   end
 
-  test "Enabled stands apart from the catalog, the grants enabled on startup and until off folded into one row",
+  test "On now stands apart from the catalog, the grants enabled on startup and until off folded into one row",
        %{conn: conn, username: username} do
     grant = github(username)
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
 
-    # A section of its own: the search, the sort and the filters are in
-    # All grants, below it.
-    refute has_element?(view, "#grants-all #grants-enabled")
-    assert has_element?(view, "#grants-all #grant-search")
-    assert has_element?(view, "#grants-all #grant-filters")
+    # A tab of its own: the search, the sort and the filters are in All
+    # grants, another tab.
+    assert has_element?(view, "#grants-tab-on[aria-current=page]")
+    refute has_element?(view, "#grants-all")
+    refute has_element?(view, "#grant-search")
 
     assert has_element?(
              view,
@@ -362,12 +509,18 @@ defmodule MWTClientWeb.SandboxLiveTest do
     refute has_element?(view, "#enabled-row-internet")
 
     # Enabled for a time, a grant has a row of its own. Its tags: its type,
-    # and whose it is; not enabled on startup, nor a subgrant.
+    # the resource it gives a use of, and whose it is; not enabled on
+    # startup.
     assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
     assert has_element?(view, "#enabled-type-#{grant.id}", "Token or API key")
+
+    assert has_element?(
+             view,
+             "#enabled-over-#{grant.id}[href='/tools/sandbox/resources/credential/#{grant.credential}']"
+           )
+
     assert has_element?(view, "#enabled-origin-#{grant.id}", "Yours")
     refute has_element?(view, "#enabled-start-#{grant.id}")
-    refute has_element?(view, "#enabled-under-#{grant.id}")
 
     # Open, each is a row like any other.
     view |> element("#enabled-startup-toggle") |> render_click()
@@ -375,27 +528,29 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#enabled-startup-list #enabled-row-mwt-change")
     assert has_element?(view, "#enabled-start-mwt-change", "Enabled on startup")
     assert has_element?(view, "#enabled-origin-mwt-change", "Built in")
-    assert has_element?(view, "#enabled-mode-mwt-change-ask[aria-checked=true]")
+    assert has_element?(view, "#enabled-mode-mwt-change--ask[aria-checked=true]")
 
     # Enabled for a time, it is no longer as MWT starts it: it leaves the
     # row, and comes back until off.
-    view |> element("#enabled-duration-mwt-change-60") |> render_click()
+    view |> element("#enabled-duration-mwt-change--60") |> render_click()
     refute has_element?(view, "#enabled-startup-list #enabled-row-mwt-change")
     assert has_element?(view, "#grants-enabled #enabled-row-mwt-change")
     assert has_element?(view, "#enabled-startup-count", "8 grants")
     assert has_element?(view, "#enabled-startup-ask", "0 ask")
 
-    view |> element("#enabled-duration-mwt-change-until_off") |> render_click()
+    view |> element("#enabled-duration-mwt-change--until_off") |> render_click()
     assert has_element?(view, "#enabled-startup-list #enabled-row-mwt-change")
 
     # Until off, one that isn't enabled on startup stays apart.
-    view |> element("#enabled-duration-#{grant.id}-until_off") |> render_click()
+    view |> element("#enabled-duration-#{grant.id}--until_off") |> render_click()
     refute has_element?(view, "#enabled-startup-list #enabled-row-#{grant.id}")
     assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
 
-    # The search and filters leave it alone.
+    # The search and filters, in All grants, leave it alone.
+    view |> element("#grants-tab-all") |> render_click()
     view |> form("#grant-search", term: "nothing like it") |> render_change()
     assert has_element?(view, "#grants-no-match")
+    view |> element("#grants-tab-on") |> render_click()
     assert has_element?(view, "#enabled-row-#{grant.id}")
     assert has_element?(view, "#enabled-startup-count", "9 grants")
 
@@ -433,45 +588,50 @@ defmodule MWTClientWeb.SandboxLiveTest do
     grant = github(username)
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
 
-    # Enabled, and its card in All grants, show how it is set: enabled for
+    # On now, and its card in All grants, show how it is set: enabled for
     # 1 h, asking each time.
-    for prefix <- ["enabled", "grant"] do
-      assert has_element?(view, "##{prefix}-duration-#{grant.id}-60[aria-checked=true]")
-      assert has_element?(view, "##{prefix}-mode-#{grant.id}-ask[aria-checked=true]")
-    end
+    assert has_element?(view, "#enabled-duration-#{grant.id}--60[aria-checked=true]")
+    assert has_element?(view, "#enabled-mode-#{grant.id}--ask[aria-checked=true]")
+    view |> element("#grants-tab-all") |> render_click()
+    assert has_element?(view, "#grant-duration-#{grant.id}--60[aria-checked=true]")
+    assert has_element?(view, "#grant-mode-#{grant.id}--ask[aria-checked=true]")
 
     # A new duration counts from now, changed in either place.
-    view |> element("#enabled-duration-#{grant.id}-240") |> render_click()
+    view |> element("#grants-tab-on") |> render_click()
+    view |> element("#enabled-duration-#{grant.id}--240") |> render_click()
     assert [%{state: :on, minutes: 240, expires_at: at}] = added(username)
     assert DateTime.diff(at, DateTime.utc_now()) > 230 * 60
-    assert has_element?(view, "#enabled-duration-#{grant.id}-240[aria-checked=true]")
-    assert has_element?(view, "#grant-duration-#{grant.id}-240[aria-checked=true]")
+    assert has_element?(view, "#enabled-duration-#{grant.id}--240[aria-checked=true]")
+    view |> element("#grants-tab-all") |> render_click()
+    assert has_element?(view, "#grant-duration-#{grant.id}--240[aria-checked=true]")
 
-    view |> element("#grant-mode-#{grant.id}-all") |> render_click()
+    view |> element("#grant-mode-#{grant.id}--all") |> render_click()
     assert [%{state: :on, allowances: [%{pattern: :all}]}] = added(username)
-    # Its row shows it on its Ask/Auto switch, with no tag of its own; its
-    # card says it too.
-    assert has_element?(view, "#grants-enabled #enabled-mode-#{grant.id}-all[aria-checked=true]")
-    refute has_element?(view, "#enabled-auto-#{grant.id}")
+    # Its card says it; its row shows it on its Ask/Auto switch, with no
+    # tag of its own.
     assert has_element?(view, "#grants-all #grant-auto-#{grant.id}", "Auto-approve")
+    view |> element("#grants-tab-on") |> render_click()
+    assert has_element?(view, "#grants-enabled #enabled-mode-#{grant.id}--all[aria-checked=true]")
+    refute has_element?(view, "#enabled-auto-#{grant.id}")
 
     # Each change keeps the other.
-    view |> element("#grant-duration-#{grant.id}-until_off") |> render_click()
+    view |> element("#enabled-duration-#{grant.id}--until_off") |> render_click()
 
     assert [%{state: :on, expires_at: nil, minutes: :until_off, allowances: [%{pattern: :all}]}] =
              added(username)
 
-    view |> element("#enabled-mode-#{grant.id}-ask") |> render_click()
+    view |> element("#enabled-mode-#{grant.id}--ask") |> render_click()
     assert [%{state: :on, expires_at: nil, allowances: []}] = added(username)
-    assert has_element?(view, "#enabled-mode-#{grant.id}-ask[aria-checked=true]")
+    assert has_element?(view, "#enabled-mode-#{grant.id}--ask[aria-checked=true]")
+    view |> element("#grants-tab-all") |> render_click()
     refute has_element?(view, "#grant-auto-#{grant.id}")
 
     # The same on its page, where auto-approve shows under Allowed for now.
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
-    view |> element("#detail-mode-#{grant.id}-all") |> render_click()
+    view |> element("#detail-mode-#{grant.id}--all") |> render_click()
     assert has_element?(view, "#detail-auto")
     assert has_element?(view, "#grant-allowances", "Every use")
-    view |> element("#detail-duration-#{grant.id}-15") |> render_click()
+    view |> element("#detail-duration-#{grant.id}--15") |> render_click()
     assert [%{state: :on, minutes: 15, allowances: [%{pattern: :all}]}] = added(username)
 
     # Off, nothing changes it.
@@ -618,10 +778,9 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
     view |> element("#add-grant") |> render_click()
-    # The two command grants are offered apart.
-    # Ask to run commands is built in: the dialog only points at it.
-    assert has_element?(view, "#command-type-grid a#type-command", "Built in")
-    assert has_element?(view, "#command-type-grid #type-saved_command", "Command subgrant")
+    # A saved command is the one command grant: an agent's own needs none.
+    refute has_element?(view, "#type-command")
+    assert has_element?(view, "#command-type-grid #type-saved_command", "Saved command")
     view |> element("#type-saved_command") |> render_click()
 
     # A saved command needs its script, and the folder it runs in.
@@ -655,40 +814,35 @@ defmodule MWTClientWeb.SandboxLiveTest do
     |> render_submit()
 
     assert_patch(view, ~p"/tools/sandbox/grants/deploy-docs")
-    assert has_element?(view, "#grant-detail-deploy-docs", "Command subgrant")
-    # A subgrant of Ask to run commands, which its page leads back to.
-    assert has_element?(view, "#grant-crumbs #grant-parent", "Ask to run commands")
+    assert has_element?(view, "#grant-detail-deploy-docs", "Saved command")
+    # An action over your machine, which its page leads to.
+    assert has_element?(view, "#grant-crumbs #grant-resource", "Your machine")
     assert has_element?(view, "#grant-delivery-script", "./deploy.sh staging")
     assert has_element?(view, "#grant-delivery", "Every run waits for you")
     assert has_element?(view, "#grant-delivery", "mwt call deploy-docs")
     assert has_element?(view, "#grant-delivery", "None: an agent chooses only when it runs")
     refute has_element?(view, "#grant-ask-to-run")
     # Nothing to paste; it turns on like any grant, asking each time unless you choose.
-    refute has_element?(view, "#grant-value-card")
-    assert has_element?(view, "#detail-mode-deploy-docs-all")
+    refute has_element?(view, "#grant-value-of")
+    assert has_element?(view, "#detail-mode-deploy-docs--all")
 
     # Off, like any grant.
     assert [%{kind: :command, script: "./deploy.sh staging", dir: ^folder, state: :off}] =
              added(username)
 
-    # A card like any grant's, naming its grant.
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    # A card like any grant's, naming its resource.
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
     assert has_element?(view, "#grants-all #grant-card-deploy-docs", "./deploy.sh staging")
     assert has_element?(view, "#grant-card-deploy-docs", "mwt call deploy-docs")
-
-    assert has_element?(
-             view,
-             "#grant-card-deploy-docs #grant-under-deploy-docs",
-             "Ask to run commands"
-           )
+    assert has_element?(view, "#grant-card-deploy-docs #grant-over-deploy-docs", "Your machine")
   end
 
-  test "a subgrant's parameters are set in its form and shown on its page; its start setting changes there",
+  test "an action's parameters are set in its form and shown on its page; its start setting changes there",
        %{conn: conn, username: username} do
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
-    # Added under its grant.
-    view |> element("#add-subgrant-commands") |> render_click()
-    assert has_element?(view, "#add-grant-title", "Add a subgrant of Ask to run commands")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/resources/machine")
+    # Added over its resource, from its page.
+    view |> element("#add-action") |> render_click()
+    assert has_element?(view, "#add-grant-title", "Add an action over Your machine")
 
     fields = %{
       name: "gh repo view",
@@ -730,15 +884,15 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#grant-param-REPO_NAME", "owner/name")
     assert has_element?(view, "#grant-delivery", "mwt call gh-repo-view REPO_NAME=…")
 
-    # It starts disabled; enabled on startup and auto-approved, it is
-    # enabled at once, every call going through.
-    assert has_element?(view, "#start-gh-repo-view-off[aria-checked=true]")
+    # It starts off; enabled on startup and auto-approved, it is enabled at
+    # once, every call going through.
+    assert has_element?(view, "#start-gh-repo-view--off[aria-checked=true]")
     refute has_element?(view, "#detail-start")
 
-    assert view |> element("#start-gh-repo-view-auto") |> render() =~
+    assert view |> element("#start-gh-repo-view--auto") |> render() =~
              "gh repo view is enabled and every use of it goes through"
 
-    view |> element("#start-gh-repo-view-auto") |> render_click()
+    view |> element("#start-gh-repo-view--auto") |> render_click()
 
     assert [%{start: :auto, state: :on} = grant] = added(username)
     assert Grant.auto_approved?(grant)
@@ -746,10 +900,10 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#detail-auto", "Auto-approve")
     assert has_element?(view, "#grant-start-words", "every use goes through without asking")
 
-    # Its card says so. In Enabled it is with the others enabled on startup
-    # and until off, folded into one row; open, its row says it is a
-    # subgrant, and of which grant.
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    # Its card says so. In On now it is with the others enabled on startup
+    # and until off, folded into one row; open, its row names the resource
+    # it is over.
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
 
     assert has_element?(
              view,
@@ -758,30 +912,29 @@ defmodule MWTClientWeb.SandboxLiveTest do
            )
 
     assert has_element?(view, "#grant-card-gh-repo-view #grant-auto-gh-repo-view")
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
     assert has_element?(view, "#enabled-startup-names", "gh repo view")
     refute has_element?(view, "#enabled-row-gh-repo-view")
     view |> element("#enabled-startup-toggle") |> render_click()
 
     assert has_element?(
              view,
-             "#enabled-startup-list #enabled-under-gh-repo-view",
-             "Subgrant of Ask to run commands"
+             "#enabled-startup-list #enabled-over-gh-repo-view",
+             "Your machine"
            )
 
     # Off again: off at once.
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/gh-repo-view")
-    view |> element("#start-gh-repo-view-off") |> render_click()
+    view |> element("#start-gh-repo-view--off") |> render_click()
     assert [%{start: :off, state: :off, allowances: []}] = added(username)
 
-    # Its grant lists it, and can't be auto-approved on startup itself:
-    # every ad-hoc run asks.
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/commands")
-    assert has_element?(view, "#grant-subgrants #subgrant-link-gh-repo-view", "gh repo view")
-    assert has_element?(view, "#start-commands-on")
-    refute has_element?(view, "#start-commands-auto")
+    # Your machine's page lists it among its actions.
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/resources/machine")
+    assert has_element?(view, "#resource-actions #action-link-gh-repo-view", "gh repo view")
   end
 
-  test "a proposed subgrant is saved to review: its card links to its page, where accepting it answers the agent",
+  test "a proposed action is saved to review: its card links to its page, where accepting it answers the agent",
        %{conn: conn, username: username} do
     asking =
       Task.async(fn ->
@@ -790,7 +943,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
             username,
             {:propose,
              %{
-               grant: "commands",
+               grant: "machine",
                name: "issue",
                purpose: "Opens an issue in a repository",
                script: "gh issue create -R \"$REPO\" --title $TITLE",
@@ -841,7 +994,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert script =~ ~s(--title "$TITLE")
     assert Grant.to_review?(grant)
 
-    {:ok, catalog, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, catalog, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
     assert has_element?(catalog, "#grants-to-review", "An agent proposed a grant")
     assert has_element?(catalog, "#grant-card-issue #grant-proposed-issue", "Proposed by claude")
     assert has_element?(catalog, "#grant-card-issue #grant-review-issue")
@@ -985,33 +1138,23 @@ defmodule MWTClientWeb.SandboxLiveTest do
       )
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
-    assert has_element?(view, "#approval-kind-#{approval.id}", "Subgrant")
+    assert has_element?(view, "#approval-kind-#{approval.id}", "Action")
     assert has_element?(view, "#approval-values-#{approval.id}", "$WORD")
     assert has_element?(view, "#approval-value-#{approval.id}-WORD", "hello")
     assert has_element?(view, "#approval-script-#{approval.id}[open]", ~s(echo "$WORD"))
   end
 
-  test "a token grant takes request subgrants: the form starts from its host and the headers its service expects",
+  test "a credential takes request actions: the form starts from a host a grant over it lists and the headers its service expects",
        %{conn: conn, username: username} do
     github(username, false)
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/resources/credential/github")
+    assert has_element?(view, "#resource-actions-empty")
 
-    assert has_element?(
-             view,
-             "#grant-card-github #add-subgrant-github[title*='a request MWT sends']"
-           )
+    view |> element("#add-action") |> render_click()
 
-    view |> element("#add-subgrant-github") |> render_click()
-
-    assert has_element?(view, "#add-grant-title", "Add a subgrant of GitHub")
+    assert has_element?(view, "#add-grant-title", "Add an action over GitHub")
     assert has_element?(view, "#grant-url[value='https://api.github.com/']")
     assert has_element?(view, "#grant-headers", "Authorization: Bearer {token}")
-
-    assert has_element?(
-             view,
-             "#request-fields",
-             "sends its token only to api.github.com, github.com"
-           )
 
     fields = %{
       name: "pr view",
@@ -1021,14 +1164,14 @@ defmodule MWTClientWeb.SandboxLiveTest do
       params: "REPO: word: the repository\nPR: number: the pull request"
     }
 
-    # A host the grant doesn't list is refused, and says which it lists.
+    # Over HTTPS only.
     view
     |> form("#add-grant-form",
-      grant: Map.put(fields, :url, "https://evil.example/repos/$REPO/pulls/$PR")
+      grant: Map.put(fields, :url, "http://api.github.com/repos/$REPO/pulls/$PR")
     )
     |> render_submit()
 
-    assert has_element?(view, "#grant-error-url", "sends its token only to")
+    assert has_element?(view, "#grant-error-url", "HTTPS only")
 
     view
     |> form("#add-grant-form",
@@ -1037,18 +1180,19 @@ defmodule MWTClientWeb.SandboxLiveTest do
     |> render_submit()
 
     assert_patch(view, ~p"/tools/sandbox/grants/pr-view")
-    assert has_element?(view, "#grant-crumbs #grant-parent", "GitHub")
+    assert has_element?(view, "#grant-crumbs #grant-resource", "GitHub")
+    assert [%{credential: "github"}] = Enum.filter(added(username), &(&1.kind == :request))
     assert has_element?(view, "#grant-request", "https://api.github.com/repos/$REPO/pulls/$PR")
     assert has_element?(view, "#grant-request", "Bearer [GitHub's token]")
     assert has_element?(view, "#grant-param-PR", "a number")
     assert has_element?(view, "#grant-delivery", "mwt call pr-view REPO=… PR=…")
 
-    # Its grant's page lists it.
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/github")
-    assert has_element?(view, "#grant-subgrants #subgrant-link-pr-view")
+    # Its credential's page lists it.
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/resources/credential/github")
+    assert has_element?(view, "#resource-actions #action-link-pr-view")
   end
 
-  test "editing a grant or subgrant opens its form filled in, and keeps its id and state",
+  test "editing a grant or action opens its form filled in, and keeps its id and state",
        %{conn: conn, username: username} do
     grant = github(username)
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/github")
@@ -1078,8 +1222,8 @@ defmodule MWTClientWeb.SandboxLiveTest do
     view |> form("#add-grant-form", grant: %{name: ""}) |> render_submit()
     assert has_element?(view, "#grant-error-name")
 
-    # Ask to run commands is built in: nothing to edit.
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/commands")
+    # The Internet's grant is built in: nothing to edit.
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/internet")
     refute has_element?(view, "#edit-grant")
   end
 
@@ -1156,18 +1300,15 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     assert has_element?(view, "#grant-signs-as-box")
 
-    # Signing sends the value to IAM Credentials, which it must list.
+    # Signing's host, IAM Credentials, is the google adapter's own:
+    # implied, not listed.
     view
     |> form("#add-grant-form",
       grant: %{signs_as: "svc@p.iam.gserviceaccount.com", keep_minutes: "4"}
     )
     |> render_submit()
 
-    assert has_element?(view, "#grant-error-signs_as", "iamcredentials.googleapis.com")
-
-    view
-    |> form("#add-grant-form", grant: %{hosts: "svc.example.com, *.googleapis.com"})
-    |> render_submit()
+    refute has_element?(view, "#grant-error-signs_as")
 
     assert %{signs_as: ["svc@p.iam.gserviceaccount.com"], keep_minutes: 4} =
              Enum.find(added(username), &(&1.id == "internal"))
@@ -1193,13 +1334,10 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#grant-present-login-box")
     view |> form("#add-grant-form", grant: %{present_login: "true"}) |> render_change()
 
-    # Refreshed at Google's token endpoint, which it must list.
+    # Refreshed at Google's token endpoint, which the google adapter
+    # implies: not listed.
     view |> form("#add-grant-form", grant: %{present_id_header: "X-Id-Token"}) |> render_submit()
-    assert has_element?(view, "#grant-error-present_login", "oauth2.googleapis.com")
-
-    view
-    |> form("#add-grant-form", grant: %{hosts: "svc.example.com, *.googleapis.com"})
-    |> render_submit()
+    refute has_element?(view, "#grant-error-present_login")
 
     assert %Grant{presents: %{login: %{refresh: "1//mwt" <> _ = refresh, header: "x-id-token"}}} =
              Enum.find(added(username), &(&1.id == "cli"))
@@ -1214,48 +1352,15 @@ defmodule MWTClientWeb.SandboxLiveTest do
              Enum.find(added(username), &(&1.id == "cli"))
   end
 
-  test "Ask to run commands, the escape hatch, is built in, off, and says it only lets agents ask",
+  test "a command an agent writes needs no grant: none is listed, and a command grant needs its script",
        %{conn: conn, username: username} do
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    refute has_element?(view, "#grant-card-commands")
 
-    # Listed with the other grants from the start, off, with what turning it on means.
-    assert has_element?(view, "#grants-all #grant-card-commands", "Ask to run commands")
-    refute has_element?(view, "#enabled-row-commands")
-    assert has_element?(view, "#grant-asks-only-commands", "Only while it is enabled")
-    assert has_element?(view, "#grant-asks-only-commands", "approve every run")
-    # A duration, and nothing to auto-approve.
-    assert has_element?(view, "#grant-duration-commands")
-    refute has_element?(view, "#grant-mode-commands")
-
-    # Enabled, it is in Enabled, and still offers no auto-approve.
-    view |> element("#grant-switch-commands") |> render_click()
-    assert has_element?(view, "#grants-enabled #enabled-row-commands")
-    assert has_element?(view, "#grants-enabled #enabled-asks-only-commands")
-    assert has_element?(view, "#grants-all #grant-card-commands")
-    refute has_element?(view, "#enabled-mode-commands")
-    refute has_element?(view, "#grant-mode-commands")
-
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/commands")
-    assert has_element?(view, "#grant-asks-only", "approve every run")
-    assert has_element?(view, "#grant-delivery", "-- COMMAND")
-    assert has_element?(view, "#grant-delivery", "Nothing auto-approves one")
-    refute has_element?(view, "#grant-allowances")
-    # Built in: no Remove.
-    refute has_element?(view, "#delete-grant")
-
-    # Even asked to, nothing lets a run through unasked.
-    assert {:error, :every_run_asks} = Sandbox.set_mode(username, "commands", :all)
-    {:ok, grant} = Sandbox.turn_on(username, "commands", 60, :all)
-    assert grant.allowances == []
-    assert {:error, :every_run_asks} = Sandbox.allow_all(username, "commands", 60)
-    assert {:error, :built_in} = Sandbox.delete_grant(username, "commands")
-
-    # The dialog only points at it, and a second isn't made.
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
     view |> element("#add-grant") |> render_click()
-    assert has_element?(view, "a#type-command", "Built in")
+    refute has_element?(view, "#type-command")
 
-    assert {:error, %{name: "Ask to run commands is built in" <> _}} =
+    assert {:error, %{script: "Write the script" <> _}} =
              Sandbox.create_grant(username, %{
                "kind" => "command",
                "name" => "Shell",
@@ -1266,16 +1371,16 @@ defmodule MWTClientWeb.SandboxLiveTest do
   test "a grant turns on asking each time by default, or auto-approved when chosen",
        %{conn: conn, username: username} do
     grant = github(username, false)
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
 
     # Ask each time is the default.
-    assert has_element?(view, "#grant-mode-#{grant.id}-ask[aria-checked=true]")
+    assert has_element?(view, "#grant-mode-#{grant.id}--ask[aria-checked=true]")
     view |> element("#grant-switch-#{grant.id}") |> render_click()
     assert [%{state: :on, allowances: []}] = added(username)
     refute has_element?(view, "#grant-auto-#{grant.id}")
 
     view |> element("#grant-switch-#{grant.id}") |> render_click()
-    view |> element("#grant-mode-#{grant.id}-all") |> render_click()
+    view |> element("#grant-mode-#{grant.id}--all") |> render_click()
     view |> element("#grant-switch-#{grant.id}") |> render_click()
 
     assert [%{state: :on, allowances: [%{pattern: :all, until: nil}]}] = added(username)
@@ -1284,14 +1389,42 @@ defmodule MWTClientWeb.SandboxLiveTest do
     # Off ends it; on again, the choice is back to asking.
     view |> element("#grant-switch-#{grant.id}") |> render_click()
     assert [%{state: :off, allowances: []}] = added(username)
-    assert has_element?(view, "#grant-mode-#{grant.id}-ask[aria-checked=true]")
+    assert has_element?(view, "#grant-mode-#{grant.id}--ask[aria-checked=true]")
 
     # The same choice on the grant's page.
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
-    view |> element("#detail-mode-#{grant.id}-all") |> render_click()
+    view |> element("#detail-mode-#{grant.id}--all") |> render_click()
     view |> element("#detail-switch-#{grant.id}") |> render_click()
     assert has_element?(view, "#detail-auto", "Auto-approve")
     assert [%{allowances: [%{pattern: :all}]}] = added(username)
+  end
+
+  test "one grant's id ending another's (docs, docs-all) makes no element id twice",
+       %{conn: conn, username: username} do
+    for name <- ["Docs", "Docs all"] do
+      {:ok, _} =
+        Sandbox.create_grant(username, %{
+          "kind" => "token",
+          "name" => name,
+          "purpose" => "Read the docs",
+          "hosts" => "docs.example.com",
+          "env" => "DOCS_TOKEN",
+          "value" => "docs-value-0123456789"
+        })
+    end
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+
+    ids =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("[id]")
+      |> LazyHTML.attribute("id")
+
+    assert ids -- Enum.uniq(ids) == []
+    assert has_element?(view, "#grant-mode-docs--all")
+    assert has_element?(view, "#grant-mode-docs-all")
   end
 
   test "auto-approving a saved command asks nothing more: the VM writes no folder of yours",
@@ -1310,18 +1443,19 @@ defmodule MWTClientWeb.SandboxLiveTest do
         "dir" => folder
       })
 
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
-    assert has_element?(view, "#grant-mode-make-docs-all")
-    refute has_element?(view, "#grant-mode-make-docs-all[data-confirm]")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    assert has_element?(view, "#grant-mode-make-docs--all")
+    refute has_element?(view, "#grant-mode-make-docs--all[data-confirm]")
   end
 
-  test "the catalog finds any grant by any word, and filters by status and type; what is on stays above",
+  test "the catalog finds any grant by any word, and filters by status and type",
        %{conn: conn, username: username} do
     grant = github(username)
 
     for {name, script} <- [
           {"Web pods", "kubectl get pods -n web"},
-          {"VPN status", "openvpn3 sessions-list"}
+          {"VPN status", "openvpn3 sessions-list"},
+          {"Disk usage", "df -h"}
         ] do
       {:ok, _} =
         Sandbox.create_grant(username, %{
@@ -1333,9 +1467,9 @@ defmodule MWTClientWeb.SandboxLiveTest do
         })
     end
 
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
-    # Every grant and subgrant is a card, the one that is on too, six a page.
-    assert has_element?(view, "#grants-all-count", "11 grants, 2 subgrants")
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    # Every grant and action is a card, the one that is on too, six a page.
+    assert has_element?(view, "#grants-all-count", "10 grants, 3 actions")
     assert has_element?(view, "#grants-pages-shown", "1–6 of 13")
     first = cards(view)
     assert length(first) == 6
@@ -1366,7 +1500,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     # Searching starts again from the first page.
     view |> element("#grants-page-2") |> render_click()
     view |> form("#grant-search", term: "web pods") |> render_change()
-    assert has_element?(view, "#grants-all-list #grant-card-web-pods #grant-under-web-pods")
+    assert has_element?(view, "#grants-all-list #grant-card-web-pods #grant-over-web-pods")
     refute has_element?(view, "#grants-pages")
     view |> element("#clear-grant-search") |> render_click()
 
@@ -1377,14 +1511,12 @@ defmodule MWTClientWeb.SandboxLiveTest do
     refute has_element?(view, "#grants-all-list #grant-card-commands")
     refute has_element?(view, "#grants-all-list #grant-card-#{grant.id}")
     assert has_element?(view, "#grants-all-count", "1 of 13 match")
-    # What is enabled stays above, whatever the search.
-    assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
 
-    view |> form("#grant-search", term: "command subgrant") |> render_change()
+    view |> form("#grant-search", term: "saved command") |> render_change()
     assert has_element?(view, "#grant-card-web-pods")
     assert has_element?(view, "#grant-card-vpn-status")
     # The filters count what they would show with the search as it is.
-    assert has_element?(view, "#grant-type-saved_command", "2")
+    assert has_element?(view, "#grant-type-saved_command", "3")
     assert has_element?(view, "#grant-status-on", "0")
 
     # The grant that is on is found like any other.
@@ -1394,10 +1526,9 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     view |> form("#grant-search", term: "nothing like it") |> render_change()
     assert has_element?(view, "#grants-no-match")
-    assert has_element?(view, "#grants-enabled #enabled-row-#{grant.id}")
 
     view |> element("#clear-grant-search") |> render_click()
-    assert has_element?(view, "#grants-all-count", "11 grants, 2 subgrants")
+    assert has_element?(view, "#grants-all-count", "10 grants, 3 actions")
 
     # Only what is on, then only one type: the search keeps.
     view |> form("#grant-status", status: "on") |> render_change()
@@ -1408,15 +1539,19 @@ defmodule MWTClientWeb.SandboxLiveTest do
     view |> form("#grant-type", type: "saved_command") |> render_change()
     assert has_element?(view, "#grant-card-web-pods")
     assert has_element?(view, "#grant-card-vpn-status")
-    refute has_element?(view, "#grant-card-commands")
     assert has_element?(view, "#grant-status-off[class*=accent]")
 
     # By name, A to Z.
     view |> form("#grant-search", sort: "name") |> render_change()
-    assert cards(view) == ["grant-card-vpn-status", "grant-card-web-pods"]
+
+    assert cards(view) == [
+             "grant-card-disk-usage",
+             "grant-card-vpn-status",
+             "grant-card-web-pods"
+           ]
 
     view |> element("#grant-filters-clear") |> render_click()
-    assert has_element?(view, "#grants-all-count", "11 grants, 2 subgrants")
+    assert has_element?(view, "#grants-all-count", "10 grants, 3 actions")
   end
 
   # The cards All grants shows now, by id, in order.

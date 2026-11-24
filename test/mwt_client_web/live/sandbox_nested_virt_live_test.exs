@@ -19,19 +19,19 @@ defmodule MWTClientWeb.SandboxNestedVirtLiveTest do
   } do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
 
-    assert has_element?(view, "#nested-virt-false[aria-checked=true]")
+    assert has_element?(view, "#nested-virt--false[aria-checked=true]")
     assert has_element?(view, "#nested-virt-host", "This machine allows it.")
     # Switching on asks first; switching back off doesn't.
-    assert has_element?(view, "#nested-virt-true[data-confirm*='escapes']")
+    assert has_element?(view, "#nested-virt--true[data-confirm*='escapes']")
 
-    view |> element("#nested-virt-true") |> render_click()
+    view |> element("#nested-virt--true") |> render_click()
 
     assert has_element?(view, "#notices", "VMs inside the VM turned on")
-    assert has_element?(view, "#nested-virt-true[aria-checked=true]")
+    assert has_element?(view, "#nested-virt--true[aria-checked=true]")
     assert Sandbox.snapshot(username).settings.nested_virt
 
-    refute has_element?(view, "#nested-virt-false[data-confirm]")
-    view |> element("#nested-virt-false") |> render_click()
+    refute has_element?(view, "#nested-virt--false[data-confirm]")
+    view |> element("#nested-virt--false") |> render_click()
     refute Sandbox.snapshot(username).settings.nested_virt
   end
 
@@ -58,6 +58,6 @@ defmodule MWTClientWeb.SandboxNestedVirtLiveTest do
     # A VM that has it on can still turn it off.
     assert {:ok, _} = Sandbox.update_settings(username, %{"nested_virt" => "true"})
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
-    assert has_element?(view, "#nested-virt-false")
+    assert has_element?(view, "#nested-virt--false")
   end
 end

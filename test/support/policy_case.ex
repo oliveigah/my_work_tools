@@ -184,9 +184,15 @@ defmodule MWTClient.PolicyCase do
         |> List.flatten()
       end
 
+      # The Internet's grant as MWT starts it: on, every use auto-approved.
+      def internet_on, do: %{Grant.internet() | state: :on, allowances: [allowance(:all, nil)]}
+
+      # A request decided with the Internet's grant on and auto-approving,
+      # so its answer is its credential's (`all_of`: the network's yes adds
+      # nothing).
       def decide_request(one, now \\ @now, more \\ []) do
         Policy.decide(
-          snapshot([one.grant, other_token_grant() | more]),
+          snapshot([one.grant, other_token_grant(), internet_on() | more]),
           {:request, one.request},
           now
         )

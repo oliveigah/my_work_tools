@@ -1,7 +1,7 @@
 defmodule MWTClient.Sandbox.HostRulesTest do
   @moduledoc """
-  A list of entries naming hosts, shared by what MWT reads and a network
-  grant's host list: which entry speaks for a host, and what an entry can
+  A list of entries naming hosts, shared by what MWT reads and a network's
+  host limits: which entry speaks for a host, and what an entry can
   be.
   """
   use ExUnit.Case, async: true

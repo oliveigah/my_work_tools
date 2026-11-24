@@ -149,7 +149,9 @@ defmodule MWTClient.Sandbox.GateTest do
       username: username
     } do
       {:ok, _} = Sandbox.turn_off(username, "internet")
-      assert :read_only = Gate.destination(username, @public, 443)
+
+      assert {:deny, "Internet would open it, and is off" <> _} =
+               Gate.destination(username, @public, 443)
 
       {:ok, grant} =
         Sandbox.create_grant(username, %{
@@ -162,12 +164,11 @@ defmodule MWTClient.Sandbox.GateTest do
       {:ok, _} = Sandbox.turn_on(username, grant.id, 60, :all)
       assert {:ok, id} = Gate.destination(username, @public, 443)
       assert id == grant.id
-      assert :read_only = Gate.destination(username, @public, 22)
+      assert {:deny, _} = Gate.destination(username, @public, 22)
     end
 
-    test "off, DNS answers only the names grants list; a network grant's only while it is on", %{
-      username: username
-    } do
+    test "off, DNS answers no public name, a token grant's hosts included; a network grant's only while it is on",
+         %{username: username} do
       _grant = github(username)
 
       {:ok, network} =
@@ -180,8 +181,9 @@ defmodule MWTClient.Sandbox.GateTest do
 
       {:ok, _} = Sandbox.turn_off(username, "internet")
       assert {:refuse, :internet_off} = Gate.lookup(username, "example.com")
-      assert :ok = Gate.lookup(username, "api.github.com")
-      assert :ok = Gate.lookup(username, "GitHub.com.")
+      # A token grant gives the use of its credential, not its hosts.
+      assert {:refuse, :internet_off} = Gate.lookup(username, "api.github.com")
+      assert {:refuse, :internet_off} = Gate.lookup(username, "GitHub.com.")
       assert network.state == :off
 
       assert {:refuse, {:grant_off, %{id: "git-server"}}} =
@@ -198,49 +200,24 @@ defmodule MWTClient.Sandbox.GateTest do
       assert {:covered, %{id: "git-server"}} = Gate.lookup(username, "git.corp.internal")
     end
 
-    test "off, a token grant's host is still reached, read by MWT; nothing else is", %{
+    test "off, a token grant's host isn't reached, its grant on or not", %{
       username: username
     } do
-      grant = github(username)
+      _grant = github(username)
       {:ok, _} = Sandbox.turn_off(username, "internet")
       # MWT's DNS answered the name with the address the proxy is asked for.
       :ok = Gate.answered(username, "api.github.com", [{140, 82, 112, 3}], 300)
       net = SandboxProxy.start(username)
 
-      response =
-        SandboxProxy.https(
-          net,
-          "api.github.com",
-          "GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer #{grant.placeholder}\r\n\r\n"
-        )
-
-      assert response =~ "HTTP/1.1 200"
-      assert response =~ "ghp_REAL_VALUE_THROUGH_THE_GATE"
-
-      # A name no token grant lists: the connection closes, unread.
       {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", net.proxy, [:binary, active: false])
       :ok = :gen_tcp.send(socket, "CONNECT 140.82.112.3:443 HTTP/1.1\r\n\r\n")
-      {:ok, "HTTP/1.1 200" <> _} = :gen_tcp.recv(socket, 0, 5_000)
-
-      assert {:error, _closed} =
-               :ssl.connect(socket,
-                 verify: :verify_none,
-                 server_name_indication: ~c"example.com",
-                 active: false
-               )
-
-      # Nor do plain bytes go anywhere.
-      {:ok, plain} = :gen_tcp.connect(~c"127.0.0.1", net.proxy, [:binary, active: false])
-      :ok = :gen_tcp.send(plain, "CONNECT 140.82.112.3:22 HTTP/1.1\r\n\r\n")
-      {:ok, "HTTP/1.1 200" <> _} = :gen_tcp.recv(plain, 0, 5_000)
-      :ok = :gen_tcp.send(plain, "SSH-2.0-OpenSSH_9.6\r\n")
-      assert {:error, :closed} = :gen_tcp.recv(plain, 0, 5_000)
+      assert {:ok, "HTTP/1.1 403" <> _} = :gen_tcp.recv(socket, 0, 5_000)
 
       _ = :sys.get_state(server(username))
 
       assert Enum.any?(
                Sandbox.events(username),
-               &(&1.summary == "The Internet is off · not passed through")
+               &(&1.summary == "140.82.112.3:443 · Internet would open it, and is off")
              )
     end
 
@@ -332,11 +309,16 @@ defmodule MWTClient.Sandbox.GateTest do
     end
   end
 
-  describe "a name a host list holds is known by its addresses" do
-    test "its answer is kept, and a connection to them is held by its entry whatever it names",
+  describe "a name the Internet blocks is known by its addresses" do
+    test "its answer is kept, and a connection to them is refused whatever it names",
          %{username: username} do
       ip = {160, 1, 2, 9}
-      {:ok, _} = Sandbox.host_rule_set(username, "internet", {:put, "paste.example", :block})
+
+      # While the Internet blocks nothing, no answer is kept.
+      :ok = Gate.remember_listed(username, "paste.example", a_answer("paste.example", ip))
+      assert Map.get(Gate.answered_for(username, ip), ip) in [nil, []]
+
+      {:ok, _} = Sandbox.limits_set(username, "internet", {:put, "paste.example", true})
 
       :ok = Gate.remember_listed(username, "paste.example", a_answer("paste.example", ip))
       assert ["paste.example"] = Map.get(Gate.answered_for(username, ip), ip)
@@ -345,34 +327,7 @@ defmodule MWTClient.Sandbox.GateTest do
       assert {:deny, words} =
                Gate.unread(username, "internet", ip, 443, %{name: "harmless.example"}, false)
 
-      assert words =~ "blocked on Internet (paste.example)"
-
-      # A name no entry asks about or blocks is not kept.
-      other = {160, 1, 2, 10}
-
-      :ok =
-        Gate.remember_listed(username, "harmless.example", a_answer("harmless.example", other))
-
-      assert Map.get(Gate.answered_for(username, other), other) in [nil, []]
-    end
-  end
-
-  describe "with the Internet off, a token grant's host is reached only where MWT's DNS said" do
-    test "its answer is kept; a connection naming it elsewhere is refused", %{username: username} do
-      _grant = github(username)
-      {:ok, _} = Sandbox.turn_off(username, "internet")
-      ip = {160, 1, 2, 20}
-
-      assert :refuse = Gate.route(username, ip, 443, "api.github.com", :read_only)
-
-      :ok = Gate.remember_read(username, "api.github.com", a_answer("api.github.com", ip))
-      assert ["api.github.com"] = Map.get(Gate.answered_for(username, ip), ip)
-      assert {:intercept, _watch} = Gate.route(username, ip, 443, "api.github.com", :read_only)
-
-      # A name no token grant reads is not kept.
-      other = {160, 1, 2, 21}
-      :ok = Gate.remember_read(username, "example.com", a_answer("example.com", other))
-      assert Map.get(Gate.answered_for(username, other), other) in [nil, []]
+      assert words =~ "harmless.example is blocked on internet (paste.example)"
     end
   end
 

@@ -11,20 +11,20 @@ defmodule MWTClient.Sandbox.Proposal do
       short-lived value and how long one is kept at most, a cloud
       metadata server for Google's client libraries (its project and
       account), a Google login file and the header its ID token travels
-      in, the service accounts MWT signs JWTs as for it, or only for its
-      subgrants;
-      starting from one of the presets, when it names one. Never the value:
-      you paste it as you review it;
+      in, the service accounts MWT signs JWTs as for it; starting from one
+      of the presets, when it names one. Never the value: you paste it as
+      you review it;
     * a **network grant** (`mwt propose network`): its destinations, the
       DNS server for their names and the interface they are reached
       through;
-    * a **subgrant** of a grant that takes them (`mwt propose GRANT`): a
-      command subgrant of Ask to run commands, a request subgrant of a
-      token grant.
+    * an **action** over a resource that takes them: a saved command over
+      your machine (`mwt propose machine`, or `commands` as before), a
+      request action over a credential (`mwt propose CREDENTIAL`, by its id
+      or a token grant's over it).
 
-  Never a start setting, an approval mode, a check or a value: those are
-  yours. MWT saves what it proposes at once, off and disabled on startup,
-  marked as proposed and to review (`MWTClient.Sandbox.Grant.to_review?/1`).
+  Never a start setting, an approval mode or a value: those are yours. MWT
+  saves what it proposes at once, off and off on startup, marked as
+  proposed and to review (`MWTClient.Sandbox.Grant.to_review?/1`).
 
   Pure: what the agent sent, the grant it names and the preset it starts
   from go in; the form's fields come out.
@@ -34,28 +34,51 @@ defmodule MWTClient.Sandbox.Proposal do
 
   @types ["token", "network"]
 
+  # What names your machine, for a saved command: `commands` was Ask to
+  # run commands' id, which saved commands sat under.
+  @machine ["machine", "commands", "any-command"]
+
   @doc """
   What `wanted`, the word after `mwt propose`, names: a new grant of a type
-  (`token`, `network`), or the grant a subgrant goes under, by id or by
-  name in any case.
+  (`token`, `network`), or the resource an action goes over: your machine
+  (`machine`, or `commands` as before) for a saved command, a credential
+  for a request action, by its id or by a token grant over it, by id or by
+  name in any case. The resource comes with what the action takes from
+  it: its name, and the headers its requests start from.
 
       iex> MWTClient.Sandbox.Proposal.target("network", [])
       {:new, :network}
+      iex> MWTClient.Sandbox.Proposal.target("commands", [])
+      {:over, :machine, %{name: "Your machine", request_headers: nil}}
       iex> MWTClient.Sandbox.Proposal.target("nothing", [])
       {:error, :unknown_grant}
   """
   @spec target(String.t(), [Grant.t()]) ::
-          {:new, :token | :network} | {:under, Grant.t()} | {:error, term()}
+          {:new, :token | :network}
+          | {:over, MWTClient.Sandbox.Resource.id(), map()}
+          | {:error, term()}
   def target(wanted, grants) do
-    parent =
+    named =
       Enum.find(grants, &(&1.id == wanted)) ||
-        Enum.find(grants, &(String.downcase(&1.name) == String.downcase(wanted)))
+        Enum.find(grants, &(String.downcase(&1.name) == String.downcase(wanted))) ||
+        Enum.find(grants, &(&1.kind == :token and Grant.credential_id(&1) == wanted))
 
     cond do
-      wanted in @types -> {:new, String.to_existing_atom(wanted)}
-      is_nil(parent) -> {:error, :unknown_grant}
-      not Grant.takes_subgrants?(parent) -> {:error, {:no_subgrants, parent.name}}
-      true -> {:under, parent}
+      wanted in @types ->
+        {:new, String.to_existing_atom(wanted)}
+
+      String.downcase(wanted) in @machine ->
+        {:over, :machine, %{name: "Your machine", request_headers: nil}}
+
+      is_nil(named) ->
+        {:error, :unknown_grant}
+
+      named.kind in [:token, :request] ->
+        {:over, {:credential, Grant.credential_id(named)},
+         %{name: Grant.credential_id(named), request_headers: named.request_headers}}
+
+      true ->
+        {:error, {:no_actions, named.name}}
     end
   end
 
@@ -64,7 +87,7 @@ defmodule MWTClient.Sandbox.Proposal do
   sent (`name`, `purpose`, and the fields of its kind), `preset` the
   preset it starts from, if any, whose fields it overrides.
   """
-  @spec attrs({:new, :token | :network} | {:under, Grant.t()}, map(), map() | nil) :: map()
+  @spec attrs({:new, :token | :network} | {:over, term(), map()}, map(), map() | nil) :: map()
   def attrs({:new, :token}, ask, preset) do
     minted? = text(ask[:mint]) != ""
     # Naming either is asking for the server: one with no project is then
@@ -92,8 +115,7 @@ defmodule MWTClient.Sandbox.Proposal do
         "present_project" => text(ask[:metadata_project]),
         "present_email" => text(ask[:metadata_account]),
         "present_login" => if(login?, do: "true", else: ""),
-        "present_id_header" => text(ask[:id_token_header]),
-        "reach" => if(ask[:subgrants_only] == true, do: "subgrants", else: "")
+        "present_id_header" => text(ask[:id_token_header])
       })
     )
     |> Map.put_new("prefix", "mwt_")
@@ -116,12 +138,12 @@ defmodule MWTClient.Sandbox.Proposal do
     |> Map.put("fill", %{})
   end
 
-  def attrs({:under, %Grant{kind: :token} = parent}, ask, _preset) do
+  def attrs({:over, {:credential, id}, over}, ask, _preset) do
     headers = ask[:headers] |> List.wrap() |> lines()
 
     %{
       "kind" => "request",
-      "parent" => parent.id,
+      "credential" => id,
       "name" => text(ask[:name]),
       "purpose" => text(ask[:purpose]),
       "method" =>
@@ -129,7 +151,7 @@ defmodule MWTClient.Sandbox.Proposal do
       "url" => text(ask[:url]),
       "headers" =>
         if(headers == "",
-          do: parent.request_headers || MWTClient.Sandbox.SavedRequest.default_headers(nil),
+          do: over.request_headers || MWTClient.Sandbox.SavedRequest.default_headers(nil),
           else: headers
         ),
       "body" => text(ask[:body]),
@@ -137,7 +159,7 @@ defmodule MWTClient.Sandbox.Proposal do
     }
   end
 
-  def attrs({:under, %Grant{}}, ask, _preset) do
+  def attrs({:over, :machine, _over}, ask, _preset) do
     %{
       "kind" => "command",
       "preset" => "saved_command",
@@ -146,7 +168,7 @@ defmodule MWTClient.Sandbox.Proposal do
       "script" => ask[:script] |> text() |> String.replace("\r\n", "\n"),
       "dir" => text(ask[:dir]),
       "params" => ask[:params] |> List.wrap() |> lines(),
-      # Confined, as a subgrant you add starts: nothing of your keys or
+      # Confined, as an action you add starts: nothing of your keys or
       # logins in reach until you choose otherwise as you review it.
       "confined" => "true"
     }

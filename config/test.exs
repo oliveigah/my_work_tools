@@ -87,3 +87,11 @@ config :phoenix,
 # service (`Req.Test.stub(MWTClient.Sandbox.SavedRequest, ...)`).
 config :mwt_client, MWTClient.Sandbox.SavedRequest,
   plug: {Req.Test, MWTClient.Sandbox.SavedRequest}
+
+# A GitHub App's installation token is traded for at GitHub: in tests a stub
+# answers (`Req.Test.stub(MWTClient.Sandbox.Adapter.GitHub, ...)`).
+config :mwt_client, MWTClient.Sandbox.Adapter.GitHub,
+  plug: {Req.Test, MWTClient.Sandbox.Adapter.GitHub}
+
+config :mwt_client, MWTClient.Sandbox.Adapter.Google,
+  plug: {Req.Test, MWTClient.Sandbox.Adapter.Google}

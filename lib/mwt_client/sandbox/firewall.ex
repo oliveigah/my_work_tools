@@ -402,7 +402,7 @@ defmodule MWTClient.Sandbox.Firewall do
       brief: "A key or token in what comes back to the VM.",
       name: "Credential entering the VM",
       text:
-        "A command's output or a request subgrant's answer, on its way to the VM, holding something shaped like a credential (a private key, a JWT, a known token prefix). Blocked, it waits for you, whatever its approval mode. A token grant's real value in a command's output always waits; in an answer, it is written out as the grant's name. The VM did nothing wrong, so this never isolates it.",
+        "A command's output or a request action's answer, on its way to the VM, holding something shaped like a credential (a private key, a JWT, a known token prefix). Blocked, it waits for you, whatever its approval mode. A token grant's real value in a command's output always waits; in an answer, it is written out as the grant's name. The VM did nothing wrong, so this never isolates it.",
       default: :block,
       actions: [:block, :alert, :off]
     }

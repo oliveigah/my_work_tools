@@ -2,7 +2,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
   @moduledoc """
   Host commands end to end: the `mwt` command in the VM (here, with a fake
   socat), the channel, the server's approval, the run on this machine, and
-  what the agent hears back. Subgrants have subgrant_channel_test.exs, and
+  what the agent hears back. Actions have action_channel_test.exs, and
   what agents propose proposal_channel_test.exs.
   """
   use MWTClient.MwtCommandCase, async: true
@@ -35,7 +35,6 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
           context,
           [
             "run",
-            "commands",
             "--reason",
             "read the input",
             "--",
@@ -69,7 +68,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       Task.async(fn ->
         mwt(
           context,
-          ["run", "commands", "--reason", "r", "--", "printf", "%s|", "a b", "c;d", "$HOME"],
+          ["run", "--reason", "r", "--", "printf", "%s|", "a b", "c;d", "$HOME"],
           stderr: false
         )
       end)
@@ -80,7 +79,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
 
     asking =
       Task.async(fn ->
-        mwt(context, ["run", "commands", "--reason", "r"], input: "echo one\necho two\n")
+        mwt(context, ["run", "--reason", "r"], input: "echo one\necho two\n")
       end)
 
     approval = command(context.username)
@@ -91,9 +90,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     # Output keeps its trailing newlines, or their absence.
     asking =
       Task.async(fn ->
-        mwt(context, ["run", "commands", "--reason", "r", "--", "printf 'x\\n\\n\\n'"],
-          stderr: false
-        )
+        mwt(context, ["run", "--reason", "r", "--", "printf 'x\\n\\n\\n'"], stderr: false)
       end)
 
     approval = command(context.username)
@@ -104,7 +101,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
   test "outside a share it runs in the home folder", context do
     asking =
       Task.async(fn ->
-        mwt(context, ["run", "commands", "--reason", "r", "--", "pwd"], stderr: false)
+        mwt(context, ["run", "--reason", "r", "--", "pwd"], stderr: false)
       end)
 
     approval = command(context.username)
@@ -116,7 +113,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
 
   test "the output can wait for you, who send it or keep it", context do
     {output, 120} =
-      mwt(context, ["run", "commands", "--reason", "r", "--wait", "0", "--", "echo secret"])
+      mwt(context, ["run", "--reason", "r", "--wait", "0", "--", "echo secret"])
 
     [_, id] = Regex.run(~r/mwt wait (run-\S+)/, output)
 
@@ -137,7 +134,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     # Kept: the agent hears it ran, not what it printed.
     asking =
       Task.async(fn ->
-        mwt(context, ["run", "commands", "--reason", "r", "--", "echo hidden; exit 3"])
+        mwt(context, ["run", "--reason", "r", "--", "echo hidden; exit 3"])
       end)
 
     approval = command(context.username)
@@ -154,7 +151,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     server = MWTClient.Vault.Store.whereis(MWTClient.Sandbox.Server, context.username)
 
     {_, 120} =
-      mwt(context, ["run", "commands", "--reason", "r", "--wait", "0", "--", "echo private"])
+      mwt(context, ["run", "--reason", "r", "--wait", "0", "--", "echo private"])
 
     asked = command(context.username)
     :ok = Sandbox.decide(context.username, asked.id, {:run, :review})
@@ -178,7 +175,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
 
     asking =
       Task.async(fn ->
-        mwt(context, ["run", "commands", "--reason", "r", "--", "touch #{marker}"])
+        mwt(context, ["run", "--reason", "r", "--", "touch #{marker}"])
       end)
 
     approval = command(context.username)
@@ -190,7 +187,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
   end
 
   test "commands accept only their own decisions", context do
-    {_, 120} = mwt(context, ["run", "commands", "--reason", "r", "--wait", "0", "--", "true"])
+    {_, 120} = mwt(context, ["run", "--reason", "r", "--wait", "0", "--", "true"])
     approval = command(context.username)
 
     for decision <- [
@@ -205,15 +202,14 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
   end
 
   test "the same command asked again joins the waiting one", context do
-    {_, 120} = mwt(context, ["run", "commands", "--reason", "r", "--wait", "0", "--", "date"])
+    {_, 120} = mwt(context, ["run", "--reason", "r", "--wait", "0", "--", "date"])
 
     {_, 120} =
-      mwt(context, ["run", "commands", "--reason", "again", "--wait", "0", "--", "date"])
+      mwt(context, ["run", "--reason", "again", "--wait", "0", "--", "date"])
 
     {_, 120} =
       mwt(context, [
         "run",
-        "commands",
         "--reason",
         "r",
         "--wait",
@@ -233,7 +229,6 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       Task.async(fn ->
         mwt(context, [
           "run",
-          "commands",
           "--reason",
           "r",
           "--wait",
@@ -264,23 +259,55 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     assert Sandbox.snapshot(context.username).running == []
   end
 
+  test "locking your machine stops the commands running there", context do
+    asking =
+      Task.async(fn ->
+        mwt(context, [
+          "run",
+          "--reason",
+          "r",
+          "--wait",
+          "30",
+          "--",
+          "echo started; sleep 60"
+        ])
+      end)
+
+    approval = command(context.username)
+    :ok = Sandbox.decide(context.username, approval.id, {:run, :send})
+
+    assert Enum.find_value(1..300, fn _ ->
+             Sandbox.snapshot(context.username).running != [] or (Process.sleep(10) && nil)
+           end)
+
+    :ok = Sandbox.lock(context.username, :machine)
+
+    assert {_output, status} = Task.await(asking, 10_000)
+    assert status in [124, 137, 143]
+    assert Sandbox.snapshot(context.username).running == []
+
+    assert Enum.any?(
+             Sandbox.events(context.username),
+             &(&1.summary =~ "stopped: " and &1.summary =~ "was locked by you")
+           )
+  end
+
   test "wrong asks and an unreachable MWT have their own statuses", context do
-    assert {output, 122} = mwt(context, ["run", "commands", "--", "true"])
+    assert {output, 122} = mwt(context, ["run", "--", "true"])
     assert output =~ "Say why"
 
     assert {_, 122} =
-             mwt(context, ["run", "commands", "--reason", "r", "--timeout", "0", "--", "true"])
+             mwt(context, ["run", "--reason", "r", "--timeout", "0", "--", "true"])
 
     assert {_, 122} =
-             mwt(context, ["run", "commands", "--reason", "r", "--timeout", "x", "--", "true"])
+             mwt(context, ["run", "--reason", "r", "--timeout", "x", "--", "true"])
 
     assert {_, 122} =
-             mwt(context, ["run", "commands", "--reason", "r", "--bogus", "--", "true"])
+             mwt(context, ["run", "--reason", "r", "--bogus", "--", "true"])
 
     assert {output, 122} =
              mwt(context, [
                "run",
-               "commands",
                "--reason",
                "r",
                "--",
@@ -290,7 +317,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     assert output =~ "16 KiB"
 
     unreachable = %{context | username: "nobody-#{System.unique_integer([:positive])}"}
-    assert {_, 123} = mwt(unreachable, ["run", "commands", "--reason", "r", "--", "true"])
+    assert {_, 123} = mwt(unreachable, ["run", "--reason", "r", "--", "true"])
     assert {_, 123} = mwt(unreachable, ["wait", "run-abc"])
     assert {_, 4} = mwt(unreachable, ["wait", "ask-abc"])
   end
@@ -298,7 +325,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
   test "status dumps and crash reports never carry a command's output", context do
     asking =
       Task.async(fn ->
-        mwt(context, ["run", "commands", "--reason", "r", "--", "echo dump-$((6 * 7))"])
+        mwt(context, ["run", "--reason", "r", "--", "echo dump-$((6 * 7))"])
       end)
 
     approval = command(context.username)
@@ -313,7 +340,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
   test "the activity log says what happened, never the output", context do
     asking =
       Task.async(fn ->
-        mwt(context, ["run", "commands", "--reason", "r", "--", "echo top-secret-$((40 + 2))"])
+        mwt(context, ["run", "--reason", "r", "--", "echo top-secret-$((40 + 2))"])
       end)
 
     approval = command(context.username)
@@ -327,71 +354,47 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     refute Enum.any?(summaries, &(&1 =~ "top-secret-42"))
   end
 
-  describe "a command grant" do
-    test "Ask to run commands is built in: it can't be removed, and off it runs nothing",
+  describe "a command" do
+    test "the agent's own needs no grant, and with your machine locked it is refused before it waits",
          context do
-      assert {:error, :built_in} = Sandbox.delete_grant(context.username, "commands")
+      # No grant gives it: none is there to turn off or remove.
+      assert {:error, :not_found} = Sandbox.delete_grant(context.username, "commands")
+      refute Enum.any?(Sandbox.snapshot(context.username).grants, &(&1.kind == :command))
 
-      assert [%{id: "commands", script: nil}] =
-               Enum.reject(
-                 Sandbox.snapshot(context.username).grants,
-                 &(&1.kind == :mwt or MWTClient.Sandbox.Grant.internet?(&1))
-               )
-
-      {:ok, _} = Sandbox.turn_off(context.username, "commands")
-      assert {output, 122} = mwt(context, ["run", "commands", "--reason", "r", "--", "true"])
-      assert output =~ "commands is off"
-      assert output =~ "mwt request commands"
-      assert Sandbox.snapshot(context.username).waiting == []
-    end
-
-    test "must be named, exist and be on", context do
+      :ok = Sandbox.lock(context.username, :machine)
       assert {output, 122} = mwt(context, ["run", "--reason", "r", "--", "true"])
-      assert output =~ "Name the command grant" and output =~ "commands"
-
-      assert {output, 122} = mwt(context, ["run", "nope", "--reason", "r", "--", "true"])
-      assert output =~ "No command grant by that name"
-
-      assert {output, 122} = mwt(context, ["run", "commands", "extra", "--reason", "r"])
-      assert output =~ "put the command after --"
-
-      {:ok, _} = Sandbox.turn_off(context.username, "commands")
-      assert {output, 122} = mwt(context, ["run", "commands", "--reason", "r", "--", "true"])
-      assert output =~ "commands is off" and output =~ "mwt request commands"
+      assert output =~ "locked"
       assert Sandbox.snapshot(context.username).waiting == []
     end
 
-    test "the id it had as Any command still works, and the agent hears the new one", context do
-      asking =
-        Task.async(fn ->
-          mwt(context, ["run", "any-command", "--reason", "r", "--", "echo hi"])
-        end)
+    test "names a saved command by its exact id, and the agent's own comes after --", context do
+      assert {output, 122} = mwt(context, ["run", "nope", "--reason", "r", "--", "true"])
+      assert output =~ "No saved command by that id"
 
-      approval = command(context.username)
-      assert approval.grant_id == "commands"
-      :ok = Sandbox.decide(context.username, approval.id, {:run, :send})
-      assert {output, 0} = Task.await(asking)
-      assert output =~ "hi"
-      assert output =~ "any-command is called commands now"
-
-      assert {output, 0} = mwt(context, ["request", "any-command", "--reason", "r"])
-      assert output =~ "already on" and output =~ "any-command is called commands now"
+      assert {output, 122} = mwt(context, ["run", "echo", "hi", "--reason", "r"])
+      assert output =~ "put the command after --"
+      assert Sandbox.snapshot(context.username).waiting == []
     end
 
-    test "never lets a run through unasked", context do
-      assert Sandbox.allow_all(context.username, "commands", 10) == {:error, :every_run_asks}
-      {:ok, _} = Sandbox.turn_off(context.username, "commands")
-      {:ok, grant} = Sandbox.turn_on(context.username, "commands", 60, :all)
-      assert grant.allowances == []
+    test "the ids the agent's own went under, commands and any-command, still work", context do
+      for id <- ["commands", "any-command"] do
+        asking =
+          Task.async(fn -> mwt(context, ["run", id, "--reason", "r", "--", "echo hi"]) end)
 
-      asking =
-        Task.async(fn ->
-          mwt(context, ["run", "commands", "--reason", "r", "--", "echo hi"])
-        end)
+        approval = command(context.username)
+        assert approval.grant_id == nil and approval.script_from == :agent
+        :ok = Sandbox.decide(context.username, approval.id, {:run, :send})
+        assert {output, 0} = Task.await(asking)
+        assert output =~ "hi"
+      end
+    end
+
+    test "the agent's own always asks, under no grant", context do
+      asking = Task.async(fn -> mwt(context, ["run", "--reason", "r", "--", "echo hi"]) end)
 
       approval = command(context.username)
-      assert approval.grant_id == "commands"
-      assert {"Grant", "Ask to run commands"} in approval.facts
+      assert approval.grant_id == nil
+      refute List.keymember?(approval.facts, "Grant", 0)
       assert {"Script", "The agent's, exactly as shown"} in approval.facts
       :ok = Sandbox.decide(context.username, approval.id, :decline)
       assert {_, 121} = Task.await(asking)
@@ -454,8 +457,8 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     end
   end
 
-  describe "Ask to run commands and saved commands" do
-    test "a run through Ask to run commands saved from its card tells the agent to use it by name",
+  describe "the agent's commands and saved commands" do
+    test "a command the agent wrote, saved from its card, tells the agent to use it by name",
          context do
       asking =
         Task.async(fn ->
@@ -463,7 +466,6 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
             context,
             [
               "run",
-              "commands",
               "--reason",
               "list the pods",
               "--suggest-save",
@@ -504,12 +506,10 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       :ok = Sandbox.decide(context.username, approval.id, {:run, :send})
       assert {output, 0} = Task.await(asking)
       assert output =~ "pod-a"
-      assert output =~ "the user's subgrant pods now"
+      assert output =~ "the user's action pods now"
       assert output =~ ~s(mwt call pods --reason "...")
 
-      # Next time it runs by name, without the escape hatch.
-      :ok = Sandbox.turn_off(context.username, "commands") |> elem(0)
-
+      # Next time it runs by name.
       asking =
         Task.async(fn -> mwt(context, ["run", "pods", "--reason", "again"], stderr: false) end)
 
@@ -524,7 +524,6 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       assert {output, 122} =
                mwt(context, [
                  "run",
-                 "commands",
                  "--reason",
                  "list the pods",
                  "--suggest-save",
@@ -537,7 +536,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       assert Sandbox.snapshot(context.username).waiting == []
     end
 
-    test "only a run through Ask to run commands can be saved from its card", context do
+    test "only a command the agent wrote can be saved from its card", context do
       {:ok, _} =
         Sandbox.create_grant(context.username, %{
           "kind" => "command",
@@ -575,12 +574,12 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       # Outside a share, an ask runs in the home folder: the saved one's folder.
       asking =
         Task.async(fn ->
-          mwt(context, ["run", "commands", "--reason", "r", "--", "echo same"])
+          mwt(context, ["run", "--reason", "r", "--", "echo same"])
         end)
 
       approval = command(context.username)
       assert approval.saved_as == "who-am-i"
-      assert Enum.any?(approval.hints, &(&1 =~ "Same as your subgrant Who am I"))
+      assert Enum.any?(approval.hints, &(&1 =~ "Same as your action Who am I"))
       :ok = Sandbox.decide(context.username, approval.id, {:run, :send})
       assert {output, 0} = Task.await(asking)
       assert output =~ "mwt call who-am-i"
@@ -590,7 +589,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       script = "kubectl get pods | grep web | awk '{print $1}' | sort | uniq"
 
       asking =
-        Task.async(fn -> mwt(context, ["run", "commands", "--reason", "r", "--", script]) end)
+        Task.async(fn -> mwt(context, ["run", "--reason", "r", "--", script]) end)
 
       approval = command(context.username)
       assert Enum.any?(approval.hints, &(&1 =~ "Long for a command you check by eye"))
@@ -683,6 +682,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
          context do
       value = "stripe_real_value_0123456789"
 
+      # Its value may be used on your machine, while this grant is on.
       {:ok, stripe} =
         Sandbox.create_grant(context.username, %{
           "kind" => "token",
@@ -691,8 +691,11 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
           "hosts" => "api.stripe.com",
           "env" => "STRIPE_KEY",
           "file_env" => "STRIPE_KEY_FILE",
+          "machine" => "true",
           "value" => value
         })
+
+      {:ok, _} = Sandbox.turn_on(context.username, stripe.id, 60, :all)
 
       home = Application.fetch_env!(:mwt_client, MWTClient.Sandbox.HostRun)[:home]
       File.mkdir_p!(home)

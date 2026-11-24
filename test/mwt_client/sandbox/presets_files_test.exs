@@ -15,10 +15,15 @@ defmodule MWTClient.Sandbox.PresetsFilesTest do
 
   test "every shipped preset loads and builds a valid grant" do
     assert {presets, []} = Presets.load(Presets.own_dir())
-    assert Enum.map(presets, & &1.id) == ~w(github google-login google hex)
+    assert Enum.map(presets, & &1.id) == ~w(github-app github google-login google hex)
 
     for preset <- presets do
-      fill = Map.new(preset.fill, &{&1.name, "x-1"})
+      # Each field filled as its shape takes: an installation's id is digits.
+      fill =
+        Map.new(
+          preset.fill,
+          &{&1.name, if(&1.name == "installation_id", do: "12345", else: "x1")}
+        )
 
       attrs =
         preset.fields
@@ -61,7 +66,7 @@ defmodule MWTClient.Sandbox.PresetsFilesTest do
       MWTClient.VaultHelpers.unlocked_identity("presets")
     end
 
-    test "a preset of yours fills, carries checks and subgrants, and removing it changes nothing",
+    test "a preset of yours fills, carries actions, and removing it changes nothing",
          %{username: username} do
       dir = Presets.dir(username)
       File.mkdir_p!(dir)
@@ -81,8 +86,7 @@ defmodule MWTClient.Sandbox.PresetsFilesTest do
           },
           "request_headers" => "X-Key: {token}",
           "tools" => ["acme"],
-          "checks" => [%{"name" => "the key is alive", "script" => "true", "daily" => false}],
-          "subgrants" => [
+          "actions" => [
             %{
               "name" => "whoami",
               "purpose" => "Who the key is",
@@ -118,7 +122,6 @@ defmodule MWTClient.Sandbox.PresetsFilesTest do
 
       assert %{hosts: ["mine.acme.test"], purpose: "Acme for mine", icon: "hero-bolt"} = grant
       assert %{request_headers: "X-Key: {token}", cli_tools: ["acme"]} = grant
-      assert [%{name: "the key is alive", on: [:enable]}] = grant.checks
 
       assert [
                %{
@@ -127,7 +130,10 @@ defmodule MWTClient.Sandbox.PresetsFilesTest do
                  headers: [{"X-Key", "{token}"}]
                }
              ] =
-               Enum.filter(Sandbox.snapshot(username).grants, &(&1.parent == grant.id))
+               Enum.filter(
+                 Sandbox.snapshot(username).grants,
+                 &(&1.kind == :request and &1.credential == grant.credential)
+               )
 
       File.rm_rf!(dir)
 

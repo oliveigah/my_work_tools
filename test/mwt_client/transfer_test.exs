@@ -38,7 +38,8 @@ defmodule MWTClient.TransferTest do
                 %{summary: "1 request"},
                 %{summary: "No diagrams"},
                 %{summary: "No notes"},
-                %{summary: "No flash cards"}
+                %{summary: "No flash cards"},
+                %{summary: "0 grants, 0 credentials"}
               ]
             }} = Transfer.read(username, path)
   end
@@ -77,7 +78,8 @@ defmodule MWTClient.TransferTest do
              %{label: "HTTP request history", summary: "2 requests"},
              %{label: "Diagrams", summary: "No diagrams"},
              %{label: "Notes", summary: "No notes"},
-             %{label: "Flash cards", summary: "No flash cards"}
+             %{label: "Flash cards", summary: "No flash cards"},
+             %{label: "Agent sandbox grants", summary: "0 grants, 0 credentials"}
            ] = plan.sections
 
     assert :ok = Transfer.import(other, plan, :merge)
@@ -136,7 +138,8 @@ defmodule MWTClient.TransferTest do
                 %{summary: "No requests"},
                 %{summary: "No diagrams"},
                 %{summary: "No notes"},
-                %{summary: "No flash cards"}
+                %{summary: "No flash cards"},
+                %{summary: "0 grants, 0 credentials"}
               ]
             }} = Transfer.read(username, path)
   end
@@ -153,7 +156,7 @@ defmodule MWTClient.TransferTest do
     other = also_unlock("someone-else")
     {:ok, plan} = Transfer.read(other, path, password: password)
 
-    assert [_requests, %{label: "Diagrams", summary: "1 diagram"}, _notes, _cards] =
+    assert [_requests, %{label: "Diagrams", summary: "1 diagram"}, _notes, _cards, _sandbox] =
              plan.sections
 
     assert :ok = Transfer.import(other, plan, :merge)
@@ -175,7 +178,10 @@ defmodule MWTClient.TransferTest do
 
     other = also_unlock("someone-else")
     {:ok, plan} = Transfer.read(other, path, password: password)
-    assert [_requests, _diagrams, %{label: "Notes", summary: "1 note"}, _cards] = plan.sections
+
+    assert [_requests, _diagrams, %{label: "Notes", summary: "1 note"}, _cards, _sandbox] =
+             plan.sections
+
     assert :ok = Transfer.import(other, plan, :merge)
 
     assert {:ok, ^note} = Notes.Library.get(other, note.id)

@@ -18,8 +18,7 @@ defmodule MWTClient.Sandbox.Egress.Request do
     * `plain?` - whether it came as plain bytes, not inside TLS MWT ended:
       then nothing proves `name` is the host at `ip`, only the client says
       so, and no real value goes in it;
-    * `under` - the grant the connection went under (`Gate.destination/3`),
-      or `:read_only` while only a token grant's hosts may be reached;
+    * `under` - the grant the connection went under (`Gate.destination/3`);
     * `operation` - what it does, in the protocol's own word: `GET`, `QUERY`,
       `PRODUCE`. The log shows it as a request's method;
     * `resource` - what it does it to: a path, a table, a topic; nil when the
@@ -38,7 +37,7 @@ defmodule MWTClient.Sandbox.Egress.Request do
           ip: :inet.ip_address() | nil,
           port: :inet.port_number(),
           plain?: boolean(),
-          under: String.t() | :read_only | nil,
+          under: String.t() | nil,
           operation: String.t(),
           resource: String.t() | nil,
           data: term()

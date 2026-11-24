@@ -2,7 +2,7 @@
 
 - Found: 2026-11-23, MWT 0.3.0
 - Kind: improvement
-- Status: open
+- Status: resolved by the grants redesign (2026-11-24), but for the ID token's own age
 
 ## What happens
 
@@ -24,3 +24,18 @@ grant that also served that service minted every 4 minutes for everything.
   carriers and approval: minted once, wielded under each grant's rules.
 - An age limit for the ID token alone: mint again only when a request
   carries the ID token and the one kept is older.
+
+## Resolution
+
+Grants are now over a credential (`MWTClient.Sandbox.Credential`), which
+holds where the value comes from and is minted once for every grant over
+it; each grant keeps its own hosts, carriers, attributes and approval.
+Grants saved before were merged into one credential where they were minted
+the same way (same preset, mint command and keep time), keeping their
+placeholders.
+See [the redesign](../dated/20261124-grants_redesign.md).
+
+Not done: an age limit for the ID token alone. Grants kept for different
+times (`keep_minutes`) stay separate credentials, so that login is still
+minted once for each: merging them would have every grant minted as often
+as the one kept shortest.

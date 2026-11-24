@@ -1,20 +1,27 @@
 defmodule MWTClient.Sandbox.SavedRequest do
   @moduledoc """
-  A request subgrant's request: one HTTP request MWT sends itself, with a
-  token grant's real value, when an agent calls the subgrant by id with a
+  A request action's request: one HTTP request MWT sends itself, with its
+  credential's real value, when an agent calls the action by id with a
   value for each of its parameters. The VM never holds the value, and never
   chooses where it goes or what is sent beyond the values.
 
   Its template is a `method`, a `url`, fixed `headers` and a JSON `body`:
 
-    * **The URL** is `https://` to a host the token grant lists, written
-      out. Parameters go in the path or the query, as `$NAME` or
+    * **The URL** is `https://` to a host, written out; reaching it takes a
+      grant over its network, as any request does. Parameters go in the
+      path or the query, as `$NAME` or
       `${NAME}`, never in the host. A value is percent-encoded for where it
       sits: a word keeps its `/` in the path, so `$REPO` can be
       `owner/name`; anything else is encoded whole.
     * **Headers** are fixed: no parameters. `{token}` stands for the grant's
-      real value, where it goes (`Authorization: Bearer {token}`); at least
-      one header carries it.
+      credential's real value, where it goes (`Authorization: Bearer
+      {token}`). The values its adapter makes from it may stand there too:
+      `{id_token}`, the ID token its login mint prints, for a Google login;
+      `{signed_jwt}`, a JWT signed as the action's one account
+      (`Grant.signs_as`), or `{signed_jwt:ACCOUNT}` naming one of its
+      accounts, with the call's URL, without its query, as `aud`
+      (`MWTClient.Sandbox.Adapter.Google.sign_jwt/4`). At least one header
+      carries one of them.
     * **The body**, when there is one, is JSON. A parameter in it is a whole
       string value, `"$TITLE"`, never part of a longer one: the value goes
       in as a JSON value, encoded, so it can't change the shape of the body
@@ -28,10 +35,12 @@ defmodule MWTClient.Sandbox.SavedRequest do
   wherever the service echoed it back.
   """
 
-  alias MWTClient.Sandbox.{Approval, Grant, HostCommand, Param, Policy, Shown}
+  alias MWTClient.Sandbox.{Approval, Grant, HostCommand, Param, Shown}
 
   @methods ~w(GET POST PUT PATCH DELETE)
   @token "{token}"
+  @id_token "{id_token}"
+  @signed_jwt ~r/\{signed_jwt(?::([^}\s]+))?\}/
   @max_template 16 * 1024
   @keep 256 * 1024
   @default_timeout 30
@@ -50,7 +59,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
           body: String.t() | nil
         }
 
-  @doc "The methods a request subgrant can send."
+  @doc "The methods a request action can send."
   @spec methods() :: [String.t()]
   def methods, do: @methods
 
@@ -89,7 +98,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
   def header_lines(headers), do: Enum.map_join(headers, "\n", fn {k, v} -> "#{k}: #{v}" end)
 
   @doc """
-  The headers a request subgrant starts with for a token grant made from
+  The headers a request action starts with for a token grant made from
   `preset`: where that service takes the token, and what it asks clients to
   send.
   """
@@ -102,20 +111,22 @@ defmodule MWTClient.Sandbox.SavedRequest do
   def default_headers(_preset), do: "Authorization: Bearer {token}\nAccept: application/json"
 
   @doc """
-  What is wrong with a request subgrant's template, by field: its `method`,
+  What is wrong with a request action's template, by field: its `method`,
   `url`, `headers` and `body` (nil or blank for none), against its
-  parameters and the hosts of `parent`, the token grant it sends with.
+  parameters and `over`, the action with its credential's fields
+  (`MWTClient.Sandbox.Credential.attach/2`), nil when it names none MWT
+  has. It may send to any host: reaching it is a network grant's to give.
   """
   @spec errors(map(), [Param.t()], Grant.t() | nil) :: %{atom() => String.t()}
-  def errors(template, params, parent) do
+  def errors(template, params, over) do
     names = MapSet.new(params, & &1.name)
     body = blank_to_nil(template[:body])
 
     [
-      {:parent, parent_error(parent)},
+      {:credential, credential_error(over)},
       {:method, method_error(template[:method], body)},
-      {:url, url_error(template[:url] || "", names, parent)},
-      {:headers, headers_error(template[:headers] || [], names)},
+      {:url, url_error(template[:url] || "", names)},
+      {:headers, headers_error(template[:headers] || [], names, over)},
       {:body, body_error(body, names)},
       {:params, unused_error(params, template[:url] || "", body)}
     ]
@@ -123,8 +134,8 @@ defmodule MWTClient.Sandbox.SavedRequest do
     |> Map.new()
   end
 
-  defp parent_error(%Grant{kind: :token, parent: nil}), do: nil
-  defp parent_error(_other), do: "A request subgrant sits under a token grant."
+  defp credential_error(%Grant{credential: id}) when is_binary(id), do: nil
+  defp credential_error(_other), do: "A request action sends with a credential: pick one."
 
   defp method_error(method, body) do
     cond do
@@ -139,7 +150,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
     end
   end
 
-  defp url_error(url, names, parent) do
+  defp url_error(url, names) do
     {authority, _rest} = split_authority(url)
 
     cond do
@@ -165,11 +176,11 @@ defmodule MWTClient.Sandbox.SavedRequest do
         "#{Enum.join(unknown(url, names), ", ")} isn't a parameter: list it below, or take it out."
 
       true ->
-        host_error(authority, parent) || shape_error(url)
+        host_error(authority) || shape_error(url)
     end
   end
 
-  defp host_error(authority, parent) do
+  defp host_error(authority) do
     {host, port} =
       case String.split(authority, ":", parts: 2) do
         [host, port] -> {host, port}
@@ -186,9 +197,6 @@ defmodule MWTClient.Sandbox.SavedRequest do
       host == "" or String.starts_with?(host, "*") ->
         "Write the host out in full, such as api.github.com."
 
-      match?(%Grant{}, parent) and not Policy.host_listed?(host, parent.hosts) ->
-        "#{parent.name} sends its token only to #{Enum.join(parent.hosts, ", ")}. Pick one of those."
-
       true ->
         nil
     end
@@ -201,7 +209,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
     end
   end
 
-  defp headers_error(headers, names) do
+  defp headers_error(headers, names, over) do
     Enum.find_value(headers, fn {name, value} ->
       cond do
         not Regex.match?(@header_name, name) ->
@@ -219,13 +227,107 @@ defmodule MWTClient.Sandbox.SavedRequest do
         true ->
           nil
       end
-    end) ||
-      if(Enum.any?(headers, fn {_name, value} -> String.contains?(value, @token) end),
-        do: nil,
-        else:
-          "Say where the token goes, as #{@token}, such as Authorization: Bearer #{@token}. Without it, the request needs no grant."
-      )
+    end) || marks_error(headers, over)
   end
+
+  # Where the values go, and whether the credential can make each one
+  # named, signing as the accounts the action names (`signs_as`).
+  defp marks_error(headers, over) do
+    needs = needs(headers)
+
+    cond do
+      not (needs.token or needs.id_token or needs.accounts != []) ->
+        "Say where the token goes, as #{@token}, such as Authorization: Bearer #{@token}. Without it, the request needs no grant."
+
+      needs.id_token and not google?(over) ->
+        "#{@id_token} is the ID token a Google login's mint prints: this credential has none."
+
+      needs.accounts != [] and not google?(over) ->
+        "{signed_jwt} is signed by Google as an account the action names: this credential isn't Google's."
+
+      bad = Enum.find(needs.accounts, &(not signs?(over, &1))) ->
+        account_error(bad, signs_as(over))
+
+      true ->
+        nil
+    end
+  end
+
+  defp account_error(:one, []),
+    do: "{signed_jwt} needs the action to name the account it signs as (Signs as, on its form)."
+
+  defp account_error(:one, _accounts),
+    do: "The action signs as more than one account: name one, as {signed_jwt:ACCOUNT}."
+
+  defp account_error(account, _accounts),
+    do: "#{account} isn't an account the action signs as."
+
+  defp google?(%Grant{} = over),
+    do: MWTClient.Sandbox.Adapter.of(over) == MWTClient.Sandbox.Adapter.Google
+
+  defp google?(_none), do: false
+
+  # `{signed_jwt}` without an account reads as the grant's only one.
+  defp signs?(over, :one), do: match?([_], signs_as(over))
+  defp signs?(over, account), do: account in signs_as(over)
+
+  defp signs_as(%Grant{signs_as: accounts}), do: Enum.map(accounts || [], &String.downcase/1)
+  defp signs_as(_none), do: []
+
+  @doc """
+  What a call's headers need filled in: the credential's value (`token`),
+  its ID token (`id_token`), and the accounts to sign a JWT as
+  (`accounts`), `:one` for `{signed_jwt}` without one named.
+
+      iex> MWTClient.Sandbox.SavedRequest.needs([{"Authorization", "Bearer {signed_jwt}"}, {"X-User", "{id_token}"}])
+      %{token: false, id_token: true, accounts: [:one]}
+  """
+  @spec needs([{String.t(), String.t()}]) :: %{
+          token: boolean(),
+          id_token: boolean(),
+          accounts: [String.t() | :one]
+        }
+  def needs(headers) do
+    values = Enum.map(headers, &elem(&1, 1))
+
+    %{
+      token: Enum.any?(values, &String.contains?(&1, @token)),
+      id_token: Enum.any?(values, &String.contains?(&1, @id_token)),
+      accounts:
+        values
+        |> Enum.flat_map(&Regex.scan(@signed_jwt, &1))
+        |> Enum.map(fn
+          [_all, account] -> String.downcase(account)
+          [_all] -> :one
+        end)
+        |> Enum.uniq()
+    }
+  end
+
+  @doc """
+  The accounts a call signs as, `{signed_jwt}` read as the action's one
+  account, or why it can't: the action no longer signs as one of them, as
+  its form may have changed since the call was asked.
+  """
+  @spec accounts(call(), Grant.t()) :: {:ok, [String.t()]} | {:error, String.t()}
+  def accounts(call, %Grant{} = action) do
+    accounts =
+      for account <- needs(call.headers).accounts do
+        case {account, signs_as(action)} do
+          {:one, [only]} -> only
+          {:one, _none_or_many} -> nil
+          {named, _accounts} -> named
+        end
+      end
+
+    if Enum.all?(accounts, &(is_binary(&1) and &1 in signs_as(action))),
+      do: {:ok, accounts},
+      else: {:error, "#{action.name} no longer signs as the account this call names"}
+  end
+
+  @doc "The `aud` a JWT signed for a call names: its URL without the query."
+  @spec audience(call()) :: String.t()
+  def audience(%{url: url}), do: url |> String.split("?", parts: 2) |> hd()
 
   defp body_error(nil, _names), do: nil
 
@@ -320,7 +422,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
     end
   end
 
-  @doc "The host a request subgrant sends to."
+  @doc "The host a request action sends to."
   @spec host(Grant.t()) :: String.t()
   def host(%Grant{url: url}) do
     {authority, _rest} = split_authority(url || "")
@@ -411,9 +513,9 @@ defmodule MWTClient.Sandbox.SavedRequest do
   `MWTClient.Sandbox.HostCommand.check/4` gives a command, with the
   request it sends as `call` and as text in `script`.
   """
-  @spec check(map(), Grant.t(), Grant.t(), [{String.t(), String.t()}]) ::
+  @spec check(map(), Grant.t(), String.t(), [{String.t(), String.t()}]) ::
           {:ok, map()} | {:error, :no_reason | :bad_timeout}
-  def check(ask, %Grant{} = grant, %Grant{} = parent, values) do
+  def check(ask, %Grant{} = grant, credential_name, values) do
     reason = ask |> Map.get(:reason) |> Shown.text() |> String.trim() |> String.slice(0, 1_000)
     agent = ask |> Map.get(:agent) |> Shown.text() |> String.trim() |> String.slice(0, 60)
     timeout = Map.get(ask, :timeout) || @default_timeout
@@ -430,7 +532,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
 
         {:ok,
          %{
-           script: text(call, parent.name),
+           script: text(call, credential_name),
            dir: nil,
            timeout: timeout,
            reason: reason,
@@ -441,7 +543,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
            call: call,
            pattern: "call " <> Approval.digest_text({grant.id, values, timeout}),
            facts: [
-             {"Sent by", "MWT, from this machine, with #{parent.name}'s real value"},
+             {"Sent by", "MWT, from this machine, with #{credential_name}'s real value"},
              {"To", call.host},
              {"Time limit", HostCommand.seconds_words(timeout)}
            ],
@@ -478,18 +580,30 @@ defmodule MWTClient.Sandbox.SavedRequest do
     "#{call.method} #{call.url}\n#{headers}#{body}"
   end
 
-  @doc "A header's value with the grant's real value shown as its name."
+  @doc "A header's value with each value it carries shown by what it is."
   @spec shown_value(String.t(), String.t()) :: String.t()
-  def shown_value(value, grant_name),
-    do: String.replace(value, @token, "[#{grant_name}'s token]")
+  def shown_value(value, grant_name) do
+    value
+    |> String.replace(@token, "[#{grant_name}'s token]")
+    |> String.replace(@id_token, "[#{grant_name}'s ID token]")
+    |> then(
+      &Regex.replace(@signed_jwt, &1, fn
+        _all, "" -> "[a JWT signed as #{grant_name}'s account]"
+        _all, account -> "[a JWT signed as #{account}]"
+      end)
+    )
+  end
 
   @doc """
-  Sends a call with the real `value` in place of `{token}`, and reports
-  how it went in the shape a command's run does: `exit` 0 for a 2xx answer
-  and 22 for any other (as `curl --fail`), 124 when it hit `timeout`
-  seconds; the answer's `status`; its body as `output`, the first 256 KiB,
-  with `cut` bytes dropped after them. Wherever the body holds the value,
-  it is written out as the grant's name.
+  Sends a call with the real values in place of their marks: `values` is
+  the credential's value (`token`, for `{token}`; a bare string is that
+  alone), its ID token (`id_token`), and the JWTs signed for it (`jwts`,
+  by account as written, `:one` for `{signed_jwt}`). It reports how it went
+  in the shape a command's run does: `exit` 0 for a 2xx answer and 22 for
+  any other (as `curl --fail`), 124 when it hit `timeout` seconds; the
+  answer's `status`; its body as `output`, the first 256 KiB, with `cut`
+  bytes dropped after them. Wherever the body holds one of the values, it
+  is written out as what it is.
 
   The body is read as it comes, and no further than MWT keeps: the VM
   often has a say in what an answer holds. So `bytes` is the length the
@@ -499,12 +613,47 @@ defmodule MWTClient.Sandbox.SavedRequest do
   Only tests configure `config :mwt_client, MWTClient.Sandbox.SavedRequest,
   plug: …`, which answers instead of the service.
   """
-  @spec send(call(), String.t(), String.t(), pos_integer()) :: map()
-  def send(call, value, grant_name, timeout) do
+  @spec send(call(), String.t() | map(), String.t(), pos_integer()) :: map()
+  def send(call, value, grant_name, timeout) when is_binary(value),
+    do: send(call, %{token: value}, grant_name, timeout)
+
+  def send(call, %{} = values, grant_name, timeout) do
+    jwts = Map.get(values, :jwts, %{})
+
     headers =
       Enum.map(call.headers, fn {name, header} ->
-        {name, String.replace(header, @token, value)}
+        filled =
+          header
+          |> replace_mark(@token, values[:token])
+          |> replace_mark(@id_token, values[:id_token])
+          |> then(
+            &Regex.replace(@signed_jwt, &1, fn
+              _all, "" -> jwts[:one] || ""
+              _all, account -> jwts[String.downcase(account)] || ""
+            end)
+          )
+
+        {name, filled}
       end)
+
+    # Each real value with the words it is written out as, longest first,
+    # so a value that holds another is written out whole.
+    secrets =
+      ([
+         {values[:token], "[#{grant_name}'s token]"},
+         {values[:id_token], "[#{grant_name}'s ID token]"}
+       ] ++
+         Enum.map(jwts, fn {account, jwt} ->
+           {jwt,
+            if(account == :one,
+              do: "[a JWT signed as #{grant_name}'s account]",
+              else: "[a JWT signed as #{account}]"
+            )}
+         end))
+      |> Enum.filter(fn {real, _shown} -> is_binary(real) and real != "" end)
+      |> Enum.sort_by(fn {real, _shown} -> -byte_size(real) end)
+
+    longest = secrets |> Enum.map(&byte_size(elem(&1, 0))) |> Enum.max(fn -> 0 end)
 
     headers =
       if call.body && not Enum.any?(headers, &(String.downcase(elem(&1, 0)) == "content-type")),
@@ -524,15 +673,13 @@ defmodule MWTClient.Sandbox.SavedRequest do
         receive_timeout: timeout * 1_000,
         connect_options: [timeout: min(timeout, 15) * 1_000],
         # A value that starts within what is kept ends within this.
-        into: keeping(@keep + byte_size(value))
+        into: keeping(@keep + longest)
       ] ++ test_options()
-
-    hidden = "[#{grant_name}'s token]"
 
     case Req.request(options) do
       {:ok, %Req.Response{status: status} = response} ->
         {read, size} = Req.Response.get_private(response, :mwt_body, {"", 0})
-        body = String.replace(read, value, hidden)
+        body = written_out(read, secrets)
         kept = if byte_size(body) > @keep, do: binary_part(body, 0, @keep), else: body
 
         # How long the body is, the value written out as the name: all of
@@ -557,10 +704,16 @@ defmodule MWTClient.Sandbox.SavedRequest do
         %{exit: 124, status: nil, output: "", bytes: 0, cut: 0, timed_out: true, error: nil}
 
       {:error, error} ->
-        message = error |> Exception.message() |> String.replace(value, hidden)
+        message = error |> Exception.message() |> written_out(secrets)
         %{exit: nil, status: nil, output: "", bytes: 0, cut: 0, timed_out: false, error: message}
     end
   end
+
+  defp replace_mark(header, _mark, nil), do: header
+  defp replace_mark(header, mark, value), do: String.replace(header, mark, value)
+
+  defp written_out(text, secrets),
+    do: Enum.reduce(secrets, text, fn {real, shown}, acc -> String.replace(acc, real, shown) end)
 
   # Collects the body as it comes, up to `limit` bytes, counting what
   # arrives; reading stops there.

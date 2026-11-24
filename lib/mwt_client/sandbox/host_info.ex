@@ -192,10 +192,10 @@ defmodule MWTClient.Sandbox.HostInfo do
     """
     ## The workspace
 
-    `$MWT_WORKSPACE`, #{root}, at the same path on both sides, and in the environment of every command and subgrant here: an escape hatch to move files between the VM and this machine, not storage or a working directory.
+    `$MWT_WORKSPACE`, #{root}, at the same path on both sides, and in the environment of every command and action here: an escape hatch to move files between the VM and this machine, not storage or a working directory.
 
-    - #{from_vm}: yours to write in the VM. What a command or subgrant here will read goes there; run `mwt sync` before you ask for it, and it is copied here, read-only. Only files and folders come, no name starting with `.` or `-`, nothing executable, at most 1 GiB, and nothing holding a credential: one entry breaking a rule stops the whole copy.
-    - #{to_vm}: written here, read-only in the VM. A command or subgrant writes its result there for you; it reaches your copy with `mwt sync` (by itself when the command ran with `--dir` inside it).
+    - #{from_vm}: yours to write in the VM. What a command or action here will read goes there; run `mwt sync` before you ask for it, and it is copied here, read-only. Only files and folders come, no name starting with `.` or `-`, nothing executable, at most 1 GiB, and nothing holding a credential: one entry breaking a rule stops the whole copy.
+    - #{to_vm}: written here, read-only in the VM. A command or action writes its result there for you; it reaches your copy with `mwt sync` (by itself when the command ran with `--dir` inside it).
 
     Remove what you left there once it served.
     """

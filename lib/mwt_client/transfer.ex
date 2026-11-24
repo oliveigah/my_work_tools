@@ -26,7 +26,8 @@ defmodule MWTClient.Transfer do
     MWTClient.HttpClient.Transfer,
     MWTClient.Diagrams.Transfer,
     MWTClient.Notes.Transfer,
-    MWTClient.Flashcards.Transfer
+    MWTClient.Flashcards.Transfer,
+    MWTClient.Sandbox.Transfer
   ]
   @extension ".mwtexport"
 
@@ -77,13 +78,15 @@ defmodule MWTClient.Transfer do
   ## Options
 
     * `:participants` - the systems to export, `participants/0` by default
+    * `:values` - the agent sandbox's stored credential values go in too
+      (`MWTClient.Sandbox.Transfer.for_file/2`); left out by default
   """
   @spec export(String.t(), Path.t(), keyword()) :: :ok | {:error, error()}
   def export(username, path, opts \\ []) do
     participants = Keyword.get(opts, :participants, @participants)
 
     result =
-      with {:ok, sections} <- export_sections(username, participants) do
+      with {:ok, sections} <- export_sections(username, participants, opts) do
         contents = %{
           created_at: DateTime.utc_now(),
           username: username,
@@ -167,10 +170,18 @@ defmodule MWTClient.Transfer do
 
   defp opener(_username, {:ok, _blank}), do: {:error, :blank_password}
 
-  defp export_sections(username, participants) do
+  # A participant may leave something out of what goes into a file
+  # (`for_file/2`), the agent sandbox its stored values unless you chose to
+  # export them; what it exports whole is what a failed import puts back.
+  defp export_sections(username, participants, opts) do
     Enum.reduce_while(participants, {:ok, %{}}, fn participant, {:ok, sections} ->
       case call(fn -> participant.export(username) end) do
         {:ok, data} ->
+          data =
+            if function_exported?(participant, :for_file, 2),
+              do: participant.for_file(data, opts),
+              else: data
+
           section = %{version: participant.version(), data: data}
           {:cont, {:ok, Map.put(sections, participant.key(), section)}}
 

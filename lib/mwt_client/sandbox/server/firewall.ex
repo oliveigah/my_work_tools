@@ -8,30 +8,31 @@ defmodule MWTClient.Sandbox.Server.Firewall do
   (refuse this one use), `:isolate` (the VM was just isolated), or
   `:isolated` (it already was). Anything but `:pass` means: refuse.
 
-  Isolating, at once: the incident is recorded and saved, every connection
-  the proxy holds is closed (`MWTClient.Sandbox.Connections`), every
-  approval waiting is refused, every command running on this machine is
-  stopped, every grant turns off, port forwarding stops, and you are
-  notified, unless you isolated it yourself. From then on the proxy, DNS,
-  the agent channel and MWT's tools refuse the VM until you release it.
-  The VM keeps running.
+  Isolating locks every resource the VM reaches through MWT, its networks,
+  its credentials and your machine, and changes no grant: the incident is
+  recorded and saved, every connection the proxy holds is closed
+  (`MWTClient.Sandbox.Connections`), every approval waiting is refused,
+  every command running on this machine is stopped, port forwarding stops,
+  and you are notified, unless you isolated it yourself. From then on the
+  proxy, DNS, the agent channel, MWT's tools and every decision
+  (`MWTClient.Sandbox.Policy`, `:isolated`) refuse the VM until you
+  release it. The VM keeps running.
 
-  Releasing turns back on the grants that were on when it was isolated,
-  as they were, for the time they have left (`restore_grants/2`): the
-  incident keeps them, so a release after MWT restarted does too. It
-  also starts over what the incident was counted on, in the watch and
-  here, so the next connection or lookup isn't isolated again on bytes
-  or names from before it.
+  Isolating locks each resource as the isolation's (`Server.Locks`), beside
+  any lock of yours; releasing ends the isolation's locks only, so what you
+  locked stays locked, and every grant is as you left it, for the time it
+  has left, since none changed. It also starts over what the
+  incident was counted on, in the watch and here, so the next connection
+  or lookup isn't isolated again on bytes or names from before it.
   """
 
   require Logger
 
   alias MWTClient.Notifications
-  alias MWTClient.Sandbox.{Allowance, Approval, EventDetails, Firewall, Gate, Grant, Watch}
-  alias MWTClient.Sandbox.Server.{Approvals, Forwarding, HostRuns, State}
+  alias MWTClient.Sandbox.{EventDetails, Firewall, Gate, Watch}
+  alias MWTClient.Sandbox.Server.{Approvals, Forwarding, HostRuns, Locks, State}
 
   @connections MWTClient.Sandbox.Connections
-  @kill_after_ms 5_000
 
   @doc "The firewall as the state holds it; a state from before it has a new one."
   def of(state), do: Map.get(state, :firewall) || Firewall.new()
@@ -88,9 +89,7 @@ defmodule MWTClient.Sandbox.Server.Firewall do
   def view(state) do
     %{
       firewall: of(state),
-      refused: Map.get(state, :firewall_refused, 0) + Gate.refused_count(state.username),
-      # What releasing turns back on, by name.
-      restorable: restorable(state)
+      refused: Map.get(state, :firewall_refused, 0) + Gate.refused_count(state.username)
     }
   end
 
@@ -209,13 +208,6 @@ defmodule MWTClient.Sandbox.Server.Firewall do
     ])
   end
 
-  defp grant_name(state, id) do
-    case Enum.find(state.grants, &(&1.id == id)) do
-      %Grant{name: name} -> name
-      nil -> id
-    end
-  end
-
   # An event the isolation kept, in a line.
   defp event_line(%{at: at, summary: summary} = event) do
     host = Map.get(event, :host)
@@ -248,8 +240,7 @@ defmodule MWTClient.Sandbox.Server.Firewall do
         cause,
         State.recent_events(state),
         State.now(),
-        "incident-" <> State.unique(),
-        grants_on(state)
+        "incident-" <> State.unique()
       )
 
     incident = firewall.isolated
@@ -258,10 +249,10 @@ defmodule MWTClient.Sandbox.Server.Firewall do
     state
     |> State.change(:firewall, fn _ -> firewall end)
     |> Map.put(:firewall_refused, 0)
+    |> Locks.lock_all(:isolation)
     |> close_connections()
     |> refuse_waiting(incident)
     |> stop_commands(incident)
-    |> grants_off(incident)
     |> Forwarding.sync()
     |> State.log(%{
       outcome: :firewall,
@@ -274,7 +265,7 @@ defmodule MWTClient.Sandbox.Server.Firewall do
           {"Seen", incident.summary},
           {"Destination",
            incident.host && "#{incident.host}#{incident.port && ":#{incident.port}"}"},
-          {"Grants turned off", {:list, Enum.map(grants_on(state), &grant_name(state, &1.id))}}
+          {"Locked", "every network, credential and your machine; no grant changed"}
         ]),
         EventDetails.section("Just before", [
           {"Events", {:list, Enum.map(Enum.take(incident.events, 15), &event_line/1)}}
@@ -295,9 +286,8 @@ defmodule MWTClient.Sandbox.Server.Firewall do
   defp by_words(%{rule: rule}), do: "the firewall: #{rule}"
 
   @doc """
-  Ends the isolation; with `trust?`, the incident's destination joins the
-  trusted list. The grants that were on as it began are on again
-  (`restore_grants/2`).
+  Ends the isolation and the isolation's locks; with `trust?`, the
+  incident's destination joins the trusted list. Your own locks stay.
   """
   def release(state, trust?) do
     case of(state) do
@@ -323,6 +313,7 @@ defmodule MWTClient.Sandbox.Server.Firewall do
           |> Map.update(:firewall_watch, nil, &(&1 && Firewall.forget(&1, rule, key)))
           |> State.change(:firewall, fn _ -> released end)
           |> Map.put(:firewall_refused, 0)
+          |> Locks.unlock_all(:isolation)
           |> Forwarding.sync()
           |> State.log(%{
             outcome: :firewall,
@@ -333,13 +324,10 @@ defmodule MWTClient.Sandbox.Server.Firewall do
                 {"For", EventDetails.duration(DateTime.diff(State.now(), incident.at, :second))},
                 {"By", Firewall.isolated_by(incident)},
                 {"Seen", incident.summary},
-                {"Trusted from now on", entry || nil},
-                {"Grants to turn back on",
-                 {:list, Enum.map(Map.get(incident, :grants_on, []), &grant_name(state, &1.id))}}
+                {"Trusted from now on", entry || nil}
               ])
             ]
           })
-          |> restore_grants(Map.get(incident, :grants_on, []))
           |> State.write_inbox()
           |> State.saved()
 
@@ -347,93 +335,10 @@ defmodule MWTClient.Sandbox.Server.Firewall do
     end
   end
 
-  @doc """
-  The grants that were on as the VM was isolated, turned on again as they
-  were: their end, duration and allowances, Auto-approve included. One
-  whose time ran out meanwhile, one removed, one already on again, and one
-  to review stay as they are. Each runs its `:enable` checks, as turning
-  it on does.
-  """
-  def restore_grants(state, grants_on) do
-    now = State.now()
-
-    restored =
-      for %{id: id} = was <- grants_on,
-          %Grant{} = grant <- [Enum.find(state.grants, &(&1.id == id))],
-          not Grant.on?(grant, now),
-          not Grant.to_review?(grant),
-          not Grant.subgrants_only?(grant),
-          is_nil(was.expires_at) or DateTime.compare(was.expires_at, now) == :gt do
-        %{
-          grant
-          | state: :on,
-            expires_at: was.expires_at,
-            minutes: was.minutes,
-            allowances: Enum.reject(was.allowances || [], &Allowance.ended?(&1, now))
-        }
-      end
-
-    if restored == [] do
-      state
-    else
-      Enum.each(restored, &State.schedule_expiry/1)
-
-      restored
-      |> Enum.reduce(state, &State.replace_grant(&2, &1))
-      |> State.log(%{
-        outcome: :grant,
-        summary: "Turned back on after the release: #{Enum.map_join(restored, ", ", & &1.name)}"
-      })
-      |> MWTClient.Sandbox.Server.Checks.run_enable(Enum.map(restored, & &1.id))
-    end
-  end
-
-  @doc "What releasing would turn back on now, by name (`restore_grants/2`)."
-  def restorable(state) do
-    case of(state) do
-      %Firewall{isolated: %{} = incident} ->
-        now = State.now()
-
-        for %{id: id} = was <- Map.get(incident, :grants_on, []),
-            %Grant{} = grant <- [Enum.find(state.grants, &(&1.id == id))],
-            not Grant.to_review?(grant),
-            is_nil(was.expires_at) or DateTime.compare(was.expires_at, now) == :gt,
-            do: grant.name
-
-      _other ->
-        []
-    end
-  end
-
-  # The grants on now, as releasing would bring them back.
-  defp grants_on(state) do
-    now = State.now()
-
-    for grant <- state.grants, Grant.on?(grant, now) do
-      %{
-        id: grant.id,
-        expires_at: grant.expires_at,
-        minutes: grant.minutes,
-        allowances: grant.allowances
-      }
-    end
-  end
-
   @doc "Withdraws the alert notification: you have seen the Firewall page."
   def seen(state) do
     Notifications.withdraw(state.username, {:sandbox_firewall, :alert})
     state
-  end
-
-  @doc """
-  Every grant that is on, turned off: when the VM is isolated, and when MWT
-  starts with it isolated.
-  """
-  def all_off(grants) do
-    Enum.map(grants, fn
-      %Grant{state: :on} = grant -> %{grant | state: :off, expires_at: nil, allowances: []}
-      grant -> grant
-    end)
   end
 
   @doc "Every connection the proxy holds for `username`, closed."
@@ -462,34 +367,8 @@ defmodule MWTClient.Sandbox.Server.Firewall do
 
   defp isolated_words(incident), do: "the VM was isolated by #{Firewall.isolated_by(incident)}"
 
-  defp stop_commands(state, incident) do
-    state.approvals
-    |> Enum.filter(&Approval.running?/1)
-    |> Enum.reduce(state, fn approval, acc ->
-      Process.send_after(self(), {:kill_command, approval.id}, @kill_after_ms)
-
-      acc
-      |> State.replace_approval(%{approval | run: %{approval.run | stopped: true}})
-      |> HostRuns.stop_group(approval.id, "TERM")
-      |> State.log(HostRuns.command_event(approval, "stopped: " <> isolated_words(incident)))
-    end)
-  end
-
-  defp grants_off(state, incident) do
-    names = for %Grant{state: :on} = grant <- state.grants, do: grant.name
-
-    if names == [] do
-      state
-    else
-      state
-      |> State.change(:grants, &all_off(&1.grants))
-      |> State.log(%{
-        outcome: :grant,
-        summary: "Turned off, #{isolated_words(incident)}: #{Enum.join(names, ", ")}",
-        details: [EventDetails.section("Grants turned off", [{"Grants", {:list, names}}])]
-      })
-    end
-  end
+  defp stop_commands(state, incident),
+    do: HostRuns.stop_running(state, state.approvals, isolated_words(incident))
 
   # You know of your own isolation.
   defp notify_isolated(state, %{by: :you}), do: state

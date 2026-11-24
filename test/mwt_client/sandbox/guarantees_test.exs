@@ -221,8 +221,9 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
     } do
       grant = github(username, :ask)
 
-      # Lock, then give the saved grant an allowance for every use, with no
-      # end, on a grant that starts on: what a session could leave behind.
+      # Lock, then give each saved grant an allowance for every use, with no
+      # end, the token grant starting on: what a session could leave behind.
+      # The Internet's grant starts as it does, auto-approving.
       :ok = Store.close(username)
       {:ok, saved} = saved(username, key)
 
@@ -230,16 +231,13 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
         Enum.map(saved.grants, fn g ->
           %{
             g
-            | start: if(g.kind == :token, do: :on, else: :off),
+            | start: if(g.kind == :token, do: :on, else: g.start),
               allowances: [%Allowance{id: "allowance-old", pattern: :all, until: nil}]
           }
         end)
 
       save(username, key, %{saved | grants: grants})
       :ok = Store.open(username, key)
-      # The Internet starts off here: MWT's DNS answered the name with the
-      # address the proxy is asked for, as it does a token grant's host.
-      :ok = MWTClient.Sandbox.Gate.answered(username, "api.github.com", [{140, 82, 112, 3}], 300)
 
       net = proxy(username)
 
