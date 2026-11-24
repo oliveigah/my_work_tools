@@ -1,12 +1,25 @@
 defmodule MWTClient.Sandbox.Image do
   @moduledoc """
-  The VM image: your Containerfile, then MWT's layer, built with podman and
-  handed to microsandbox.
+  The VM image, in three parts, built with podman and handed to
+  microsandbox:
 
-  MWT's layer holds only pointers into `/mnt/mwt` and `/cache`, so nothing in
-  the image belongs to one identity: the CA, the credential helper and the
-  agents' instructions arrive when the VM is created. Updates to those files
-  need no rebuild; changing the layer's startup wiring does.
+    1. **MWT's base** (`base/0`): Ubuntu, with what MWT itself runs in the
+       VM. MWT keeps it; it changes with MWT, never with you.
+    2. **Your layer** (`Settings.image_layer`): the VM's tools, yours to
+       edit, starting from MWT's default (`default_layer/0`). No `FROM`:
+       it comes after the base (`layer_problem/1`).
+    3. **MWT's final layer** (`final_layer/0`): checks that what MWT runs
+       is still there, points the VM at `/mnt/mwt` and `/cache`, and lists
+       the checksum of every file, which the VM's image check reads
+       (`MWTClient.Sandbox.ImageCheck`).
+
+  What podman builds is the three in that order (`full/1`): the build page
+  shows it, and each build keeps it.
+
+  MWT's layers hold only pointers into `/mnt/mwt` and `/cache`, so nothing
+  in the image belongs to one identity: the CA, the credential helper and
+  the agents' instructions arrive when the VM is created. Updates to those
+  files need no rebuild; changing the layers' startup wiring does.
 
   Each build gets a tag of its date and number (`2026-11-12.1`) under the
   image name from the settings. MWT keeps as many as the `vm_images`
@@ -14,8 +27,8 @@ defmodule MWTClient.Sandbox.Image do
   (`keep/3`, `MWTClient.Storage.Retention`).
 
   The build runs on this machine in a rootless podman container, which
-  isolates it less than the VM does: install scripts in your Containerfile
-  run there. Keep what it installs to what you trust.
+  isolates it less than the VM does: install scripts in your layer run
+  there. Keep what it installs to what you trust.
   """
 
   alias MWTClient.Sandbox.{Build, Msb}
@@ -27,17 +40,62 @@ defmodule MWTClient.Sandbox.Image do
   @spec default_name() :: String.t()
   def default_name, do: @default_name
 
-  @doc "The Containerfile a new sandbox starts with."
-  @spec default_containerfile() :: String.t()
-  def default_containerfile, do: File.read!(priv("Containerfile"))
+  @doc "MWT's base: the first part of every build, MWT's own."
+  @spec base() :: String.t()
+  def base, do: File.read!(priv("mwt-base.Containerfile"))
 
-  @doc "The layer MWT appends to every build."
-  @spec mwt_layer() :: String.t()
-  def mwt_layer, do: File.read!(priv("mwt-layer.Containerfile"))
+  @doc "The layer a new sandbox starts with, and *Start from MWT's default* gives."
+  @spec default_layer() :: String.t()
+  def default_layer, do: File.read!(priv("your-layer.Containerfile"))
 
-  @doc "What podman builds: your Containerfile with MWT's layer after it."
+  @doc "MWT's final layer: the last part of every build, MWT's own."
+  @spec final_layer() :: String.t()
+  def final_layer, do: File.read!(priv("mwt-final-layer.Containerfile"))
+
+  @your_layer "# ---- Your layer: yours to edit, on MWT's build page. ----"
+
+  @doc """
+  The three parts of what podman builds from `layer`, in order, each
+  starting with a line that says whose it is: `:base` and `:final`, MWT's,
+  and `:yours`.
+  """
+  @spec parts(String.t()) :: [{:base | :yours | :final, String.t()}]
+  def parts(layer) do
+    [
+      base: String.trim(base()),
+      yours: @your_layer <> "\n" <> String.trim(layer),
+      final: String.trim(final_layer())
+    ]
+  end
+
+  @doc "What podman builds from `layer`: its parts (`parts/1`), a blank line between them."
   @spec full(String.t()) :: String.t()
-  def full(containerfile), do: String.trim_trailing(containerfile) <> "\n" <> mwt_layer()
+  def full(layer), do: Enum.map_join(parts(layer), "\n\n", &elem(&1, 1)) <> "\n"
+
+  @doc """
+  What keeps `layer` from being built, or nil. Your layer comes after
+  MWT's base, so it has no `FROM`: one would start an image of its own,
+  without what MWT runs in the VM.
+
+      iex> MWTClient.Sandbox.Image.layer_problem("RUN apt-get install -y htop")
+      nil
+      iex> MWTClient.Sandbox.Image.layer_problem("FROM ubuntu:26.04\\nRUN true") =~ "FROM"
+      true
+  """
+  @spec layer_problem(String.t()) :: String.t() | nil
+  def layer_problem(layer) do
+    if whole_containerfile?(layer),
+      do:
+        "Your layer comes after MWT's base, so it has no FROM line: remove it, " <>
+          "or start from MWT's default."
+  end
+
+  @doc """
+  Whether `text` is a whole Containerfile, with its own `FROM`: what a
+  recipe was before MWT kept the base (2026-11-24).
+  """
+  @spec whole_containerfile?(String.t()) :: boolean()
+  def whole_containerfile?(text), do: Regex.match?(~r/^\s*FROM\s+\S+/mi, text)
 
   @doc """
   Whether `name` can name an image: lowercase letters and digits, joined by
@@ -92,12 +150,12 @@ defmodule MWTClient.Sandbox.Image do
     {newest ++ still_used, removed}
   end
 
-  @doc "Writes the build context into `dir`, replacing what was there."
+  @doc "Writes the build context into `dir`, replacing what was there: `full`, what podman builds."
   @spec write_context(Path.t(), String.t()) :: :ok
-  def write_context(dir, containerfile) do
+  def write_context(dir, full) do
     File.rm_rf!(dir)
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "Containerfile"), full(containerfile))
+    File.write!(Path.join(dir, "Containerfile"), full)
   end
 
   @doc """
@@ -107,16 +165,23 @@ defmodule MWTClient.Sandbox.Image do
   spaces in a home folder are fine. It runs with `Msb.env/1`: the image is
   loaded by the confined msb (`MWT_MSB`, `Msb.confined/1`), allowed to read
   the archive and nothing else of this machine.
+
+  `cache: false` builds every step again and pulls the base image afresh,
+  for when a build may hold something damaged or stale: podman otherwise
+  reuses every step whose text and parent haven't changed.
   """
-  @spec build_script(Path.t(), String.t()) :: String.t()
-  def build_script(dir, ref) do
+  @spec build_script(Path.t(), String.t(), keyword()) :: String.t()
+  def build_script(dir, ref, opts \\ []) do
     archive = Path.join(dir, "image.tar")
     q = &shell_quote/1
 
+    cache =
+      if Keyword.get(opts, :cache, true), do: "--pull=newer", else: "--pull=always --no-cache"
+
     """
     set -euo pipefail
-    echo "==> podman build #{ref}"
-    podman build --format docker --pull=newer --tag #{q.(ref)} --file #{q.(Path.join(dir, "Containerfile"))} #{q.(dir)}
+    echo "==> podman build #{ref}#{if cache =~ "no-cache", do: " (without podman's cache)", else: ""}"
+    podman build --format docker #{cache} --tag #{q.(ref)} --file #{q.(Path.join(dir, "Containerfile"))} #{q.(dir)}
     container=$(podman create #{q.(ref)})
     podman cp "$container:/etc/mwt/versions.txt" #{q.(Path.join(dir, "versions.txt"))} || true
     podman rm "$container" >/dev/null
@@ -132,7 +197,7 @@ defmodule MWTClient.Sandbox.Image do
 
   @doc "Reads what a finished build left in `dir` into a `Build`."
   @spec read_build(Path.t(), map()) :: Build.t()
-  def read_build(dir, %{name: name, tag: tag, containerfile: containerfile, built_at: built_at}) do
+  def read_build(dir, %{name: name, tag: tag, layer: layer, built_at: built_at} = building) do
     versions =
       case File.read(Path.join(dir, "versions.txt")) do
         {:ok, text} -> String.slice(text, 0, 20_000)
@@ -152,7 +217,8 @@ defmodule MWTClient.Sandbox.Image do
       name: name,
       tag: tag,
       built_at: built_at,
-      containerfile: containerfile,
+      containerfile: building.containerfile,
+      layer: layer,
       versions: versions,
       size: size
     }

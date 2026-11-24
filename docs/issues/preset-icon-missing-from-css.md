@@ -33,3 +33,15 @@ empty too.
   missing.
 - Render grant icons as inline SVG from the heroicons files instead of CSS
   classes, so any name works.
+
+## Worse than an empty box (found 2026-11-24)
+
+`<.icon>` (`core_components.ex`) has clauses only for `git-branch`,
+`diagram` and `hero-*`. A preset of yours whose icon is any other name
+(`"icon": "rocket"`) raises `FunctionClauseError` on every page that draws
+a grant made from it: the grants page, the overview, the approvals.
+
+The fix proposed then: one list of the icons a grant may take, in
+`lib/mwt_client` so Tailwind builds every class on it, with the type's icon
+for a name not on it, in the preset loader and in `Presets.icon/1` (which
+covers grants already saved with `hero-identification`).

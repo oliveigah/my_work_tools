@@ -17,7 +17,8 @@ defmodule MWTClient.Storage.Maintenance do
   @versions %{
     "note_versions" => "notes",
     "diagram_versions" => "diagrams",
-    "flashcard_versions" => "flashcards"
+    "flashcard_versions" => "flashcards",
+    "image_layer_versions" => "image_layers"
   }
 
   @doc """
@@ -75,8 +76,8 @@ defmodule MWTClient.Storage.Maintenance do
   @doc "The kinds `clear/2` clears: every kind with a rule but the VM's."
   @spec clearable() :: [String.t()]
   def clearable,
-    do: ~w(note_versions diagram_versions flashcard_versions http_history http_bodies
-           agent_activity backups legacy)
+    do: ~w(note_versions diagram_versions flashcard_versions image_layer_versions http_history
+           http_bodies agent_activity backups legacy)
 
   @doc """
   Removes everything of one kind (`clearable/0`), as its rule would if it

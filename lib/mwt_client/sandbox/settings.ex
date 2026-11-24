@@ -3,7 +3,11 @@ defmodule MWTClient.Sandbox.Settings do
   How the VM is built. Changing the image or resources of a VM that exists
   means recreating it; shared folders are copied in while it runs, so
   changing them doesn't.
-  `image_name` only names the next build. `host_notes` is your own text
+  `image_layer` is your layer of the VM's image, after MWT's base and
+  before MWT's final layer (`MWTClient.Sandbox.Image`), with its version
+  number and when it was saved; what it held before each save is kept
+  (`MWTClient.Sandbox.LayerVersions`). `image_name` only names the next
+  build. `host_notes` is your own text
   about this machine, which agents read with the rest of `mwt host`.
 
   `cpus` and `memory_gib` start at what this machine can spare, and can't
@@ -47,7 +51,9 @@ defmodule MWTClient.Sandbox.Settings do
 
   alias MWTClient.Sandbox.{Image, Share}
 
-  defstruct containerfile: nil,
+  defstruct image_layer: nil,
+            image_layer_version: 1,
+            image_layer_saved_at: nil,
             image_name: "mwt_agent_sdb_image",
             cpus: 4,
             memory_gib: 8,
@@ -64,7 +70,9 @@ defmodule MWTClient.Sandbox.Settings do
             confine_reads: nil
 
   @type t :: %__MODULE__{
-          containerfile: String.t() | nil,
+          image_layer: String.t() | nil,
+          image_layer_version: pos_integer(),
+          image_layer_saved_at: DateTime.t() | nil,
           image_name: String.t(),
           cpus: pos_integer(),
           memory_gib: pos_integer(),
@@ -104,7 +112,7 @@ defmodule MWTClient.Sandbox.Settings do
       {:work_gib, attrs["work_gib"], &cast_int(&1, 1, 4_096)},
       {:nested_virt, attrs["nested_virt"], &cast_boolean/1},
       {:way_of_working, attrs["way_of_working"], &cast_way_of_working/1},
-      {:containerfile, attrs["containerfile"], &cast_containerfile/1},
+      {:image_layer, attrs["image_layer"], &cast_layer/1},
       {:image_name, attrs["image_name"], &cast_image_name/1},
       {:host_notes, attrs["host_notes"], &cast_notes/1},
       {:confine_reads, attrs["confine_reads"], &cast_reads/1}
@@ -125,10 +133,13 @@ defmodule MWTClient.Sandbox.Settings do
     if errors == %{}, do: {:ok, struct!(settings, changes)}, else: {:error, errors}
   end
 
-  defp cast_containerfile(value) do
-    if Regex.match?(~r/^\s*FROM\s+\S+/mi, value),
-      do: {:ok, String.replace(value, "\r\n", "\n")},
-      else: {:error, "A Containerfile needs a FROM line."}
+  defp cast_layer(value) do
+    layer = String.replace(value, "\r\n", "\n")
+
+    case Image.layer_problem(layer) do
+      nil -> {:ok, layer}
+      problem -> {:error, problem}
+    end
   end
 
   # The folders confined commands may read, one a line; none written is

@@ -32,6 +32,9 @@
 #     image has certutil (libnss3-tools): Chromium, Playwright's included,
 #     trusts that store, not the system's bundle, so without it every page
 #     MWT reads would refuse to open. Only MWT's entry is put back.
+#   - MWT's CA for containers, when the image has podman: a file of
+#     /etc/containers/containers.conf.d that mounts it into every container
+#     and build.
 #
 # It also starts `mwt ports --watch`, which tells MWT what listens in the VM
 # so its servers open on the user's machine. It needs bash, ss and socat,
@@ -176,6 +179,42 @@ if command -v certutil >/dev/null 2>&1 && [ -r "$inbox/ca.pem" ]; then
     echo "mwt-boot: could not make Chromium's certificate store" >&2
     status=1
   fi
+fi
+
+# MWT's CA for containers, when the image has podman (its /etc/containers):
+# every container and build gets it mounted under the name OpenSSL looks a
+# CA up by in /etc/ssl/certs, its subject's hash, so it is trusted before
+# the image has a bundle and a build that installs ca-certificates replaces
+# nothing of it; and the bundle and CA at /run/mwt, which the variables of
+# `podman run` point tools at (builds take mounts but no variables). None
+# of it is committed into an image built here. The hash is the CA's, which
+# MWT gives each identity, so it is written here rather than in the image.
+if [ -d "$etc/containers" ] && [ -r "$inbox/ca.pem" ]; then
+  if hash=$(openssl x509 -subject_hash -noout -in "$inbox/ca.pem" 2>/dev/null) &&
+    mkdir -p "$etc/containers/containers.conf.d" && {
+      echo "# Written by MWT's boot script: MWT's CA in every container and build."
+      echo '[containers]'
+      echo 'volumes = ['
+      printf '  "%s:/etc/ssl/certs/%s.0:ro",\n' "$inbox/ca.pem" "$hash"
+      printf '  "%s:/run/mwt/ca-bundle.pem:ro",\n' "$inbox/ca-bundle.pem"
+      printf '  "%s:/run/mwt/ca.pem:ro",\n' "$inbox/ca.pem"
+      echo ']'
+      echo 'env = ['
+      echo '  "SSL_CERT_FILE=/run/mwt/ca-bundle.pem",'
+      echo '  "CURL_CA_BUNDLE=/run/mwt/ca-bundle.pem",'
+      echo '  "REQUESTS_CA_BUNDLE=/run/mwt/ca-bundle.pem",'
+      echo '  "NODE_EXTRA_CA_CERTS=/run/mwt/ca.pem",'
+      echo ']'
+    } > "$etc/containers/containers.conf.d/50-mwt.conf.new" &&
+    mv "$etc/containers/containers.conf.d/50-mwt.conf.new" "$etc/containers/containers.conf.d/50-mwt.conf"; then
+    :
+  else
+    echo "mwt-boot: could not give containers MWT's CA" >&2
+    status=1
+  fi
+  # /run is on the VM's disk, not in memory: what podman kept there of the
+  # containers before this boot would say they still run.
+  [ -z "${MWT_INBOX:-}" ] && rm -rf /run/containers /run/libpod /run/crun
 fi
 
 if [ -z "${MWT_INBOX:-}" ] && [ -x "$inbox/bin/mwt" ] &&

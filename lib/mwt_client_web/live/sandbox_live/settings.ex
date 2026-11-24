@@ -16,7 +16,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
 
   import MWTClientWeb.SandboxLive.Components
 
-  alias MWTClient.Sandbox.{Image, NestedVirt, Resources}
+  alias MWTClient.Sandbox.{Image, LayerVersions, NestedVirt, Resources}
 
   @tabs [
     {"runtime", "Runtime", "hero-cpu-chip-micro"},
@@ -56,8 +56,17 @@ defmodule MWTClientWeb.SandboxLive.Settings do
   attr :name_error, :string, default: nil
   attr :tools, :map, required: true
   attr :settings, :any, required: true
-  attr :containerfile_form, :any, required: true
-  attr :containerfile_error, :string, default: nil
+  attr :layer_form, :any, required: true
+  attr :layer_error, :string, default: nil
+  attr :layer_versions, :list, default: [], doc: "the versions of your layer, on its tab"
+  attr :layer_versions_open, :boolean, default: false
+  attr :layer_version, :integer, default: nil, doc: "the version of your layer chosen"
+
+  attr :image_pane, :atom,
+    default: nil,
+    doc:
+      "what shows beside your layer: `:full`, `:log`, or nil for the build log when there is one"
+
   attr :vm_form, :any, required: true
   attr :vm_errors, :map, required: true
   attr :resources, :map, required: true, doc: "this machine: `host`, `suggested`, `most`"
@@ -1071,19 +1080,23 @@ defmodule MWTClientWeb.SandboxLive.Settings do
 
   defp image_tab(assigns) do
     current = Enum.find(assigns.builds, &(&1.ref == assigns.image.tag))
+    log? = assigns.image.building? or assigns.image.log != [] or assigns.image.error != nil
 
     assigns =
       assign(assigns,
-        mwt_layer: Image.mwt_layer(),
         current: current,
-        different_default?: assigns.settings.containerfile != Image.default_containerfile(),
-        edited?: current != nil and current.containerfile != assigns.settings.containerfile
+        parts: Image.parts(assigns.settings.image_layer),
+        log?: log?,
+        pane: assigns.image_pane || if(log?, do: :log, else: :full),
+        upgraded?: LayerVersions.upgraded?(assigns.settings, assigns.layer_versions),
+        different_default?: assigns.settings.image_layer != Image.default_layer(),
+        edited?: current != nil and current.layer != assigns.settings.image_layer
       )
 
     ~H"""
     <.card id="settings-image" title="The VM's image" class="mb-5" body_class="">
       <:help>
-        Your Containerfile, then MWT's layer, built with podman on this machine and handed to microsandbox. MWT's default comes with Bash, completion, language runtimes and development CLIs already installed. The build runs here, in a rootless podman container, which isolates less than the VM: install scripts in your Containerfile run there.
+        Three parts, built with podman on this machine and handed to microsandbox: MWT's base (Ubuntu, with what MWT itself runs in the VM), your layer (the VM's tools, yours to edit) and MWT's final layer, which points the VM at /mnt/mwt and /cache, checks that what MWT runs is still there, and lists the checksum of every file for the image check. The build runs here, in a rootless podman container, which isolates less than the VM: install scripts in your layer run there.
       </:help>
       <:actions>
         <span
@@ -1107,6 +1120,17 @@ defmodule MWTClientWeb.SandboxLive.Settings do
           <% end %>
         </span>
         <.button
+          :if={@image.loaded?}
+          id="image-build-fresh"
+          variant="secondary"
+          phx-click="build_image"
+          phx-value-cache="false"
+          disabled={@image.building? or not @tools.podman}
+          title="Builds every step again and pulls the base afresh, for a build that may hold something damaged or stale"
+        >
+          Rebuild without cache
+        </.button>
+        <.button
           id="image-build"
           variant={if(@image.loaded?, do: "secondary", else: "primary")}
           phx-click="build_image"
@@ -1122,7 +1146,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
         class="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line-soft px-4 py-2.5"
       >
         <p class="flex-1 text-[11px] leading-5 text-muted">
-          Save the recipe, build it, then recreate the VM to use it.
+          Save your layer, build it, then recreate the VM to use it.
         </p>
         <.form
           for={@name_form}
@@ -1155,23 +1179,34 @@ defmodule MWTClientWeb.SandboxLive.Settings do
       </div>
 
       <p
-        :if={@different_default?}
-        id="containerfile-default-differs"
+        :if={@upgraded?}
+        id="layer-upgraded"
+        class="flex items-start gap-2 border-b border-accent/30 bg-accent-soft/20 px-4 py-2 text-[11px] leading-5 text-ink"
+      >
+        <.icon name="hero-information-circle-micro" class="mt-0.5 size-3.5 shrink-0 text-accent" />
+        <span class="flex-1">
+          MWT now keeps the base of the image, Ubuntu with what MWT runs in the VM, so your layer has no FROM. Your whole Containerfile is the newest version here, and you're on MWT's default layer: bring over what you added, then save and build.
+        </span>
+      </p>
+
+      <p
+        :if={@different_default? and not @upgraded?}
+        id="layer-default-differs"
         class="flex items-center gap-2 border-b border-line-soft bg-accent-soft/20 px-4 py-2 text-[11px] text-ink"
       >
         <.icon name="hero-information-circle-micro" class="size-3.5 shrink-0 text-accent" />
         <span class="flex-1">
-          Your recipe differs from MWT's current default. To adopt it, choose "Start from MWT's default", review, save and build.
+          Your layer differs from MWT's current default. To adopt it, choose "Start from MWT's default", review, save and build.
         </span>
       </p>
 
       <p
         :if={@edited?}
-        id="containerfile-edited"
+        id="layer-edited"
         class="flex items-center gap-2 border-b border-warn/30 bg-warn-soft/25 px-4 py-2 text-[11px] text-ink"
       >
         <.icon name="hero-pencil-square-micro" class="size-3.5 text-warn" />
-        The Containerfile changed since the current build. Build to use it.
+        Your layer changed since the current build. Build to use it.
       </p>
 
       <p
@@ -1184,58 +1219,108 @@ defmodule MWTClientWeb.SandboxLive.Settings do
 
       <div class="grid gap-0 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
         <.form
-          for={@containerfile_form}
-          id="containerfile-form"
-          phx-submit="save_containerfile"
+          for={@layer_form}
+          id="layer-form"
+          phx-submit="save_layer"
           class="flex min-w-0 flex-col border-line-soft lg:border-r"
         >
           <div class="flex items-center gap-2 border-b border-line-soft px-4 py-2">
-            <p class="flex-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
-              Containerfile
+            <p class="flex flex-1 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+              Your layer
+              <.help id="layer-help" label="About your layer">
+                Containerfile instructions after MWT's base: no FROM. Each save keeps the layer it replaced, under Versions.
+              </.help>
             </p>
+            <.versions_button id="layer-versions-button" open={@layer_versions_open} />
             <button
               type="button"
-              id="containerfile-reset"
-              phx-click="reset_containerfile"
+              id="layer-reset"
+              phx-click="reset_layer"
               class="cursor-pointer rounded px-1.5 py-0.5 text-[10px] text-faint transition-colors hover:bg-hover hover:text-ink"
             >
               Start from MWT's default
             </button>
           </div>
           <textarea
-            name={@containerfile_form[:containerfile].name}
-            id="containerfile"
+            name={@layer_form[:image_layer].name}
+            id="image-layer"
             spellcheck="false"
             rows="18"
             class="min-h-80 w-full flex-1 resize-y border-0 bg-deep px-4 py-3 font-mono text-[11px] leading-5 text-ink outline-none focus:ring-2 focus:ring-inset focus:ring-accent/25"
-          >{@containerfile_form[:containerfile].value}</textarea>
+          >{@layer_form[:image_layer].value}</textarea>
           <div class="flex items-center gap-2 border-t border-line-soft px-4 py-2">
-            <p :if={@containerfile_error} id="containerfile-error" class="flex-1 text-[11px] text-bad">
-              {@containerfile_error}
+            <p :if={@layer_error} id="layer-error" class="flex-1 text-[11px] text-bad">
+              {@layer_error}
             </p>
             <p
-              :if={is_nil(@containerfile_error)}
+              :if={is_nil(@layer_error)}
               class="flex-1 truncate font-mono text-[10px] text-faint"
               title={@image.tag}
             >
               {@image.tag || "not built yet"}
             </p>
-            <.button type="submit" id="containerfile-save">Save</.button>
+            <.button type="submit" id="layer-save">Save</.button>
           </div>
         </.form>
 
-        <div class="flex min-w-0 flex-col">
-          <%= if @image.building? or @image.log != [] or @image.error do %>
-            <div class="flex items-center gap-2 border-b border-line-soft px-4 py-2">
-              <p class="flex-1 text-[10px] font-semibold uppercase tracking-wide text-muted">
-                Build log
-              </p>
+        <.versions_panel
+          :if={@layer_versions_open}
+          id="layer-versions"
+          kind={:layer}
+          class="min-w-0 max-h-[36rem]"
+          versions={@layer_versions}
+          selected={@layer_version}
+          current={%{text: @settings.image_layer}}
+          empty="No earlier versions yet. One is kept before every save and every restore."
+        />
+
+        <div :if={not @layer_versions_open} class="flex min-w-0 flex-col">
+          <div class="flex items-center gap-1 border-b border-line-soft px-2 py-1.5">
+            <button
+              type="button"
+              id="image-pane-full"
+              phx-click="image_pane"
+              phx-value-pane="full"
+              aria-pressed={to_string(@pane == :full)}
+              class={[
+                "cursor-pointer rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide transition-colors",
+                if(@pane == :full, do: "bg-active text-ink", else: "text-muted hover:text-ink")
+              ]}
+            >
+              What podman builds
+            </button>
+            <button
+              :if={@log?}
+              type="button"
+              id="image-pane-log"
+              phx-click="image_pane"
+              phx-value-pane="log"
+              aria-pressed={to_string(@pane == :log)}
+              class={[
+                "flex cursor-pointer items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide transition-colors",
+                if(@pane == :log, do: "bg-active text-ink", else: "text-muted hover:text-ink")
+              ]}
+            >
+              Build log
               <.icon
                 :if={@image.building?}
                 name="hero-arrow-path-micro"
-                class="size-3.5 animate-spin text-warn"
+                class="size-3 animate-spin text-warn"
               />
-            </div>
+            </button>
+            <span class="flex-1"></span>
+            <button
+              :if={@pane == :full}
+              id="image-full-copy"
+              type="button"
+              phx-hook="CopyText"
+              phx-update="ignore"
+              data-copy-target="image-full"
+              class="cursor-pointer rounded px-2 py-0.5 text-[10px] text-accent transition-colors hover:bg-accent-soft"
+            >Copy</button>
+          </div>
+
+          <%= if @pane == :log do %>
             <p
               :if={@image.error}
               id="image-error"
@@ -1245,23 +1330,15 @@ defmodule MWTClientWeb.SandboxLive.Settings do
             </p>
             <pre
               id="build-log"
-              class="max-h-96 min-h-48 flex-1 overflow-auto bg-deep/60 px-4 py-3 font-mono text-[10px] leading-4 text-muted"
+              class="max-h-[36rem] min-h-48 flex-1 overflow-auto bg-deep/60 px-4 py-3 font-mono text-[10px] leading-4 text-muted"
               phx-no-curly-interpolation
             ><%= @image.log |> Enum.take(160) |> Enum.reverse() |> Enum.join("\n") %></pre>
           <% else %>
-            <div class="flex items-center gap-2 border-b border-line-soft px-4 py-2">
-              <p class="flex flex-1 items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
-                MWT adds this layer
-                <.help id="mwt-layer-help" label="About MWT's layer">
-                  It points at /mnt/mwt and /cache. The image holds nothing of this identity's; CA, grant and helper updates arrive without rebuilding it.
-                </.help>
-              </p>
-            </div>
             <pre
-              id="mwt-layer"
-              class="max-h-96 flex-1 overflow-auto bg-deep/40 px-4 py-3 font-mono text-[10px] leading-4 text-faint"
+              id="image-full"
+              class="max-h-[36rem] min-h-48 flex-1 overflow-auto bg-deep/40 px-4 py-3 font-mono text-[10px] leading-4"
               phx-no-curly-interpolation
-            ><%= String.trim(@mwt_layer) %></pre>
+            ><%= for {{part, text}, index} <- Enum.with_index(@parts) do %><span id={"image-full-#{part}"} class={if(part == :yours, do: "text-ink", else: "text-faint")}><%= text %><%= if index < length(@parts) - 1, do: "\n\n", else: "\n" %></span><% end %></pre>
           <% end %>
         </div>
       </div>
@@ -1269,7 +1346,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
 
     <.card id="settings-builds" title="Builds kept" body_class="">
       <:help>
-        The current one and the two before it. Going back means using a build, not the recipe: rebuilding the same Containerfile later gives other versions.
+        The current one and the two before it, as the VM image builds rule on the Storage page says, and the one the VM was created from. Going back means using a build, not the recipe: rebuilding the same layer later gives other versions. Each keeps the Containerfile podman built.
       </:help>
       <ul class="divide-y divide-line-soft">
         <li :if={@builds == []} id="builds-empty">
@@ -1315,7 +1392,31 @@ defmodule MWTClientWeb.SandboxLive.Settings do
             >
               Make current
             </.button>
+            <.button
+              :if={build.ref != @image.tag and not (build.ref == @created_ref and @vm.exists?)}
+              id={"build-delete-" <> String.replace(build.tag, ".", "-")}
+              variant="secondary"
+              phx-click="delete_build"
+              phx-value-ref={build.ref}
+              data-confirm={"Delete #{build.ref} from microsandbox and podman?"}
+              disabled={@image.building?}
+            >
+              Delete
+            </.button>
           </div>
+          <details :if={build.containerfile != ""} class="group mt-1.5 pl-7">
+            <summary class="cursor-pointer list-none text-[10px] text-faint transition-colors hover:text-ink [&::-webkit-details-marker]:hidden">
+              <.icon
+                name="hero-chevron-right-micro"
+                class="size-3 transition-transform group-open:rotate-90"
+              /> Containerfile
+            </summary>
+            <pre
+              id={"build-containerfile-" <> String.replace(build.tag, ".", "-")}
+              class="mt-1.5 max-h-72 overflow-auto rounded-md bg-deep/60 px-3 py-2 font-mono text-[10px] leading-4 text-muted"
+              phx-no-curly-interpolation
+            ><%= String.trim(build.containerfile) %></pre>
+          </details>
           <details :if={build.versions != ""} class="group mt-1.5 pl-7">
             <summary class="cursor-pointer list-none text-[10px] text-faint transition-colors hover:text-ink [&::-webkit-details-marker]:hidden">
               <.icon

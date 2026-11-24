@@ -436,20 +436,38 @@ image, writable (`Disks.check_words/3`); without `bwrap` they don't run.
 
 ### The image
 
-The settings page holds your Containerfile (the default ships in
-`priv/sandbox`). MWT appends its layer
-([What MWT hands to the VM](#what-mwt-hands-to-the-vm)), builds it with
-rootless podman here, `--format docker` (else podman ignores `SHELL`, and
-`pipefail` with it), and loads it into microsandbox
-(`MWTClient.Sandbox.Image`). Nothing comes from a registry of MWT's.
+Three parts, in this order (`MWTClient.Sandbox.Image`), all in
+`priv/sandbox`:
 
-- **Base: Ubuntu 26.04,** with `MISE_ERLANG_PRECOMPILED_OS=ubuntu-26.04`,
-  so mise takes hex.pm's prebuilt Erlang (seconds) rather than compiling
-  it (minutes per version).
-- **apt only for what mise can't do:** the C toolchain, git,
-  openssh-client, curl, ca-certificates (without it Erlang finds no CAs),
-  unzip, xz, locales, postgresql-client, sqlite3, inotify-tools, tmux,
-  Bash, bash-completion.
+1. **MWT's base** (`mwt-base.Containerfile`), MWT's, read-only: Ubuntu
+   26.04 and what MWT itself runs in the VM: bash, coreutils, GNU find and
+   tar, sed, grep, awk, util-linux, git, socat, iproute2 (`ss`), python3
+   (`memo`), ca-certificates with openssl, bubblewrap.
+2. **Your layer** (`your-layer.Containerfile` is MWT's default), yours to
+   edit on the Build page, with no `FROM`: it starts after the base. Each
+   save keeps the layer it replaced, as a note's versions are
+   (`MWTClient.Sandbox.LayerVersions`, the `image_layer_versions` rule).
+3. **MWT's final layer** (`mwt-final-layer.Containerfile`), MWT's: it
+   checks that your layer left what MWT runs, and stops the build naming
+   what is missing; points the VM at `/mnt/mwt` and `/cache`
+   ([What MWT hands to the VM](#what-mwt-hands-to-the-vm)); keeps podman's
+   storage on `/cache`; and, last, lists the checksum of every file in
+   `/etc/mwt/image.sha256`, for the image check.
+
+The Build page shows the three as one text, what podman builds
+(`Image.full/1`), and each build keeps it. MWT builds it with rootless
+podman here, `--format docker` (else podman ignores `SHELL`, and
+`pipefail` with it), and loads it into microsandbox. Nothing comes from a
+registry of MWT's.
+
+- **Base: Ubuntu 26.04,** fixed by MWT: hex.pm builds Erlang only for
+  Ubuntu (`MISE_ERLANG_PRECOMPILED_OS=ubuntu-26.04`, seconds rather than
+  minutes per version; Debian, Fedora and Alpine have none), Playwright
+  supports it, and it is patched until 2031.
+- **apt only for what mise can't do,** in the default layer: the C
+  toolchain, openssh-client, curl, unzip, xz, postgresql-client, sqlite3,
+  inotify-tools, tmux, bash-completion, Playwright's libraries, and podman
+  with `podman-docker` and nftables.
 - **The rest through mise,** in `/usr/local/share/mise`
   (`mise install --system`, `mise reshim --system`), versions in
   `/etc/mise/config.toml` with majors pinned: Erlang, Elixir, Node, Python
@@ -490,11 +508,40 @@ rootless podman here, `--format docker` (else podman ignores `SHELL`, and
   run there), so the build runs little third-party code: apt packages are
   signed, mise checks checksums and attestations, and the agents come as
   binaries, with no npm install scripts.
-- **An old VM's recipe:** your saved Containerfile is kept across MWT
-  updates, so it gets no new defaults by itself. In **Agent Sandbox →
-  Settings**: review it, **Start from MWT's default**, **Save**; **Build**
-  (a running VM doesn't change); **Recreate**, keeping Home and Cache if
-  you like (a stop and start runs the same image); reconnect Zed.
+- **Your layer across updates:** it is kept, so it gets no new defaults by
+  itself. In **Agent Sandbox → Settings → Build**: review it, **Start from
+  MWT's default**, **Save**; **Build** (a running VM doesn't change);
+  **Recreate**, keeping Home and Cache if you like (a stop and start runs
+  the same image); reconnect Zed. A recipe from before the base was MWT's
+  (2026-11-24), a whole Containerfile, became the newest version of your
+  layer, replaced by MWT's default; the Build page says so until you save.
+- **Containers in the VM:** podman, rootful, as `docker` too. Its storage
+  is on `/cache` (`/etc/containers/storage.conf`, from the final layer):
+  on the root overlay, podman's own overlay can't mount, and `/cache`
+  survives recreating. Its network needs nftables (netavark). They trust
+  MWT's CA through `/etc/containers/containers.conf.d/50-mwt.conf`, which
+  the boot script writes, the CA's hash being the identity's: every
+  container and build gets the CA mounted as `/etc/ssl/certs/HASH.0`, the
+  name OpenSSL looks it up by, so a build that installs ca-certificates
+  replaces nothing of it, and the bundle and CA at `/run/mwt`; `podman
+  run`, not a build, also gets `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+  `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` pointing there. Nothing of
+  it is committed into an image built in the VM. Mounting the bundle over
+  `/etc/ssl/certs/ca-certificates.crt` instead broke every build that
+  installs ca-certificates (it can't replace a mounted file). In a build,
+  tools that carry their own CAs (Node, Java, gcloud's installer, Python's
+  certifi) still need it named in the step: gcloud's install failed so in a
+  build of MWT's own image in the VM. The boot script also
+  clears podman's runtime state, since `/run` is on the VM's disk.
+- **The image check** (`MWTClient.Sandbox.ImageCheck`): after a VM's
+  first start, MWT mounts its image disk (`/dev/vda`, EROFS) read-only in
+  the VM, apart from its root, and checks every file against the build's
+  list, in a task of its own (7 to 20 s for 5 GB). The result goes on the
+  VM's record; damage shows on the Overview, naming the files, with
+  **Rebuild without cache** (`--no-cache --pull=always`) on the Build page.
+  It catches a damaged image, not a hostile VM, which reports it. Seen once:
+  `docs/issues/vm-image-file-zeroed-after-load.md`.
+- **Deleting a build:** any kept but the current one and the VM's.
 
 <a id="what-mwt-hands-to-the-vm"></a>
 
@@ -529,7 +576,7 @@ disks.
 | `AGENTS.md`, `grants.md`, `host.md`                  | What agents are told; what `mwt grants` prints; [your machine](#host-commands)  |
 | `guides/<topic>.md`                                  | What only some tasks need, which `mwt help TOPIC` prints                        |
 
-**MWT's layer** is only pointers into `/mnt/mwt`, so one image serves any
+**MWT's final layer** points only into `/mnt/mwt`, so one image serves any
 identity, the CA changes without a rebuild, and old tags keep working:
 `/etc/ssl/certs/ca-certificates.crt` links to `ca-bundle.pem` (a hook in
 `/etc/ca-certificates/update.d` restores it when a package regenerates it),
@@ -4644,8 +4691,8 @@ notification ([Desktop notifications](#desktop-notifications)).
   ([Shared folders](#shared-folders)); CPUs and memory against this machine
   and the suggestion, the disks, how long an approval waits; VMs inside the
   VM; the VM's memory; *This machine, for agents* (your notes, the folders
-  confined commands may read). *Build:* the image's name, the Containerfile,
-  MWT's layer, the builds kept ([The image](#the-image)).
+  confined commands may read). *Build:* the image's name, your layer and its
+  versions, what podman builds whole, the builds kept ([The image](#the-image)).
 - **Setup:** what this machine lacks (`bwrap` and its user namespaces, the
   relay, the tools that make disks); build, share, start; then what Zed
   needs: your key let in once and the SSH entry, with a warning when
@@ -4879,6 +4926,7 @@ history is in git.
 | 2026-11-11 | The VM gets placeholders, never real values: MWT alone holds the values and swaps them in on the way out, and microsandbox's own secret feature is unused ([Grant kinds](#grant-kinds)). |
 | 2026-11-12 | Host commands move the work to where a value is instead of the value to the VM, and agents learn your machine from `mwt host`, never by probing it ([Host commands](#host-commands)). |
 | 2026-11-13 | The image is Ubuntu 26.04 with its tools from mise (Erlang prebuilt), built on your machine with podman from your Containerfile and MWT's layer, its last three builds kept, since rebuilding the same recipe later gives other versions; nothing is published, so podman is a dependency ([The image](#the-image)). |
+| 2026-11-24 | The image is three parts: MWT's base (Ubuntu 26.04, fixed, and what MWT runs in the VM), your layer, versioned, with no `FROM`, and MWT's final layer, which checks MWT's needs survived and lists every file's checksum; the Build page shows what podman builds whole. A VM's image disk is checked once after its first start, since a damaged one crashed tools with nothing noticing. Containers are podman's, storage on `/cache`, MWT's CA mounted by hash ([The image](#the-image)). |
 | 2026-11-13 | MWT creates, starts and stops the VM, which stops when MWT quits or locks; the launcher Zed uses only looks at it and goes in while it runs ([Creating the VM](#creating-the-vm)). |
 | 2026-11-13 | The proxy, TLS interception and HTTP reading are MWT's own Elixir, with a strict reader of its own: Bandit and Finch read leniently what MWT must refuse, and can't take a connection MWT decrypted ([Each intercepted request](#each-intercepted-request)). |
 | 2026-11-13 | The VM's work lives on its own ext4 disks (Home, Cache, Work), which nothing on your machine opens: a folder the VM could write let a planted hook run when you used git there, and a disk is several times faster ([Disks](#disks)). |

@@ -19,6 +19,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
 
   alias MWTClient.Sandbox.{
     Bubble,
+    CopyBack,
     Disks,
     FolderSync,
     Guest,
@@ -32,7 +33,8 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     Projects,
     Server,
     ShareMounts,
-    Sockets
+    Sockets,
+    Workspace
   }
 
   alias MWTClient.Sandbox.Monitor.Host
@@ -422,6 +424,13 @@ defmodule MWTClient.Sandbox.VMLiveTest do
 
     # Its store on the work disk, shown read-only at the same path.
     guest = Guest.vm(username, name)
+
+    ## The image check: the image disk mounted read-only, apart from the root
+
+    # Alpine has no checksum list, so it isn't checked: that it says so
+    # means the disk was found and mounted.
+    assert {:unchecked, why} = MWTClient.Sandbox.ImageCheck.run(guest)
+    assert why =~ "built before MWT made one"
     later = [now: System.os_time(:second) + 10]
     assert :ok = ShareMounts.arrange(guest, [share])
     # Again: what is shown already stays as it is.
@@ -461,6 +470,26 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert :ok = ShareMounts.arrange(guest, [])
     assert {:ok, "gone\n"} = exec.("test -e #{share}/hello.txt || echo gone")
     assert {:ok, "gone\n"} = exec.("test -e #{Path.dirname(store)} || echo gone")
+
+    ## The workspace's from-vm, copied back: the list of names goes into the
+    ## VM's tar on its stdin, and its archive comes back into a file here
+
+    workspace = Path.join(System.tmp_dir!(), "vm-workspace-#{System.unique_integer([:positive])}")
+    on_exit(fn -> MWTClient.TestFolders.remove!(workspace) end)
+    File.mkdir_p!(Workspace.from_vm(workspace))
+    store = Workspace.vm_store()
+
+    assert {:ok, _} =
+             exec.(
+               "mkdir -p #{store}/sub && printf 'probe\n' > #{store}/probe.txt && printf 'deep\n' > #{store}/sub/deep.txt"
+             )
+
+    {copied, nil} =
+      CopyBack.run(CopyBack.new("vm-live"), guest, workspace, dir: Path.join(workspace, "data"))
+
+    assert copied.status.error == nil
+    assert File.read!(Path.join(Workspace.from_vm(workspace), "probe.txt")) == "probe\n"
+    assert File.read!(Path.join(Workspace.from_vm(workspace), "sub/deep.txt")) == "deep\n"
 
     # The built-in command grant is still off.
     assert {:ok, grants} = exec.("/mnt/mwt/bin/mwt grants")

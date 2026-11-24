@@ -76,6 +76,32 @@ defmodule MWTClient.Sandbox.InstructionsTest do
       end
     end
 
+    test "gives containers MWT's CA, when the image has podman", %{
+      inbox: inbox,
+      etc: etc,
+      boot: boot
+    } do
+      ca = MWTClient.Sandbox.CertificateAuthority.new()
+      pem = Path.join(inbox, "ca.pem")
+      File.write!(pem, MWTClient.Sandbox.CertificateAuthority.pem(ca.cert))
+      conf = Path.join(etc, "containers/containers.conf.d/50-mwt.conf")
+
+      # No podman, no file.
+      assert {_, 0} = boot.()
+      refute File.exists?(conf)
+
+      File.mkdir_p!(Path.join(etc, "containers"))
+      assert {_, 0} = boot.()
+      {hash, 0} = System.cmd("openssl", ["x509", "-subject_hash", "-noout", "-in", pem])
+
+      # Under the name OpenSSL looks it up by, so a build that installs
+      # ca-certificates replaces nothing of it.
+      text = File.read!(conf)
+      assert text =~ ~s("#{pem}:/etc/ssl/certs/#{String.trim(hash)}.0:ro")
+      assert text =~ ~s("#{inbox}/ca-bundle.pem:/run/mwt/ca-bundle.pem:ro")
+      assert text =~ ~s("SSL_CERT_FILE=/run/mwt/ca-bundle.pem")
+    end
+
     test "writes which VM this is, and a line for every interactive login shell", %{
       inbox: inbox,
       etc: etc,

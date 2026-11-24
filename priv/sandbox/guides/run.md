@@ -30,7 +30,11 @@ So keep the command the smallest that gets what you need:
 2. Ask: `mwt run --reason "what it does, and why it must run there" -- COMMAND ARGS`,
    or pass a script on stdin (`mwt run --reason "..." <<'EOF' ... EOF`).
    Options go before the `--`. The user approves the exact text, once,
-   and it runs as them with `bash -lc`.
+   and it runs as them with `bash -lc`. Your shell here expands `~`,
+   `$VAR` and globs before `mwt` sees them, and several words are sent
+   quoted: for their shell to expand one, send the whole command as one
+   argument in single quotes (`-- 'ls ~/x'`). A word in this VM's home is
+   refused.
 3. Where it runs: `--dir`, by default your current directory. Shared folders
    are at the same path there: the command sees the user's own files, and
    once it ends, MWT syncs that folder's copy, so what it wrote there

@@ -9,7 +9,7 @@ defmodule MWTClientWeb.SandboxLive.Overview do
 
   import MWTClientWeb.SandboxLive.Components
 
-  alias MWTClient.Sandbox.{Grant, Presets}
+  alias MWTClient.Sandbox.{Grant, ImageCheck, Presets}
   alias MWTClientWeb.SandboxLive.{Monitor, Servers}
 
   attr :vm, :any, required: true
@@ -132,6 +132,19 @@ defmodule MWTClientWeb.SandboxLive.Overview do
           class="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-4 text-ink"
           phx-no-curly-interpolation
         ><%= @vm.error %></pre>
+      </div>
+      <div
+        :if={damaged_image(@vm)}
+        id="vm-image-damaged"
+        class="relative flex gap-2.5 border-t border-bad/30 bg-bad-soft/20 px-5 py-2.5"
+      >
+        <.icon name="hero-exclamation-triangle" class="mt-px size-4 shrink-0 text-bad" />
+        <p class="min-w-0 flex-1 break-words text-[11px] leading-4 text-ink">
+          {ImageCheck.explain(damaged_image(@vm))}
+          <.link patch={~p"/tools/sandbox/settings?tab=build"} class="text-accent hover:underline">
+            Build page
+          </.link>
+        </p>
       </div>
       <div
         :if={not @proxy.listening?}
@@ -593,6 +606,10 @@ defmodule MWTClientWeb.SandboxLive.Overview do
     </.card>
     """
   end
+
+  # What the image check found, when it found the VM's image damaged.
+  defp damaged_image(%{record: %{image_check: %{result: {:damaged, _, _} = result}}}), do: result
+  defp damaged_image(_vm), do: nil
 
   defp waiting_words(waiting) do
     asks = Enum.count(waiting, &(&1.kind == :activation))

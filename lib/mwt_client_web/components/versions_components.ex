@@ -1,7 +1,7 @@
 defmodule MWTClientWeb.VersionsComponents do
   @moduledoc """
-  The versions of a note, a diagram or a flash card, as their pages show
-  them: a button that opens them, and a panel listing each earlier version
+  The versions of a note, a diagram, a flash card or your layer of the VM's
+  image, as their pages show them: a button that opens them, and a panel listing each earlier version
   with who replaced it and when. Choosing one shows what restoring it would
   change, and *Restore* makes it current (`MWTClient.Versions`).
 
@@ -45,13 +45,21 @@ defmodule MWTClientWeb.VersionsComponents do
 
   @doc """
   The panel of versions. `current` is the item's content now, in the
-  fields a version keeps; `kind` says how to show what differs.
+  fields a version keeps; `kind` says how to show what differs; `empty`,
+  when a version is kept, which differs between kinds.
   """
   attr :id, :string, required: true
-  attr :kind, :atom, required: true, values: [:note, :diagram, :card]
+  attr :kind, :atom, required: true, values: [:note, :diagram, :card, :layer]
   attr :versions, :list, required: true
   attr :selected, :integer, default: nil, doc: "the number of the version chosen"
   attr :current, :map, required: true
+
+  attr :empty, :string,
+    default:
+      "No earlier versions yet. One is kept before every change an agent makes, " <>
+        "before a restore, and every 10 minutes while you edit."
+
+  attr :class, :any, default: "w-80", doc: "its width, beside what it versions"
 
   def versions_panel(assigns) do
     assigns =
@@ -60,7 +68,7 @@ defmodule MWTClientWeb.VersionsComponents do
     ~H"""
     <aside
       id={@id}
-      class="flex w-80 shrink-0 flex-col border-l border-line-soft bg-panel"
+      class={["flex shrink-0 flex-col border-l border-line-soft bg-panel", @class]}
       aria-label="Versions"
     >
       <div class="flex h-9 shrink-0 items-center justify-between border-b border-line-soft pl-3 pr-1.5">
@@ -81,8 +89,7 @@ defmodule MWTClientWeb.VersionsComponents do
         id={"#{@id}-empty"}
         class="p-4 text-[12px] leading-relaxed text-muted"
       >
-        No earlier versions yet. One is kept before every change an agent makes, before a
-        restore, and every 10 minutes while you edit.
+        {@empty}
       </div>
 
       <ol :if={@versions != []} id={"#{@id}-list"} class="min-h-0 flex-1 overflow-y-auto py-1">
@@ -139,7 +146,7 @@ defmodule MWTClientWeb.VersionsComponents do
   Used here, and on the cards of changes agents ask to make.
   """
   attr :id, :string, required: true
-  attr :kind, :atom, required: true, values: [:note, :diagram, :card]
+  attr :kind, :atom, required: true, values: [:note, :diagram, :card, :layer]
   attr :from, :map, required: true
   attr :to, :map, required: true
 
@@ -153,6 +160,19 @@ defmodule MWTClientWeb.VersionsComponents do
     ~H"""
     <div id={@id} class="flex flex-col gap-1.5">
       <.title_change :if={@title} change={@title} />
+      <.text_lines lines={@lines} />
+    </div>
+    """
+  end
+
+  def difference(%{kind: :layer} = assigns) do
+    assigns =
+      assign(assigns,
+        lines: Diff.around_changes(Diff.lines(assigns.from[:text] || "", assigns.to[:text] || ""))
+      )
+
+    ~H"""
+    <div id={@id}>
       <.text_lines lines={@lines} />
     </div>
     """

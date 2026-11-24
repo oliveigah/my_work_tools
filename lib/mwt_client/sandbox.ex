@@ -166,9 +166,14 @@ defmodule MWTClient.Sandbox do
   @spec ca_pem(username()) :: String.t()
   def ca_pem(username), do: Server.call(username, :ca_pem)
 
-  @doc "Builds the VM image with podman and loads it into microsandbox."
-  @spec build_image(username()) :: :ok | {:error, :busy | :no_podman | :no_msb}
-  def build_image(username), do: Server.call(username, :build_image)
+  @doc """
+  Builds the VM image with podman and loads it into microsandbox: MWT's
+  base, your layer, MWT's final layer. `cache: false` builds every step
+  again, for when a build may hold something damaged or stale.
+  """
+  @spec build_image(username(), keyword()) ::
+          :ok | {:error, :busy | :no_podman | :no_msb | {:layer, String.t()}}
+  def build_image(username, opts \\ []), do: Server.call(username, {:build_image, opts})
 
   @doc """
   Starts the VM, creating it first when it does not exist or its settings
@@ -221,6 +226,14 @@ defmodule MWTClient.Sandbox do
   @doc "Makes a kept build current again. The VM picks it up when recreated."
   @spec use_build(username(), String.t()) :: :ok | {:error, :busy | :not_found}
   def use_build(username, ref), do: Server.call(username, {:use_build, ref})
+
+  @doc """
+  Deletes a build from microsandbox and podman, and from the builds kept:
+  never the current one, nor the one the VM was created from.
+  """
+  @spec delete_build(username(), String.t()) ::
+          :ok | {:error, :busy | :not_found | :current | :in_use}
+  def delete_build(username, ref), do: Server.call(username, {:delete_build, ref})
 
   @doc """
   The VM's memories you haven't reviewed: those noted after its memory was
@@ -592,13 +605,25 @@ defmodule MWTClient.Sandbox do
   def probe_host(username), do: Server.call(username, :probe_host)
 
   @doc """
-  Changes resources, the hold time, the proxy port, the image name, the
-  Containerfile or your notes about this machine (`"host_notes"`) from the
+  Changes resources, the hold time, the proxy port, the image name, your
+  layer of the image (`"image_layer"`, the one it replaced kept as a
+  version) or your notes about this machine (`"host_notes"`) from the
   settings forms.
   """
   @spec update_settings(username(), map()) ::
           {:ok, Settings.t()} | {:error, %{atom() => String.t()}}
   def update_settings(username, attrs), do: Server.call(username, {:update_settings, attrs})
+
+  @doc "The versions kept of your layer of the image, the newest first."
+  @spec layer_versions(username()) :: [MWTClient.Versions.Version.t()]
+  def layer_versions(username), do: MWTClient.Sandbox.LayerVersions.list(username)
+
+  @doc """
+  Makes the version numbered `number` your layer again, keeping the one it
+  replaces as a version too.
+  """
+  @spec restore_layer(username(), integer()) :: {:ok, Settings.t()} | {:error, :not_found}
+  def restore_layer(username, number), do: Server.call(username, {:restore_layer, number})
 
   @doc """
   Shares a folder, if `MWTClient.Sandbox.Shares` allows it: its git

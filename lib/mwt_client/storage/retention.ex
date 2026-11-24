@@ -70,6 +70,13 @@ defmodule MWTClient.Storage.Retention do
       default: @versions_default
     },
     %{
+      key: "image_layer_versions",
+      label: "Image layer versions",
+      about: "What your layer of the VM's image held before each save, to restore.",
+      fields: @versions,
+      default: @versions_default
+    },
+    %{
       key: "http_history",
       label: "HTTP history",
       about: "Requests sent from the HTTP client, with their responses. Samples never sent stay.",

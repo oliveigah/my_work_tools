@@ -51,7 +51,7 @@ defmodule MWTClient.Sandbox.JavaTrustTest do
   end
 
   test "the image points every JVM at it, with the options MWT means" do
-    layer = File.read!(Path.join(:code.priv_dir(:mwt_client), "sandbox/mwt-layer.Containerfile"))
+    layer = MWTClient.Sandbox.Image.final_layer()
     assert layer =~ ~s(JAVA_TOOL_OPTIONS="#{JavaTrust.options()}")
     assert JavaTrust.options() =~ "-Djavax.net.ssl.trustStore=/mnt/mwt/java-truststore.jks"
   end

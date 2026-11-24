@@ -87,6 +87,7 @@ defmodule MWTClient.Sandbox.Server do
     HostInfo,
     HostRun,
     Image,
+    LayerVersions,
     Memory,
     Msb,
     NestedVirt,
@@ -191,10 +192,15 @@ defmodule MWTClient.Sandbox.Server do
     # made since takes what is there at its first start.
     folders = dir |> Disks.paths() |> Map.put(:optmem, Path.join(dir, "optmem"))
 
+    saved_settings = Map.from_struct(saved[:settings] || default_settings())
+
+    # A recipe from before MWT kept the base, a whole Containerfile, is kept
+    # as a version of your layer, which starts from MWT's default.
     settings =
-      struct(Settings, Map.from_struct(saved[:settings] || default_settings()))
-      |> Map.update!(:containerfile, &(&1 || Image.default_containerfile()))
+      struct(Settings, saved_settings)
+      |> Map.update!(:image_layer, &(&1 || Image.default_layer()))
       |> Map.update!(:shares, fn shares -> Enum.map(shares, &Share.upgrade/1) end)
+      |> then(&LayerVersions.upgrade(username, &1, saved_settings[:containerfile]))
 
     builds = saved[:builds] || []
     current = saved[:current]
@@ -601,14 +607,22 @@ defmodule MWTClient.Sandbox.Server do
 
   defp answer(:ca_pem, _from, state), do: {:reply, State.ca_pem(state), state}
 
-  defp answer(:build_image, _from, %{image: %{building?: true}} = state),
+  defp answer({:build_image, _opts}, _from, %{image: %{building?: true}} = state),
     do: {:reply, {:error, :busy}, state}
 
-  defp answer(:build_image, _from, state) do
+  defp answer({:build_image, opts}, _from, state) do
     cond do
-      not Image.podman?() -> {:reply, {:error, :no_podman}, state}
-      is_nil(Msb.executable()) -> {:reply, {:error, :no_msb}, state}
-      true -> {:reply, :ok, Machine.start_build(state)}
+      not Image.podman?() ->
+        {:reply, {:error, :no_podman}, state}
+
+      is_nil(Msb.executable()) ->
+        {:reply, {:error, :no_msb}, state}
+
+      problem = Image.layer_problem(state.settings.image_layer) ->
+        {:reply, {:error, {:layer, problem}}, state}
+
+      true ->
+        {:reply, :ok, Machine.start_build(state, opts)}
     end
   end
 
@@ -712,6 +726,36 @@ defmodule MWTClient.Sandbox.Server do
           |> State.changed()
 
         {:reply, :ok, if(State.external?(), do: Machine.check(state), else: state)}
+    end
+  end
+
+  # The current build and the VM's stay: the next build replaces the one,
+  # recreating the VM frees the other.
+  defp answer({:delete_build, ref}, _from, state) do
+    cond do
+      state.image.building? ->
+        {:reply, {:error, :busy}, state}
+
+      not Enum.any?(state.builds, &(&1.ref == ref)) ->
+        {:reply, {:error, :not_found}, state}
+
+      ref == state.image.tag ->
+        {:reply, {:error, :current}, state}
+
+      ref == state.created_ref ->
+        {:reply, {:error, :in_use}, state}
+
+      true ->
+        username = state.username
+
+        state =
+          state
+          |> State.change(:builds, fn state -> Enum.reject(state.builds, &(&1.ref == ref)) end)
+          |> State.log(%{outcome: :vm, summary: "Image #{ref} deleted"})
+          |> State.task(:delete_builds, fn -> Image.delete(username, ref) end)
+          |> State.changed()
+
+        {:reply, :ok, state}
     end
   end
 
@@ -1308,6 +1352,8 @@ defmodule MWTClient.Sandbox.Server do
   defp answer({:update_settings, attrs}, _from, state) do
     case Settings.cast(state.settings, attrs, Resources.most(Resources.host())) do
       {:ok, settings} ->
+        settings = LayerVersions.change(state.username, state.settings, settings, :you, :edit)
+
         # The inbox, the host's description in it, follows: your notes,
         # and the guides the agents' instructions carry.
         state =
@@ -1320,6 +1366,19 @@ defmodule MWTClient.Sandbox.Server do
 
       {:error, errors} ->
         {:reply, {:error, errors}, state}
+    end
+  end
+
+  defp answer({:restore_layer, number}, _from, state) do
+    case LayerVersions.fetch(state.username, number) do
+      {:ok, version} ->
+        restored = %{state.settings | image_layer: LayerVersions.text(version)}
+        settings = LayerVersions.change(state.username, state.settings, restored, :you, :restore)
+        state = state |> State.change(:settings, fn _ -> settings end) |> State.changed()
+        {:reply, {:ok, settings}, state}
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
     end
   end
 

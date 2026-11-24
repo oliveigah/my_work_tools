@@ -44,8 +44,8 @@ defmodule MWTClient.Storage.Janitor do
   @doc "The kinds a sweep applies: every kind but the VM's."
   @spec kinds() :: [String.t()]
   def kinds,
-    do: ~w(note_versions diagram_versions flashcard_versions http_history http_bodies
-           agent_activity backups legacy)
+    do: ~w(note_versions diagram_versions flashcard_versions image_layer_versions http_history
+           http_bodies agent_activity backups legacy)
 
   @impl true
   def init(username) do
@@ -100,6 +100,9 @@ defmodule MWTClient.Storage.Janitor do
 
   defp apply_rule(username, "flashcard_versions", rule, now),
     do: Versions.thin(username, "flashcards", rule, now)
+
+  defp apply_rule(username, "image_layer_versions", rule, now),
+    do: Versions.thin(username, "image_layers", rule, now)
 
   defp apply_rule(username, "http_history", rule, now), do: Resources.trim(username, rule, now)
 

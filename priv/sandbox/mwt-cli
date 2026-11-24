@@ -197,8 +197,9 @@ mwt - ask MWT, the user's control panel, for access
       here in the VM. --dir defaults to the current directory; outside a
       shared folder it runs in the user's home folder. --timeout is in
       seconds (1 to 3600). After --, one argument is a shell line as it is
-      and several are quoted and joined; with none the script is read from
-      stdin (16 KiB max).
+      and several are quoted and joined, so ~, $VAR and globs expand here,
+      never there (a word in this VM's home is refused); with none the
+      script is read from stdin (16 KiB max).
 
   mwt wait ID [--wait 60]
       Keep waiting for the answer to an earlier ask or run, or a change to
@@ -1142,6 +1143,21 @@ case $command in
     if [ ${#words[@]} -eq 1 ]; then
       script=${words[0]}
     elif [ ${#words[@]} -gt 1 ]; then
+      # Several words were expanded by the shell here, ~ and $HOME into this
+      # VM's home, which the user's machine doesn't have; quoted, they reach
+      # its shell as they are, so nothing expands there. One argument, or
+      # stdin, is sent as written: a path there that names /root on purpose
+      # (over ssh, say) goes that way.
+      if [ -n "${HOME:-}" ] && [ "$HOME" != / ]; then
+        for word in "${words[@]}"; do
+          case $word in
+            "$HOME" | "$HOME"/* | *="$HOME" | *="$HOME"/*)
+              echo "mwt: $word is in this VM's home ($HOME), which the user's machine doesn't have: the shell here expanded ~ or \$HOME before mwt saw it. Send the command as one argument in single quotes, so their shell expands it there: -- '~/bin/tool --help'." >&2
+              exit 122
+              ;;
+          esac
+        done
+      fi
       script=$(printf '%q ' "${words[@]}")
       script=${script% }
     elif [ -t 0 ] || ! read -r -t 0; then

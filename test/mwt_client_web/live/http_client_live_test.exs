@@ -504,7 +504,9 @@ defmodule MWTClientWeb.HttpClientLiveTest do
     assert picked(view) == [to_string(health_id)]
     assert view |> element("#history-menu-tag") |> render() =~ "Tag 1 request"
 
+    # Opened as a task, as a click on the row opens it: waited for.
     view |> element("#history-menu-open") |> render_click()
+    render_async(view)
     refute has_element?(view, "#history-menu")
     assert first_attribute(view, "#request-description-input", "value") == "Health check"
   end

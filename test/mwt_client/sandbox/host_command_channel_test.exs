@@ -98,6 +98,28 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
     assert {"x\n\n\n", 0} = Task.await(asking, 10_000)
   end
 
+  test "a word the shell here expanded into the VM's home is refused before any card",
+       context do
+    home = System.user_home!()
+
+    for word <- [home, home <> "/.local/bin/tool", "--config=" <> home <> "/x"] do
+      {output, 122} = mwt(context, ["run", "--reason", "r", "--", word, "--help"])
+      assert output =~ "#{word} is in this VM's home"
+      assert output =~ "one argument in single quotes"
+    end
+
+    assert Sandbox.snapshot(context.username).waiting == []
+
+    # One argument is sent as written: a path there may name it on purpose.
+    asking =
+      Task.async(fn ->
+        mwt(context, ["run", "--reason", "r", "--wait", "0", "--", "ls #{home}/x"])
+      end)
+
+    assert command(context.username).script == "ls #{home}/x"
+    assert {_output, 120} = Task.await(asking, 10_000)
+  end
+
   test "outside a share it runs in the home folder", context do
     asking =
       Task.async(fn ->

@@ -102,7 +102,8 @@ defmodule MWTClient.Sandbox.ServerTest do
     assert Enum.map(mwt_tools, &MWTClient.Sandbox.Grant.auto_approved?/1) ==
              [true, true, false, true, true, true, true, true]
 
-    assert snapshot.settings.containerfile =~ "FROM "
+    assert snapshot.settings.image_layer == MWTClient.Sandbox.Image.default_layer()
+    refute MWTClient.Sandbox.Image.whole_containerfile?(snapshot.settings.image_layer)
     assert snapshot.settings.image_name == "mwt_agent_sdb_image"
     assert snapshot.image.tag == nil
     assert snapshot.builds == []
@@ -115,10 +116,10 @@ defmodule MWTClient.Sandbox.ServerTest do
     pid = GenServer.whereis(Store.via(Server, username))
     Phoenix.PubSub.subscribe(MWTClient.PubSub, Server.State.topic(username))
 
-    # A Containerfile podman refuses at once, or no podman at all: either
-    # way the build prints its first line and fails fast.
+    # A layer podman refuses at once, or no podman at all: either way the
+    # build prints its first line and fails fast.
     :sys.replace_state(pid, fn state ->
-      state = put_in(state.settings.containerfile, "NOT A CONTAINERFILE\n")
+      state = put_in(state.settings.image_layer, "NOT AN INSTRUCTION\n")
       Server.Machine.start_build(state)
     end)
 
@@ -128,6 +129,37 @@ defmodule MWTClient.Sandbox.ServerTest do
     image = built(username)
     assert image.error =~ "The build failed"
     assert :sys.get_state(pid).build == nil
+  end
+
+  test "a build is deleted unless it is current or the VM's", %{username: username} do
+    pid = GenServer.whereis(Store.via(Server, username))
+
+    builds =
+      for n <- 1..3 do
+        %MWTClient.Sandbox.Build{
+          ref: "box:2026-11-24.#{n}",
+          name: "box",
+          tag: "2026-11-24.#{n}",
+          built_at: DateTime.add(~U[2026-11-24 12:00:00Z], n, :minute)
+        }
+      end
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | builds: builds,
+          created_ref: "box:2026-11-24.1",
+          image: %{state.image | tag: "box:2026-11-24.3"}
+      }
+    end)
+
+    assert {:error, :current} = Sandbox.delete_build(username, "box:2026-11-24.3")
+    assert {:error, :in_use} = Sandbox.delete_build(username, "box:2026-11-24.1")
+    assert {:error, :not_found} = Sandbox.delete_build(username, "box:gone")
+    assert :ok = Sandbox.delete_build(username, "box:2026-11-24.2")
+
+    assert Enum.map(Sandbox.snapshot(username).builds, & &1.ref) ==
+             ["box:2026-11-24.1", "box:2026-11-24.3"]
   end
 
   # The image once its build ended, each change heard as it comes.

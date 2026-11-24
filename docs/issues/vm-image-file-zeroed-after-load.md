@@ -2,7 +2,7 @@
 
 - Found: 2026-11-23, MWT 0.3.0, microsandbox 0.7.15 (MWT's pinned build)
 - Kind: bug
-- Status: open; seen once, gone after a rebuild; cause unknown
+- Status: cause unknown; since 2026-11-24 MWT notices it (below)
 
 ## What happened
 
@@ -54,3 +54,17 @@ nowhere.
 - MWT has no way to delete a build, or to build without podman's cache.
 - microsandbox won't remove an image that a stopped VM references: the VM's
   record had to go first.
+
+## What was done (2026-11-24)
+
+- MWT's final layer lists the checksum of every file of the image
+  (`/etc/mwt/image.sha256`). After a VM's first start, MWT mounts its image
+  disk read-only in the VM, apart from its root, and checks every file
+  (`MWTClient.Sandbox.ImageCheck`): 7 s warm, about 17 s cold, for this
+  4.8 GB image of 80,000 files. Damage shows on the Overview, naming the
+  files.
+- **Rebuild without cache** (`podman build --no-cache --pull=always`) and
+  **Delete** on each kept build but the current one and the VM's.
+
+If it happens again, the check names the files; the step above, counting
+the all-zero MiB chunks of the layer's `.erofs`, still tells where.

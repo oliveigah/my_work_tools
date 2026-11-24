@@ -1,6 +1,9 @@
-# The VM's userspace. Edit freely: MWT appends a small layer after the last
-# line that points the VM at /mnt/mwt (its CA bundle, git's credential helper,
-# the placeholders) and at /cache.
+# Your layer: the VM's tools. Edit it freely; MWT keeps the rest. It comes
+# after MWT's base (Ubuntu 26.04 with what MWT itself runs in the VM: bash,
+# git, socat, python3, CA certificates, bubblewrap) and before MWT's final
+# layer, which points the VM at /mnt/mwt (its CA bundle, git's credential
+# helper, the placeholders) and at /cache, and checks that what MWT needs is
+# still there. So no FROM: the base is MWT's.
 #
 # The build runs with podman on this machine, in a container, with an empty
 # context: no host file reaches the image. Downloads are checked against
@@ -10,27 +13,24 @@
 # in /etc/mise/config.toml. Versions installed later in the VM go to
 # /cache/mise, which survives recreating it. Keep /root empty: the VM's Home
 # is mounted over it.
-FROM docker.io/library/ubuntu:26.04
-
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG MISE_VERSION=2026.11.7
-ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# bubblewrap confines microsandbox when the VM runs VMs of its own (VMs
-# inside the VM, in MWT's settings), as MWT does on your machine. The
-# libraries and fonts after it are what a headless Chromium (Playwright's)
-# needs to load pages and take screenshots, and certutil (libnss3-tools),
-# with which MWT's boot script puts its CA in Chromium's own certificate
-# store; apt installs at runtime are lost on every recreate, so they belong
+# What agents work with. The libraries and fonts are what a headless
+# Chromium (Playwright's) needs to load pages and take screenshots, and
+# certutil (libnss3-tools), with which MWT's boot script puts its CA in
+# Chromium's own certificate store. podman runs containers in the VM, with
+# docker as its alias and nftables for their network: MWT's final layer
+# keeps their storage on /cache, and its boot script has them trust MWT's
+# CA. apt installs at runtime are lost on every recreate, so they belong
 # here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      bash bash-completion ca-certificates curl git openssh-client less procps iproute2 \
-      build-essential pkg-config libssl-dev unzip xz-utils zstd tmux socat lsof \
+      bash-completion curl openssh-client less procps \
+      build-essential pkg-config libssl-dev unzip xz-utils zstd tmux lsof \
       postgresql-client sqlite3 inotify-tools \
-      bubblewrap \
       libnss3 libnss3-tools libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 libdrm2 libgbm1 \
       libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libasound2t64 \
       fonts-liberation \
+      podman podman-docker nftables \
     && rm -rf /var/lib/apt/lists/*
 
 RUN arch="$(uname -m)" \
@@ -113,8 +113,3 @@ RUN MISE_DATA_DIR=/tmp/mwt-runtime mise install --dry-run --dry-run-code \
       done; \
       mix hex.info >/dev/null; java -version; python --version; node --version' \
     && rm -rf /tmp/mwt-runtime /tmp/mise-cache
-
-WORKDIR /root
-USER root
-ENTRYPOINT []
-CMD ["/bin/bash"]

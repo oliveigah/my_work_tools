@@ -244,6 +244,29 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#vm-record", "mwt vm")
   end
 
+  test "the image check's result goes on the VM it is about, and damage shows on the overview",
+       %{conn: conn, username: username} do
+    server = MWTClient.Vault.Store.whereis(Server, username)
+    record = %{id: "3f2a9c1e", created_at: DateTime.utc_now(), image: "img:1"}
+    :sys.replace_state(server, &%{&1 | vm_record: record, vm: %{&1.vm | exists?: true}})
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox")
+    refute has_element?(view, "#vm-image-damaged")
+
+    damaged = {:damaged, ["/usr/local/bin/mise"], 1}
+
+    :sys.replace_state(server, fn state ->
+      # A check of a VM recreated since is about no VM any more.
+      state = Server.Machine.finished(state, {:image_check, "an-older-vm"}, damaged)
+      Server.Machine.finished(state, {:image_check, "3f2a9c1e"}, damaged)
+    end)
+
+    assert %{result: ^damaged} = Sandbox.snapshot(username).vm.record.image_check
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox")
+    assert has_element?(view, "#vm-image-damaged", "/usr/local/bin/mise")
+    assert has_element?(view, "#vm-image-damaged", "Rebuild the image without podman's cache")
+  end
+
   test "setup spells out how to open this VM in Zed", %{conn: conn, username: username} do
     {:ok, overview, _html} = live(conn, ~p"/tools/sandbox")
     refute has_element?(overview, "#connect-zed")
@@ -748,7 +771,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#activity-empty", "Nothing matches")
   end
 
-  test "settings refuse unsafe folders and Containerfiles without a FROM", %{conn: conn} do
+  test "settings refuse unsafe folders, and a layer with a FROM of its own", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
 
     view |> form("#share-form", share: %{path: "~"}) |> render_submit()
@@ -760,14 +783,14 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings?tab=build")
 
-    view |> form("#containerfile-form", image: %{containerfile: "RUN true"}) |> render_submit()
-    assert has_element?(view, "#containerfile-error")
-
     view
-    |> form("#containerfile-form", image: %{containerfile: "FROM debian:bookworm-slim\n"})
+    |> form("#layer-form", layer: %{image_layer: "FROM debian:bookworm-slim\nRUN true\n"})
     |> render_submit()
 
-    assert has_element?(view, "#notices", "Containerfile saved")
+    assert has_element?(view, "#layer-error", "no FROM line")
+
+    view |> form("#layer-form", layer: %{image_layer: "RUN true\n"}) |> render_submit()
+    assert has_element?(view, "#notices", "Your layer is saved")
   end
 
   test "a saved command is added with its script and folder, off, like any grant",
@@ -1742,7 +1765,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#image-name[value='mwt_agent_sdb_image']")
     assert has_element?(view, "#builds-empty")
     assert has_element?(view, "#image-setup-guide")
-    refute has_element?(view, "#containerfile-default-differs")
+    refute has_element?(view, "#layer-default-differs")
 
     view |> form("#image-name-form", image_name: %{name: "Not Valid"}) |> render_submit()
     assert has_element?(view, "#image-name-error")
@@ -1752,22 +1775,62 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#image-name[value='agentbox']")
   end
 
-  test "an older recipe can adopt the current default explicitly", %{
+  test "an older layer can adopt the current default explicitly", %{
     conn: conn,
     username: username
   } do
-    {:ok, _} =
-      Sandbox.update_settings(username, %{"containerfile" => "FROM debian:bookworm-slim\n"})
+    {:ok, _} = Sandbox.update_settings(username, %{"image_layer" => "RUN true\n"})
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings?tab=build")
 
-    assert has_element?(view, "#containerfile-default-differs")
-    view |> element("#containerfile-reset") |> render_click()
-    view |> form("#containerfile-form") |> render_submit()
-    refute has_element?(view, "#containerfile-default-differs")
+    assert has_element?(view, "#layer-default-differs")
+    view |> element("#layer-reset") |> render_click()
+    view |> form("#layer-form") |> render_submit()
+    refute has_element?(view, "#layer-default-differs")
 
-    assert Sandbox.snapshot(username).settings.containerfile ==
-             MWTClient.Sandbox.Image.default_containerfile()
+    assert Sandbox.snapshot(username).settings.image_layer ==
+             MWTClient.Sandbox.Image.default_layer()
+  end
+
+  test "the build page shows what podman builds, your layer between MWT's parts", %{
+    conn: conn,
+    username: username
+  } do
+    {:ok, _} = Sandbox.update_settings(username, %{"image_layer" => "RUN echo mine\n"})
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings?tab=build")
+
+    assert has_element?(view, "#image-full-base", "FROM docker.io/library/ubuntu:26.04")
+    assert has_element?(view, "#image-full-yours", "RUN echo mine")
+    assert has_element?(view, "#image-full-final", "/etc/mwt/image.sha256")
+
+    # What the pane shows is what podman builds, to the byte.
+    text =
+      view |> element("#image-full") |> render() |> LazyHTML.from_fragment() |> LazyHTML.text()
+
+    assert text == MWTClient.Sandbox.Image.full("RUN echo mine\n")
+  end
+
+  test "each save of your layer keeps the one it replaced, to restore", %{
+    conn: conn,
+    username: username
+  } do
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings?tab=build")
+    view |> form("#layer-form", layer: %{image_layer: "RUN echo first\n"}) |> render_submit()
+    view |> form("#layer-form", layer: %{image_layer: "RUN echo second\n"}) |> render_submit()
+
+    view |> element("#layer-versions-button") |> render_click()
+    # Newest first: the first save replaced MWT's default.
+    assert [%{version: 2} = first, %{version: 1}] = Sandbox.layer_versions(username)
+    assert MWTClient.Sandbox.LayerVersions.text(first) == "RUN echo first\n"
+
+    view |> element("#layer-versions-2") |> render_click()
+    assert has_element?(view, "#layer-versions-diff", "RUN echo first")
+    view |> element("#layer-versions-restore") |> render_click()
+
+    assert Sandbox.snapshot(username).settings.image_layer == "RUN echo first\n"
+    assert has_element?(view, "#image-layer", "RUN echo first")
+    # The restore kept what it replaced too.
+    assert [%{how: :restore} | _] = Sandbox.layer_versions(username)
   end
 
   test "creating the VM first asks about Home, Cache and memory", %{

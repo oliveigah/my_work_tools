@@ -5,7 +5,8 @@ defmodule MWTClient.Versions do
 
   Notes, diagrams and flash cards each keep theirs through one of these,
   held in the library's own process, which is the only one changing its
-  items. That process tells it of every change to what a version keeps
+  items; so does your layer of the VM's image
+  (`MWTClient.Sandbox.LayerVersions`), through the sandbox's. That process tells it of every change to what a version keeps
   (`changed/5`), with the item as it was before, and it decides whether to
   keep that as a version:
 
@@ -39,7 +40,7 @@ defmodule MWTClient.Versions do
   alias MWTClient.Versions.Version
 
   @quiet_ms 10 * 60 * 1000
-  @kinds ~w(notes diagrams flashcards)
+  @kinds ~w(notes diagrams flashcards image_layers)
   @day_us 86_400_000_000
 
   @enforce_keys [:username, :kind]
@@ -47,11 +48,13 @@ defmodule MWTClient.Versions do
 
   @typedoc """
   Who made a change: you, in MWT; an agent on this machine, through
-  `/mcp`; or an agent in the VM, with what it claimed about itself
-  (`agent`, `thread`). Claims label a version; they prove nothing.
+  `/mcp`; an agent in the VM, with what it claimed about itself
+  (`agent`, `thread`), as claims label a version and prove nothing; or MWT
+  itself, when an update moved what you had (`:mwt`).
   """
   @type by ::
           :you
+          | :mwt
           | {:agent, :local}
           | {:agent, :vm, %{agent: String.t() | nil, thread: String.t() | nil}}
 
@@ -64,7 +67,10 @@ defmodule MWTClient.Versions do
           recent: %{String.t() => %{by: by(), kept: integer() | nil}}
         }
 
-  @doc "The versions of one identity's `kind`: `\"notes\"`, `\"diagrams\"` or `\"flashcards\"`."
+  @doc """
+  The versions of one identity's `kind`: `\"notes\"`, `\"diagrams\"`,
+  `\"flashcards\"` or `\"image_layers\"`.
+  """
   @spec open(String.t(), String.t()) :: t()
   def open(username, kind) when kind in @kinds, do: %__MODULE__{username: username, kind: kind}
 
@@ -140,6 +146,7 @@ defmodule MWTClient.Versions do
   def rule_key("notes"), do: "note_versions"
   def rule_key("diagrams"), do: "diagram_versions"
   def rule_key("flashcards"), do: "flashcard_versions"
+  def rule_key("image_layers"), do: "image_layer_versions"
 
   @doc """
   Thins the versions of `kind` (`\"notes\"`) of `username` by `rule`
@@ -378,6 +385,7 @@ defmodule MWTClient.Versions do
   @doc "Who made a change, in words, starting with a capital."
   @spec who(by()) :: String.t()
   def who(:you), do: "You"
+  def who(:mwt), do: "MWT"
   def who({:agent, :local}), do: "An agent on this machine"
   def who({:agent, :vm, %{agent: agent}}) when is_binary(agent), do: "#{agent} in the VM"
   def who({:agent, :vm, _claims}), do: "An agent in the VM"

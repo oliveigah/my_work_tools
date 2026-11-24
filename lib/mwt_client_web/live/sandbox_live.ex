@@ -24,6 +24,7 @@ defmodule MWTClientWeb.SandboxLive do
     Event,
     Grant,
     HandoffRecords,
+    Image,
     Handoffs,
     Instructions,
     Leftovers,
@@ -148,7 +149,9 @@ defmodule MWTClientWeb.SandboxLive do
      |> stream(:events, [])
      |> refresh()
      |> assign_vm_form()
-     |> assign_containerfile_form()
+     |> assign_layer_form()
+     |> assign(layer_versions: [], layer_versions_open: false, layer_version: nil)
+     |> assign(:image_pane, nil)
      |> assign_name_form()
      |> assign_host_form()
      |> assign_way_form()
@@ -397,8 +400,12 @@ defmodule MWTClientWeb.SandboxLive do
                   name_error={@name_error}
                   tools={@tools}
                   settings={@settings}
-                  containerfile_form={@containerfile_form}
-                  containerfile_error={@containerfile_error}
+                  layer_form={@layer_form}
+                  layer_error={@layer_error}
+                  layer_versions={@layer_versions}
+                  layer_versions_open={@layer_versions_open}
+                  layer_version={@layer_version}
+                  image_pane={@image_pane}
                   vm_form={@vm_form}
                   vm_errors={@vm_errors}
                   resources={@resources}
@@ -2386,11 +2393,14 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
-  def handle_event("build_image", _params, socket) do
+  def handle_event("build_image", params, socket) do
     socket =
-      case Sandbox.build_image(socket.assigns.username) do
+      case Sandbox.build_image(socket.assigns.username, cache: params["cache"] != "false") do
         :ok ->
-          socket
+          assign(socket, :image_pane, :log)
+
+        {:error, {:layer, problem}} ->
+          put_notice(socket, :error, "Your layer can't be built", body: problem)
 
         {:error, :busy} ->
           put_notice(socket, :info, "A build is already running")
@@ -2410,34 +2420,87 @@ defmodule MWTClientWeb.SandboxLive do
     {:noreply, refresh(socket)}
   end
 
-  def handle_event("save_containerfile", %{"image" => %{"containerfile" => text}}, socket) do
-    case Sandbox.update_settings(socket.assigns.username, %{"containerfile" => text}) do
+  def handle_event("save_layer", %{"layer" => %{"image_layer" => text}}, socket) do
+    case Sandbox.update_settings(socket.assigns.username, %{"image_layer" => text}) do
       {:ok, _settings} ->
         {:noreply,
          socket
-         |> assign(:containerfile_error, nil)
          |> refresh()
-         |> assign_containerfile_form()
-         |> put_notice(:success, "Containerfile saved", body: "Build the image to use it.")}
+         |> assign_layer_form()
+         |> put_notice(:success, "Your layer is saved", body: "Build the image to use it.")}
 
       {:error, errors} ->
         {:noreply,
          assign(socket,
-           containerfile_form: to_form(%{"containerfile" => text}, as: :image),
-           containerfile_error: errors[:containerfile]
+           layer_form: to_form(%{"image_layer" => text}, as: :layer),
+           layer_error: errors[:image_layer]
          )}
     end
   end
 
-  def handle_event("reset_containerfile", _params, socket) do
+  def handle_event("reset_layer", _params, socket) do
     {:noreply,
      assign(socket,
-       containerfile_form:
-         to_form(%{"containerfile" => MWTClient.Sandbox.Image.default_containerfile()},
-           as: :image
-         ),
-       containerfile_error: nil
+       layer_form: to_form(%{"image_layer" => Image.default_layer()}, as: :layer),
+       layer_error: nil
      )}
+  end
+
+  # The versions of your layer, on the build page: the panel takes the
+  # place of what podman builds and the build log while it is open.
+  def handle_event("show_versions", _params, socket) do
+    {:noreply,
+     assign(socket,
+       layer_versions: Sandbox.layer_versions(socket.assigns.username),
+       layer_versions_open: true,
+       layer_version: nil
+     )}
+  end
+
+  def handle_event("hide_versions", _params, socket) do
+    {:noreply, assign(socket, layer_versions_open: false, layer_version: nil)}
+  end
+
+  def handle_event("select_version", %{"version" => number}, socket) do
+    {:noreply, assign(socket, :layer_version, String.to_integer(number))}
+  end
+
+  def handle_event("restore_version", %{"version" => number}, socket) do
+    username = socket.assigns.username
+
+    case Sandbox.restore_layer(username, String.to_integer(number)) do
+      {:ok, _settings} ->
+        {:noreply,
+         socket
+         |> refresh()
+         |> assign_layer_form()
+         |> assign(layer_versions: Sandbox.layer_versions(username), layer_version: nil)
+         |> put_notice(:success, "Version restored", body: "Build the image to use it.")}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> assign(layer_versions: Sandbox.layer_versions(username), layer_version: nil)
+         |> put_notice(:warning, "That version is gone")}
+    end
+  end
+
+  def handle_event("image_pane", %{"pane" => pane}, socket) when pane in ~w(full log) do
+    {:noreply,
+     assign(socket, image_pane: String.to_existing_atom(pane), layer_versions_open: false)}
+  end
+
+  def handle_event("delete_build", %{"ref" => ref}, socket) do
+    socket =
+      case Sandbox.delete_build(socket.assigns.username, ref) do
+        :ok -> put_notice(socket, :success, "#{ref} deleted")
+        {:error, :busy} -> put_notice(socket, :info, "Wait for the build to finish")
+        {:error, :not_found} -> put_notice(socket, :warning, "That build is gone")
+        {:error, :current} -> put_notice(socket, :warning, "The current build stays")
+        {:error, :in_use} -> put_notice(socket, :warning, "The VM runs that build")
+      end
+
+    {:noreply, refresh(socket)}
   end
 
   def handle_event("set_value", %{"value" => %{"value" => value}}, socket) do
@@ -2919,6 +2982,13 @@ defmodule MWTClientWeb.SandboxLive do
           if(grant, do: Sandbox.events(username, %{grant: grant.id, limit: 10}), else: [])
         )
 
+      # Your layer's versions: the page says when MWT moved your recipe
+      # into them, and lists them when you open them.
+      :settings ->
+        if socket.assigns.settings_tab == "build",
+          do: assign(socket, :layer_versions, Sandbox.layer_versions(username)),
+          else: socket
+
       _other ->
         socket
     end
@@ -3075,13 +3145,13 @@ defmodule MWTClientWeb.SandboxLive do
     )
   end
 
-  defp assign_containerfile_form(socket) do
+  defp assign_layer_form(socket) do
     socket
     |> assign(
-      :containerfile_form,
-      to_form(%{"containerfile" => socket.assigns.settings.containerfile}, as: :image)
+      :layer_form,
+      to_form(%{"image_layer" => socket.assigns.settings.image_layer}, as: :layer)
     )
-    |> assign(:containerfile_error, nil)
+    |> assign(:layer_error, nil)
   end
 
   defp page_title(socket) do

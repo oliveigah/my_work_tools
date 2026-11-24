@@ -7,7 +7,7 @@ evidence, and a fix or a workaround when one is known.
 
 | Issue | Kind | Status |
 | --- | --- | --- |
-| [A file in the VM image reads as zeros after loading](vm-image-file-zeroed-after-load.md) | bug | open, seen once, cause unknown |
+| [A file in the VM image reads as zeros after loading](vm-image-file-zeroed-after-load.md) | bug | cause unknown; MWT notices it since 2026-11-24 |
 | [Workspace copy-back fails on every file](workspace-copy-back-fails.md) | bug | open |
 | [The Home and Cache disks started empty after an update](home-and-cache-disks-emptied.md) | bug | to confirm |
 | [A preset's icon shows as an empty box](preset-icon-missing-from-css.md) | bug | open |
@@ -19,4 +19,4 @@ evidence, and a fix or a workaround when one is known.
 | [A login file names no project](login-file-without-project.md) | improvement | partly resolved (2026-11-24) |
 | [No preset for a GitHub App installation token](github-app-preset.md) | improvement | resolved (2026-11-24) |
 | ["Only that command gets it" reads as secrecy](placeholder-files-readable.md) | documentation | resolved (2026-11-24) |
-| [`mwt run` arguments are expanded in the VM first](run-arguments-expand-in-vm.md) | documentation | open |
+| [`mwt run` arguments are expanded in the VM first](run-arguments-expand-in-vm.md) | documentation | fixed 2026-11-24 |

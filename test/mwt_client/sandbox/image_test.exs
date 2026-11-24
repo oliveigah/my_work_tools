@@ -43,12 +43,36 @@ defmodule MWTClient.Sandbox.ImageTest do
     refute Image.valid_name?("")
   end
 
-  test "MWT's layer only points at /mnt/mwt and /cache" do
-    layer = Image.mwt_layer()
+  test "MWT's final layer only points at /mnt/mwt and /cache" do
+    layer = Image.final_layer()
     assert layer =~ "/mnt/mwt/ca-bundle.pem"
     assert layer =~ "BASH_ENV=/mnt/mwt/profile.sh"
     assert layer =~ "MISE_DATA_DIR=/cache/mise"
     refute layer =~ "COPY"
+  end
+
+  test "podman builds MWT's base, your layer and MWT's final layer, one FROM in all" do
+    full = Image.full("RUN echo mine")
+
+    assert [{:base, base}, {:yours, yours}, {:final, final}] = Image.parts("RUN echo mine")
+    assert full == Enum.join([base, yours, final], "\n\n") <> "\n"
+    assert [_one] = Regex.scan(~r/^FROM /m, full)
+    assert base =~ "FROM docker.io/library/ubuntu:26.04"
+    assert yours =~ ~r/\A# ---- Your layer.*\nRUN echo mine\z/
+    # The final layer runs as root, checks MWT's needs before anything else,
+    # and lists the checksums last, once every file is in place.
+    assert final =~ "\nUSER root\n"
+    assert final =~ "your layer removed or replaced them"
+    assert final |> String.split("RUN ") |> List.last() =~ "/etc/mwt/image.sha256"
+    assert final =~ ~s(graphroot = "/cache/containers/storage")
+  end
+
+  test "the default layer has no FROM, and keeps what MWT's base installs to the base" do
+    layer = Image.default_layer()
+    assert Image.layer_problem(layer) == nil
+    refute Image.whole_containerfile?(layer)
+    assert layer =~ "podman podman-docker nftables"
+    assert Image.layer_problem("FROM ubuntu:26.04\nRUN true") =~ "no FROM line"
   end
 
   test "the build reads what podman left without running the image" do
@@ -62,15 +86,19 @@ defmodule MWTClient.Sandbox.ImageTest do
       Image.read_build(dir, %{
         name: "box",
         tag: "2026-11-12.1",
-        containerfile: "FROM x",
+        layer: "RUN x",
+        containerfile: Image.full("RUN x"),
         built_at: ~U[2026-11-12 12:00:00Z]
       })
 
     assert build.ref == "box:2026-11-12.1"
+    assert build.layer == "RUN x"
+    assert build.containerfile =~ "FROM docker.io/library/ubuntu"
     assert build.versions =~ "erlang"
     assert build.size == 4_510_000_000
     script = Image.build_script(dir, build.ref)
-    assert script =~ "--format docker"
+    assert script =~ "--format docker --pull=newer --tag"
+    assert Image.build_script(dir, build.ref, cache: false) =~ "--pull=always --no-cache --tag"
     # Loaded by the confined msb, let read the archive and nothing else.
     assert script =~ ~s(MWT_MSB_READ='#{dir}/image.tar' "$MWT_MSB" load --input)
   end

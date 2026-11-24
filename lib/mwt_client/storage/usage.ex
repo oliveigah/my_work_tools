@@ -135,6 +135,7 @@ defmodule MWTClient.Storage.Usage do
       "note_versions" => version_kind.("notes"),
       "diagram_versions" => version_kind.("diagrams"),
       "flashcard_versions" => version_kind.("flashcards"),
+      "image_layer_versions" => version_kind.("image_layers"),
       "http_history" =>
         counted(username, :journal, "http_requests", "completed_at", journal,
           group: "http",

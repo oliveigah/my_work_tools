@@ -20,11 +20,13 @@ defmodule MWTClient.Sandbox.Server.Machine do
     Grant,
     Guest,
     Image,
+    ImageCheck,
     Inbox,
     Memory,
     MemoryControl,
     Msb,
     NestedVirt,
+    Projects,
     VM
   }
 
@@ -427,12 +429,37 @@ defmodule MWTClient.Sandbox.Server.Machine do
       ]
       |> Enum.filter(&is_binary/1)
 
-    state = Copying.answer_waiters(state)
+    state = state |> Copying.answer_waiters() |> check_image()
 
     if errors == [],
       do: state,
       else: State.change(state, :vm, &%{&1.vm | error: Enum.join(errors, " ")})
   end
+
+  # Each VM's image is checked once, after its first start
+  # (`MWTClient.Sandbox.ImageCheck`), in a task of its own: the VM is in use
+  # meanwhile. A check MWT stopped halfway runs at the next start.
+  defp check_image(state) do
+    record = State.vm_record(state)
+    checking? = Enum.any?(Map.values(state.tasks), &match?({:image_check, _id}, &1))
+
+    with %{id: id} <- record,
+         nil <- Map.get(record, :image_check),
+         false <- checking?,
+         {:ok, guest} <- Projects.guest(state.username, state.vm) do
+      State.task(state, {:image_check, id}, fn -> ImageCheck.run(guest) end)
+    else
+      _other -> state
+    end
+  end
+
+  defp image_check_summary(:intact), do: "The VM's image checked: every file as built"
+
+  defp image_check_summary({:damaged, _files, count}),
+    do:
+      "The VM's image is damaged: #{if count == 0, do: "its checksum list", else: "#{count} files"}"
+
+  defp image_check_summary(_unchecked), do: "The VM's image wasn't checked"
 
   # Every boot syncs every share, comparing each copy whole.
   defp reset_sync(state), do: ShareSync.reset(state)
@@ -836,6 +863,31 @@ defmodule MWTClient.Sandbox.Server.Machine do
 
   def finished(state, :delete_builds, _result), do: state
 
+  # Kept on the VM it is about; a VM recreated meanwhile is checked anew.
+  def finished(state, {:image_check, id}, result) do
+    result = with {:error, why} <- result, do: {:failed, why}
+
+    case State.vm_record(state) do
+      %{id: ^id} = record ->
+        state
+        |> Map.put(:vm_record, Map.put(record, :image_check, %{result: result, at: State.now()}))
+        |> State.log(%{
+          outcome: :vm,
+          summary: image_check_summary(result),
+          details: [
+            EventDetails.section("The image check", [
+              {"Image", Map.get(record, :image)},
+              {"Found", ImageCheck.explain(result)}
+            ])
+          ]
+        })
+        |> State.changed()
+
+      _other ->
+        state
+    end
+  end
+
   # How the grant `key` names makes its value now, nil once it is gone.
   defp how_made_now(state, key) do
     id = with {id, _host} <- key, do: id
@@ -941,20 +993,25 @@ defmodule MWTClient.Sandbox.Server.Machine do
   def build_dir(state), do: Path.join(state.dir, "build")
 
   @doc """
-  Starts building the image, in a task that sends podman's output line by line.
+  Starts building the image, in a task that sends podman's output line by
+  line: MWT's base, your layer and MWT's final layer (`Image.full/1`).
+  `cache: false` builds every step again (`Image.build_script/3`).
   """
-  def start_build(state) do
+  def start_build(state, opts \\ []) do
     dir = build_dir(state)
     name = state.settings.image_name
     today = NaiveDateTime.local_now() |> NaiveDateTime.to_date()
     tag = Image.next_tag(name, today, state.builds)
     ref = "#{name}:#{tag}"
-    Image.write_context(dir, state.settings.containerfile)
+    layer = state.settings.image_layer
+    full = Image.full(layer)
+    Image.write_context(dir, full)
 
     building = %{
       name: name,
       tag: tag,
-      containerfile: state.settings.containerfile,
+      layer: layer,
+      containerfile: full,
       built_at: State.now()
     }
 
@@ -967,7 +1024,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
         :exit_status,
         :stderr_to_stdout,
         {:line, 2_000},
-        args: ["-c", Image.build_script(dir, ref)],
+        args: ["-c", Image.build_script(dir, ref, opts)],
         env:
           Enum.map(Msb.env(state.username), fn {k, v} ->
             {String.to_charlist(k), String.to_charlist(v)}
@@ -981,11 +1038,13 @@ defmodule MWTClient.Sandbox.Server.Machine do
     )
     |> State.log(%{
       outcome: :vm,
-      summary: "Building image #{ref}",
+      summary:
+        "Building image #{ref}" <>
+          if(Keyword.get(opts, :cache, true), do: "", else: ", without podman's cache"),
       details: [
         EventDetails.section("The build", [
           {"Image", ref},
-          {"Containerfile", {:code, state.settings.containerfile || "MWT's own"}}
+          {"Your layer", {:code, layer}}
         ])
       ]
     })
