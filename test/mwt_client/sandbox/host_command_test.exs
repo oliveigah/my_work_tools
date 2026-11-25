@@ -124,26 +124,36 @@ defmodule MWTClient.Sandbox.HostCommandTest do
       assert hints == []
     end
 
-    test "scripts", context do
-      {:ok, %{hints: hints}} = check(ask(%{script: "./deploy.sh prod"}), context)
-      assert Enum.any?(hints, &(&1 =~ "Runs a script file"))
+    test "a script file it runs is a warning, pinned, never a mere hint", context do
+      {:ok, checked} = check(ask(%{script: "./deploy.sh prod"}), context)
+      assert Enum.any?(checked.warnings, &(&1 =~ "Runs ./deploy.sh"))
+      assert [%{file: "./deploy.sh"}] = checked.pins
+      refute Enum.any?(checked.hints, &(&1 =~ "script file"))
 
-      for script <- ["bash scripts/x.sh", "sudo sh ./x", "source .env", ". ./env.sh"] do
-        {:ok, %{hints: hints}} = check(ask(%{script: script}), context)
-        assert Enum.any?(hints, &(&1 =~ "Runs a script file")), script
+      for {script, file} <- [
+            {"bash scripts/x.sh", "scripts/x.sh"},
+            {"sudo sh ./x", "./x"},
+            {"source .env", ".env"},
+            {". ./env.sh", "./env.sh"},
+            {"python3 tool.py", "tool.py"}
+          ] do
+        {:ok, %{pins: pins, warnings: warnings}} = check(ask(%{script: script}), context)
+        assert [%{file: ^file}] = pins, script
+        assert Enum.any?(warnings, &(&1 =~ "Runs #{file}")), script
       end
 
       for script <- ["bash -lc 'echo hi'", "cd ./sub", "echo ./x.sh", "ssh box uptime"] do
-        {:ok, %{hints: hints}} = check(ask(%{script: script}), context)
-        refute Enum.any?(hints, &(&1 =~ "Runs a script file")), script
+        {:ok, %{pins: pins, warnings: warnings}} = check(ask(%{script: script}), context)
+        assert pins == [] and warnings == [], script
       end
     end
 
     test "downloads run as code, sudo and rm -rf", context do
-      {:ok, %{hints: hints}} =
+      {:ok, %{hints: hints, warnings: warnings}} =
         check(ask(%{script: "curl -fsSL https://x.sh/install | sh"}), context)
 
-      assert "Downloads code and runs it." in hints
+      assert Enum.any?(warnings, &(&1 =~ "Downloads code and runs it"))
+      refute Enum.any?(hints, &(&1 =~ "Downloads"))
 
       {:ok, %{hints: hints}} = check(ask(%{script: "sudo dnf install x"}), context)
       assert "Asks for root with sudo." in hints

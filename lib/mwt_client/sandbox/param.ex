@@ -1,66 +1,64 @@
 defmodule MWTClient.Sandbox.Param do
   @moduledoc """
-  One parameter of an action: what an agent fills in when it calls the
-  action by id (`mwt call ID NAME=value`). See "Grants and actions" in
+  One parameter of a fixed call: what an agent fills in when it calls it
+  by id (`mwt call ID NAME=value`). See "Parameters" in
   `docs/agent_sandbox.md`.
 
-  A parameter has a `name`, in capitals; a `shape`, which says what a value
-  may be; and `about`, a line saying what it is, for you and for agents.
+  A parameter has a `name`, in capitals; `about`, a line saying what it
+  is, for you and for agents; and a `schema`, the JSON Schema its values
+  keep to (`MWTClient.Sandbox.ParamSchema`): the call's parameters are one
+  JSON Schema object, each a property of it.
 
-  | Shape              | A value is                                                    |
-  | ------------------ | ------------------------------------------------------------- |
-  | `:word`            | letters, digits and `_ . - @ : +`, in parts joined by `/`; no part is `.` or `..`, and it starts with none of `/` or `-` |
-  | `:number`          | digits only                                                   |
-  | `{:one_of, list}`  | one of the values you listed                                  |
-  | `:date`            | a date, `YYYY-MM-DD`                                          |
-  | `:time`            | a time, RFC 3339: `2026-11-17T12:00:00Z`, or with an offset   |
-  | `:decimal`         | a number, with a sign and a fraction if it has them: `-12.50` |
-  | `:text`            | anything that shows, not starting with `-`                    |
+  Before its schema, every value meets MWT's own floor, whatever the
+  schema says (`check/2`): given and not blank, nothing in it that doesn't
+  show, at most 4 KiB, never an option (no leading `-`, but for a number)
+  and never up a folder (no part between `/` that is `.` or `..`). Then
+  it is typed by its schema's `type` and checked against the schema.
 
+  `NAME: shape: what it is`, a line each, is a shorthand for a schema,
+  which agents use in `--param` (`parse/1`): `word` (MWT's `word`
+  format), `number` (an integer, 0 or more), `decimal` (a number), `date`,
+  `time` (`date-time`), `text` (a string), or `a|b|c` (one of them).
 
-  A command action reads its parameters as environment variables: the
-  script runs exactly as saved, and a value never becomes part of its
-  text. So a name can't be one the environment already gives a meaning to
+  A command reads its parameters as environment variables: the script
+  runs exactly as saved, and a value never becomes part of its text. So a
+  name can't be one the environment already gives a meaning to
   (`reserved?/1`), and every parameter has to appear in the script
   (`unused/2`): a value reaches a tool only where the script shows it go.
 
-  Pure, apart from `reserved?/1` reading MWT's own environment.
+  Pure, apart from `reserved?/1` reading MWT's own environment and
+  `MWTClient.Sandbox.ParamSchema.check/2`'s process.
   """
 
-  alias MWTClient.Sandbox.Shown
+  alias MWTClient.Sandbox.{ParamSchema, Shown}
 
-  @enforce_keys [:name, :shape, :about]
-  defstruct [:name, :shape, :about]
+  @enforce_keys [:name, :about, :schema]
+  defstruct [:name, :about, :schema]
 
-  @type shape ::
-          :word
-          | :number
-          | :date
-          | :time
-          | :decimal
-          | :text
-          | {:one_of, [String.t(), ...]}
-  @type t :: %__MODULE__{name: String.t(), shape: shape(), about: String.t()}
+  @type t :: %__MODULE__{name: String.t(), about: String.t(), schema: ParamSchema.t()}
 
   @typedoc "What is wrong with a call's values, for the agent."
   @type problem ::
           {:missing, t()}
           | {:unknown, String.t()}
-          | {:shape, t()}
           | {:hidden, t(), [String.t()]}
+          | {:floor, t(), String.t()}
+          | {:type, t()}
+          | {:rule, t(), String.t()}
 
   @max_params 8
-  @max_word 200
-  @max_text 4096
+  @max_value 4096
   @max_about 200
 
   @name ~r/\A[A-Z][A-Z0-9_]{0,39}\z/
-  @part ~r/\A[A-Za-z0-9_.@:+-]+\z/
-  @number ~r/\A[0-9]{1,18}\z/
-  @date ~r/\A[0-9]{4}-[0-9]{2}-[0-9]{2}\z/
-  @time ~r/\A[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?([Zz]|[+-][0-9]{2}:[0-9]{2})\z/
-  @decimal ~r/\A-?[0-9]{1,18}(\.[0-9]{1,18})?\z/
-  @shapes ~w(word number date time decimal text)
+  @shapes %{
+    "word" => %{"type" => "string", "format" => "word"},
+    "number" => %{"type" => "integer", "minimum" => 0},
+    "decimal" => %{"type" => "number"},
+    "date" => %{"type" => "string", "format" => "date"},
+    "time" => %{"type" => "string", "format" => "date-time"},
+    "text" => %{"type" => "string"}
+  }
 
   # Names the shell, the loader and git give a meaning to. Others are the
   # machine's to say: a name its environment has is refused too.
@@ -68,20 +66,23 @@ defmodule MWTClient.Sandbox.Param do
     EDITOR VISUAL PAGER TERM TMPDIR TZ LANG USER SHELL PWD OLDPWD)
   @reserved_prefixes ~w(BASH_ LD_ DYLD_ GIT_ SSH_ LC_ MWT_)
 
-  @doc "The most parameters an action takes."
+  @doc "The most parameters a call takes."
   @spec max() :: pos_integer()
   def max, do: @max_params
 
   @doc """
-  Parameters from text, one a line, as you write them in the form and
-  agents in `--param`: `NAME: shape: what it is`. The shape is `word`,
-  `number`, `text`, or values joined by `|`; left empty, a word.
+  Parameters from the shorthand, one a line, as agents write them in
+  `--param`: `NAME: shape: what it is`. The shape is `word`, `number`,
+  `decimal`, `date`, `time`, `text`, or values joined by `|`; left empty,
+  a word. Each becomes the schema the moduledoc says.
 
       iex> MWTClient.Sandbox.Param.parse("REPO: word: owner/name of the repository")
-      {:ok, [%MWTClient.Sandbox.Param{name: "REPO", shape: :word, about: "owner/name of the repository"}]}
+      {:ok, [%MWTClient.Sandbox.Param{name: "REPO", about: "owner/name of the repository",
+        schema: %{"type" => "string", "format" => "word"}}]}
 
       iex> MWTClient.Sandbox.Param.parse("TARGET: staging|production: where it deploys")
-      {:ok, [%MWTClient.Sandbox.Param{name: "TARGET", shape: {:one_of, ["staging", "production"]}, about: "where it deploys"}]}
+      {:ok, [%MWTClient.Sandbox.Param{name: "TARGET", about: "where it deploys",
+        schema: %{"type" => "string", "enum" => ["staging", "production"]}}]}
 
       iex> MWTClient.Sandbox.Param.parse("repo: word: the repository")
       {:error, "repo: a name is in capitals, like REPO_NAME: letters, digits and underscores."}
@@ -99,7 +100,7 @@ defmodule MWTClient.Sandbox.Param do
       if length(params) > @max_params,
         do:
           {:error,
-           "At most #{@max_params} parameters. One that needs more is more than one action."},
+           "At most #{@max_params} parameters. One that needs more is more than one call."},
         else: {:ok, params}
     end
   end
@@ -121,7 +122,7 @@ defmodule MWTClient.Sandbox.Param do
 
         # Two parts are a name and what it is, unless the second is a shape.
         [name, rest] ->
-          if String.trim(rest) in @shapes,
+          if Map.has_key?(@shapes, String.trim(rest)),
             do: {String.trim(name), String.trim(rest), ""},
             else: {String.trim(name), "", String.trim(rest)}
 
@@ -129,45 +130,38 @@ defmodule MWTClient.Sandbox.Param do
           {String.trim(name), "", ""}
       end
 
-    cond do
-      not Regex.match?(@name, name) ->
-        {:error,
-         "#{name}: a name is in capitals, like REPO_NAME: letters, digits and underscores."}
+    with :ok <- name_error(name) do
+      cond do
+        about == "" ->
+          {:error, "#{name}: say what it is, after the shape: #{name}: word: what it is."}
 
-      reserved?(name) ->
-        {:error,
-         "#{name} already means something on this machine or to the shell. Pick another name."}
-
-      about == "" ->
-        {:error, "#{name}: say what it is, after the shape: #{name}: word: what it is."}
-
-      true ->
-        with {:ok, shape} <- shape(name, shape) do
-          {:ok, %__MODULE__{name: name, shape: shape, about: String.slice(about, 0, @max_about)}}
-        end
+        true ->
+          with {:ok, schema} <- shape(name, shape) do
+            {:ok,
+             %__MODULE__{name: name, about: String.slice(about, 0, @max_about), schema: schema}}
+          end
+      end
     end
   end
 
-  defp shape(_name, shape) when shape in ["", "word"], do: {:ok, :word}
-  defp shape(_name, "number"), do: {:ok, :number}
-  defp shape(_name, "date"), do: {:ok, :date}
-  defp shape(_name, "time"), do: {:ok, :time}
-  defp shape(_name, "decimal"), do: {:ok, :decimal}
-  defp shape(_name, "text"), do: {:ok, :text}
+  defp shape(_name, ""), do: {:ok, @shapes["word"]}
 
-  defp shape(name, list) do
-    values = list |> String.split("|") |> Enum.map(&String.trim/1)
-
+  defp shape(name, shape) do
     cond do
-      not String.contains?(list, "|") ->
-        {:error,
-         "#{name}: #{list} is no shape. Use word, number, date, time, decimal, text, or the values it may take, as a|b|c."}
+      Map.has_key?(@shapes, shape) ->
+        {:ok, @shapes[shape]}
 
-      Enum.any?(values, &(&1 == "" or String.starts_with?(&1, "-"))) ->
-        {:error, "#{name}: each value of a list is some text that doesn't start with a dash."}
+      not String.contains?(shape, "|") ->
+        {:error,
+         "#{name}: #{shape} is no shape. Use word, number, decimal, date, time, text, or the values it may take, as a|b|c."}
 
       true ->
-        {:ok, {:one_of, Enum.uniq(values)}}
+        values = shape |> String.split("|") |> Enum.map(&String.trim/1)
+
+        if Enum.any?(values, &(&1 == "" or String.starts_with?(&1, "-"))),
+          do:
+            {:error, "#{name}: each value of a list is some text that doesn't start with a dash."},
+          else: {:ok, %{"type" => "string", "enum" => Enum.uniq(values)}}
     end
   end
 
@@ -175,6 +169,26 @@ defmodule MWTClient.Sandbox.Param do
     case params |> Enum.map(& &1.name) |> Enum.frequencies() |> Enum.find(&(elem(&1, 1) > 1)) do
       nil -> :ok
       {name, _times} -> {:error, "#{name} is there twice."}
+    end
+  end
+
+  @doc """
+  Why `name` can't be a parameter's, or `:ok`: capitals, digits and
+  underscores, and nothing the environment already gives a meaning to.
+  """
+  @spec name_error(String.t()) :: :ok | {:error, String.t()}
+  def name_error(name) do
+    cond do
+      not (is_binary(name) and Regex.match?(@name, name)) ->
+        {:error,
+         "#{Shown.text(to_string(name))}: a name is in capitals, like REPO_NAME: letters, digits and underscores."}
+
+      reserved?(name) ->
+        {:error,
+         "#{name} already means something on this machine or to the shell. Pick another name."}
+
+      true ->
+        :ok
     end
   end
 
@@ -187,33 +201,6 @@ defmodule MWTClient.Sandbox.Param do
     name in @reserved or Enum.any?(@reserved_prefixes, &String.starts_with?(name, &1)) or
       System.get_env(name) != nil
   end
-
-  @doc """
-  A parameter as a line, the way `parse/1` reads it.
-
-      iex> MWTClient.Sandbox.Param.line(%MWTClient.Sandbox.Param{name: "PR", shape: :number, about: "the pull request"})
-      "PR: number: the pull request"
-  """
-  @spec line(t()) :: String.t()
-  def line(%__MODULE__{} = param), do: "#{param.name}: #{shape_name(param.shape)}: #{param.about}"
-
-  @doc "A shape as it is written: `word`, `number`, `date`, `time`, `decimal`, `text`, or `a|b|c`."
-  @spec shape_name(shape()) :: String.t()
-  def shape_name({:one_of, values}), do: Enum.join(values, "|")
-  def shape_name(shape), do: Atom.to_string(shape)
-
-  @doc "What a value of a shape may be, in a line, for you and for agents."
-  @spec shape_words(shape()) :: String.t()
-  def shape_words(:word),
-    do:
-      "a word: letters, digits and _ . - @ : +, in parts joined by /; no spaces, no .. and no leading / or -"
-
-  def shape_words(:number), do: "a number: digits only"
-  def shape_words(:date), do: "a date: YYYY-MM-DD"
-  def shape_words(:time), do: "a time, RFC 3339: 2026-11-17T12:00:00Z, or with an offset"
-  def shape_words(:decimal), do: "a decimal: digits, a leading - and a fraction if it has them"
-  def shape_words(:text), do: "text: anything that shows, not starting with a dash"
-  def shape_words({:one_of, values}), do: "one of: " <> Enum.join(values, ", ")
 
   @doc """
   The parameters `script` doesn't read: those it names neither as `$NAME`
@@ -247,7 +234,7 @@ defmodule MWTClient.Sandbox.Param do
         :single in places &&
           "$#{param.name} is inside single quotes, where the shell leaves it as it is: " <>
             "the value isn't used there.",
-        (:bare in places and spaces?(param.shape)) &&
+        (:bare in places and may_space?(param.schema)) &&
           "$#{param.name} can hold spaces, and is read outside double quotes: the shell " <>
             "would split it into several arguments. Write \"$#{param.name}\"."
       ]
@@ -255,16 +242,39 @@ defmodule MWTClient.Sandbox.Param do
     end)
   end
 
-  defp spaces?(:text), do: true
-  defp spaces?({:one_of, values}), do: Enum.any?(values, &(&1 =~ ~r/[\s*?\[]/))
-  defp spaces?(_shape), do: false
+  # Whether a value of its schema may hold a space: text that is neither a
+  # word, nor a pattern's, nor one of a list without spaces.
+  defp may_space?(%{"enum" => values}) when is_list(values),
+    do: Enum.any?(values, &(is_binary(&1) and &1 =~ ~r/[\s*?\[]/))
+
+  defp may_space?(%{"format" => "word"}), do: false
+  defp may_space?(%{"type" => type}) when type in ["integer", "number", "boolean"], do: false
+  defp may_space?(%{"pattern" => _pattern}), do: false
+  defp may_space?(_schema), do: true
+
+  @doc """
+  Where `script` reads the parameter `name` (`$NAME` or `${NAME}`): each
+  time, `:bare`, in `:double` quotes or in `:single` ones. For hints and
+  warnings (`hints/2`, `MWTClient.Sandbox.Openness`), never for deciding.
+
+      iex> MWTClient.Sandbox.Param.places(~s(echo $A "$A" '$A'), "A")
+      [:bare, :double, :single]
+  """
+  @spec places(String.t(), String.t()) :: [:bare | :double | :single]
+  def places(script, name), do: scan(script, name, :bare, [])
+
+  @doc """
+  Whether a value of `schema` may hold a space: text that is neither a
+  word, nor a pattern's, nor one of a list without spaces.
+  """
+  @spec spaces?(map()) :: boolean()
+  def spaces?(schema), do: may_space?(schema)
 
   # Where a script reads `$NAME` or `${NAME}`: `:bare`, in `:double` quotes
   # or in `:single` ones. Quotes are followed as bash does for the common
   # cases (a backslash escapes outside single quotes); here-documents and
   # `$'…'` are not, since this only feeds hints and the "is it read at all"
   # check, where a single-quoted mention counts as read.
-  defp places(script, name), do: scan(script, name, :bare, [])
 
   defp scan("", _name, _quote, found), do: Enum.reverse(found)
 
@@ -315,15 +325,16 @@ defmodule MWTClient.Sandbox.Param do
 
   @doc """
   Checks the values of a call against the parameters: every parameter
-  given, none unknown, each value of its shape and showing all it holds.
-  Answers the values in the parameters' order, or what is wrong first.
+  given, none unknown, each over MWT's floor, of its type, and keeping to
+  its schema. Answers the values, as given, in the parameters' order, or
+  what is wrong first.
 
       iex> alias MWTClient.Sandbox.Param
       iex> {:ok, params} = Param.parse("REPO: word: the repository")
       iex> Param.check(params, %{"REPO" => "oliveigah/klife"})
       {:ok, [{"REPO", "oliveigah/klife"}]}
-      iex> {:error, {:shape, %Param{name: "REPO"}}} = Param.check(params, %{"REPO" => "--web"})
-      iex> {:error, {:shape, %Param{name: "REPO"}}} = Param.check(params, %{"REPO" => "../other"})
+      iex> {:error, {:floor, %Param{name: "REPO"}, _}} = Param.check(params, %{"REPO" => "--web"})
+      iex> {:error, {:floor, %Param{name: "REPO"}, _}} = Param.check(params, %{"REPO" => "../other"})
       iex> Param.check(params, %{"REPO" => "a/b", "EXTRA" => "1"})
       {:error, {:unknown, "EXTRA"}}
   """
@@ -349,64 +360,51 @@ defmodule MWTClient.Sandbox.Param do
   defp value(param, value) when value in [nil, ""], do: {:error, {:missing, param}}
 
   defp value(param, value) when is_binary(value) do
+    typed = ParamSchema.typed(param.schema, value)
+
     cond do
-      Shown.hidden(value) != [] -> {:error, {:hidden, param, Shown.hidden(value)}}
-      fits?(param.shape, value) -> {:ok, value}
-      true -> {:error, {:shape, param}}
+      Shown.hidden(value) != [] ->
+        {:error, {:hidden, param, Shown.hidden(value)}}
+
+      (why = floor(value, typed)) != nil ->
+        {:error, {:floor, param, why}}
+
+      typed == :error ->
+        {:error, {:type, param}}
+
+      true ->
+        case ParamSchema.check(param.schema, elem(typed, 1)) do
+          :ok -> {:ok, value}
+          {:error, why} -> {:error, {:rule, param, why}}
+        end
     end
   end
 
-  defp value(param, _other), do: {:error, {:shape, param}}
+  defp value(param, _other), do: {:error, {:type, param}}
 
-  @doc """
-  Whether `value` is of `shape`.
+  # MWT's floor, whatever the schema says: why a value can't be any
+  # parameter's, or nil.
+  defp floor(value, typed) do
+    cond do
+      byte_size(value) > @max_value ->
+        "it is over 4 KiB"
 
-      iex> MWTClient.Sandbox.Param.fits?(:word, "feature/login-v2")
-      true
+      String.trim(value) == "" ->
+        "it is blank"
 
-      iex> MWTClient.Sandbox.Param.fits?(:word, "a b")
-      false
+      String.starts_with?(String.trim_leading(value), "-") and not number?(typed) ->
+        "it starts with -, as an option does"
 
-      iex> MWTClient.Sandbox.Param.fits?(:number, "42")
-      true
+      value |> String.split("/") |> Enum.any?(&(String.trim(&1) in [".", ".."])) ->
+        "it goes up a folder (. or ..)"
 
-      iex> MWTClient.Sandbox.Param.fits?({:one_of, ["staging", "production"]}, "dev")
-      false
-
-      iex> MWTClient.Sandbox.Param.fits?(:text, "-rf /")
-      false
-  """
-  @spec fits?(shape(), String.t()) :: boolean()
-  def fits?(:word, value) do
-    parts = String.split(value, "/")
-
-    byte_size(value) <= @max_word and not String.starts_with?(value, "-") and
-      Enum.all?(parts, &(Regex.match?(@part, &1) and &1 not in [".", ".."]))
+      true ->
+        nil
+    end
   end
 
-  def fits?(:number, value), do: Regex.match?(@number, value)
-
-  def fits?(:date, value),
-    do: Regex.match?(@date, value) and match?({:ok, _}, Date.from_iso8601(value))
-
-  def fits?(:time, value) do
-    Regex.match?(@time, value) and
-      match?(
-        {:ok, _, _},
-        value
-        |> String.replace(~r/[t ]/, "T", global: false)
-        |> String.upcase()
-        |> DateTime.from_iso8601()
-      )
-  end
-
-  def fits?(:decimal, value), do: Regex.match?(@decimal, value)
-  def fits?({:one_of, values}, value), do: value in values
-
-  def fits?(:text, value),
-    do:
-      byte_size(value) <= @max_text and String.trim(value) != "" and
-        not String.starts_with?(String.trim_leading(value), "-")
+  defp number?({:ok, number}) when is_number(number), do: true
+  defp number?(_typed), do: false
 
   @doc "What is wrong with a call's values, in words for the agent."
   @spec explain(problem()) :: String.t()
@@ -415,7 +413,13 @@ defmodule MWTClient.Sandbox.Param do
 
   def explain({:unknown, name}), do: "It has no parameter #{name}."
 
-  def explain({:shape, param}), do: "#{param.name} isn't of its shape. #{describe(param)}"
+  def explain({:floor, param, why}),
+    do: "#{param.name} can't be that: #{why}. #{describe(param)}"
+
+  def explain({:type, param}), do: "#{param.name} isn't of its type. #{describe(param)}"
+
+  def explain({:rule, param, why}),
+    do: "#{param.name} doesn't keep to its schema: #{why}. #{describe(param)}"
 
   def explain({:hidden, param, what}),
     do:
@@ -423,14 +427,51 @@ defmodule MWTClient.Sandbox.Param do
         "what the user reads. Send it without."
 
   @doc """
-  A parameter in a line, for agents and for a card: its name, what a value
-  may be, and what it is.
+  A parameter in a line, for agents and for a card: its name, what a
+  value may be, and what it is.
+
+      iex> {:ok, [count]} = MWTClient.Sandbox.ParamSchema.parse(~s({"properties": {"COUNT":
+      ...>   {"description": "how many", "type": "integer", "minimum": 1, "maximum": 10}}}))
+      iex> MWTClient.Sandbox.Param.describe(count)
+      "COUNT is an integer, from 1 to 10. It is: how many"
   """
   @spec describe(t()) :: String.t()
   def describe(%__MODULE__{} = param),
-    do: "#{param.name} is #{shape_words(param.shape)}. It is: #{param.about}"
+    do: "#{param.name} is #{ParamSchema.words(param.schema)}. It is: #{param.about}"
 
-  @doc "Brings parameters saved by an older MWT up to date."
+  @doc """
+  Brings a parameter saved by an older MWT up to date: one with a shape
+  (and a rule, 2026-11-25) takes the schema they make; a schema from a
+  file is held to what one written in the form is, and one that isn't
+  leaves its parameter text, its floor alone.
+  """
   @spec upgrade(map()) :: t()
-  def upgrade(%{} = saved), do: struct(__MODULE__, Map.delete(saved, :__struct__))
+  def upgrade(%{} = saved) do
+    # Saved as a struct of an older MWT's: its fields, as a plain map.
+    saved = Map.delete(saved, :__struct__)
+    name = saved[:name]
+    about = saved[:about] || ""
+
+    schema =
+      case saved do
+        %{schema: %{} = schema} -> schema
+        %{shape: shape} -> Map.merge(old_shape(shape), saved[:rule] || %{})
+        _none -> %{"type" => "string"}
+      end
+
+    schema =
+      case ParamSchema.valid(to_string(name), schema) do
+        :ok -> schema
+        {:error, _} -> %{"type" => "string"}
+      end
+
+    %__MODULE__{name: name, about: about, schema: schema}
+  end
+
+  defp old_shape({:one_of, values}), do: %{"type" => "string", "enum" => values}
+
+  defp old_shape(shape) when is_atom(shape),
+    do: Map.get(@shapes, Atom.to_string(shape), %{"type" => "string"})
+
+  defp old_shape(_other), do: %{"type" => "string"}
 end

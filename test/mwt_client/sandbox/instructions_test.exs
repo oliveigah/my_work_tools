@@ -278,7 +278,7 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     guides = Instructions.guides()
 
     assert Map.keys(guides) |> Enum.sort() ==
-             ~w(access handoff projects propose run workspace)
+             ~w(access handoff projects propose resources run workspace)
 
     # Every guide is named in the text, or in another guide, so an agent
     # finds it; and every guide named exists.
@@ -439,7 +439,11 @@ defmodule MWTClient.Sandbox.InstructionsTest do
           script: "kubectl get #{name} -n \"$NAMESPACE\"",
           dir: "/home/me",
           params: [
-            %Param{name: "NAMESPACE", shape: {:one_of, ["web", "jobs"]}, about: "the namespace"}
+            %Param{
+              name: "NAMESPACE",
+              about: "the namespace",
+              schema: %{"type" => "string", "enum" => ["web", "jobs"]}
+            }
           ],
           state: :on
         }
@@ -462,19 +466,25 @@ defmodule MWTClient.Sandbox.InstructionsTest do
       credential: "github",
       method: "GET",
       url: "https://api.github.com/repos/$REPO",
-      params: [%Param{name: "REPO", shape: :word, about: "the repository"}]
+      params: [
+        %Param{
+          name: "REPO",
+          about: "the repository",
+          schema: %{"type" => "string", "format" => "word"}
+        }
+      ]
     }
 
     text = Instructions.grants([view | saved] ++ [github], ~U[2026-11-12 12:00:00Z])
     # A command the agent writes asks every time: kept small.
-    assert text =~ "always ask to run a command you write, and the user approves every"
+    assert text =~ "while Commands agents write is on, you may ask to"
     assert text =~ "send the smallest command that gets what"
     assert text =~ "mwt help run"
     assert text =~ ~s(mwt call ID NAME=value --reason "why now")
 
     # Under their resource: how to call each, its state, what it is for,
     # and each parameter with its shape.
-    assert text =~ "Actions over the user's machine"
+    assert text =~ "Actions over host commands, on the user's machine"
 
     assert text =~ """
              - `mwt call pods NAMESPACE=…` · on until the user turns it off · Show pods

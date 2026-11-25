@@ -160,25 +160,26 @@ defmodule MWTClient.Sandbox.Instructions do
     or, when you know what it takes, propose the grant (read mwt help propose first).
     One proposed and not yet reviewed stays off until the user accepts it on its page.
 
-    Each grant gives uses of one resource (a credential, a network, the
-    user's machine, MWT's tools); an off grant gives nothing. A use needs a
-    grant that is on over every resource it goes through: a request with a
-    credential needs a grant over the credential listing its host and one
-    over the network the host is on. It runs unasked only if each lets it
-    through unasked. A locked resource, or a host its network blocks,
+    Each grant gives uses of one resource (a credential, a network, host
+    commands, MWT's tools); an off grant gives nothing. A use of yours
+    needs a grant that is on over every resource it goes through: your
+    request with a credential needs a grant over the credential listing its
+    host and one over the network the host is on. It runs unasked only if
+    each lets it through unasked. A locked resource, or a host its network blocks,
     refuses whatever the grants say. A credential is used through mwt exec
     CREDENTIAL. When a use fails (a bare 403, permission denied), run mwt
     why --recent.
 
-    An action is one fixed use of a resource, which MWT carries out for you
+    An action is one fixed use, which MWT builds and carries out for you
     when you call it by its id, with a value for each parameter:
     mwt call ID NAME=value --reason "why now"
-    Look for one before anything else: it may run without asking. To run
-    something on the user's machine that no action does, propose one
-    when you will need it again (mwt help propose). Otherwise you may
-    always ask to run a command you write, and the user approves every
-    run: read mwt help run first, send the smallest command that gets what
-    you need, and work on its output here in the VM.
+    Its request goes out as yours would. Look for one before anything else:
+    it may run without asking. To run something on the user's machine that
+    no action does, propose one when you will need it again (mwt help
+    propose). Otherwise, while Commands agents write is on, you may ask to
+    run a command you write, and the user approves every run: read
+    mwt help run first, send the smallest command that gets what you need,
+    and work on its output here in the VM.
 
     #{body}
     """
@@ -218,7 +219,7 @@ defmodule MWTClient.Sandbox.Instructions do
 
         "  - `#{Grant.signature(grant)}` · #{state(grant, now)}" <>
           if(Grant.auto_approved?(grant, now), do: ", runs without asking", else: "") <>
-          ceiling_words(grant) <> " · #{one_line(grant.purpose)}" <> params
+          " · #{one_line(grant.purpose)}" <> params
       end)
 
     """
@@ -229,13 +230,13 @@ defmodule MWTClient.Sandbox.Instructions do
 
   defp actions_words({:credential, _id}),
     do:
-      "requests MWT sends for you with its real value, each also needing a grant over the network of its host; the answer's body comes back, its HTTP status on stderr, exit 0 for 2xx and 22 otherwise"
+      "requests MWT builds and sends for you through its proxy with its real value, each also needing a grant over the network of its host, as yours would; the answer's body comes back, its HTTP status on stderr, exit 0 for 2xx and 22 otherwise"
 
   defp actions_words(_resource), do: "the user's own scripts, each in a folder they chose"
 
   defp resource_words({:credential, id}), do: "the credential `#{id}`"
   defp resource_words({:network, id}), do: "the network `#{id}`"
-  defp resource_words(:machine), do: "the user's machine"
+  defp resource_words(:machine), do: "host commands, on the user's machine"
   defp resource_words(:mwt), do: "MWT's tools"
 
   defp grant_block(grant, now) do
@@ -260,7 +261,7 @@ defmodule MWTClient.Sandbox.Instructions do
         "- id: `#{grant.id}` · #{Presets.type_name(grant)} over #{resource_words(Grant.resource(grant))} · #{state(grant, now)}",
         "- for: #{one_line(grant.purpose)}",
         "- " <> usage(grant)
-      ] ++ only ++ ["- " <> approval(grant) <> ceiling_words(grant)],
+      ] ++ only ++ ["- " <> approval(grant)],
       "\n"
     )
   end
@@ -311,11 +312,6 @@ defmodule MWTClient.Sandbox.Instructions do
             "which goes only to the host its aud names, in the Authorization header."
       end
 
-    machine =
-      if grant.machine,
-        do: " The user's saved commands that run with this credential may use it too.",
-        else: ""
-
     "use: run mwt exec #{Grant.credential_id(grant)} -- COMMAND here in the VM: it speaks as " <>
       "the credential #{Grant.credential_id(grant)}, and decides nothing; this grant gives its " <>
       "requests to its hosts, which also need a grant over their network. " <>
@@ -324,7 +320,7 @@ defmodule MWTClient.Sandbox.Instructions do
       "this token, only to #{Enum.join(grant.hosts, ", ")}, in the " <>
       "#{Enum.join(Grant.carriers(grant), " or ")} header; MWT swaps in the real value there " <>
       "and refuses it in any other header." <>
-      git <> presents <> login <> signs <> machine
+      git <> presents <> login <> signs
   end
 
   def usage(%Grant{kind: :mwt, tools: :git_fetch}),
@@ -361,19 +357,26 @@ defmodule MWTClient.Sandbox.Instructions do
       end
   end
 
-  def usage(%Grant{kind: :network, internet: true}),
+  def usage(%Grant{kind: :network, internet: true} = grant),
     do:
-      "use: any public address, directly, but the hosts the user blocked (mwt_host_blocked). Off, " <>
-        "only what other grants over the Internet list is reached, and DNS answers only their names: " <>
-        "a connection refused or a name not found may mean this is off."
+      "use: any public address, directly, but the hosts the user blocked (mwt_host_blocked)" <>
+        except_words(grant) <>
+        ". Off, only what other grants over the Internet list is reached, and DNS answers only " <>
+        "their names: a connection refused or a name not found may mean this is off."
 
   # One over part of a network.
   def usage(%Grant{kind: :network, scope: [_ | _]} = grant) do
     hosts = Enum.map_join(grant.scope, ", ", &String.trim_leading(&1, "*."))
 
-    "use: #{hosts} and the names under it on the network #{grant.network}, directly: it gives " <>
-      "those beside the network's other grants, the most permissive counting."
+    "use: #{hosts} and the names under it on the network #{grant.network}" <>
+      except_words(grant) <>
+      ", directly: it gives those beside the network's other grants, the most permissive counting."
   end
+
+  def usage(%Grant{kind: :network, except: [_ | _] = except} = grant),
+    do:
+      usage(%{grant | except: []}) <>
+        " It leaves out #{Enum.join(except, ", ")} and the names under them: only a grant naming them gives them."
 
   def usage(%Grant{kind: :network} = grant) do
     names? =
@@ -394,16 +397,33 @@ defmodule MWTClient.Sandbox.Instructions do
   def usage(%Grant{kind: :request} = grant) do
     params = Enum.map_join(grant.params, &(" " <> Param.describe(&1) <> "."))
 
-    ~s[use: #{Grant.signature(grant)} --reason "why now". MWT sends #{grant.method} #{grant.url} with the token itself and gives you the answer: its body on stdout, its HTTP status on stderr; exit 0 for 2xx, 22 otherwise.] <>
-      params
+    ~s[use: #{Grant.signature(grant)} --reason "why now". MWT builds #{grant.method} #{grant.url} and sends it through its proxy, putting the token in on the way out, and gives you the answer: its body on stdout, its HTTP status on stderr; exit 0 for 2xx, 22 otherwise. An answer that echoes the token is cut.] <>
+      params <> openness_words(grant)
   end
+
+  def usage(%Grant{kind: :agent_commands}),
+    do:
+      ~s[use: mwt run --reason "what it does, and why it must run there" -- COMMAND runs a command you write on the user's machine, as them, once they approve it. The last resort: read mwt help run first.]
 
   def usage(%Grant{kind: :command} = grant) do
     params = Enum.map_join(grant.params, &(" " <> Param.describe(&1) <> "."))
 
     ~s[use: #{Grant.signature(grant)} --reason "why now". It runs the user's own script on their machine; you send no command.] <>
-      params
+      params <> openness_words(grant)
   end
+
+  # How open a fixed call is, for agents too: a value it can turn into
+  # code is said, so nothing reads it as narrower than it is.
+  defp openness_words(grant) do
+    case MWTClient.Sandbox.Openness.grade(grant) do
+      %{grade: :narrow} -> ""
+      %{grade: grade} -> " How open: #{MWTClient.Sandbox.Openness.words(grade)}."
+      nil -> ""
+    end
+  end
+
+  defp approval(%Grant{kind: :agent_commands}),
+    do: "uses: the user approves every run, always; none is handed a credential's value"
 
   defp approval(%Grant{kind: :command} = grant) do
     if Grant.auto_approved?(grant),
@@ -441,11 +461,6 @@ defmodule MWTClient.Sandbox.Instructions do
     end
   end
 
-  # One that always asks: an agent shouldn't wait for an allowance.
-  defp ceiling_words(%Grant{} = grant) do
-    if Grant.ceiling(grant) == :ask, do: " · always asks: no allowance covers a use", else: ""
-  end
-
   defp state(%Grant{proposal: %{reviewed_at: nil} = proposal}, _now),
     do:
       "off, proposed by #{proposal.agent} and not reviewed yet: the user must accept it on its page before anything turns it on"
@@ -464,4 +479,13 @@ defmodule MWTClient.Sandbox.Instructions do
   defp state(%Grant{}, _now), do: "off: it gives nothing; ask for it to be turned on"
 
   defp one_line(text), do: text |> to_string() |> String.replace(~r/\s+/, " ") |> String.trim()
+
+  # The hosts a network grant leaves out, which only a grant over them
+  # gives (`Grant.except`).
+  defp except_words(%Grant{except: [_ | _] = except}),
+    do:
+      ", nor #{Enum.join(except, ", ")} and the names under them, which it leaves out: " <>
+        "only a grant naming them gives them"
+
+  defp except_words(%Grant{}), do: ""
 end

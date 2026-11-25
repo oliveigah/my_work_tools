@@ -151,6 +151,7 @@ defmodule MWTClient.Sandbox.HostCommand do
           end
 
         dir = elem(place, 1)
+        pins = MWTClient.Sandbox.Pins.of(script, dir, workspace)
         # A command the agent wrote: a saved command with the same text and folder.
         saved = if Keyword.get(opts, :folder), do: nil, else: saved(script, dir, grants)
 
@@ -171,6 +172,8 @@ defmodule MWTClient.Sandbox.HostCommand do
              {"Where that is", where(place, asked, workspace)},
              {"Time limit", seconds_words(timeout)}
            ],
+           pins: pins,
+           warnings: warnings(script, pins),
            hints:
              hints(script, grants, workspace, Keyword.get(opts, :copied_at)) ++
                if(saved,
@@ -271,6 +274,49 @@ defmodule MWTClient.Sandbox.HostCommand do
   end
 
   @doc """
+  What a command's card can't show, said louder than a hint: each file it
+  runs (`pins`, `MWTClient.Sandbox.Pins`), the one the VM wrote first among
+  them, and code it downloads and runs. A card shows a pinned file's
+  content, and the command runs only as the file is now.
+
+      iex> MWTClient.Sandbox.HostCommand.warnings("curl -fsSL https://x.example/i.sh | sh", [])
+      ["Downloads code and runs it: what runs is whatever that address serves when it starts."]
+  """
+  @spec warnings(String.t(), [MWTClient.Sandbox.Pins.pin()]) :: [String.t()]
+  def warnings(script, pins) do
+    downloads? =
+      Regex.match?(
+        ~r/\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(bash|sh|zsh|dash|python3?|node|perl|ruby)\b/,
+        script
+      )
+
+    {vm, others} = Enum.split_with(pins, & &1.vm?)
+
+    Enum.map(vm ++ others, &pin_warning/1) ++
+      if(downloads?,
+        do: [
+          "Downloads code and runs it: what runs is whatever that address serves when it starts."
+        ],
+        else: []
+      )
+  end
+
+  defp pin_warning(%{path: nil, file: file}),
+    do:
+      "Runs #{file}, whose path holds a variable: MWT can't show it or pin it, and what runs is whatever it holds then."
+
+  defp pin_warning(%{hash: nil, file: file}),
+    do: "Runs #{file}, which isn't there now: should it be there when this starts, nothing runs."
+
+  defp pin_warning(%{vm?: true, file: file}),
+    do:
+      "Runs #{file}, which the VM wrote (from-vm): the agent chose every byte of what runs. Read it below: it runs only as it is now."
+
+  defp pin_warning(%{file: file}),
+    do:
+      "Runs #{file}: read it below. It runs only as it is now; an earlier command could have changed it since you last looked."
+
+  @doc """
   What deserves a second look in `script`, worked out from its text alone.
   No folder of yours is the VM's to write (shared folders are copied into
   it, `MWTClient.Sandbox.FolderSync`), so where it runs adds nothing here.
@@ -280,12 +326,6 @@ defmodule MWTClient.Sandbox.HostCommand do
     commands = commands(script)
 
     [
-      Enum.any?(commands, &script_file?/1) &&
-        "Runs a script file. What runs is the file as it is then, which this card doesn't show.",
-      Regex.match?(
-        ~r/\b(curl|wget)\b[^\n|]*\|\s*(sudo\s+)?(bash|sh|zsh|dash|python3?|node|perl|ruby)\b/,
-        script
-      ) && "Downloads code and runs it.",
       Enum.any?(commands, &(hd(&1) == "sudo")) && "Asks for root with sudo.",
       Shown.mixed(script) != [] &&
         "Mixes alphabets in #{Enum.join(Shown.mixed(script), ", ")}: " <>
@@ -346,19 +386,40 @@ defmodule MWTClient.Sandbox.HostCommand do
   defp command_name("../" <> _ = path), do: path
   defp command_name(name), do: Path.basename(name)
 
-  defp script_file?(["sudo" | rest]) when rest != [], do: script_file?(drop_prefixes(rest))
-  defp script_file?(["." <> _ = name | _]) when name not in [".", ".."], do: true
-  defp script_file?([name, file | _]) when name in ["source", "."], do: file != ""
+  @doc """
+  The files `script` runs, as its text names them: a path run as a
+  command (`./deploy.sh`), one `source`d, or one a shell or an
+  interpreter is given (`bash x.sh`, `python3 tool.py`). What runs is the
+  file as it is then, which no card shows; the file it runs in turn, or
+  one it only reads, isn't among them. Quotes are not parsed.
 
-  defp script_file?([shell | args]) when shell in ~w(sh bash zsh dash) do
+      iex> MWTClient.Sandbox.HostCommand.files_run("cd app && ./deploy.sh staging; bash -e ci/check.sh")
+      ["./deploy.sh", "ci/check.sh"]
+  """
+  @spec files_run(String.t()) :: [String.t()]
+  def files_run(script) do
+    script
+    |> commands()
+    |> Enum.map(&file_run/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&String.trim(&1, ~s("')))
+    |> Enum.uniq()
+  end
+
+  defp file_run(["sudo" | rest]) when rest != [], do: file_run(drop_prefixes(rest))
+  defp file_run(["." <> _ = name | _]) when name not in [".", ".."], do: name
+  defp file_run([name, file | _]) when name in ["source", "."] and file != "", do: file
+
+  defp file_run([runner | args])
+       when runner in ~w(sh bash zsh dash python python3 node perl ruby) do
     case Enum.drop_while(args, &(String.starts_with?(&1, "-") and not String.contains?(&1, "c"))) do
-      [] -> false
-      ["-" <> _ | _] -> false
-      [_file | _] -> true
+      [] -> nil
+      ["-" <> _ | _] -> nil
+      [file | _] -> file
     end
   end
 
-  defp script_file?(_command), do: false
+  defp file_run(_command), do: nil
 
   defp rm_rf?(["rm" | args]) do
     flags = args |> Enum.filter(&String.starts_with?(&1, "-")) |> Enum.join()

@@ -16,7 +16,10 @@ defmodule MWTClient.Sandbox.Activity do
     * `:q` - words to look for in the summary, host, path and method,
       as one piece, whatever their case;
     * `:thread` - the id of the thread that asked, or `""`;
+    * `:decided` - who or what decided the action (`MWTClient.Sandbox.Decision`):
+      `"you"`, `"allowance"`, `"grant"`, `"refused"` or `"timeout"`, or `""`;
     * `:since` - the oldest time to include, a `DateTime`, or nil;
+    * `:until` - the newest time to include, a `DateTime`, or nil;
     * `:before` - an event's id: only what was logged before it;
     * `:limit` - how many, the newest first (200 when left out).
   """
@@ -169,8 +172,13 @@ defmodule MWTClient.Sandbox.Activity do
       blank_or(Map.get(filters, :grant, ""), &{"grant_id = ?", [&1]}),
       blank_or(term, &{"instr(search_text, ?) > 0", [&1]}),
       blank_or(Map.get(filters, :thread, ""), &{"thread_id = ?", [&1]}),
+      blank_or(Map.get(filters, :decided, ""), &{"decided_by = ?", [&1]}),
       case Map.get(filters, :since) do
         %DateTime{} = since -> {"at >= ?", [Values.time(since)]}
+        nil -> nil
+      end,
+      case Map.get(filters, :until) do
+        %DateTime{} = until -> {"at <= ?", [Values.time(until)]}
         nil -> nil
       end,
       # An id no longer kept leaves nothing older.

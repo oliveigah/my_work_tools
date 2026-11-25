@@ -126,6 +126,12 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
       whole; tests make it short
     * `:body_within` - how long, in milliseconds, the start of a request's
       body may take to arrive (10 seconds, `Driver.Http1`)
+    * `:fixed` - the mark of a fixed call, on a connection MWT opened
+      itself to send what it built (`MWTClient.Sandbox.Egress.FixedCall`):
+      its destination, route and requests are decided by the call
+      (`Gate.fixed_destination/4`, `Gate.route/6`, `Gate.authorize/3`), and
+      a cut answer is told to the caller. Only MWT passes it: the VM's
+      connections take the options of the config.
   """
   def run(client, username, options \\ []) do
     started = System.monotonic_time(:millisecond)
@@ -185,7 +191,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
         }
       }
 
-      case Gate.route(username, ip, port, sni, under) do
+      case Gate.route(username, ip, port, sni, under, Keyword.get(options, :fixed)) do
         # A token grant's host: read, for its value to go in.
         {:intercept, watch} ->
           discard(link)
@@ -250,7 +256,13 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     parent = self()
     ref = make_ref()
 
-    spawn_link(fn -> send(parent, {ref, Gate.destination(username, ip, port)}) end)
+    decide =
+      case Keyword.get(options, :fixed) do
+        nil -> fn -> Gate.destination(username, ip, port) end
+        fixed -> fn -> Gate.fixed_destination(username, ip, port, fixed) end
+      end
+
+    spawn_link(fn -> send(parent, {ref, decide.()}) end)
 
     receive do
       {^ref, answer} ->
@@ -951,12 +963,13 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     parent = self()
     ref = make_ref()
     username = core.username
+    fixed = Keyword.get(core.options, :fixed)
 
     pid =
       spawn_link(fn ->
         verdict =
           try do
-            Gate.authorize(username, request)
+            Gate.authorize(username, request, fixed)
           catch
             :exit, reason -> {:exit, reason}
           end
@@ -988,14 +1001,21 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     flushed = flush_vm(core)
     _cut = gate_found(core.username, label, core.ctx.name, how)
 
+    case Keyword.get(core.options, :fixed) do
+      %{notify: notify, ref: ref} -> send(notify, {:fixed_cut, ref, label})
+      _none -> :ok
+    end
+
     case flushed do
       {:ok, core} -> {:ok, core}
       {:error, reason, core} -> {:failed, :vm, {:error, reason}, unarmed(core, :vm)}
     end
   end
 
+  # A driver's line names the grant the connection went under, so the log
+  # says what let it through (`MWTClient.Sandbox.Decision`).
   defp act(core, {:log, attrs}) do
-    Server.cast(core.username, {:log, attrs})
+    Server.cast(core.username, {:log, Map.put_new(attrs, :grant_id, core.ctx.under)})
     {:ok, core}
   end
 

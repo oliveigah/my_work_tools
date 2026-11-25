@@ -9,7 +9,7 @@ defmodule MWTClientWeb.SandboxLive.Overview do
 
   import MWTClientWeb.SandboxLive.Components
 
-  alias MWTClient.Sandbox.{Grant, ImageCheck, Presets}
+  alias MWTClient.Sandbox.{Grant, ImageCheck}
   alias MWTClientWeb.SandboxLive.{Monitor, Servers}
 
   attr :vm, :any, required: true
@@ -20,6 +20,9 @@ defmodule MWTClientWeb.SandboxLive.Overview do
   attr :settings, :any, required: true
   attr :memory, :map, required: true
   attr :grants, :list, required: true
+  attr :credentials, :list, default: [], doc: "the credentials grants are over"
+  attr :networks, :list, default: [], doc: "the networks grants are over, the Internet included"
+  attr :locks, :map, default: %{}, doc: "what you locked, by resource"
   attr :waiting, :list, required: true
   attr :recent, :list, required: true
   attr :stats, :map, required: true
@@ -31,8 +34,10 @@ defmodule MWTClientWeb.SandboxLive.Overview do
   attr :now, DateTime, required: true
 
   def page(assigns) do
-    on = Enum.filter(assigns.grants, &Grant.on?/1)
-    assigns = assign(assigns, on: on)
+    on = Enum.filter(assigns.grants, &Grant.on?(&1, assigns.now))
+
+    assigns =
+      assign(assigns, on: on, shared: shared(on, assigns), soon: ending_soon(on, assigns.now))
 
     ~H"""
     <section
@@ -287,44 +292,74 @@ defmodule MWTClientWeb.SandboxLive.Overview do
             </.link>
           </:actions>
           <div :if={@on == []}>
-            <.empty icon="hero-lock-closed">
-              Nothing beyond the public internet.
+            <.empty icon="hero-lock-closed" id="overview-grants-none">
+              Nothing is on: agents in the VM reach nothing through MWT.
             </.empty>
           </div>
-          <ul class="divide-y divide-line-soft">
-            <li
-              :for={grant <- @on}
-              id={"overview-grant-#{grant.id}"}
-              class="flex items-center gap-3 px-4 py-2.5"
+          <div :if={@on != []}>
+            <p
+              id="overview-grants-summary"
+              class="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b border-line-soft px-4 py-3 text-[11px] text-muted"
             >
-              <.grant_tile icon={Presets.icon(grant)} on class="size-7" />
-              <.link
-                patch={~p"/tools/sandbox/grants/#{grant.id}"}
-                class="min-w-0 flex-1 truncate text-xs font-medium text-ink hover:text-accent"
-              >
-                {grant.name}
-              </.link>
-              <span class="font-mono text-[11px] text-ok-strong">
-                <%= if grant.expires_at do %>
-                  <.clock
-                    id={"overview-left-#{grant.id}"}
-                    deadline={grant.expires_at}
-                    done="ending…"
-                    now={@now}
-                  />
-                <% else %>
-                  until off
-                <% end %>
+              <span>
+                <span class="text-[15px] font-semibold tabular-nums text-ink">{length(@on)}</span>
+                {if(length(@on) == 1, do: "grant on", else: "grants on")}
               </span>
-              <.switch
-                id={"overview-switch-#{grant.id}"}
-                on
-                label={"Turn #{grant.name} off"}
-                phx-click="turn_off"
-                phx-value-id={grant.id}
-              />
-            </li>
-          </ul>
+              <span>
+                over
+                <span class="text-[15px] font-semibold tabular-nums text-ink">
+                  {length(@shared)}
+                </span>
+                {if(length(@shared) == 1, do: "resource", else: "resources")}
+              </span>
+              <span id="overview-grants-soon" class={@soon > 0 && "text-warn-strong"}>
+                {@soon} ending within the hour
+              </span>
+            </p>
+            <ul class="divide-y divide-line-soft">
+              <li
+                :for={row <- Enum.take(@shared, 5)}
+                id={"overview-shared-#{dom_id(row.resource)}"}
+                class="flex items-center gap-3 px-4 py-2"
+              >
+                <.icon name={resource_icon(row.resource)} class="size-4 shrink-0 text-muted" />
+                <.link
+                  navigate={MWTClient.Sandbox.Resource.path(row.resource)}
+                  class="min-w-0 flex-1 truncate text-xs font-medium text-ink hover:text-accent"
+                >
+                  {row.name}
+                </.link>
+                <span :if={row.locked} title="Locked: every use is refused" class="flex">
+                  <.icon name="hero-lock-closed-micro" class="size-3.5 text-bad" />
+                </span>
+                <span class="shrink-0 text-[11px] tabular-nums text-muted">
+                  {row.count} on
+                </span>
+                <span class="w-20 shrink-0 text-right font-mono text-[11px] text-ok-strong">
+                  <%= if row.next do %>
+                    <.clock
+                      id={"overview-next-#{dom_id(row.resource)}"}
+                      deadline={row.next}
+                      done="ending…"
+                      now={@now}
+                    />
+                  <% else %>
+                    until off
+                  <% end %>
+                </span>
+              </li>
+            </ul>
+            <p
+              :if={length(@shared) > 5}
+              id="overview-shared-more"
+              class="border-t border-line-soft px-4 py-2 text-[11px] text-muted"
+            >
+              And {length(@shared) - 5} more resources:
+              <.link patch={~p"/tools/sandbox/grants"} class="text-accent hover:underline">
+                every grant that is on
+              </.link>
+            </p>
+          </div>
         </.card>
 
         <.shares_card shares={@settings.shares} sync={@sync} vm={@vm} now={@now} />
@@ -608,6 +643,38 @@ defmodule MWTClientWeb.SandboxLive.Overview do
   end
 
   # What the image check found, when it found the VM's image damaged.
+  # What is shared now, by resource: each resource some grant that is on
+  # is over, with how many are, and when the first of them ends (nil when
+  # all are on until off); what ends soonest first, then the most grants.
+  defp shared(on, assigns) do
+    alias MWTClient.Sandbox.Resource
+
+    on
+    |> Enum.group_by(&Grant.resource/1)
+    |> Enum.map(fn {resource, grants} ->
+      %{
+        resource: resource,
+        name: Resource.name(resource, assigns.credentials, assigns.networks),
+        count: length(grants),
+        next:
+          grants
+          |> Enum.map(& &1.expires_at)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.min(DateTime, fn -> nil end),
+        locked: Map.has_key?(assigns.locks, resource)
+      }
+    end)
+    |> Enum.sort_by(&{is_nil(&1.next), &1.next && DateTime.to_unix(&1.next), -&1.count, &1.name})
+  end
+
+  # How many of the grants that are on end within the hour.
+  defp ending_soon(on, now) do
+    soon = DateTime.add(now, 3600)
+    Enum.count(on, &(&1.expires_at && DateTime.compare(&1.expires_at, soon) != :gt))
+  end
+
+  defp dom_id(resource), do: MWTClientWeb.SandboxLive.ResourcePages.dom_id(resource)
+
   defp damaged_image(%{record: %{image_check: %{result: {:damaged, _, _} = result}}}), do: result
   defp damaged_image(_vm), do: nil
 

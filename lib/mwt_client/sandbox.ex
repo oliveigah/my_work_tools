@@ -107,6 +107,7 @@ defmodule MWTClient.Sandbox do
     * `:q` - words to look for in the summary, host and path
     * `:thread` - the id of the thread that asked, or `""` for any
     * `:since` - only events from this `DateTime` on, or nil for all kept
+    * `:until` - only events up to this `DateTime`, or nil for up to now
     * `:before` - an event id: only events older than it, for the next page
     * `:limit` - at most this many, 200 by default
 
@@ -122,6 +123,14 @@ defmodule MWTClient.Sandbox do
   """
   @spec event(username(), String.t()) :: Event.t() | nil
   def event(username, id), do: Activity.opened(username, id)
+
+  @doc """
+  A card an action's decision names (`MWTClient.Sandbox.Decision`), as it
+  was decided: `%{card: approval, choice: words}`, or nil once no line
+  names it any more.
+  """
+  @spec audit_card(username(), String.t()) :: map() | nil
+  def audit_card(username, id), do: MWTClient.Storage.Journal.card(username, id)
 
   @doc """
   The activity log's figures over the events kept that pass the
@@ -309,9 +318,20 @@ defmodule MWTClient.Sandbox do
           :keep_off | {pos_integer() | :until_off, :ask | :all},
           String.t() | nil
         ) ::
-          {:ok, Grant.t()} | {:error, :not_found | :reviewed | :no_value | :changed}
+          {:ok, Grant.t()}
+          | {:error, :not_found | :reviewed | :no_value | :changed | :resource_to_review}
   def review(username, id, enable, revision),
     do: Server.call(username, {:review, id, enable, revision})
+
+  @doc """
+  Accepts a credential or network an agent proposed, on its page, as it
+  showed `revision`: yours from now on. A credential's value is yours to
+  paste whenever you have it; until then every use is refused.
+  """
+  @spec review_resource(username(), MWTClient.Sandbox.Resource.id(), String.t() | nil) ::
+          {:ok, struct()} | {:error, :not_found | :reviewed | :changed}
+  def review_resource(username, resource, revision),
+    do: Server.call(username, {:review_resource, resource, revision})
 
   @doc """
   Gives a grant that is on a new duration, counted from now: `minutes`, or
@@ -324,32 +344,38 @@ defmodule MWTClient.Sandbox do
 
   @doc """
   Changes how the uses of a grant that is on are approved: `:ask`, each
-  waits for you, or `:all`, every use goes through while it stays on. One
-  set to always ask takes only `:ask`.
+  waits for you, or `:all`, every use goes through while it stays on.
   """
   @spec set_mode(username(), String.t(), :ask | :all) ::
-          {:ok, Grant.t()} | {:error, :not_found | :off | :every_run_asks}
+          {:ok, Grant.t()} | {:error, :not_found | :off}
   def set_mode(username, id, mode), do: Server.call(username, {:set_mode, id, mode})
 
   @doc """
   Sets the state a grant is in when MWT starts, and puts it in that state
   now: `:off`, `:on` (enabled until turned off, every use asks) or `:auto`
-  (enabled until turned off, every use goes through).
-  `:auto` only where uses can be auto-approved.
+  (enabled until turned off, every use goes through). One an agent
+  proposed starts off until you review it (`:to_review`); Commands agents
+  write never lets a use through unasked (`:always_asks`).
   """
   @spec set_start(username(), String.t(), Grant.start()) ::
-          {:ok, Grant.t()} | {:error, :not_found | :every_run_asks}
+          {:ok, Grant.t()} | {:error, :not_found | :to_review | :always_asks}
   def set_start(username, id, start), do: Server.call(username, {:set_start, id, start})
 
   @doc """
-  Sets whether a grant always asks (`Grant.ceiling/1`): `:ask`, every use
-  asks and no allowance covers one; `:allow`, allowances as you choose.
-  Only those `Grant.ceilings/1` offers it.
+  Sets the hosts a network grant leaves out (`Grant.except`), from a
+  form's text (`MWTClient.Sandbox.Network.except_entries/1`): the one field
+  the Internet's built-in grant lets you change, beside how it starts and
+  whether it always asks. Another network grant's are set with the rest
+  of its form (`update_grant/3`).
   """
-  @spec set_ceiling(username(), String.t(), Grant.ceiling()) ::
-          {:ok, Grant.t()} | {:error, :not_found | :not_offered}
-  def set_ceiling(username, id, ceiling),
-    do: Server.call(username, {:set_ceiling, id, ceiling})
+  @spec set_except(username(), String.t(), String.t() | nil) ::
+          {:ok, Grant.t()} | {:error, :not_found | %{except: String.t()}}
+  def set_except(username, id, text) do
+    case MWTClient.Sandbox.Network.except_entries(text) do
+      {:ok, entries} -> Server.call(username, {:set_except, id, entries})
+      {:error, message} -> {:error, %{except: message}}
+    end
+  end
 
   @doc """
   The firewall (`MWTClient.Sandbox.Firewall`): its settings and incidents,
@@ -466,15 +492,67 @@ defmodule MWTClient.Sandbox do
   def turn_off(username, id), do: Server.call(username, {:turn_off, id})
 
   @doc """
-  How a request to `url` would be decided now, carrying the credential
-  `credential` (its id) or none: each grant's say, the locks, the result
-  and what would change it (`MWTClient.Sandbox.Explain`). Sends nothing,
-  and keeps nothing of what it was given.
+  Runs `command` in the running VM as an agent there would, under
+  `credential` (`mwt exec`) when one is named, and gives back what it
+  printed and its exit status (`MWTClient.Sandbox.Console`), as the
+  console's history keeps it (`console_runs/1`). Runs in the caller: it
+  takes as long as the command, up to `seconds`.
   """
-  @spec explain_request(username(), String.t(), String.t() | nil, String.t() | nil) ::
-          {:ok, String.t()} | {:error, String.t()}
-  def explain_request(username, url, method, credential),
-    do: Server.call(username, {:explain_request, url, method, credential})
+  @spec console(username(), String.t(), String.t() | nil, pos_integer()) ::
+          {:ok, MWTClient.Sandbox.ConsoleHistory.run()} | {:error, :vm_not_running | String.t()}
+  def console(username, command, credential, seconds \\ 60) do
+    alias MWTClient.Sandbox.Console
+
+    with :ok <- Server.call(username, {:console_check, command}),
+         {:ok, guest} <- Projects.guest(username, snapshot(username).vm),
+         {:ok, result} <- Console.run(guest, command, credential, seconds) do
+      Server.call(username, {:console_ran, result})
+    else
+      {:error, {:carries_value, name}} ->
+        {:error,
+         "That command holds the real value of #{name}. What you type here goes into the VM, where agents can read it: use the credential instead (Speaking as)."}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Records a console run you stopped from MWT before it ended
+  (`console/4`): its command, who it spoke as and when it started, with
+  no output, as the history and the activity log keep it.
+  """
+  @spec console_stopped(username(), String.t(), String.t() | nil, DateTime.t()) ::
+          {:ok, MWTClient.Sandbox.ConsoleHistory.run()}
+  def console_stopped(username, command, credential, started_at) do
+    Server.call(
+      username,
+      {:console_ran,
+       %{
+         command: command,
+         credential: credential,
+         status: nil,
+         output: "",
+         cut: false,
+         timed_out: false,
+         stopped: true,
+         started_at: started_at,
+         finished_at: DateTime.utc_now()
+       }}
+    )
+  end
+
+  @doc """
+  The console's runs, newest first, each with what it printed
+  (`MWTClient.Sandbox.ConsoleHistory`): kept in memory, until the identity
+  locks or MWT stops.
+  """
+  @spec console_runs(username()) :: [MWTClient.Sandbox.ConsoleHistory.run()]
+  def console_runs(username), do: Server.call(username, :console_runs)
+
+  @doc "Forgets the console's runs. The activity log keeps its line of each."
+  @spec clear_console_runs(username()) :: :ok
+  def clear_console_runs(username), do: Server.call(username, :clear_console_runs)
 
   @doc """
   Locks a resource the VM reaches through MWT (`MWTClient.Sandbox.Resource`):

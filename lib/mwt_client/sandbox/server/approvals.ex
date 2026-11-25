@@ -12,6 +12,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
 
   alias MWTClient.Sandbox.{
     Approval,
+    Decision,
     Describe,
     Event,
     Grant,
@@ -181,12 +182,11 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       :allow_once ->
         true
 
-      # A grant that always asks takes no allowance: once is all. Nothing
-      # is similar to a use MWT couldn't describe (no pattern).
+      # Nothing is similar to a use MWT couldn't describe (no pattern).
       {:allow, scope, duration} ->
         (scope == :all or (scope == :similar and approval.pattern != nil) or
            (scope == :ids and MWTClient.Sandbox.Allowance.widen(approval.pattern) != nil)) and
-          duration?(duration, :grant) and not always_asks?(state, approval)
+          duration?(duration, :grant)
 
       # Only some of the card's grants, those you left ticked.
       {:allow, scope, duration, ids} ->
@@ -208,24 +208,13 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     end
   end
 
+  # Turning it on from its card waits for what its page or its resource
+  # needs first (`Grants.turn_on_refusal/2`).
   defp to_review?(state, approval) do
     case Enum.find(state.grants, &(&1.id == approval.grant_id)) do
-      %Grant{} = grant -> Grant.to_review?(grant)
-      nil -> false
+      %Grant{} = grant -> Grants.turn_on_refusal(state, grant) != nil
+      nil -> approval.resource != nil
     end
-  end
-
-  # Any grant the card answers for that always asks takes no allowance,
-  # and leaves the card with Allow once.
-  defp always_asks?(state, approval) do
-    approval
-    |> Approval.grant_ids()
-    |> Enum.any?(fn id ->
-      case Enum.find(state.grants, &(&1.id == id)) do
-        %Grant{} = grant -> Grant.ceiling(grant) == :ask
-        nil -> false
-      end
-    end)
   end
 
   defp duration?(minutes, _open) when is_integer(minutes) and minutes > 0, do: true
@@ -242,7 +231,13 @@ defmodule MWTClient.Sandbox.Server.Approvals do
 
     state
     |> settle(approval, :allowed, {:turn_on, minutes, uses})
-    |> Grants.turn_on(grant, minutes, uses, " · asked by #{approval.agent}")
+    |> Grants.turn_on(
+      grant,
+      minutes,
+      uses,
+      " · asked by #{approval.agent}",
+      you(state, approval, "you turned it on", true)
+    )
     |> answer_waiters(approval, :allow)
   end
 
@@ -275,36 +270,64 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   def decide(state, approval, :send_output) do
     state
     |> settle(approval, :allowed, :send_output)
+    |> State.log(
+      HostRuns.command_event(
+        approval,
+        "you sent its output to the agent",
+        you(state, approval, "you sent its output to the agent", true)
+      )
+    )
     |> answer_waiters(approval, :allow)
-    |> State.log(HostRuns.command_event(approval, "you sent its output to the agent"))
   end
 
   def decide(state, approval, :keep_output) do
     state
     |> settle(approval, :denied, :keep_output)
+    |> State.log(
+      HostRuns.command_event(
+        approval,
+        "you kept its output from the agent",
+        you(state, approval, "you kept its output from the agent", false)
+      )
+    )
     |> answer_waiters(approval, {:deny, :by_you})
-    |> State.log(HostRuns.command_event(approval, "you kept its output from the agent"))
   end
 
   def decide(state, approval, :decline) do
     state
     |> settle(approval, :denied, :decline)
+    |> State.log(
+      event_for(approval, :denied, "you declined", you(state, approval, "you declined", false))
+    )
     |> answer_waiters(approval, {:deny, :by_you})
-    |> State.log(event_for(approval, :denied, "you declined"))
   end
 
   def decide(state, approval, :simpler) do
     state
     |> settle(approval, :denied, :simpler)
+    |> State.log(
+      event_for(
+        approval,
+        :denied,
+        "you asked for a simpler one",
+        you(state, approval, "you asked for a simpler one", false)
+      )
+    )
     |> answer_waiters(approval, {:deny, :by_you})
-    |> State.log(event_for(approval, :denied, "you asked for a simpler one"))
   end
 
   def decide(state, approval, :allow_once) do
     state
     |> settle(approval, :allowed, :allow_once)
+    |> State.log(
+      event_for(
+        approval,
+        :allowed,
+        "you allowed once",
+        you(state, approval, "you allowed once", true)
+      )
+    )
     |> answer_waiters(approval, :allow)
-    |> State.log(event_for(approval, :allowed, "you allowed once"))
   end
 
   def decide(state, approval, {:allow, scope, duration}),
@@ -337,24 +360,26 @@ defmodule MWTClient.Sandbox.Server.Approvals do
         state =
           state
           |> settle(approval, :allowed, {:allow, scope, duration})
-          |> answer_waiters(approval, :allow)
-          |> State.log(
-            event_for(
-              approval,
-              :allowed,
+          |> then(fn settled ->
+            words =
               "you allowed #{how} #{State.duration_words(duration)}" <>
                 if(length(grants) > 1,
                   do: ", on #{Enum.map_join(grants, ", ", & &1.name)}",
                   else: ""
                 )
+
+            State.log(
+              settled,
+              event_for(approval, :allowed, words, you(state, approval, words, true))
             )
-          )
+          end)
+          |> answer_waiters(approval, :allow)
 
         Enum.reduce(grants, state, fn grant, state ->
           grant = Enum.find(state.grants, &(&1.id == grant.id)) || grant
 
           state
-          |> Grants.allow(grant, pattern, duration)
+          |> Grants.allow(grant, pattern, duration, %{kind: :card, card: approval.id})
           |> State.log(%{
             outcome: :grant,
             summary:
@@ -372,8 +397,10 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   def decide(state, approval, :deny) do
     state
     |> settle(approval, :denied, :deny)
+    |> State.log(
+      event_for(approval, :denied, "you denied", you(state, approval, "you denied", false))
+    )
     |> answer_waiters(approval, {:deny, :by_you})
-    |> State.log(event_for(approval, :denied, "you denied"))
   end
 
   def decide(state, approval, :deny_and_turn_off),
@@ -383,8 +410,10 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     state =
       state
       |> settle(approval, :denied, :deny_and_turn_off)
+      |> State.log(
+        event_for(approval, :denied, "you denied", you(state, approval, "you denied", false))
+      )
       |> answer_waiters(approval, {:deny, :by_you})
-      |> State.log(event_for(approval, :denied, "you denied"))
 
     case Enum.find(state.grants, &(&1.id == id)) do
       nil ->
@@ -423,7 +452,13 @@ defmodule MWTClient.Sandbox.Server.Approvals do
         state
         |> settle(approval, :denied, why)
         |> answer_waiters(approval, {:deny, why})
-        |> State.log(HostRuns.command_event(approval, HostRuns.refused_words(why)))
+        |> State.log(
+          HostRuns.command_event(
+            approval,
+            HostRuns.refused_words(why),
+            Decision.refused(HostRuns.refused_words(why))
+          )
+        )
     end
   end
 
@@ -466,7 +501,20 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     state =
       state
       |> settle(approval, :allowed, decision)
-      |> State.log(HostRuns.command_event(approval, how))
+      |> State.log(
+        HostRuns.command_event(
+          approval,
+          how,
+          settled(
+            if(decision == :auto,
+              do: HostRuns.auto_decision(state, approval),
+              else: you(state, approval, how, true)
+            ),
+            approval
+          )
+        )
+      )
+      |> HostRuns.repin(approval)
 
     # A request action's call is a request MWT sends, not a script; a
     # confined one runs once the values of the grants it names are at hand.
@@ -495,6 +543,21 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     |> Enum.reduce(state, fn approval, acc ->
       acc
       |> settle(approval, :allowed, {:turn_on, minutes, uses})
+      |> answer_waiters(approval, :allow)
+    end)
+  end
+
+  @doc """
+  Answers the agent waiting on a resource it proposed: you accepted it.
+  """
+  def settle_resource(state, resource) do
+    state.approvals
+    |> Enum.filter(
+      &(&1.status == :waiting and &1.kind == :activation and &1.resource == resource)
+    )
+    |> Enum.reduce(state, fn approval, acc ->
+      acc
+      |> settle(approval, :allowed, :accepted)
       |> answer_waiters(approval, :allow)
     end)
   end
@@ -532,7 +595,12 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       {from, {:network_request, _request}}, acc ->
         case outcome do
           :allow ->
-            GenServer.reply(from, {:ok, approval.grant_id})
+            # With what decided the card, which its line said first.
+            GenServer.reply(
+              from,
+              {:ok, approval.grant_id, State.card_decision(acc, approval.id)}
+            )
+
             State.used(acc, approval.grant_id)
 
           denied ->
@@ -558,6 +626,8 @@ defmodule MWTClient.Sandbox.Server.Approvals do
             |> Approval.grant_ids()
             |> Enum.reduce(acc, &State.used(&2, &1))
             |> State.log(%{
+              # As its card was decided, which its own line says.
+              decision: State.card_decision(acc, approval.id),
               outcome: :read,
               summary: "Read by MWT, no credential in it",
               host: request.host,
@@ -677,11 +747,12 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   @max_to_review 20
 
   @doc """
-  A grant an agent proposes (`mwt propose`), checked as the add form
-  checks yours (`MWTClient.Sandbox.Proposal`): a token or network grant,
-  or an action of a grant that takes them. Returns the grant to save
-  (off, disabled on startup, to review), the ask the agent waits on, and
-  the proposal of the same name it replaces, still to review, or nil.
+  What an agent proposes (`mwt propose`), checked as the forms check what
+  you add (`MWTClient.Sandbox.Proposal`): a credential, a network, a grant
+  over a resource, or an action over one that takes them. Returns what to
+  save, tagged (`{:grant, grant}`, `{:credential, credential}` or
+  `{:network, network}`, off and to review), the ask the agent waits on,
+  and the proposal of the same name it replaces, still to review, or nil.
   Nothing is saved here.
   """
   def proposal(state, ask) do
@@ -708,40 +779,28 @@ defmodule MWTClient.Sandbox.Server.Approvals do
         {:error, :no_purpose}
 
       true ->
-        with {:ok, target} <- target(state, wanted),
+        with {:ok, target} <- target(state, wanted, Map.get(ask, :over)),
              :ok <- script_given(target, ask),
              {:ok, preset} <- proposed_preset(state, target, ask),
              previous = previous(state, target, name),
              :ok <- room(state, previous),
-             existing = Enum.reject(state.grants, &(previous && &1.id == previous.id)),
-             attrs = Proposal.attrs(target, place(state, target, ask), preset),
-             {:ok, grant, _value} <-
-               refused(
-                 Grants.build_grant(attrs, existing,
-                   preset: preset,
-                   proposal: true,
-                   credentials: Map.get(state, :credentials, [])
-                 )
-               ) do
+             {:ok, attrs} <- fields(Proposal.attrs(target, place(state, target, ask), preset)),
+             {:ok, made} <- build(state, target, attrs, preset, previous) do
           said = %{agent: agent, thread: Approval.thread(ask), reason: reason, minutes: minutes}
-
-          grant = %{
-            grant
-            | id: (previous && previous.id) || grant.id,
-              proposal: Proposal.stamp(said, State.now()),
-              state: :off,
-              start: :off,
-              expires_at: nil,
-              allowances: []
-          }
-
-          {:ok, grant, proposal_ask(grant, target, said, previous), previous}
+          made = stamped(made, Proposal.stamp(said, State.now()))
+          {:ok, made, proposal_ask(made, target, said, previous), previous}
         end
     end
   end
 
-  defp target(state, wanted) do
-    case Proposal.target(wanted, state.grants) do
+  defp target(state, wanted, over) do
+    known = %{
+      grants: state.grants,
+      credentials: Map.get(state, :credentials, []),
+      networks: Map.get(state, :networks, [])
+    }
+
+    case Proposal.target(wanted, over, known) do
       {:error, reason} -> {:error, reason}
       target -> {:ok, target}
     end
@@ -756,29 +815,98 @@ defmodule MWTClient.Sandbox.Server.Approvals do
 
   defp script_given(_target, _ask), do: :ok
 
-  # A preset a new grant starts from, MWT's or yours, of its own type.
-  defp proposed_preset(state, {:new, kind}, ask) do
-    case ask |> Map.get(:preset) |> State.to_text() |> String.trim() do
-      "" ->
+  # The preset it starts from, MWT's or yours, of what it makes.
+  defp proposed_preset(state, target, ask) do
+    case {ask |> Map.get(:preset) |> State.to_text() |> String.trim(),
+          Proposal.preset_makes(target)} do
+      {"", _makes} ->
         {:ok, nil}
 
-      id ->
+      {id, nil} ->
+        {:error, {:no_preset, id, Proposal.thing(target)}}
+
+      {id, makes} ->
         case Presets.find(id, state.username) do
-          {:ok, %{id: id, kind: ^kind} = preset} when is_binary(id) -> {:ok, preset}
-          _other -> {:error, {:no_preset, id, kind}}
+          {:ok, %{id: id, makes: ^makes} = preset} when is_binary(id) -> {:ok, preset}
+          _other -> {:error, {:no_preset, id, Proposal.thing(target)}}
         end
     end
   end
 
-  defp proposed_preset(_state, _target, _ask), do: {:ok, nil}
+  defp fields({:ok, attrs}), do: {:ok, attrs}
+  defp fields({:error, message}), do: {:error, {:proposal, message}}
 
-  # The proposal of the same name, over the same resource, still to
-  # review: proposing again changes it.
+  # What it makes, built as the forms build what you add.
+  defp build(state, {:new, :credential}, attrs, preset, previous) do
+    alias MWTClient.Sandbox.Server.Resources
+
+    keep = [valueless: true, placeholder: previous && previous.placeholder]
+
+    case Resources.build_credential(attrs, preset, keep) do
+      {:ok, credential, _value} ->
+        {:ok,
+         {:credential,
+          %{credential | id: resource_id(state, :credentials, credential.name, previous)}}}
+
+      {:error, errors} ->
+        {:error, {:proposal, Proposal.refusal(errors)}}
+    end
+  end
+
+  defp build(state, {:new, :network}, attrs, _preset, previous) do
+    case MWTClient.Sandbox.Server.Resources.build_network(attrs) do
+      {:ok, network} ->
+        {:ok, {:network, %{network | id: resource_id(state, :networks, network.name, previous)}}}
+
+      {:error, errors} ->
+        {:error, {:proposal, Proposal.refusal(errors)}}
+    end
+  end
+
+  defp build(state, _target, attrs, preset, previous) do
+    others = %{state | grants: Enum.reject(state.grants, &(previous && &1.id == previous.id))}
+
+    case Grants.build_new(others, attrs, preset, proposal: true) do
+      {:ok, grant, _value} ->
+        grant = %{
+          grant
+          | id: (previous && previous.id) || grant.id,
+            state: :off,
+            start: :off,
+            expires_at: nil,
+            allowances: []
+        }
+
+        {:ok, {:grant, grant}}
+
+      {:error, errors} ->
+        {:error, {:proposal, Proposal.refusal(errors)}}
+    end
+  end
+
+  # A new resource's id, made from its name; the one it replaces keeps its.
+  defp resource_id(_state, _key, _name, %{id: id}), do: id
+
+  defp resource_id(state, key, name, nil) do
+    alias MWTClient.Sandbox.Server.Resources
+    Resources.new_id(name, state |> Map.get(key, []) |> Enum.map(& &1.id))
+  end
+
+  defp stamped({tag, made}, proposal), do: {tag, %{made | proposal: proposal}}
+
+  # The proposal of the same name, of the same kind, over the same
+  # resource, still to review: proposing again changes it.
+  defp previous(state, {:new, :credential}, name),
+    do: same_name(Map.get(state, :credentials, []), name)
+
+  defp previous(state, {:new, :network}, name),
+    do: same_name(Map.get(state, :networks, []), name)
+
   defp previous(state, target, name) do
     same? =
       case target do
         {:over, resource, _over} -> &(Grant.action?(&1) and Grant.resource(&1) == resource)
-        {:new, kind} -> &(&1.kind == kind and not Grant.action?(&1))
+        {:grant, resource, _over} -> &(not Grant.action?(&1) and Grant.resource(&1) == resource)
       end
 
     Enum.find(
@@ -787,10 +915,23 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     )
   end
 
+  defp same_name(resources, name) do
+    Enum.find(
+      resources,
+      &(match?(%{proposal: %{reviewed_at: nil}}, &1) and
+          String.downcase(&1.name) == String.downcase(name))
+    )
+  end
+
   defp room(state, nil) do
-    if Enum.count(state.grants, &Grant.to_review?/1) >= @max_to_review,
-      do: {:error, :too_many_proposals},
-      else: :ok
+    to_review =
+      Enum.count(state.grants, &Grant.to_review?/1) +
+        Enum.count(
+          Map.get(state, :credentials, []) ++ Map.get(state, :networks, []),
+          &match?(%{proposal: %{reviewed_at: nil}}, &1)
+        )
+
+    if to_review >= @max_to_review, do: {:error, :too_many_proposals}, else: :ok
   end
 
   defp room(_state, _previous), do: :ok
@@ -804,34 +945,46 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     Map.put(ask, :dir, dir)
   end
 
-  defp place(_state, _target, ask), do: ask
+  # Anything else runs nowhere: the folder the CLI always sends is no
+  # field of it.
+  defp place(_state, _target, ask), do: Map.delete(ask, :dir)
 
-  defp refused({:ok, grant, value}), do: {:ok, grant, value}
-  defp refused({:error, errors}), do: {:error, {:proposal, Proposal.refusal(errors)}}
+  # The ask the agent waits on: for a grant, answered once you accept it
+  # and it turns on; for a resource, once you accept it. Declining it
+  # removes the proposal.
+  defp proposal_ask({tag, made}, target, said, previous) do
+    parent_name =
+      case target do
+        {:over, _resource, %{name: name}} -> name
+        {:grant, _resource, %{name: name}} -> name
+        _new -> nil
+      end
 
-  # The ask the agent waits on: answered once you accept the grant and it
-  # turns on; declining it removes the proposal.
-  defp proposal_ask(grant, target, said, previous) do
-    parent_name = with {:over, _resource, %{name: name}} <- target, do: name
+    {grant_id, resource, kind} =
+      case tag do
+        :grant -> {made.id, nil, made.kind}
+        resource -> {nil, {resource, made.id}, resource}
+      end
 
     %Approval{
       id: "ask-" <> State.unique(),
       kind: :activation,
-      grant_id: grant.id,
-      title: "Review #{grant.name}",
+      grant_id: grant_id,
+      resource: resource,
+      title: "Review #{made.name}",
       agent: said.agent,
       thread: said.thread,
       minutes: said.minutes,
       reason: said.reason,
-      pattern: "propose #{grant.id}",
+      pattern: "propose #{if(resource, do: "#{tag}:", else: "")}#{made.id}",
       proposal: %{
-        kind: grant.kind,
+        kind: kind,
         parent_name: if(is_binary(parent_name), do: parent_name),
         updated: previous != nil
       },
       requested_at: State.now(),
       deadline: DateTime.add(State.now(), @activation_hold_seconds, :second),
-      claims: [{"Reason", said.reason}, {"It is for", grant.purpose}]
+      claims: [{"Reason", said.reason}, {"It is for", made.purpose}]
     }
   end
 
@@ -868,7 +1021,13 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     state
     |> settle(approval, :timed_out, nil)
     |> answer_waiters(approval, {:deny, :timed_out})
-    |> State.log(HostRuns.command_event(approval, "output kept: you didn't release it in time"))
+    |> State.log(
+      HostRuns.command_event(
+        approval,
+        "output kept: you didn't release it in time",
+        Decision.timeout(approval)
+      )
+    )
   end
 
   def give_up(state, approval) do
@@ -877,7 +1036,9 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     state
     |> settle(approval, :timed_out, nil)
     |> answer_waiters(approval, {:deny, :timed_out})
-    |> State.log(event_for(approval, :timed_out, "gave up after #{minutes} min"))
+    |> State.log(
+      event_for(approval, :timed_out, "gave up after #{minutes} min", Decision.timeout(approval))
+    )
   end
 
   @doc """
@@ -931,7 +1092,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   @doc """
   Refuses every use, command or call still waiting to run that `picks?`
   picks, as `settle_waiting/4` does for a grant's: for what waits on no
-  grant, as the commands agents write, when your machine is locked.
+  grant, as the commands agents write, when host commands are locked.
   """
   def settle_waiting_where(state, picks?, decision) do
     state.approvals
@@ -939,8 +1100,8 @@ defmodule MWTClient.Sandbox.Server.Approvals do
     |> Enum.reduce(state, fn approval, acc ->
       acc
       |> settle(approval, :denied, decision)
-      |> answer_waiters(approval, {:deny, decision})
       |> State.log(event_for(approval, :refused, refused_words(approval, decision)))
+      |> answer_waiters(approval, {:deny, decision})
     end)
   end
 
@@ -950,13 +1111,17 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   defp refused_words(_approval, _decision), do: "its grant turned off"
 
   @doc """
-  The log's event for what became of an approval.
+  The log's event for what became of an approval; `decision` says who or what
+  decided it (`MWTClient.Sandbox.Decision`), nil to let its outcome say.
   """
-  def event_for(%Approval{kind: :command} = approval, _outcome, how),
-    do: HostRuns.command_event(approval, how)
+  def event_for(approval, outcome, how, decision \\ nil)
 
-  def event_for(approval, outcome, how) do
+  def event_for(%Approval{kind: :command} = approval, _outcome, how, decision),
+    do: HostRuns.command_event(approval, how, settled(decision, approval))
+
+  def event_for(approval, outcome, how, decision) do
     Map.merge(Event.asked_by(approval.agent, approval.thread), %{
+      decision: settled(decision, approval),
       outcome: outcome,
       summary: "#{approval.title} · #{how}",
       host: approval.host,
@@ -965,9 +1130,18 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       method: approval.method,
       path: approval.path,
       exchange_id: is_map(approval.request) && Map.get(approval.request, :exchange),
-      details: Approval.details(approval, how)
+      details: Approval.details(approval)
     })
   end
+
+  # A card's line's decision says which card it settled, which an
+  # allowance's names apart from the card it came from.
+  defp settled(nil, _approval), do: nil
+  defp settled(decision, approval), do: Map.put_new(decision, :settled, approval.id)
+
+  # Decided by you on `approval`, choosing `how`, its grant as it is now.
+  defp you(state, approval, how, allowed?),
+    do: Decision.you(approval, how, State.grant_of(state, approval), allowed?)
 
   defp event_port(%Approval{kind: kind}) when kind in [:connection, :tool], do: nil
   defp event_port(%Approval{request: %{port: port}}) when is_integer(port), do: port

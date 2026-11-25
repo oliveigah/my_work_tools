@@ -320,6 +320,17 @@ none. The first 2 KiB of them go into `search_text`, so the log's word
 filter finds what only the details say (a command's script, a file a
 copy back wrote).
 
+Who or what decided each action (`MWTClient.Sandbox.Decision`,
+`MWTClient.Storage.Migrations.JournalDecisions`, `journal.db` version 5)
+is kept with its line: `events.decided_by` (`you`, `allowance`, `grant`,
+`refused`, `timeout`), which the log's *Decided by* filters on, and the
+whole decision as a compressed term in `events.decision`, the grant's
+state then as a hash, so the log can say it changed since. Each card you
+decided, or that timed out, is kept whole with what was chosen on it, in
+`events_cards(id, at, card)`, named by `events.card_id`; a sweep of the
+retention rule deletes those no line names any more, and a Clear deletes
+them all.
+
 Measured: a million events take 7.7 s to insert (129,000 a second; 7.1 s
 unencrypted) and 155 MB on disk. One kind in one hour: 0.4 ms. Top hosts
 over 100,000 events: 47 ms. A scan of every row's details: 175 ms.

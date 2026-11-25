@@ -1,0 +1,15 @@
+{
+  "id": "hex-packages",
+  "makes": "grant",
+  "over": ["hex"],
+  "name": "Hex packages",
+  "icon": "hero-cube",
+  "blurb": "hex.pm and its repository: publishing, owners and private packages.",
+  "guide": [
+    "The key's own permissions are the limit: Hex enforces them, whatever this grant says."
+  ],
+  "fields": {
+    "purpose": "Hex: publishing packages and reading private ones.",
+    "hosts": "hex.pm, repo.hex.pm"
+  }
+}

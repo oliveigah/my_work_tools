@@ -112,6 +112,8 @@ defmodule MWTClient.MixProject do
       {:elixirkit, github: "livebook-dev/elixirkit"},
       {:req, "~> 0.7.4"},
       {:mdex, "~> 0.14.1"},
+      # JSON Schema: the rules a fixed call's parameters keep to.
+      {:jsv, "~> 0.28"},
       {:ecto_sqlite3, "~> 0.26.0"},
       # Pinned apart: the top of this file relies on how it builds its NIF.
       {:exqlite, "~> 0.43.0"}

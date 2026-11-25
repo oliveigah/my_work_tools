@@ -230,9 +230,38 @@ defmodule MWTClient.Sandbox.Transfer do
   defp built_in(%{id: id} = saved) when is_binary(id) do
     rules = List.wrap(saved[:host_rules])
 
-    if Enum.all?(rules, &host_rule?/1),
-      do: {:ok, %{id: id, start: saved[:start], ceiling: saved[:ceiling], host_rules: rules}},
-      else: :error
+    # The hosts the Internet's grant leaves out, as entries; a file from
+    # before them has none.
+    except =
+      case saved[:except] do
+        nil ->
+          {:ok, []}
+
+        list when is_list(list) ->
+          if Enum.all?(list, &is_binary/1),
+            do: MWTClient.Sandbox.Network.except_entries(list),
+            else: :error
+
+        _other ->
+          :error
+      end
+
+    case except do
+      {:ok, except} ->
+        if Enum.all?(rules, &host_rule?/1),
+          do:
+            {:ok,
+             %{
+               id: id,
+               start: saved[:start],
+               host_rules: rules,
+               except: except
+             }},
+          else: :error
+
+      _error ->
+        :error
+    end
   end
 
   defp built_in(_other), do: :error

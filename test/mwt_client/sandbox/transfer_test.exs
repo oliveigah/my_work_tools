@@ -227,10 +227,10 @@ defmodule MWTClient.Sandbox.TransferTest do
     # Into the same identity, its datalake made differently: the file's
     # comes in beside it, with a new placeholder.
     {:ok, _} =
-      Sandbox.update_grant(username, datalake.id, %{
+      Sandbox.update_resource(username, {:credential, datalake.credential}, %{
         "name" => "Datalake",
         "purpose" => "The datalake in prod",
-        "hosts" => "internal.example.com",
+        "source" => "stored",
         "env" => "DATALAKE_TOKEN, DL_TOKEN"
       })
 
@@ -249,7 +249,7 @@ defmodule MWTClient.Sandbox.TransferTest do
       MWTClient.Sandbox.Transfer.prepare(1, %{
         credentials: [],
         grants: [
-          # Ask to run commands: a command an agent writes needs no grant.
+          # Ask to run commands: Commands agents write, built in, takes its place.
           %{id: "commands", name: "Ask to run commands", kind: :command},
           # A token grant only its actions used: its actions stay, over
           # its credential.
@@ -262,7 +262,7 @@ defmodule MWTClient.Sandbox.TransferTest do
 
     assert [
              %Grant{id: "gh-view", credential: "github"},
-             %Grant{id: "gcp", credential: "google", machine: true},
+             %Grant{id: "gcp", credential: "google"},
              %Grant{id: "bq", with: ["google"]}
            ] = prepared.grants
   end

@@ -273,12 +273,13 @@ defmodule MWTClientWeb.SandboxLive.Components do
   def outcome_style(:allowed), do: {"Approved", "bg-ok-soft/60 text-ok-strong"}
   def outcome_style(:denied), do: {"Denied", "bg-bad-soft/60 text-bad"}
   def outcome_style(:timed_out), do: {"No answer", "bg-warn-soft/60 text-warn-strong"}
-  def outcome_style(:refused), do: {"Grant off", "bg-warn-soft/60 text-warn-strong"}
+  def outcome_style(:refused), do: {"Refused", "bg-warn-soft/60 text-warn-strong"}
   def outcome_style(:blocked), do: {"Blocked", "bg-bad-soft/60 text-bad"}
   def outcome_style(:violation), do: {"Wrong host", "bg-bad text-white"}
   def outcome_style(:grant), do: {"Grant change", "bg-violet/15 text-violet-strong"}
   def outcome_style(:vm), do: {"VM change", "bg-hover text-muted"}
   def outcome_style(:command), do: {"Host command", "bg-bad-soft/50 text-bad"}
+  def outcome_style(:call), do: {"Fixed call", "bg-violet/15 text-violet-strong"}
   def outcome_style(:project), do: {"Project", "bg-hover text-muted"}
   def outcome_style(:handoff), do: {"Handoff", "bg-accent-soft/60 text-accent-strong"}
   def outcome_style(:tool), do: {"MWT tool", "bg-accent-soft/60 text-accent-strong"}
@@ -315,7 +316,8 @@ defmodule MWTClientWeb.SandboxLive.Components do
     do: "Nobody answered an agent's ask in time, so it was declined."
 
   def outcome_meaning(:refused),
-    do: "A placeholder came while its grant was off, so MWT refused the request."
+    do:
+      "MWT refused it before it went anywhere: no grant that is on covers it (one is off, leaves its host out, or doesn't list it), or a call's values break a parameter's shape or rule. The line says which."
 
   def outcome_meaning(:blocked),
     do: "MWT refused the connection: a destination it always refuses, or one whose grant is off."
@@ -332,6 +334,10 @@ defmodule MWTClientWeb.SandboxLive.Components do
   def outcome_meaning(:command),
     do:
       "A command an agent asked to run on your machine: run, declined or ended. Never its output."
+
+  def outcome_meaning(:call),
+    do:
+      "A call of a fixed request: asked, sent through MWT's proxy, answered. The request it sent has a line of its own."
 
   def outcome_meaning(:project),
     do: "A repository became a project or stopped being one, or its settings or mirror changed."
@@ -561,6 +567,401 @@ defmodule MWTClientWeb.SandboxLive.Components do
       </span>
       <p class="max-w-sm text-xs leading-5 text-muted">{render_slot(@inner_block)}</p>
     </div>
+    """
+  end
+
+  @doc """
+  A part of a page, without a box: a heading with its "?", actions on the
+  right, and what it holds under a rule. Pages are sections one under the
+  other; `card/1` is for a list that is one thing.
+  """
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :subtitle, :string, default: nil
+  attr :class, :any, default: nil
+  slot :help
+  slot :actions
+  slot :inner_block, required: true
+
+  def page_section(assigns) do
+    ~H"""
+    <section id={@id} class={["border-t border-line-soft pt-4", @class]}>
+      <header class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <div class="min-w-0 flex-1">
+          <h2 class="flex items-center gap-1.5 text-[13px] font-semibold text-ink">
+            {@title}
+            <.help :if={@help != []} id={"#{@id}-help"} label={"About #{@title}"}>
+              {render_slot(@help)}
+            </.help>
+          </h2>
+          <p :if={@subtitle} class="mt-0.5 text-[11px] leading-4 text-muted">{@subtitle}</p>
+        </div>
+        {render_slot(@actions)}
+      </header>
+      {render_slot(@inner_block)}
+    </section>
+    """
+  end
+
+  @doc """
+  A short label beside a name: one shape for every tag (*Proposed*, *To review*, *Starts on*, *Locked*), its tone saying what
+  kind of thing it says.
+  """
+  attr :id, :string, default: nil
+  attr :tone, :atom, default: :plain, values: [:plain, :accent, :ok, :warn, :bad, :violet]
+  attr :icon, :string, default: nil
+  attr :title, :string, default: nil
+  slot :inner_block, required: true
+
+  def badge(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      title={@title}
+      class={[
+        "inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium",
+        case @tone do
+          :plain -> "border-line bg-deep text-muted"
+          :accent -> "border-accent/40 bg-accent-soft/30 text-accent-strong"
+          :ok -> "border-ok/40 bg-ok-soft/30 text-ok-strong"
+          :warn -> "border-warn/45 bg-warn-soft/40 text-warn-strong"
+          :bad -> "border-bad/45 bg-bad-soft/40 text-bad"
+          :violet -> "border-violet/40 bg-violet/10 text-violet-strong"
+        end
+      ]}
+    >
+      <.icon :if={@icon} name={@icon} class="size-3" />{render_slot(@inner_block)}
+    </span>
+    """
+  end
+
+  @doc """
+  A form's text field as the sandbox's forms show one: its label in words,
+  a "?" for what its value means when there is more to say, the field,
+  and a line under it. Errors show apart (`field_error`), as the sandbox's
+  builders return them by field.
+  """
+  attr :field, Phoenix.HTML.FormField, required: true
+  attr :label, :string, required: true
+  attr :hint, :string, default: nil, doc: "a line under the field"
+  attr :help, :string, default: nil, doc: "more, behind a ?"
+  attr :type, :string, default: "text"
+  attr :mono, :boolean, default: false, doc: "for code: scripts, hosts, headers"
+
+  attr :rest, :global,
+    include:
+      ~w(placeholder rows autocomplete phx-mounted phx-debounce min max disabled spellcheck)
+
+  def text_field(assigns) do
+    ~H"""
+    <div class="space-y-1.5">
+      <div class="flex items-center gap-1">
+        <label for={@field.id} class="text-[12px] font-medium text-ink">{@label}</label>
+        <.help :if={@help} id={"#{@field.id}-help"} label={"About #{@label}"}>{@help}</.help>
+      </div>
+      <textarea
+        :if={@type == "textarea"}
+        id={@field.id}
+        name={@field.name}
+        class={field_classes(@mono)}
+        {@rest}
+      >{Phoenix.HTML.Form.normalize_value("textarea", @field.value)}</textarea>
+      <input
+        :if={@type != "textarea"}
+        type={@type}
+        id={@field.id}
+        name={@field.name}
+        value={Phoenix.HTML.Form.normalize_value(@type, @field.value)}
+        class={field_classes(@mono)}
+        {@rest}
+      />
+      <p :if={@hint} class="text-[11px] leading-4 text-muted">{@hint}</p>
+    </div>
+    """
+  end
+
+  @doc """
+  A form's yes-or-no field, as the sandbox's forms show one: a box, its
+  label, and a line under it.
+  """
+  attr :field, Phoenix.HTML.FormField, required: true
+  attr :label, :string, required: true
+  attr :hint, :string, default: nil
+  attr :id, :string, default: nil
+  attr :checked_value, :string, default: "true"
+  attr :unchecked_value, :string, default: "false"
+
+  attr :checked, :boolean,
+    default: nil,
+    doc: "whether it is checked; by default, whether the field holds the checked value"
+
+  def check_field(assigns) do
+    assigns =
+      assign_new(assigns, :is_checked, fn ->
+        if is_nil(assigns.checked),
+          do: to_string(assigns.field.value) == assigns.checked_value,
+          else: assigns.checked
+      end)
+
+    ~H"""
+    <label class="flex cursor-pointer items-start gap-2.5">
+      <input type="hidden" name={@field.name} value={@unchecked_value} />
+      <input
+        type="checkbox"
+        name={@field.name}
+        id={@id || @field.id}
+        value={@checked_value}
+        checked={@is_checked}
+        class="mt-0.5 size-4 shrink-0 cursor-pointer rounded accent-accent"
+      />
+      <span class="min-w-0">
+        <span class="block text-[12px] font-medium text-ink">{@label}</span>
+        <span :if={@hint} class="block text-[11px] leading-4 text-muted">{@hint}</span>
+      </span>
+    </label>
+    """
+  end
+
+  @doc """
+  One choice of a few, in a form, as a row of pills: radio inputs a
+  submit sends, so it is saved with the rest.
+  """
+  attr :id, :string, required: true
+  attr :name, :string, required: true
+  attr :label, :string, default: nil
+  attr :options, :list, required: true, doc: "`{value, label}` pairs"
+  attr :value, :any, required: true
+  attr :hint, :string, default: nil
+
+  def choice_field(assigns) do
+    ~H"""
+    <div id={@id} class="space-y-1.5">
+      <p :if={@label} class="text-[12px] font-medium text-ink">{@label}</p>
+      <div
+        role="radiogroup"
+        class="inline-flex flex-wrap rounded-lg border border-line-soft bg-deep/60 p-0.5"
+      >
+        <label
+          :for={{value, label} <- @options}
+          id={"#{@id}-#{value}"}
+          class={[
+            "cursor-pointer rounded-md px-3 py-1 text-[12px] transition-colors has-focus-visible:outline-2 has-focus-visible:outline-accent",
+            if(to_string(@value) == to_string(value),
+              do: "bg-panel font-medium text-ink shadow-sm",
+              else: "text-muted hover:text-ink"
+            )
+          ]}
+        >
+          <input
+            type="radio"
+            name={@name}
+            value={value}
+            checked={to_string(@value) == to_string(value)}
+            class="sr-only"
+          />
+          {label}
+        </label>
+      </div>
+      <p :if={@hint} class="text-[11px] leading-4 text-muted">{@hint}</p>
+    </div>
+    """
+  end
+
+  defp field_classes(mono) do
+    [
+      "w-full rounded-lg border border-line-soft bg-deep/40 px-3 py-2 text-ink shadow-xs",
+      "placeholder:text-faint transition-colors focus:border-accent/60 focus:bg-panel focus:outline-none focus:ring-2 focus:ring-accent/15",
+      if(mono, do: "font-mono text-[12px]", else: "text-[13px]")
+    ]
+  end
+
+  @doc """
+  Where a command or a script runs: on the host, your machine, as you
+  (`MWTClient.Sandbox.Grant.host_command?/1`), beside every script or
+  command a page shows; or on the VM, for what the console tries as the
+  VM would.
+  """
+  attr :id, :string, default: nil
+  attr :place, :atom, required: true, values: [:vm, :machine]
+
+  def where(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      title={
+        if(@place == :vm,
+          do: "Runs on the VM: agents' own tools, where MWT sees only what leaves it",
+          else:
+            "Runs on the host, your machine: carried out by MWT or as you, the VM only sends values"
+        )
+      }
+      class={[
+        "inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium",
+        if(@place == :vm,
+          do: "border-accent/35 bg-accent-soft/30 text-accent-strong",
+          else: "border-warn/40 bg-warn-soft/30 text-warn-strong"
+        )
+      ]}
+    >
+      <.icon
+        name={
+          if(@place == :vm, do: "hero-cube-transparent-micro", else: "hero-computer-desktop-micro")
+        }
+        class="size-3"
+      />
+      {if(@place == :vm, do: "Runs on VM", else: "Runs on host")}
+    </span>
+    """
+  end
+
+  @doc """
+  A grant's kind: open use or a fixed call (`Grant.kind_of/1`), by who
+  builds what it lets through. Every grant shows it.
+  """
+  attr :id, :string, default: nil
+  attr :kind, :atom, required: true, values: [:open, :fixed]
+
+  def kind_badge(assigns) do
+    ~H"""
+    <span
+      id={@id}
+      title={"#{kind_name(@kind)}: #{kind_words(@kind)}"}
+      class="inline-flex shrink-0 items-center rounded border border-line bg-deep px-1.5 py-0.5 text-[10px] font-medium text-muted"
+    >
+      {kind_name(@kind)}
+    </span>
+    """
+  end
+
+  @doc "What a kind of grant is called."
+  def kind_name(:open), do: "Open use"
+  def kind_name(:fixed), do: "Fixed call"
+
+  @doc "What a kind of grant is, in a line."
+  def kind_words(:open),
+    do:
+      "The agent builds what it sends: its own tools' requests, or a command it writes. MWT checks each use against the grants over everything it uses, asking you or letting it through."
+
+  def kind_words(:fixed),
+    do:
+      "MWT builds it, from your template and the values agents give, which keep to the schema you set. It covers the credentials it names, in what it builds and nothing else, and what it builds goes out through its channel as the agents' own would."
+
+  @doc """
+  What a form holds beyond the common case, folded: its summary says what
+  of it is set, so nothing set there is hidden.
+  """
+  attr :id, :string, required: true
+  attr :set, :list, default: [], doc: "what is set in it, each a few words"
+  attr :open, :boolean, default: false
+  slot :inner_block, required: true
+
+  def advanced(assigns) do
+    ~H"""
+    <details id={@id} open={@open} class="group rounded-lg border border-line-soft">
+      <summary class="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-xs text-muted transition-colors hover:text-ink">
+        <.icon
+          name="hero-chevron-right-micro"
+          class="size-3.5 shrink-0 transition-transform group-open:rotate-90"
+        />
+        <span class="font-medium">Advanced</span>
+        <span :if={@set != []} class="min-w-0 truncate text-faint">· {Enum.join(@set, " · ")}</span>
+      </summary>
+      <div class="space-y-4 border-t border-line-soft px-3 py-3">{render_slot(@inner_block)}</div>
+    </details>
+    """
+  end
+
+  @doc """
+  Choosing a preset, or none, before a form: each with what it is, what it
+  sets and what it asks you for, so you choose knowing what you get; a
+  search over them when there are many. Choosing pushes `event` with the
+  preset's id as `preset`; "By hand" with none.
+  """
+  attr :id, :string, required: true
+  attr :presets, :list, required: true
+  attr :event, :string, required: true
+  attr :by_hand, :string, required: true, doc: "what By hand means here, in a line"
+
+  def preset_picker(assigns) do
+    ~H"""
+    <div id={@id} phx-hook=".PresetSearch" class="space-y-2">
+      <input
+        :if={length(@presets) > 5}
+        type="search"
+        id={"#{@id}-search"}
+        data-preset-search
+        placeholder="Search presets"
+        autocomplete="off"
+        class="w-full rounded-md border border-line bg-deep px-2.5 py-1.5 text-xs text-ink placeholder:text-faint focus:border-accent focus:outline-none"
+      />
+      <ul class="divide-y divide-line-soft overflow-hidden rounded-lg border border-line-soft">
+        <li>
+          <button
+            type="button"
+            id={"#{@id}-none"}
+            phx-click={@event}
+            class="flex w-full cursor-pointer items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-accent-soft/20"
+          >
+            <.icon name="hero-pencil-square" class="mt-0.5 size-4 shrink-0 text-muted" />
+            <span class="min-w-0 flex-1">
+              <span class="block text-xs font-medium text-ink">By hand</span>
+              <span class="block text-[11px] text-muted">{@by_hand}</span>
+            </span>
+          </button>
+        </li>
+        <li
+          :for={preset <- @presets}
+          data-preset-text={
+            String.downcase(
+              "#{preset.name} #{preset.blurb} #{Enum.join(MWTClient.Sandbox.Presets.summary(preset), " ")}"
+            )
+          }
+        >
+          <button
+            type="button"
+            id={"#{@id}-#{preset.id}"}
+            phx-click={@event}
+            phx-value-preset={preset.id}
+            class="flex w-full cursor-pointer items-start gap-3 px-3 py-2.5 text-left transition-colors hover:bg-accent-soft/20"
+          >
+            <.icon name={preset.icon} class="mt-0.5 size-4 shrink-0 text-muted" />
+            <span class="min-w-0 flex-1">
+              <span class="block text-xs font-medium text-ink">{preset.name}</span>
+              <span class="block text-[11px] text-muted">{preset.blurb}</span>
+              <span
+                :if={MWTClient.Sandbox.Presets.summary(preset) != []}
+                class="mt-0.5 block text-[10px] text-faint"
+              >
+                Sets: {Enum.join(MWTClient.Sandbox.Presets.summary(preset), " · ")}
+              </span>
+              <span
+                :if={MWTClient.Sandbox.Presets.needs(preset) != []}
+                class="block text-[10px] text-faint"
+              >
+                You give: {Enum.join(MWTClient.Sandbox.Presets.needs(preset), ", ")}
+              </span>
+            </span>
+          </button>
+        </li>
+      </ul>
+    </div>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".PresetSearch">
+      // Shows only the presets whose words hold every word typed; By hand
+      // always shows.
+      export default {
+        mounted() {
+          const input = this.el.querySelector("[data-preset-search]")
+          if (!input) return
+          input.addEventListener("input", () => {
+            const words = input.value.toLowerCase().split(/\s+/).filter(Boolean)
+            this.el.querySelectorAll("[data-preset-text]").forEach((row) => {
+              const text = row.dataset.presetText
+              row.hidden = !words.every((word) => text.includes(word))
+            })
+          })
+        }
+      }
+    </script>
     """
   end
 

@@ -21,6 +21,8 @@ defmodule MWTClient.Sandbox.Event do
     * `:vm` - the VM started, stopped or was recreated
     * `:command` - a command an agent asked to run on the host: run,
       declined, stopped, ended, its output sent or kept. Never its output.
+    * `:call` - a call of a request action: asked, sent through MWT's
+      proxy, answered. The request it sent has a line of its own.
     * `:project` - a repository became a project or stopped being one, its
       settings changed, or its mirror kept stray edits or failed
     * `:handoff` - an agent handed work off or updated it, or you accepted
@@ -75,6 +77,7 @@ defmodule MWTClient.Sandbox.Event do
     :exchange_id,
     :exchange,
     :details,
+    :decision,
     detailed?: false
   ]
 
@@ -93,6 +96,7 @@ defmodule MWTClient.Sandbox.Event do
           | :grant
           | :vm
           | :command
+          | :call
           | :project
           | :handoff
           | :tool
@@ -117,16 +121,17 @@ defmodule MWTClient.Sandbox.Event do
           thread: String.t() | nil,
           exchange_id: String.t() | nil,
           exchange: MWTClient.Sandbox.Exchange.t() | :none | nil,
+          decision: MWTClient.Sandbox.Decision.t() | nil,
           details: MWTClient.Sandbox.EventDetails.t() | nil,
           detailed?: boolean()
         }
 
   @outcomes ~w(tunnel read read_failed lookup swapped allowed denied timed_out refused blocked violation grant vm
-               command project handoff tool firewall lost)a
+               command call project handoff tool firewall lost)a
 
   @groups %{
     "traffic" => [:read, :tunnel],
-    "credentials" => [:swapped, :allowed, :denied, :timed_out, :refused],
+    "credentials" => [:swapped, :allowed, :denied, :timed_out, :refused, :call],
     "blocked" => [:blocked, :violation, :read_failed],
     "lookups" => [:lookup],
     "changes" => [:grant, :vm, :project, :handoff, :tool],
@@ -191,7 +196,10 @@ defmodule MWTClient.Sandbox.Event do
       thread: event.thread,
       exchange_id: event.exchange_id,
       detailed: if(details(event), do: 1, else: 0),
-      search_text: search_text(event)
+      search_text: search_text(event),
+      decided_by: event.decision && Atom.to_string(event.decision.by),
+      card_id: event.decision && event.decision[:card],
+      decision: event.decision && Values.term(event.decision)
     }
   end
 
@@ -199,13 +207,13 @@ defmodule MWTClient.Sandbox.Event do
   @spec columns() :: [String.t()]
   def columns,
     do: ~w(id at outcome summary grant_id host port method path up down ms agent thread_id thread
-         exchange_id detailed)
+         exchange_id detailed decision)
 
   @doc "An event read back from the journal, its columns as `columns/0` lists them."
   @spec from_row(list()) :: t()
   def from_row(
         [id, at, outcome, summary, grant_id, host, port, method, path, up, down, ms] ++
-          [agent, thread_id, thread, exchange_id, detailed]
+          [agent, thread_id, thread, exchange_id, detailed, decision]
       ) do
     %__MODULE__{
       id: id,
@@ -224,7 +232,8 @@ defmodule MWTClient.Sandbox.Event do
       thread_id: thread_id,
       thread: thread,
       exchange_id: exchange_id,
-      detailed?: detailed == 1
+      detailed?: detailed == 1,
+      decision: decision && Values.from_term(decision)
     }
   end
 

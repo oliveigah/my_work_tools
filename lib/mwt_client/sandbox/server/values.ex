@@ -373,7 +373,7 @@ defmodule MWTClient.Sandbox.Server.Values do
   forms}`, the value as it is first (`Secrets.forms/1`).
   """
   def value_forms(state) do
-    own = for {grant, value} <- values(state), do: {{:value, grant.name}, Secrets.forms(value)}
+    own = for {name, value} <- values(state), do: {{:value, name}, Secrets.forms(value)}
 
     made =
       for {_placeholder, %Made{value: value} = made} <- Map.get(state, :made, %{}),
@@ -409,16 +409,28 @@ defmodule MWTClient.Sandbox.Server.Values do
     end
   end
 
-  # Every value at hand, as {grant, value}: its stored one, or each it
-  # minted, one per host for a grant minted per host.
+  # Every value at hand, as {name, value}: each credential's stored one,
+  # or each it minted, one per host for one minted per host; a
+  # credential with no grant over it yet included. A token grant saved
+  # before credentials, with none of its own, by its name.
   defp values(state) do
     stored = state.values || %{}
     minted = Map.get(state, :minted) || %{}
+    credentials = Map.get(state, :credentials, [])
+    known = MapSet.new(credentials, & &1.id)
 
-    # One per credential: every grant over it has the same value.
-    for %Grant{kind: :token} = grant <- Enum.uniq_by(state.grants, &credential_key/1),
-        value <- grant_values(stored, minted, Grant.credential_id(grant)),
-        do: {grant, value}
+    of_credentials =
+      for credential <- credentials,
+          value <- grant_values(stored, minted, credential.id),
+          do: {credential.name, value}
+
+    of_grants =
+      for %Grant{kind: :token} = grant <- Enum.uniq_by(state.grants, &credential_key/1),
+          not MapSet.member?(known, Grant.credential_id(grant)),
+          value <- grant_values(stored, minted, Grant.credential_id(grant)),
+          do: {grant.name, value}
+
+    of_credentials ++ of_grants
   end
 
   defp credential_key(%Grant{kind: :token} = grant), do: {:credential, Grant.credential_id(grant)}
@@ -733,6 +745,20 @@ defmodule MWTClient.Sandbox.Server.Values do
        "No grant over #{grant.name}'s network covers #{request.host}: #{grant.name} covers only " <>
          "#{Enum.join(grant.scope || grant.destinations, ", ")}. Ask the user for one that does " <>
          "(mwt request --need \"...\"), or run mwt why --recent.",
+       grant
+     )}
+  end
+
+  def refusal({:excepted, grant, entry}, request) do
+    title = Describe.request(request).title
+
+    {request_event(request, grant, :refused, "#{title} · #{grant.name} leaves out #{entry}"), nil,
+     deny(
+       403,
+       "mwt_not_covered",
+       "#{grant.name} leaves out #{entry}, and no other grant that is on covers #{request.host}. " <>
+         "The user set it so: ask for a grant over that host if you need it " <>
+         "(mwt request --need \"...\"), or run mwt why #{request.host}.",
        grant
      )}
   end

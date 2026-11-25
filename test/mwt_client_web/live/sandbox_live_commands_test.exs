@@ -299,7 +299,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
 
     # Your own script: named, with what it's for, and calmer.
     assert has_element?(view, "#approval-#{approval.id}[data-command=saved]")
-    assert has_element?(view, "#approval-kind-#{approval.id}", "Action")
+    assert has_element?(view, "#approval-kind-#{approval.id}", "Fixed call")
     assert has_element?(view, "#approval-#{approval.id} h3", "Pods")
     assert has_element?(view, "#approval-purpose-#{approval.id}", "List pods")
     assert has_element?(view, "#approval-trust-#{approval.id}", "The agent sent no text")

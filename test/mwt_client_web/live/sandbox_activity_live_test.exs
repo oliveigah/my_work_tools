@@ -107,7 +107,7 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
 
     assert has_element?(view, "#event-event-a1 summary", "1.3 s")
-    assert has_element?(view, "#event-event-a1 details", "100 / 4,000 bytes")
+    assert has_element?(view, "#event-event-a1 details", "↑ 100 · ↓ 4,000 bytes")
     assert has_element?(view, "#event-event-a3 details", "GET /user")
     assert has_element?(view, "#event-event-a4 details", "10.0.0.5:22")
   end
@@ -148,7 +148,8 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
              "Not read"
            )
 
-    assert has_element?(view, "#event-meaning-event-a1", "as bytes, unread")
+    # Opened, the line says it once, by its badge: no row repeats it.
+    refute has_element?(view, "#event-meaning-event-a1")
 
     # The legend has every outcome, in the filters' groups.
     for {group, outcomes} <- Event.groups(), outcome <- outcomes do
@@ -359,7 +360,6 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
 
     assert has_element?(view, "#event-details-#{edited.id}", "What changed")
     assert has_element?(view, "#event-details-#{edited.id}", "uploads.github.com")
-    assert has_element?(view, "#event-details-#{edited.id}", "The grant, then")
     refute render(view) =~ "ghp_real_value_0123456789"
 
     json =

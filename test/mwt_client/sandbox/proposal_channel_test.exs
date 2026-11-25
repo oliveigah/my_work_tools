@@ -36,7 +36,7 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
       asking = Task.async(fn -> propose(context) end)
       ask = waiting(context.username, &(&1.kind == :activation))
       assert ask.title == "Review repo view"
-      assert %{kind: :command, parent_name: "Your machine", updated: false} = ask.proposal
+      assert %{kind: :command, parent_name: "Host commands", updated: false} = ask.proposal
 
       grant = proposed(context.username, ask.grant_id)
 
@@ -45,7 +45,7 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
                name: "repo view",
                purpose: "Shows a repository",
                script: ~s(echo "viewing $REPO_NAME"),
-               params: [%{name: "REPO_NAME", shape: :word}],
+               params: [%{name: "REPO_NAME", schema: %{"format" => "word"}}],
                state: :off,
                start: :off,
                proposal: %{agent: "claude", reason: "I look at several", reviewed_at: nil}
@@ -63,7 +63,7 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
       assert {:error, :bad_decision} =
                Sandbox.decide(context.username, ask.id, {:turn_on, 60, :ask})
 
-      assert {:error, :every_run_asks} = Sandbox.set_start(context.username, grant.id, :on)
+      assert {:error, :to_review} = Sandbox.set_start(context.username, grant.id, :on)
 
       # The agent is told where it is and that it waits.
       assert Sandbox.snapshot(context.username).waiting |> Enum.any?(&(&1.id == ask.id))
@@ -264,124 +264,263 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
                "$A"
              ], "one argument in single quotes"},
             {["propose", "token", "--name", "x", "--for", "y", "--reason", "r"],
-             "--host: List at least one host"},
+             "mwt propose token is gone"},
             {["propose", "network", "--name", "x", "--for", "y", "--reason", "r"],
              "--destination: List at least one"},
+            {["propose", "credential", "--name", "x", "--for", "y", "--reason", "r"] ++
+               ["--host", "api.example.com"], "--host isn't for a credential"},
+            {["propose", "credential", "--name", "x", "--for", "y", "--reason", "r"] ++
+               ["--set", "value=sk_live"], "value is yours to set"},
+            {["propose", "credential", "--name", "x", "--for", "y", "--reason", "r"] ++
+               ["--set", "hosts=a.example"], "A credential has no field hosts"},
+            {["propose", "credential", "--name", "x", "--for", "y", "--reason", "r"] ++
+               ["--set", "adapter"], "--set takes NAME=VALUE"},
+            {["propose", "credential", "--name", "x", "--for", "y", "--reason", "r"] ++
+               ["--preset", "nope"], "No preset for a credential is called nope"},
+            # A grant preset doesn't start a credential.
+            {["propose", "credential", "--name", "x", "--for", "y", "--reason", "r"] ++
+               ["--preset", "github-everything"],
+             "No preset for a credential is called github-everything"},
+            {["propose", "credential", "--name", "x", "--for", "y", "--reason", "r"] ++
+               ["--set", "adapter=gitlab"], "No adapter is called gitlab"},
+            {["propose", "credential", "--name", "x", "--for", "y", "--reason", "r"] ++
+               ["--set", "app_id=Iv23li"], "A GitHub App's token is minted"},
+            {["propose", "grant", "--name", "x", "--for", "y", "--reason", "r"],
+             "Say which resource the grant is over"},
+            {["propose", "grant", "--over", "nope", "--name", "x", "--for", "y", "--reason", "r"],
+             ~s[No credential or network is called "nope"]},
             {[
                "propose",
-               "token",
+               "credential",
                "--name",
                "x",
                "--for",
                "y",
                "--reason",
                "r",
-               "--preset",
-               "nope"
-             ], "No token preset is called nope"},
-            {["propose", "token", "--name", "x", "--for", "y", "--reason", "r", "--", "echo a"],
-             "takes no script"}
+               "--",
+               "echo a"
+             ], "takes no script"}
           ] do
         assert {output, 1} = mwt(context, args)
         assert output =~ says, inspect(args)
       end
 
-      assert Sandbox.snapshot(context.username).waiting == []
-      refute Enum.any?(Sandbox.snapshot(context.username).grants, &Grant.proposed?/1)
+      snapshot = Sandbox.snapshot(context.username)
+      assert snapshot.waiting == []
+      refute Enum.any?(snapshot.grants, &Grant.proposed?/1)
+      assert snapshot.credentials == []
     end
   end
 
-  describe "a grant an agent proposes" do
-    test "a token grant: saved off with no value; accepted, it needs one before it turns on",
+  describe "a resource and grants over it, proposed apart" do
+    defp credential(username, id),
+      do: Enum.find(Sandbox.snapshot(username).credentials, &(&1.id == id))
+
+    defp grant(username, id),
+      do: Enum.find(Sandbox.snapshot(username).grants, &(&1.id == id))
+
+    test "a credential with no value, then a grant over it: each accepted in turn",
          context do
       assert {output, 2} =
                mwt(context, [
                  "propose",
-                 "token",
+                 "credential",
                  "--name",
                  "Stripe test",
                  "--for",
-                 "Test charges through the Stripe API",
-                 "--host",
-                 "api.stripe.com",
+                 "A Stripe test key",
                  "--env",
                  "STRIPE_API_KEY",
-                 "--carrier",
-                 "Authorization",
                  "--reason",
                  "The checkout tests call Stripe",
                  "--wait",
                  "0"
                ])
 
-      assert output =~ "Saved as stripe-test, off, for the user to review"
-      assert output =~ "mwt wait"
+      assert output =~ "Saved as the credential stripe-test, for the user to review"
 
-      grant = Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "stripe-test"))
+      assert %{env: ["STRIPE_API_KEY"], source: :stored, adapter: :bearer, proposal: proposal} =
+               stripe = credential(context.username, "stripe-test")
 
-      assert %Grant{
-               kind: :token,
-               hosts: ["api.stripe.com"],
-               env: ["STRIPE_API_KEY"],
-               carriers: ["authorization"],
-               source: :stored,
-               state: :off,
-               start: :off
-             } = grant
+      assert %{agent: "claude", reviewed_at: nil} = proposal
+      assert Sandbox.snapshot(context.username).grants |> Enum.filter(&Grant.proposed?/1) == []
+      ask = waiting(context.username, &(&1.resource == {:credential, "stripe-test"}))
+      assert ask.title == "Review Stripe test"
 
-      assert Grant.to_review?(grant)
-      refute Sandbox.snapshot(context.username).values["stripe-test"]
-
-      # grants.md says it waits for the user.
-      {0, listed} = Channel.answer("grants", %{}, context.username)
-      assert listed =~ "proposed by claude and not reviewed yet"
-
-      # No value yet: accepting it can't turn it on.
-      assert {:error, :no_value} =
-               Sandbox.review(context.username, grant.id, {60, :ask}, grant.proposal.revision)
-
-      :ok = Sandbox.set_value(context.username, grant.id, "sk_test_real")
-      {:ok, on} = Sandbox.review(context.username, grant.id, {60, :ask}, grant.proposal.revision)
-      assert on.state == :on
-    end
-
-    test "a token grant from a preset takes its fields, the agent's overriding them", context do
-      assert {_output, 2} =
+      # A grant over it, proposed before it is accepted.
+      assert {output, 2} =
                mwt(context, [
                  "propose",
-                 "token",
+                 "grant",
+                 "--over",
+                 "Stripe test",
                  "--name",
-                 "GitHub, read-only",
+                 "Stripe API",
                  "--for",
-                 "Reading issues of oliveigah/klife",
-                 "--preset",
-                 "github",
+                 "Test charges through the Stripe API",
                  "--host",
-                 "api.github.com",
+                 "api.stripe.com",
+                 "--carrier",
+                 "Authorization",
                  "--reason",
                  "r",
                  "--wait",
                  "0"
                ])
 
-      grant =
-        Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "github-read-only"))
+      assert output =~ "Saved as stripe-api, off, for the user to review"
 
-      assert grant.hosts == ["api.github.com"]
-      assert grant.env == ["GITHUB_TOKEN", "GH_TOKEN"]
-      assert grant.git
-      assert grant.preset == "github"
-      assert grant.cli_tools == ["gh"]
-      assert String.starts_with?(grant.placeholder, "ghp_")
+      assert %Grant{
+               kind: :token,
+               credential: "stripe-test",
+               hosts: ["api.stripe.com"],
+               env: ["STRIPE_API_KEY"],
+               carriers: ["authorization"],
+               state: :off
+             } = over = grant(context.username, "stripe-api")
+
+      assert Grant.to_review?(over)
+
+      # The resource first.
+      assert {:error, :resource_to_review} =
+               Sandbox.review(context.username, over.id, :keep_off, over.proposal.revision)
+
+      assert {:error, :changed} =
+               Sandbox.review_resource(context.username, {:credential, "stripe-test"}, "old")
+
+      assert {:ok, %{proposal: %{reviewed_at: %DateTime{}}}} =
+               Sandbox.review_resource(
+                 context.username,
+                 {:credential, "stripe-test"},
+                 stripe.proposal.revision
+               )
+
+      assert {said, 0} = mwt(context, ["wait", ask.id])
+      assert said =~ "accepted the credential stripe-test"
+      assert said =~ "mwt_no_value"
+
+      # Accepted with no value: the grant over it can't turn on yet.
+      assert {:error, :no_value} =
+               Sandbox.review(context.username, over.id, {60, :ask}, over.proposal.revision)
+
+      {:ok, _off} = Sandbox.review(context.username, over.id, :keep_off, over.proposal.revision)
+      assert {:error, :no_value} = Sandbox.turn_on(context.username, over.id, 60)
+      :ok = Sandbox.set_credential_value(context.username, "stripe-test", "sk_test_real")
+      assert {:ok, %{state: :on}} = Sandbox.turn_on(context.username, over.id, 60)
     end
 
-    test "a Google grant with a metadata server for client libraries", context do
+    test "a GitHub App from its preset, a field overridden, and a grant on one repository",
+         context do
+      assert {_output, 2} =
+               mwt(context, [
+                 "propose",
+                 "credential",
+                 "--name",
+                 "GitHub App",
+                 "--for",
+                 "My App's installation token",
+                 "--preset",
+                 "github-app",
+                 "--fill",
+                 "app_id=Iv23liABCD",
+                 "--fill",
+                 "installation_id=12345678",
+                 "--fill",
+                 "key_command=cat ~/.config/app.pem",
+                 "--set",
+                 "env=GH_TOKEN",
+                 "--reason",
+                 "r",
+                 "--wait",
+                 "0"
+               ])
+
+      assert %{
+               adapter: :github,
+               app: %{app_id: "Iv23liABCD", installation_id: "12345678"},
+               source: {:minted, "cat ~/.config/app.pem"},
+               env: ["GH_TOKEN"],
+               git: true,
+               preset: "github-app",
+               cli_tools: ["gh"]
+             } = app = credential(context.username, "github-app")
+
+      assert String.starts_with?(app.placeholder, "ghs_")
+
+      assert {_output, 2} =
+               mwt(context, [
+                 "propose",
+                 "grant",
+                 "--over",
+                 "github-app",
+                 "--name",
+                 "klife only",
+                 "--for",
+                 "gh and git on oliveigah/klife",
+                 "--preset",
+                 "github-repository",
+                 "--fill",
+                 "repository=oliveigah/klife",
+                 "--reason",
+                 "r",
+                 "--wait",
+                 "0"
+               ])
+
+      assert %Grant{
+               credential: "github-app",
+               hosts: ["api.github.com", "github.com", "uploads.github.com"],
+               attributes: %{"github.repository" => ["oliveigah/klife"]},
+               app: %{app_id: "Iv23liABCD"}
+             } = grant(context.username, "klife-only")
+    end
+
+    test "the same App from no preset at all, every field set", context do
+      assert {_output, 2} =
+               mwt(context, [
+                 "propose",
+                 "credential",
+                 "--name",
+                 "Bare App",
+                 "--for",
+                 "An App by hand",
+                 "--set",
+                 "adapter=github",
+                 "--set",
+                 "app_id=123456",
+                 "--set",
+                 "installation_id=42",
+                 "--mint",
+                 "pass show github/app-key",
+                 "--env",
+                 "GH_TOKEN",
+                 "--git",
+                 "--set",
+                 "prefix=ghs_",
+                 "--reason",
+                 "r",
+                 "--wait",
+                 "0"
+               ])
+
+      assert %{
+               adapter: :github,
+               app: %{app_id: "123456", installation_id: "42"},
+               source: {:minted, "pass show github/app-key"},
+               git: true,
+               preset: nil
+             } = credential(context.username, "bare-app")
+    end
+
+    test "a Google credential with a metadata server, and a grant that signs as an account",
+         context do
       google = fn extra ->
         mwt(
           context,
           [
             "propose",
-            "token",
+            "credential",
             "--name",
             "BigQuery",
             "--for",
@@ -400,94 +539,68 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
       # option it lacks, and nothing is saved.
       assert {output, 1} = google.(["--metadata-account", "sa@p.iam.gserviceaccount.com"])
       assert output =~ "--metadata-project: Name the project"
-      refute Enum.any?(Sandbox.snapshot(context.username).grants, &(&1.id == "bigquery"))
+      refute credential(context.username, "bigquery")
 
       assert {_output, 2} =
                google.([
                  "--metadata-project",
                  "my-project",
                  "--metadata-account",
-                 "sa@my-project.iam.gserviceaccount.com"
+                 "sa@my-project.iam.gserviceaccount.com",
+                 "--keep-minutes",
+                 "4"
                ])
 
-      grant = Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "bigquery"))
+      assert %{
+               adapter: :google,
+               keep_minutes: 4,
+               presents: %{
+                 metadata: %{
+                   project: "my-project",
+                   email: "sa@my-project.iam.gserviceaccount.com"
+                 }
+               }
+             } = credential(context.username, "bigquery")
 
-      assert grant.presents == %{
-               metadata: %{project: "my-project", email: "sa@my-project.iam.gserviceaccount.com"}
-             }
+      assert {_output, 2} =
+               mwt(context, [
+                 "propose",
+                 "grant",
+                 "--over",
+                 "BigQuery",
+                 "--name",
+                 "Internal service",
+                 "--for",
+                 "The internal service behind IAP",
+                 "--preset",
+                 "google-apis",
+                 "--host",
+                 "svc.example.com",
+                 "--sign-as",
+                 "svc@p.iam.gserviceaccount.com",
+                 "--reason",
+                 "r",
+                 "--wait",
+                 "0"
+               ])
 
-      assert grant.hosts == ["*.googleapis.com"]
-      assert Grant.to_review?(grant)
-    end
+      # The option replaces the preset's hosts, as a field the form has.
+      assert %Grant{hosts: ["svc.example.com"], signs_as: ["svc@p.iam.gserviceaccount.com"]} =
+               grant(context.username, "internal-service")
 
-    test "a grant that signs JWTs as a service account, its tokens kept a few minutes",
-         context do
-      propose = fn extra ->
-        mwt(
-          context,
-          [
-            "propose",
-            "token",
-            "--name",
-            "Internal service",
-            "--for",
-            "The internal service behind IAP",
-            "--host",
-            "svc.example.com",
-            "--mint",
-            "gcloud auth print-access-token",
-            "--keep-minutes",
-            "4",
-            "--sign-as",
-            "svc@p.iam.gserviceaccount.com",
-            "--reason",
-            "r",
-            "--wait",
-            "0"
-          ] ++ extra
-        )
-      end
-
-      # Signing's host is the google adapter's own: implied, not listed.
-      assert {_output, 2} = propose.([])
-
-      grant =
-        Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "internal-service"))
-
-      assert grant.signs_as == ["svc@p.iam.gserviceaccount.com"]
-      assert grant.keep_minutes == 4
-
-      # mwt grants says what MWT answers for it.
       {0, listed} = Channel.answer("grants", %{}, context.username)
       assert listed =~ "signJwt as svc@p.iam.gserviceaccount.com"
-
-      # Proposed again before review, with a login file: it changes in place.
-      assert {_output, 2} =
-               propose.([
-                 "--host",
-                 "*.googleapis.com",
-                 "--login-file",
-                 "--id-token-header",
-                 "X-Id-Token"
-               ])
-
-      grant =
-        Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "internal-service"))
-
-      assert %{login: %{refresh: "1//mwt" <> _, header: "x-id-token"}} = grant.presents
-      {0, listed} = Channel.answer("grants", %{}, context.username)
-      assert listed =~ "GOOGLE_APPLICATION_CREDENTIALS names a Google login file"
     end
 
-    test "a network grant, with its own DNS server and way out", context do
+    test "a network, and a grant over part of it", context do
       assert {_output, 2} =
                mwt(context, [
                  "propose",
                  "network",
                  "--name",
-                 "Staging database",
+                 "Staging",
                  "--for",
-                 "Postgres on the staging network",
+                 "The staging network",
                  "--destination",
                  "db.staging.corp:5432",
                  "--destination",
@@ -502,30 +615,96 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
                  "0"
                ])
 
-      grant =
-        Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == "staging-database"))
+      network = Enum.find(Sandbox.snapshot(context.username).networks, &(&1.id == "staging"))
 
-      assert %Grant{
-               kind: :network,
+      assert %{
                destinations: ["db.staging.corp:5432", "10.20.0.0/16:5432"],
                resolver: "10.8.0.1",
                anchor: "wg0",
-               state: :off
-             } = grant
+               proposal: %{reviewed_at: nil}
+             } = network
 
-      assert Grant.to_review?(grant)
-      # An ask for it by id makes a card to review, never one that turns it on.
       assert {_output, 2} =
-               mwt(context, ["request", grant.id, "--reason", "r", "--wait", "0"])
+               mwt(context, [
+                 "propose",
+                 "grant",
+                 "--over",
+                 "staging",
+                 "--name",
+                 "Staging database",
+                 "--for",
+                 "Postgres on staging",
+                 "--destination",
+                 "db.staging.corp:5432",
+                 "--reason",
+                 "r",
+                 "--wait",
+                 "0"
+               ])
 
-      ask = waiting(context.username, &(&1.kind == :activation and is_nil(&1.proposal)))
-      assert ask.title == "Review Staging database"
+      over = grant(context.username, "staging-database")
+      assert %Grant{kind: :network, network: "staging", scope: ["db.staging.corp:5432"]} = over
+
+      # An ask for it by id makes a card to review, never one that turns it on.
+      assert {_output, 2} = mwt(context, ["request", over.id, "--reason", "r", "--wait", "0"])
+
+      ask =
+        waiting(
+          context.username,
+          &(&1.kind == :activation and &1.grant_id == over.id and is_nil(&1.proposal))
+        )
 
       assert {:error, :bad_decision} =
                Sandbox.decide(context.username, ask.id, {:turn_on, 60, :ask})
     end
 
-    test "at most twenty wait for review", context do
+    test "declining a proposed credential removes it and what was proposed over it", context do
+      {_output, 2} =
+        mwt(context, [
+          "propose",
+          "credential",
+          "--name",
+          "Hex key",
+          "--for",
+          "Publishing",
+          "--preset",
+          "hex",
+          "--reason",
+          "r",
+          "--wait",
+          "0"
+        ])
+
+      asking =
+        Task.async(fn ->
+          mwt(context, [
+            "propose",
+            "grant",
+            "--over",
+            "Hex key",
+            "--name",
+            "Hex packages",
+            "--for",
+            "hex.pm",
+            "--preset",
+            "hex-packages",
+            "--reason",
+            "r"
+          ])
+        end)
+
+      grant_ask = waiting(context.username, &(&1.grant_id == "hex-packages"))
+      ask = waiting(context.username, &(&1.resource == {:credential, "hex-key"}))
+      :ok = Sandbox.decide(context.username, ask.id, :decline)
+
+      refute credential(context.username, "hex-key")
+      refute grant(context.username, "hex-packages")
+      assert {output, 3} = Task.await(asking)
+      assert output =~ "declined"
+      refute Enum.any?(Sandbox.snapshot(context.username).waiting, &(&1.id == grant_ask.id))
+    end
+
+    test "at most twenty wait for review, resources and grants together", context do
       for n <- 1..20 do
         assert {_output, 2} =
                  mwt(context, [
@@ -547,13 +726,11 @@ defmodule MWTClient.Sandbox.ProposalChannelTest do
       assert {output, 1} =
                mwt(context, [
                  "propose",
-                 "network",
+                 "credential",
                  "--name",
                  "one more",
                  "--for",
                  "y",
-                 "--destination",
-                 "10.0.1.1:22",
                  "--reason",
                  "r"
                ])

@@ -17,17 +17,19 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
   test "a credential is added on its own, edited, given a grant from its page, and removed with it",
        %{conn: conn, username: username} do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=resources")
-    assert has_element?(view, "#resources-credentials-empty")
+    refute has_element?(view, "#resources-rows [id^=resource-credential-]")
 
     view |> element("#add-credential") |> render_click()
     assert has_element?(view, "#resource-dialog", "Add a credential")
+    view |> element("#resource-presets-none") |> render_click()
 
-    # A pasted value is needed.
+    # A name is needed; a value may come later.
     view
-    |> form("#resource-form", resource: %{name: "GitHub personal", purpose: "gh, as me"})
+    |> form("#resource-form", resource: %{name: "", purpose: "gh, as me"})
     |> render_submit()
 
-    assert has_element?(view, "#resource-error-value")
+    assert has_element?(view, "#resource-error-name")
+    refute has_element?(view, "#resource-error-value")
 
     view
     |> form("#resource-form",
@@ -52,10 +54,9 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
 
     # Edited: its id and placeholder stay.
     [before] = Sandbox.snapshot(username).credentials
-    page |> element("#edit-resource") |> render_click()
 
     page
-    |> form("#resource-form", resource: %{name: "GitHub (me)", purpose: "gh, as me"})
+    |> form("#resource-settings-form", resource: %{name: "GitHub (me)", purpose: "gh, as me"})
     |> render_submit()
 
     assert [%{id: "github-personal", name: "GitHub (me)", placeholder: placeholder}] =
@@ -66,8 +67,10 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
     # A grant over it, from its page: the credential comes chosen.
     {:ok, page, _html} = live(conn, ~p"/tools/sandbox/resources/credential/github-personal")
     page |> element("#add-grant-over") |> render_click()
+    page |> element("#pick-kind-open") |> render_click()
     assert has_element?(page, "#add-grant-title", "Add a grant over GitHub (me)")
-    assert has_element?(page, "#grant-credential option[value=github-personal][selected]")
+    refute has_element?(page, "#grant-credential")
+    assert has_element?(page, "#grant-credential-of", "GitHub (me)")
 
     page
     |> form("#add-grant-form",
@@ -114,7 +117,7 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
              Enum.find(Sandbox.snapshot(username).networks, &(&1.id == "prod-vpn"))
 
     {:ok, page, _html} = live(conn, ~p"/tools/sandbox/resources/network/prod-vpn")
-    assert has_element?(page, "#network-destinations", "db.prod.corp:5432")
+    assert has_element?(page, "#resource-settings-form textarea", "db.prod.corp:5432")
     assert has_element?(page, "#resource-limits")
 
     # Over part of it: the hosts its form lists.
@@ -146,7 +149,7 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
 
     # Locked from its page: the On now tab says so, and links to it.
     {:ok, page, _html} = live(conn, ~p"/tools/sandbox/resources/network/prod-vpn")
-    assert has_element?(page, "#lock-network-prod-vpn-open", "Open")
+    assert has_element?(page, "#lock-network-prod-vpn[aria-pressed=false]", "Lock")
     page |> element("#lock-network-prod-vpn") |> render_click()
     assert has_element?(page, "#lock-network-prod-vpn-locked", "Locked")
     assert Map.has_key?(Sandbox.snapshot(username).locks, {:network, "prod-vpn"})
@@ -184,17 +187,110 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
 
     assert has_element?(
              view,
-             "#grant-crumbs #grant-resource[href='/tools/sandbox/resources/network/office-lan']",
+             "#grant-resource[href='/tools/sandbox/resources/network/office-lan']",
              "Office LAN"
            )
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
-    view |> form("#grant-search", term: "printers") |> render_change()
+    view |> form("#grant-filters", %{term: "printers"}) |> render_change()
 
     assert has_element?(
              view,
-             "#grant-card-office-printers #grant-over-office-printers",
+             "#grant-row-office-printers #grant-over-office-printers",
              "Office LAN"
            )
+  end
+
+  test "the Grants list filters by the resource each is over, with how many", %{
+    conn: conn,
+    username: username
+  } do
+    for {name, hosts} <- [{"GitHub", "api.github.com"}, {"Hex", "hex.pm"}] do
+      {:ok, _grant} =
+        Sandbox.create_grant(username, %{
+          "kind" => "token",
+          "name" => name,
+          "purpose" => "p",
+          "hosts" => hosts,
+          "value" => "v"
+        })
+    end
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    assert has_element?(view, "#grant-resource-credential-github", "GitHub")
+    assert has_element?(view, "#grant-resource-machine", "Host commands")
+
+    view
+    |> form("#grant-filters", %{resource: "credential:hex"})
+    |> render_change()
+
+    assert has_element?(view, "#grant-row-hex")
+    refute has_element?(view, "#grant-row-github")
+    assert has_element?(view, "#grant-filters-clear")
+  end
+
+  test "a resource an agent proposed is reviewed from its card, on its page", %{
+    conn: conn,
+    username: username
+  } do
+    {:ok, ask} =
+      MWTClient.Sandbox.Server.call(
+        username,
+        {:propose,
+         %{
+           grant: "credential",
+           name: "Stripe test",
+           purpose: "A test key",
+           reason: "The checkout tests",
+           agent: "claude",
+           set: %{},
+           fill: %{}
+         }}
+      )
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
+    assert has_element?(view, "#approval-#{ask.id}", "Review the credential “Stripe test”")
+    assert has_element?(view, "#approval-resource-#{ask.id}")
+
+    view |> element("#review-ask-#{ask.id}") |> render_click()
+    assert_patch(view, ~p"/tools/sandbox/resources/credential/stripe-test")
+    assert has_element?(view, "#resource-review", "claude proposed this credential")
+  end
+
+  test "the Resources tab is one list: each with its grants, how many are on and its last use, found by kind, state and words",
+       %{conn: conn, username: username} do
+    {:ok, _} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "GitHub",
+        "purpose" => "p",
+        "hosts" => "api.github.com",
+        "value" => "v"
+      })
+
+    {:ok, _} = Sandbox.turn_on(username, "github", 60)
+
+    {:ok, _} =
+      Sandbox.create_resource(username, :credential, %{"name" => "Spare", "purpose" => "p"})
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=resources")
+    assert has_element?(view, "#resource-grants-credential-github", "1 grant, on")
+    assert has_element?(view, "#resource-used-credential-github", "Never used")
+    assert has_element?(view, "#resources-rows #resource-network-internet")
+    assert has_element?(view, "#resources-rows #resource-machine")
+    assert has_element?(view, "#resource-kind-credential", "2")
+
+    view |> form("#resource-filters", %{kind: "credential"}) |> render_change()
+    refute has_element?(view, "#resources-rows #resource-network-internet")
+    assert has_element?(view, "#resources-rows #resource-credential-spare")
+
+    view |> form("#resource-filters", %{state: "unused"}) |> render_change()
+    assert has_element?(view, "#resources-rows #resource-credential-spare")
+    refute has_element?(view, "#resources-rows #resource-credential-github")
+
+    view |> element("#resource-filters-clear") |> render_click()
+    view |> form("#resource-filters", %{term: "spare"}) |> render_change()
+    assert has_element?(view, "#resources-rows #resource-credential-spare")
+    refute has_element?(view, "#resources-rows #resource-machine")
   end
 end

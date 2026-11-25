@@ -64,7 +64,7 @@ defmodule MWTClient.Sandbox.LocksTest do
     assert {:forward, _, _} = Server.call(username, {:authorize, request(grant)})
   end
 
-  test "your machine locked refuses the agent's commands and MWT's tools that run there; MWT's own tools lock apart",
+  test "host commands locked refuses the agent's commands; MWT's own tools, git and sync included, lock apart",
        %{username: username} do
     :ok = Sandbox.lock(username, :machine)
 
@@ -73,27 +73,21 @@ defmodule MWTClient.Sandbox.LocksTest do
     assert {:refuse, {:locked, :machine, _}} =
              Policy.decide(snapshot, {:command, %{script: "ls"}}, DateTime.utc_now())
 
-    assert {:refuse, {:locked, :machine, _}} =
-             Policy.decide(snapshot, {:tool, %{grant: :git_fetch}}, DateTime.utc_now())
-
-    # Notes, diagrams and flash cards are MWT's tools, a resource of their own.
-    refute match?(
-             {:refuse, {:locked, _, _}},
-             Policy.decide(
-               snapshot,
-               {:tool, %{grant: :read, tool: "list_notes"}},
-               DateTime.utc_now()
+    # MWT's tools are a resource of their own: notes, diagrams and flash
+    # cards, and the projects' git and the shared folders, all MWT's code.
+    for use <- [%{grant: :read, tool: "list_notes"}, %{grant: :git_fetch}, %{grant: :share_sync}] do
+      refute match?(
+               {:refuse, {:locked, _, _}},
+               Policy.decide(snapshot, {:tool, use}, DateTime.utc_now())
              )
-           )
+    end
 
     :ok = Sandbox.lock(username, :mwt)
 
-    assert {:refuse, {:locked, :mwt, _}} =
-             Policy.decide(
-               snapshot(username),
-               {:tool, %{grant: :read, tool: "list_notes"}},
-               DateTime.utc_now()
-             )
+    for use <- [%{grant: :read, tool: "list_notes"}, %{grant: :git_fetch}] do
+      assert {:refuse, {:locked, :mwt, _}} =
+               Policy.decide(snapshot(username), {:tool, use}, DateTime.utc_now())
+    end
 
     :ok = Sandbox.unlock(username, :machine)
     snapshot = snapshot(username)

@@ -19,8 +19,9 @@ defmodule MWTClient.Sandbox.Why do
     * a network grant covers it, and is off (how to ask for it), or lists
       another port; a name it lists, which MWT answers only while the
       grant is on; its way out isn't connected (a VPN that is down);
-    * a network blocks it (`MWTClient.Sandbox.HostLimits`), or a grant
-      over part of a network names it, on or off;
+    * a network blocks it (`MWTClient.Sandbox.HostLimits`), a grant
+      leaves it out (`Grant.except`), or a grant over part of a network
+      names it, on or off;
     * the Internet opens it, or is off; or the address is private or
       reserved, which the Internet never opens;
     * no grant covers it, and how to ask for access.
@@ -182,7 +183,31 @@ defmodule MWTClient.Sandbox.Why do
           else: "- #{label(grant)} would give it, and is off. " <> ask(grant)
       end
 
-    {blocked != [], blocked ++ parts}
+    # A grant leaving it out (`Grant.except`) gives it nothing: with no
+    # other grant on naming it, it isn't reached.
+    excepting =
+      for %Grant{kind: :network} = grant <- world.snapshot.grants,
+          Grant.on?(grant, world.now),
+          entry = MWTClient.Sandbox.Network.excepted(grant, [name]),
+          do: {grant, entry}
+
+    named_on? =
+      Enum.any?(world.snapshot.grants, fn g ->
+        g.kind == :network and MWTClient.Sandbox.Network.part?(g) and Grant.on?(g, world.now) and
+          names?(g, name) and is_nil(MWTClient.Sandbox.Network.excepted(g, [name]))
+      end)
+
+    left_out =
+      for {grant, entry} <- excepting,
+          do:
+            "- #{label(grant)} leaves it out (#{entry}), as the user set it: it gives it nothing. " <>
+              if(named_on?,
+                do: "A grant naming it gives it instead, as its approval says.",
+                else:
+                  "Only a grant over the host itself gives it: ask for one (mwt request --need \"...\") if the task needs it."
+              )
+
+    {blocked != [] or (excepting != [] and not named_on?), blocked ++ left_out ++ parts}
   end
 
   defp host_lists(_address, _world), do: {false, []}
@@ -213,6 +238,10 @@ defmodule MWTClient.Sandbox.Why do
     token_lines = Enum.map(tokens, &token_line(&1, world))
 
     cond do
+      # Left out by the Internet's grant: said by `host_lists/2`.
+      tokens == [] and networks == [] and internet_excepts?(world, name) ->
+        {false, []}
+
       tokens == [] and networks == [] ->
         {internet_on?(world),
          [
@@ -381,6 +410,13 @@ defmodule MWTClient.Sandbox.Why do
           true ->
             "the Internet grant would open it, and is off: #{ask(internet)}"
         end
+    end
+  end
+
+  defp internet_excepts?(world, name) do
+    case Enum.find(world.snapshot.grants, &Grant.internet?/1) do
+      nil -> false
+      internet -> MWTClient.Sandbox.Network.excepted(internet, [name]) != nil
     end
   end
 

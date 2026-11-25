@@ -25,7 +25,10 @@ defmodule MWTClient.Sandbox.Policy do
   grants only give. Across resources the use goes unasked only if each
   lets it through unasked; if any asks, one card names each grant that
   asks (`all_of/1`). A locked resource, or a host its network blocks
-  (`MWTClient.Sandbox.HostLimits`), refuses whatever the grants say.
+  (`MWTClient.Sandbox.HostLimits`), refuses whatever the grants say. A
+  network grant covers its part of the network but the hosts it leaves
+  out (`Grant.except`), which another grant may cover on its own terms;
+  none does, `{:excepted, grant, entry}`.
 
     * **A connection** goes through its network. The network grants that
       are on and open the address (the Internet's covering every public
@@ -60,21 +63,21 @@ defmodule MWTClient.Sandbox.Policy do
       `MWTClient.Sandbox.Made`) is that grant's use, with hosts and
       carriers of its own; one MWT no longer holds is refused,
       `{:made_stale, made}`.
-    * **A call of a request action** (`{:call, _}`): the credential (the
-      action itself, or a token grant over it listing its host, the most
-      permissive) and the network of its host.
-    * **A saved command** (`{:command, _}`, by its exact id): your machine
-      (the saved command) and each credential it runs with (a token grant
-      over it that allows your machine, `Grant.machine`). A command the
-      agent writes (no id, or one Ask to run commands had) needs no grant:
-      it asks you, always; refused only while your machine is locked.
+    * **A call of a request action** (`{:call, _}`): the action, for the
+      credential in its request (no token grant over it has a say), and the
+      network of its host as for the agent's own request (`reach/3`): its
+      request goes out as the agent's would.
+    * **A saved command** (`{:command, _}`, by its exact id): the saved
+      command alone, over host commands and the credentials it runs with
+      (`Grant.with`); a lock on any of them refuses. A command the agent
+      writes (no id, or one Ask to run commands had) is open use of host
+      commands: Commands agents write (`Grant.agent_commands/0`) has to be
+      on, and then it asks you, always; refused while host commands are
+      locked.
     * **A call of MWT's tools** (`{:tool, _}`): MWT's tools, or your machine
       for git and the shared folders, by the built-in grant for what it
       does. Adding past the hour's limit asks whatever the allowances say
       (`MWTClient.Sandbox.MwtTools`).
-
-  A grant whose ceiling is `:ask` (`Grant.ceiling/1`) asks for every use,
-  whatever allowance it holds.
 
   An allowance added while cards wait settles those it would have let
   through had it been there when they were asked, and no others
@@ -138,11 +141,11 @@ defmodule MWTClient.Sandbox.Policy do
           | {:network_down, Grant.t()}
           | {:host_blocked, String.t(), String.t() | :default}
           | {:outside, Grant.t() | String.t()}
+          | {:excepted, Grant.t(), String.t()}
           | {:plain_http, Grant.t()}
           | {:name_a_grant, [String.t()]}
           | {:no_such_grant, [String.t()]}
           | {:fixed_script, Grant.t()}
-          | {:not_on_machine, String.t(), Grant.t() | nil}
           | :no_mwt_grant
           | {:locked, Resource.id(), Grant.t() | nil}
           | {:uncovered, Grant.t()}
@@ -203,8 +206,11 @@ defmodule MWTClient.Sandbox.Policy do
       # the connection until its first bytes say which host it is for
       # (`{:unread, _, _, _}`, or each request it carries): an address
       # shared by many names opens for the others.
-      if HostLimits.any?(limits) and
-           HostLimits.any_blocked?(limits, answered_names(snapshot, ip)) do
+      answered = answered_names(snapshot, ip)
+
+      # So does a grant that leaves out one of them (`Grant.except`).
+      if (HostLimits.any?(limits) and HostLimits.any_blocked?(limits, answered)) or
+           Network.excepted(grant, answered) != nil do
         {:ask, grant, about}
       else
         allow_or_ask(grant, now, about)
@@ -225,11 +231,20 @@ defmodule MWTClient.Sandbox.Policy do
         nil ->
           parts =
             for g <- parts(snapshot.grants, network),
+                g.id != grant.id,
                 Grant.on?(g, now),
                 Enum.any?(names, &names?(g, &1)),
                 do: g
 
-          most_permissive(Enum.map([grant | parts], &allow_or_ask(&1, now, about)))
+          # A grant leaving out one of the names it may be for has no say:
+          # MWT can't tell which of them it is for.
+          case Enum.split_with([grant | parts], &is_nil(Network.excepted(&1, names))) do
+            {[], [first | _]} ->
+              {:refuse, {:excepted, first, Network.excepted(first, names)}}
+
+            {covering, _left_out} ->
+              most_permissive(Enum.map(covering, &allow_or_ask(&1, now, about)))
+          end
 
         entry ->
           {:refuse, {:host_blocked, network, entry}}
@@ -358,7 +373,8 @@ defmodule MWTClient.Sandbox.Policy do
 
         case Enum.find(grants_over, &Grant.on?(&1, now)) do
           %Grant{} = grant ->
-            {:allow, grant, %Allowance{id: "login-refresh", pattern: :all, until: nil},
+            {:allow, grant,
+             %Allowance{id: "login-refresh", pattern: :all, until: nil, origin: %{kind: :mwt}},
              Describe.request(request)}
 
           nil ->
@@ -407,31 +423,18 @@ defmodule MWTClient.Sandbox.Policy do
 
       action ->
         host = SavedRequest.host(action)
-        credential = Grant.credential_id(action)
         about = %{pattern: "call " <> action.id, title: action.name, facts: [], claims: []}
-
-        # The credential: the action, or a token grant over it listing the
-        # host, the most permissive.
-        tokens =
-          for %Grant{kind: :token} = g <- grants,
-              Grant.credential_id(g) == credential,
-              host_listed?(host, Adapter.hosts(g)),
-              do: g
+        network = network_of_host(snapshot, host)
 
         cond do
           refused = locked_refusal(snapshot, [action]) ->
             refused
 
-          true ->
-            credential_say =
-              case Enum.filter([action | tokens], &Grant.on?(&1, now)) do
-                [] -> {:refuse, {:grant_off, action}}
-                on -> on |> Enum.map(&allow_or_ask(&1, now, about)) |> most_permissive()
-              end
+          not Grant.on?(action, now) ->
+            all_of([{:refuse, {:grant_off, action}}, reach(snapshot, network, host, about, now)])
 
-            network = network_of_host(snapshot, host)
-            request = %{host: host, under: nil, about: about}
-            all_of([credential_say, network_say(snapshot, network, request, now)])
+          true ->
+            all_of([allow_or_ask(action, now, about), reach(snapshot, network, host, about, now)])
         end
     end
   end
@@ -446,11 +449,18 @@ defmodule MWTClient.Sandbox.Policy do
     grant = Enum.find(commands, &(&1.id == wanted))
 
     cond do
-      # The agent's own: no grant gives it, you approve each one.
-      is_nil(grant) and (wanted == "" or wanted in Grant.former_command_ids()) ->
+      # The agent's own: Commands agents write lets it ask, and nothing
+      # lets it through unasked (`Grant.always_asks?/1`), so it asks with
+      # no grant that an allowance could be added to. Missing from the
+      # grants, it counts as off.
+      is_nil(grant) and
+          (wanted == "" or wanted in [Grant.agent_commands().id | Grant.former_command_ids()]) ->
+        written = Enum.find(grants, Grant.agent_commands(), &Grant.agent_commands?/1)
+
         cond do
-          locked?(snapshot, :machine) -> {:refuse, {:locked, :machine, nil}}
+          locked?(snapshot, :machine) -> {:refuse, {:locked, :machine, written}}
           script == "" -> {:refuse, {:name_a_grant, ids}}
+          not Grant.on?(written, now) -> {:refuse, {:grant_off, written}}
           true -> {:ask, nil, %{script: nil, dir: nil, pattern: nil}}
         end
 
@@ -471,7 +481,10 @@ defmodule MWTClient.Sandbox.Policy do
             do: allow_or_ask(grant, now, about),
             else: {:refuse, {:grant_off, grant}}
 
-        all_of([machine_say | Enum.map(grant.with, &machine_use(snapshot, &1, about, now))])
+        case Enum.find(grant.with, &locked?(snapshot, {:credential, &1})) do
+          nil -> machine_say
+          locked -> {:refuse, {:locked, {:credential, locked}, grant}}
+        end
     end
   end
 
@@ -498,24 +511,6 @@ defmodule MWTClient.Sandbox.Policy do
           true ->
             allow_or_ask(grant, now, about)
         end
-    end
-  end
-
-  # A credential a saved command runs with: given by a token grant over it
-  # that is on and allows your machine, the most permissive.
-  defp machine_use(%{grants: grants} = snapshot, credential, about, now) do
-    over = for %Grant{kind: :token} = g <- grants, Grant.credential_id(g) == credential, do: g
-    allowing = Enum.filter(over, & &1.machine)
-
-    cond do
-      locked?(snapshot, {:credential, credential}) ->
-        {:refuse, {:locked, {:credential, credential}, List.first(over)}}
-
-      (on = Enum.filter(allowing, &Grant.on?(&1, now))) != [] ->
-        on |> Enum.map(&allow_or_ask(&1, now, about)) |> most_permissive()
-
-      true ->
-        {:refuse, {:not_on_machine, credential, List.first(allowing)}}
     end
   end
 
@@ -646,8 +641,9 @@ defmodule MWTClient.Sandbox.Policy do
   # A network's say about a request to a host on it: locked or blocked,
   # refused; then the most permissive of the grants over it that are on
   # and cover the host, one over all of it or one over part of it naming
-  # it. The Internet's grant auto-approving passes it without a word: a
-  # request there costs nothing more than its log line.
+  # it, but for one that leaves the host out (`Grant.except`). The
+  # Internet's grant auto-approving passes it without a word: a request
+  # there costs nothing more than its log line.
   defp network_say(snapshot, network, request, now) do
     names = [request.host | Map.get(request, :names, [])]
     names = for name <- names, is_binary(name), do: String.downcase(name)
@@ -656,15 +652,17 @@ defmodule MWTClient.Sandbox.Policy do
     named =
       Enum.filter(over, &(Network.part?(&1) and Enum.any?(names, fn n -> names?(&1, n) end)))
 
-    covering = named ++ Enum.reject(over, &Network.part?/1)
+    {covering, left_out} =
+      Enum.split_with(
+        named ++ Enum.reject(over, &Network.part?/1),
+        &is_nil(Network.excepted(&1, names))
+      )
+
     about = about(request)
 
     cond do
-      locked?(snapshot, {:network, network}) ->
-        {:refuse, {:locked, {:network, network}, List.first(covering)}}
-
-      entry = blocked(limits(snapshot, network), names) ->
-        {:refuse, {:host_blocked, network, entry}}
+      refused = network_limits(snapshot, network, names, List.first(covering)) ->
+        refused
 
       (on = Enum.filter(covering, &Grant.on?(&1, now))) != [] ->
         on
@@ -680,8 +678,43 @@ defmodule MWTClient.Sandbox.Policy do
       covering != [] ->
         {:refuse, {:grant_off, hd(covering)}}
 
+      left_out != [] ->
+        first = Enum.find(left_out, hd(left_out), &Grant.on?(&1, now))
+        {:refuse, {:excepted, first, Network.excepted(first, names)}}
+
       true ->
         {:refuse, {:outside, under(snapshot.grants, request) || network}}
+    end
+  end
+
+  @doc """
+  Whether a request to `host` may leave on its network as the agent's own
+  would, credential aside: locked or blocked, refused; then the network's
+  grants that cover the host, the most permissive (`network_say/4`). A
+  fixed call's request goes out this way too: the action covers its
+  credential in it, the network's grants decide where it goes, as they
+  do for the agent's own requests (docs/grant_mental_model.md, Q5).
+  """
+  @spec reach(snapshot(), String.t() | nil, DateTime.t()) :: answer()
+  def reach(snapshot, host, now) do
+    reach(snapshot, network_of_host(snapshot, host), host, %{}, now)
+  end
+
+  defp reach(snapshot, network, host, about, now),
+    do: network_say(snapshot, network, %{host: host, under: nil, about: about}, now)
+
+  # What refuses a use of `network` whatever its grants say, or nil: the
+  # network locked, or one of `names` on its list of blocked hosts.
+  defp network_limits(snapshot, network, names, grant) do
+    cond do
+      locked?(snapshot, {:network, network}) ->
+        {:refuse, {:locked, {:network, network}, grant}}
+
+      entry = blocked(limits(snapshot, network), names) ->
+        {:refuse, {:host_blocked, network, entry}}
+
+      true ->
+        nil
     end
   end
 
@@ -693,10 +726,13 @@ defmodule MWTClient.Sandbox.Policy do
     end
   end
 
-  # The network a host is on, for a use that went under no connection (a
-  # call MWT sends): one a network grant other than the Internet's names
-  # it in, else the Internet.
-  defp network_of_host(snapshot, host) do
+  @doc """
+  The network a host is on, for a use that went under no connection (a
+  call MWT sends): one a network grant other than the Internet's names
+  it in, else the Internet.
+  """
+  @spec network_of_host(snapshot(), String.t() | nil) :: String.t()
+  def network_of_host(snapshot, host) do
     name = String.downcase(host || "")
 
     Enum.find_value(snapshot.grants, "internet", fn
@@ -915,22 +951,16 @@ defmodule MWTClient.Sandbox.Policy do
   defp about(%{about: about}), do: about
   defp about(request), do: Describe.request(request)
 
-  # Yes or ask, by the grant's allowances: one that always asks asks,
-  # whatever allowance it was left with.
+  # Yes or ask, by the grant's allowances.
   defp allow_or_ask(grant, now, about) do
-    allowance =
-      Grant.ceiling(grant) != :ask &&
-        Enum.find(grant.allowances, &Allowance.covers?(&1, about.pattern, now))
+    allowance = Enum.find(grant.allowances, &Allowance.covers?(&1, about.pattern, now))
 
     if allowance, do: {:allow, grant, allowance, about}, else: {:ask, grant, about}
   end
 
-  # Whether the grant would ask for a use: it always does, or no
-  # allowance of its covers it.
-  defp asks?(grant, pattern, now) do
-    Grant.ceiling(grant) == :ask or
-      not Enum.any?(grant.allowances, &Allowance.covers?(&1, pattern, now))
-  end
+  # Whether the grant would ask for a use: no allowance of its covers it.
+  defp asks?(grant, pattern, now),
+    do: not Enum.any?(grant.allowances, &Allowance.covers?(&1, pattern, now))
 
   @doc """
   Whether `allowance`, added now, lets through the use `approval` holds:

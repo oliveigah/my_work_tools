@@ -19,115 +19,290 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
 
   ## The Resources tab
 
+  @per_page 20
+  @resource_kinds [
+    {"all", "All"},
+    {"credential", "Credentials"},
+    {"network", "Networks"},
+    {"other", "Others"}
+  ]
+  @resource_states [
+    {"all", "Open or locked"},
+    {"open", "Open"},
+    {"locked", "Locked"},
+    {"review", "To review"},
+    {"unused", "No grant"}
+  ]
+
+  @doc "The filters the Resources tab starts with: every resource."
+  def resource_filters, do: %{kind: "all", state: "all", term: ""}
+
+  @doc "Filters from the form's params, anything unknown left at its default."
+  def resource_filters(params) do
+    pick = fn key, options ->
+      value = params[Atom.to_string(key)]
+      if Enum.any?(options, &(elem(&1, 0) == value)), do: value, else: "all"
+    end
+
+    %{
+      kind: pick.(:kind, @resource_kinds),
+      state: pick.(:state, @resource_states),
+      term: params["term"] |> to_string() |> String.slice(0, 200)
+    }
+  end
+
   attr :grants, :list, required: true
   attr :credentials, :list, required: true
   attr :networks, :list, required: true
   attr :locks, :map, required: true
   attr :now, DateTime, required: true
+  attr :filters, :map, default: %{kind: "all", state: "all", term: ""}
+  attr :page, :integer, default: 1
 
-  @doc "Every resource, in three groups, each with its lock and its grants."
+  @doc """
+  Every resource in one list, a page at a time: each credential, each
+  network (the Internet first), your machine and MWT's tools, with what it
+  is, how many grants are over it and how many are on, its last use, and
+  its lock; found by kind, state and words.
+  """
   def list(assigns) do
+    entries = resource_entries(assigns)
+    found = Enum.filter(entries, &matches?(&1, assigns.filters))
+    {shown, page, pages} = paged(found, assigns.page, @per_page)
+
+    unkinded = Enum.filter(entries, &matches?(&1, %{assigns.filters | kind: "all"}))
+
+    kinds =
+      for {value, label} <- @resource_kinds,
+          do: {value, label, Enum.count(unkinded, &(value == "all" or &1.kind == value))}
+
     assigns =
       assign(assigns,
-        networks: Enum.sort_by(assigns.networks, &(not &1.internet))
+        found: found,
+        shown: shown,
+        page: page,
+        pages: pages,
+        per_page: @per_page,
+        kinds: kinds,
+        states: @resource_states,
+        filtered?: assigns.filters != resource_filters()
       )
 
     ~H"""
-    <div id="resources-list" class="space-y-6">
-      <.card
-        id="resources-credentials"
-        title="Credentials"
-        subtitle="Secrets MWT uses for the VM, which never enters it: a token, an API key, a login a command mints."
+    <section id="resources-list" aria-label="Resources">
+      <form
+        id="resource-filters"
+        phx-change="filter_resources"
+        phx-submit="filter_resources"
+        class="mb-3 flex flex-wrap items-center gap-2"
+        autocomplete="off"
       >
-        <:help>
-          The VM gets a placeholder instead; MWT swaps the real value in on the way out, where a grant over the credential lets it go. Add one here, then a grant over it on its page, or add a grant from a preset, which makes both.
-        </:help>
-        <:actions>
-          <.button
-            id="add-credential"
-            phx-click="open_resource_form"
-            phx-value-kind="credential"
+        <div
+          id="resource-kind"
+          role="radiogroup"
+          aria-label="Kind"
+          class="flex items-center rounded-lg border border-line bg-deep p-0.5"
+        >
+          <label
+            :for={{value, label, count} <- @kinds}
+            id={"resource-kind-#{value}"}
+            class={[
+              "flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1 text-[12px] transition-colors has-focus-visible:outline-2 has-focus-visible:outline-accent",
+              if(@filters.kind == value,
+                do: "bg-panel font-medium text-ink shadow-sm",
+                else: "text-muted hover:text-ink"
+              )
+            ]}
           >
-            <.icon name="hero-plus-micro" class="size-3.5" /> Add credential
-          </.button>
-        </:actions>
-        <ul :if={@credentials != []} class="-m-4 divide-y divide-line-soft">
-          <.resource_row
-            :for={credential <- @credentials}
-            resource={{:credential, credential.id}}
-            name={credential.name}
-            summary={credential_summary(credential)}
-            grants={@grants}
-            locks={@locks}
-            now={@now}
+            <input
+              type="radio"
+              name="kind"
+              value={value}
+              checked={@filters.kind == value}
+              class="sr-only"
+            />
+            {label}
+            <span class="text-[10px] tabular-nums opacity-70">{count}</span>
+          </label>
+        </div>
+        <div class="relative min-w-48 flex-1">
+          <.icon
+            name="hero-magnifying-glass"
+            class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint"
           />
-        </ul>
-        <p :if={@credentials == []} id="resources-credentials-empty" class="text-xs text-muted">
-          None yet.
-        </p>
-      </.card>
+          <input
+            type="text"
+            name="term"
+            id="resource-search-term"
+            value={@filters.term}
+            placeholder="Search: name, service, hosts…"
+            phx-debounce="120"
+            class="w-full rounded-lg border border-line bg-panel py-1.5 pl-8 pr-2 text-[12px] text-ink outline-none transition-colors placeholder:text-faint focus:border-accent/60"
+          />
+        </div>
+        <select
+          name="state"
+          id="resource-state"
+          aria-label="State"
+          class={[
+            "rounded-lg border bg-panel px-2 py-1.5 text-[12px] focus:border-accent focus:outline-none",
+            if(@filters.state == "all",
+              do: "border-line text-muted",
+              else: "border-accent/50 text-ink"
+            )
+          ]}
+        >
+          <option :for={{value, label} <- @states} value={value} selected={@filters.state == value}>
+            {label}
+          </option>
+        </select>
+        <button
+          :if={@filtered?}
+          type="button"
+          id="resource-filters-clear"
+          phx-click="clear_resource_filters"
+          class="inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+        >
+          <.icon name="hero-x-mark-micro" class="size-3.5" /> Clear
+        </button>
+        <span class="flex-1"></span>
+        <.button
+          id="add-credential"
+          type="button"
+          phx-click="open_resource_form"
+          phx-value-kind="credential"
+        >
+          <.icon name="hero-plus-micro" class="size-3.5" /> Add credential
+        </.button>
+        <.button
+          id="add-network"
+          type="button"
+          phx-click="open_resource_form"
+          phx-value-kind="network"
+        >
+          <.icon name="hero-plus-micro" class="size-3.5" /> Add network
+        </.button>
+      </form>
 
-      <.card
-        id="resources-networks"
-        title="Networks"
-        subtitle="Where the VM's connections go: the Internet, built in, and your private networks (a VPN, the office LAN, a database)."
-      >
-        <:help>
-          A grant over a network opens it, all of it or some of its hosts. A network's own host lists keep the VM away from hosts, whatever any grant says.
-        </:help>
-        <:actions>
-          <.button id="add-network" phx-click="open_resource_form" phx-value-kind="network">
-            <.icon name="hero-plus-micro" class="size-3.5" /> Add network
-          </.button>
-        </:actions>
-        <ul class="-m-4 divide-y divide-line-soft">
+      <div :if={@found != []} class="overflow-hidden rounded-xl border border-line bg-panel">
+        <ul id="resources-rows" class="divide-y divide-line-soft">
           <.resource_row
-            :for={network <- @networks}
-            resource={{:network, network.id}}
-            name={network.name}
-            summary={network_summary(network)}
-            built_in={network.internet}
+            :for={entry <- @shown}
+            resource={entry.resource}
+            name={entry.name}
+            summary={entry.summary}
+            built_in={entry.built_in}
+            to_review={entry.to_review}
             grants={@grants}
             locks={@locks}
             now={@now}
           />
         </ul>
-      </.card>
-
-      <.card
-        id="resources-built-in"
-        title="Built in"
-        subtitle="Your machine, and MWT's own tools."
+      </div>
+      <.pages
+        :if={@pages > 1}
+        name="resources"
+        label="Pages of resources"
+        page={@page}
+        pages={@pages}
+        per_page={@per_page}
+        total={length(@found)}
+        event="resources_page"
+        class="mt-3"
+      />
+      <div
+        :if={@found == []}
+        id="resources-credentials-empty"
+        class="rounded-xl border border-dashed border-line"
       >
-        <ul class="-m-4 divide-y divide-line-soft">
-          <.resource_row
-            resource={:machine}
-            name="Your machine"
-            summary="Saved commands, the projects' git, the shared folders and the workspace"
-            built_in
-            grants={@grants}
-            locks={@locks}
-            now={@now}
-          />
-          <.resource_row
-            resource={:mwt}
-            name="MWT's tools"
-            summary="Notes, diagrams and flash cards, through mwt mcp"
-            built_in
-            grants={@grants}
-            locks={@locks}
-            now={@now}
-          />
-        </ul>
-      </.card>
-    </div>
+        <.empty icon="hero-key">
+          {if(@filtered?, do: "Nothing matches these filters.", else: "No resource yet.")}
+        </.empty>
+      </div>
+    </section>
     """
+  end
+
+  # Every resource as the list shows it, with what it is filtered by.
+  defp resource_entries(assigns) do
+    credentials =
+      for credential <- assigns.credentials,
+          do: %{
+            resource: {:credential, credential.id},
+            kind: "credential",
+            name: credential.name,
+            summary: credential_summary(credential),
+            built_in: false,
+            to_review: to_review?(credential),
+            words:
+              "#{credential.name} #{credential.id} #{credential.purpose} #{credential.adapter}"
+          }
+
+    networks =
+      for network <- Enum.sort_by(assigns.networks, &(not &1.internet)),
+          do: %{
+            resource: {:network, network.id},
+            kind: "network",
+            name: network.name,
+            summary: network_summary(network),
+            built_in: network.internet,
+            to_review: to_review?(network),
+            words:
+              "#{network.name} #{network.id} #{network.purpose} #{Enum.join(network.destinations, " ")}"
+          }
+
+    others = [
+      %{
+        resource: :machine,
+        kind: "other",
+        name: "Host commands",
+        summary: "Code run on your machine: your saved commands, and the commands agents write",
+        built_in: true,
+        to_review: false,
+        words: "host commands your machine saved commands agents write run"
+      },
+      %{
+        resource: :mwt,
+        kind: "other",
+        name: "MWT's tools",
+        summary:
+          "Notes, diagrams and flash cards through mwt mcp; the projects' git, the shared folders and the workspace",
+        built_in: true,
+        to_review: false,
+        words:
+          "mwt tools notes diagrams flash cards mcp git shared folders workspace sync handoff"
+      }
+    ]
+
+    for entry <- credentials ++ networks ++ others do
+      over = Resource.grants(assigns.grants, entry.resource)
+
+      Map.merge(entry, %{
+        locked: Map.has_key?(assigns.locks, entry.resource),
+        grant_count: length(over)
+      })
+    end
+  end
+
+  defp matches?(entry, filters) do
+    words = filters.term |> String.downcase() |> String.split(~r/\s+/, trim: true)
+    text = String.downcase(entry.words)
+
+    (filters.kind == "all" or entry.kind == filters.kind) and
+      case filters.state do
+        "open" -> not entry.locked
+        "locked" -> entry.locked
+        "review" -> entry.to_review
+        "unused" -> entry.grant_count == 0
+        _all -> true
+      end and Enum.all?(words, &String.contains?(text, &1))
   end
 
   attr :resource, :any, required: true
   attr :name, :string, required: true
   attr :summary, :string, required: true
   attr :built_in, :boolean, default: false
+  attr :to_review, :boolean, default: false, doc: "an agent proposed it, not accepted yet"
   attr :grants, :list, required: true
   attr :locks, :map, required: true
   attr :now, DateTime, required: true
@@ -136,9 +311,12 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   # them are on, and its lock.
   defp resource_row(assigns) do
     over = Resource.grants(assigns.grants, assigns.resource)
-    on = Enum.count(over, &Grant.on?(&1, assigns.now))
 
-    assigns = assign(assigns, over: length(over), on: on, dom: dom_id(assigns.resource))
+    assigns =
+      assign(assigns,
+        usage: usage(over, assigns.now),
+        dom: dom_id(assigns.resource)
+      )
 
     ~H"""
     <li id={"resource-#{@dom}"} class="flex items-center gap-3 px-4 py-3">
@@ -157,23 +335,31 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
           >
             {@name}
           </.link>
-          <span
-            :if={@built_in}
-            class="rounded border border-line bg-deep px-1.5 py-0.5 text-[10px] font-medium text-muted"
-          >
-            Built in
-          </span>
+          <.badge :if={@built_in}>Built in</.badge>
+          <.badge :if={@to_review} id={"resource-to-review-#{@dom}"} tone={:warn}>
+            Proposed · to review
+          </.badge>
         </p>
         <p class="truncate text-[11px] text-faint" title={@summary}>{@summary}</p>
       </div>
       <span
         id={"resource-grants-#{@dom}"}
         class={[
-          "hidden shrink-0 text-[11px] sm:inline",
-          if(@on > 0, do: "font-medium text-ok-strong", else: "text-faint")
+          "hidden w-28 shrink-0 text-right text-[11px] sm:inline",
+          if(@usage.on > 0, do: "font-medium text-ok-strong", else: "text-faint")
         ]}
       >
-        {grants_count(@over, @on)}
+        {grants_count(@usage.count, @usage.on)}
+      </span>
+      <span
+        id={"resource-used-#{@dom}"}
+        class="hidden w-28 shrink-0 text-right text-[11px] text-faint md:inline"
+      >
+        <%= if @usage.last_used do %>
+          Used <.clock id={"resource-used-at-#{@dom}"} since={@usage.last_used} now={@now} />
+        <% else %>
+          Never used
+        <% end %>
       </span>
       <.lock_switch resource={@resource} locks={@locks} name={@name} />
     </li>
@@ -198,9 +384,15 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   attr :modes, :map, required: true
   attr :now, DateTime, required: true
 
+  attr :settings, :map,
+    default: nil,
+    doc: "its settings' form: `form`, `errors`, `dirty` (`resource_settings_*` events)"
+
   @doc """
-  A resource's page: what it is, its lock, a network's host limits, the
-  grants over it, each with its switch, and its actions.
+  A resource's page: what it is and its lock in its head; **Now**, whether
+  it can be used (a credential's value) and the grants and actions over
+  it, each with its switch; a network's host limits; **Settings**, what it
+  is, edited in place and kept once saved.
   """
   def page(assigns) do
     resource = assigns.resource
@@ -215,14 +407,13 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
       end
 
     over = if found, do: Resource.grants(assigns.grants, resource), else: []
-    {actions, grants} = Enum.split_with(over, &Grant.action?/1)
 
     assigns =
       assign(assigns,
         found: found,
         name: found && Resource.name(resource, assigns.credentials, assigns.networks),
-        over_grants: Enum.sort_by(grants, &{not Grant.on?(&1, assigns.now), &1.name}),
-        actions: actions,
+        over_grants: Enum.sort_by(over, &{not Grant.on?(&1, assigns.now), &1.name}),
+        usage: usage(over, assigns.now),
         dom: resource && dom_id(resource),
         built_in?: built_in?(found)
       )
@@ -251,72 +442,124 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
         <.icon name="hero-arrow-left-micro" class="size-3.5" /> Resources
       </.link>
 
-      <header id="resource-header" class="mb-6 flex flex-wrap items-center gap-3">
+      <header id="resource-header" class="mb-5 flex flex-wrap items-start gap-3">
         <span class={[
-          "flex size-10 shrink-0 items-center justify-center rounded-xl",
+          "flex size-11 shrink-0 items-center justify-center rounded-xl",
           resource_tone(@resource)
         ]}>
           <.icon name={resource_icon(@resource)} class="size-5" />
         </span>
-        <div class="min-w-0 flex-1">
-          <p class="text-[10px] font-medium uppercase tracking-wide text-faint">
-            {Resource.kind_words(@resource)}{if(@built_in?, do: " · Built in")}
-          </p>
-          <h1 id="resource-name" class="truncate text-lg font-semibold tracking-tight text-ink">
-            {@name}
-          </h1>
-          <p :if={purpose(@found) != ""} class="mt-0.5 text-[13px] text-muted">
+        <div class="min-w-0 flex-1 basis-80">
+          <div class="flex flex-wrap items-center gap-2">
+            <h1 id="resource-name" class="text-xl font-semibold tracking-tight text-ink">
+              {@name}
+            </h1>
+            <.badge>{Resource.kind_words(@resource)}</.badge>
+            <.badge :if={match?(%Credential{}, @found)}>{adapter_name(@found)}</.badge>
+            <.badge :if={@built_in?}>Built in</.badge>
+          </div>
+          <p :if={purpose(@found) != ""} class="mt-1 max-w-3xl text-[13px] leading-5 text-muted">
             {purpose(@found)}
           </p>
         </div>
-        <div class="flex items-center gap-2">
-          <.lock_switch resource={@resource} locks={@locks} name={@name} labelled />
-          <.button
-            :if={not @built_in?}
-            id="edit-resource"
-            phx-click="edit_resource"
-            phx-value-kind={elem(@resource, 0)}
-            phx-value-id={elem(@resource, 1)}
-          >
-            <.icon name="hero-pencil-square-micro" class="size-3.5" /> Edit
-          </.button>
-          <.button
-            :if={not @built_in?}
-            id="delete-resource"
-            variant="danger"
-            phx-click="confirm_delete_resource"
-            phx-value-kind={elem(@resource, 0)}
-            phx-value-id={elem(@resource, 1)}
-          >
-            <.icon name="hero-trash-micro" class="size-3.5" /> Remove
-          </.button>
-        </div>
+        <.lock_switch resource={@resource} locks={@locks} name={@name} />
       </header>
 
-      <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div class="space-y-5">
-          <.card
-            id="resource-grants"
-            title="Grants over it"
-            subtitle={grants_subtitle(@resource)}
-            body_class=""
+      <div
+        :if={to_review?(@found)}
+        id="resource-review"
+        class="mb-5 rounded-xl border border-warn/45 bg-warn-soft/25 p-4"
+      >
+        <div class="flex items-start gap-3">
+          <.icon name="hero-sparkles" class="mt-0.5 size-4 shrink-0 text-warn" />
+          <div class="min-w-0 flex-1 space-y-1">
+            <p class="text-[13px] font-medium text-ink">
+              {@found.proposal.agent} proposed this {kind_word(@resource)}. Nothing over it can be accepted or turned on until you accept it.
+            </p>
+            <p class="break-words text-xs text-muted">
+              <span class="text-faint">Why:</span> {@found.proposal.reason}
+            </p>
+            <p
+              :if={match?(%Credential{source: :stored}, @found)}
+              id="resource-review-value"
+              class="text-xs text-muted"
+            >
+              Its value is yours to paste, now or later: until you do, every use of it is refused.
+            </p>
+            <div :if={match?(%Credential{source: {:minted, _}}, @found)} class="space-y-1">
+              <p class="flex items-center gap-1.5 text-xs text-muted">
+                Its value is minted by this command, which the agent wrote:
+                <.where place={:machine} />
+              </p>
+              <pre
+                id="resource-review-mint"
+                class="overflow-x-auto rounded-md border border-line-soft bg-deep/60 px-2.5 py-1.5 font-mono text-[11px] text-ink"
+              >{elem(@found.source, 1)}</pre>
+              <ul id="resource-review-hints" class="space-y-1">
+                <li
+                  :for={hint <- mint_hints(@found, @grants)}
+                  class="flex items-start gap-1.5 text-[11px] leading-4 text-warn-strong"
+                >
+                  <.icon name="hero-exclamation-triangle-micro" class="mt-px size-3.5 shrink-0" />
+                  <span>{hint}</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <.button
+            id="resource-accept"
+            variant="primary"
+            phx-click="accept_resource"
+            phx-value-kind={elem(@resource, 0)}
+            phx-value-id={elem(@resource, 1)}
+            phx-value-revision={@found.proposal.revision}
           >
-            <:help>
-              Each grant gives uses of this resource, while it is on. Of those that cover a use, the most permissive counts; a use that also goes through another resource needs a grant there too, and it goes unasked only if each lets it through.
-            </:help>
-            <:actions>
+            <.icon name="hero-check-micro" class="size-3.5" /> Accept
+          </.button>
+          <.button
+            id="resource-decline"
+            variant="danger"
+            phx-click="decline_resource"
+            phx-value-kind={elem(@resource, 0)}
+            phx-value-id={elem(@resource, 1)}
+          >
+            Decline
+          </.button>
+          <span class="text-[11px] text-muted">
+            Declining removes it, with what was proposed over it.
+          </span>
+        </div>
+      </div>
+
+      <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_21rem]">
+        <div class="min-w-0 space-y-5">
+          <section
+            id="resource-now"
+            class="overflow-hidden rounded-xl border border-line bg-panel shadow-sm"
+          >
+            <header class="flex flex-wrap items-center gap-3 border-b border-line-soft px-5 py-3.5">
+              <div class="min-w-0 flex-1">
+                <h2 class="flex items-center gap-1.5 text-[14px] font-semibold text-ink">
+                  Grants over it
+                  <.help id="resource-grants-help" label="About the grants over it">
+                    Each grant gives a use of this resource while it is on. Open use: the agent builds what it sends, its own requests or a command it writes. Fixed call: MWT builds it, from your template and the agent's values; it covers the credentials it names, and goes out through its channel as the agent's own would. Of those that cover a use, the most permissive counts.
+                  </.help>
+                </h2>
+                <p class="mt-0.5 text-[12px] text-muted">{grants_subtitle(@resource)}</p>
+              </div>
               <.button
                 :if={add_grant_preset(@resource)}
                 id="add-grant-over"
-                variant="primary"
                 phx-click="open_add_grant"
                 phx-value-preset={add_grant_preset(@resource)}
                 phx-value-over={over_value(@resource)}
               >
-                <.icon name="hero-plus-micro" class="size-3.5" /> Add a grant over it
+                <.icon name="hero-plus-micro" class="size-3.5" /> Add grant
               </.button>
-            </:actions>
-            <ul :if={@over_grants != []} class="divide-y divide-line-soft">
+            </header>
+            <ul :if={@over_grants != []} id="resource-grants" class="divide-y divide-line-soft">
               <Grants.grant_row
                 :for={grant <- @over_grants}
                 prefix="resource"
@@ -329,68 +572,216 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
             <p
               :if={@over_grants == []}
               id="resource-grants-empty"
-              class="px-4 py-4 text-xs text-muted"
+              class="px-5 py-5 text-[12px] text-muted"
             >
               {no_grants_words(@resource)}
             </p>
-          </.card>
+          </section>
 
           <.limits_card :if={match?(%Network{}, @found)} network={@found} />
 
-          <.card
-            :if={actions_preset(@resource)}
-            id="resource-actions"
-            title="Actions"
-            subtitle={actions_subtitle(@resource)}
-            body_class=""
+          <.form
+            :if={@settings && not @built_in?}
+            for={@settings.form}
+            id="resource-settings-form"
+            phx-change="resource_settings_change"
+            phx-submit="resource_settings_save"
+            class="rounded-xl border border-line bg-panel shadow-sm"
           >
-            <:help>
-              An action is one fixed use of this resource, which MWT carries out when an agent calls it by id with a value for each parameter: mwt call ID NAME=value. Each is a grant of its own, with its own switch.
-            </:help>
-            <:actions>
-              <.button
-                id="add-action"
-                phx-click="open_add_grant"
-                phx-value-preset={actions_preset(@resource)}
-                phx-value-over={over_value(@resource)}
-              >
-                <.icon name="hero-plus-micro" class="size-3.5" /> Add action
-              </.button>
-            </:actions>
-            <ul :if={@actions != []} class="divide-y divide-line-soft">
-              <Grants.grant_row
-                :for={grant <- @actions}
-                prefix="action"
-                grant={grant}
-                duration={Grants.row_duration(grant, @durations, @now)}
-                mode={Grants.row_mode(grant, @modes, @now)}
-                now={@now}
+            <header id="resource-settings" class="border-b border-line-soft px-5 py-3.5">
+              <h2 class="text-[14px] font-semibold text-ink">Settings</h2>
+              <p class="mt-0.5 text-[12px] text-muted">
+                What it is. Every grant over it follows; changes are kept once you save them.
+              </p>
+            </header>
+            <div class="space-y-5 px-5 py-5">
+              <.text_field field={@settings.form[:name]} label="Name" />
+              <.field_error errors={@settings.errors} field={:name} />
+              <.text_field
+                field={@settings.form[:purpose]}
+                type="textarea"
+                label="What it is"
+                rows="2"
               />
-            </ul>
-            <p :if={@actions == []} id="resource-actions-empty" class="px-4 py-4 text-xs text-muted">
-              None yet.
-            </p>
-          </.card>
+              <.field_error errors={@settings.errors} field={:purpose} />
+              <%= if match?(%Credential{}, @found) do %>
+                <.credential_fields
+                  form={@settings.form}
+                  errors={@settings.errors}
+                  editing={@found.id}
+                />
+              <% else %>
+                <.network_fields form={@settings.form} errors={@settings.errors} />
+              <% end %>
+            </div>
+            <footer
+              id="resource-settings-bar"
+              class="sticky bottom-0 flex items-center justify-end gap-2 rounded-b-xl border-t border-line-soft bg-panel/95 px-5 py-3 backdrop-blur"
+            >
+              <.button
+                :if={not @built_in?}
+                type="button"
+                id="delete-resource"
+                variant="danger"
+                title="Every grant over it goes with it, and anything waiting on them is refused."
+                phx-click="confirm_delete_resource"
+                phx-value-kind={elem(@resource, 0)}
+                phx-value-id={elem(@resource, 1)}
+              >
+                <.icon name="hero-trash-micro" class="size-3.5" /> Remove
+              </.button>
+              <span class={[
+                "mr-auto text-[12px]",
+                if(@settings.dirty, do: "text-warn-strong", else: "text-faint")
+              ]}>
+                {if(@settings.dirty, do: "Changes not saved yet", else: "Saved")}
+              </span>
+              <.button
+                :if={@settings.dirty}
+                type="button"
+                id="resource-settings-cancel"
+                phx-click="resource_settings_cancel"
+              >
+                Cancel
+              </.button>
+              <.button
+                type="submit"
+                id="resource-settings-save"
+                variant="primary"
+                disabled={not @settings.dirty}
+              >
+                Save
+              </.button>
+            </footer>
+          </.form>
         </div>
 
-        <div class="space-y-5">
-          <.card id="resource-what" title="What it is">
-            <.what_it_is
+        <aside class="space-y-4 lg:sticky lg:top-4">
+          <section
+            :if={match?(%Credential{}, @found)}
+            id="resource-value"
+            class="rounded-xl border border-line bg-panel p-4 shadow-sm"
+          >
+            <p class="text-[12px] font-semibold text-ink">Its value</p>
+            <.value_line
               found={@found}
               has_value={has_value?(@found, @credential_values)}
               value_form={@value_form}
             />
-          </.card>
-          <.card id="resource-lock" title="Lock">
-            <p class="text-xs leading-5 text-muted">
-              Locked, every use of it is refused, whatever its grants say, and nothing waiting on it goes. Agents can't ask for it to be unlocked; only you unlock it. Isolating the VM locks every resource until you release it.
+          </section>
+
+          <section id="resource-use" class="rounded-xl border border-line bg-panel p-4 shadow-sm">
+            <p class="text-[12px] font-semibold text-ink">Use</p>
+            <dl class="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[12px]">
+              <dt class="text-muted">Grants</dt>
+              <dd id="resource-use-grants" class={["text-ink", @usage.on > 0 && "text-ok-strong"]}>
+                {grants_count(@usage.count, @usage.on)}
+              </dd>
+              <dt class="text-muted">Last used</dt>
+              <dd id="resource-use-last" class="text-ink">
+                <%= if @usage.last_used do %>
+                  <.clock id="resource-last-used" since={@usage.last_used} now={@now} />
+                <% else %>
+                  never
+                <% end %>
+              </dd>
+              <dt class="text-muted">Lock</dt>
+              <dd class="text-ink">
+                {if(Map.has_key?(@locks, @resource), do: "locked: every use refused", else: "open")}
+              </dd>
+            </dl>
+            <.link
+              :if={match?(%Credential{}, @found) or match?(%Network{}, @found)}
+              navigate={try_path(@resource)}
+              id="resource-try"
+              class="mt-3 inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:underline"
+            >
+              <.icon name="hero-command-line-micro" class="size-3.5" /> Try it as the VM
+            </.link>
+          </section>
+
+          <section id="resource-what" class="rounded-xl border border-line bg-panel p-4 shadow-sm">
+            <p class="text-[12px] font-semibold text-ink">
+              {if(match?(%Credential{}, @found), do: "In the VM", else: "What it is")}
             </p>
-          </.card>
-        </div>
+            <div class="mt-2">
+              <.what_it_is found={@found} has_value={false} value_form={@value_form} />
+            </div>
+          </section>
+        </aside>
       </div>
     </div>
     """
   end
+
+  # How a resource is used: its grants, how many are on, and the last use
+  # of any of them.
+  defp usage(grants, now) do
+    %{
+      count: length(grants),
+      on: Enum.count(grants, &Grant.on?(&1, now)),
+      last_used:
+        grants
+        |> Enum.map(& &1.last_used_at)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.max(DateTime, fn -> nil end)
+    }
+  end
+
+  defp adapter_name(%Credential{adapter: adapter}) do
+    case MWTClient.Sandbox.Adapter.find(adapter) do
+      {:ok, found} -> found.name()
+      :error -> to_string(adapter)
+    end
+  end
+
+  attr :found, Credential, required: true
+  attr :has_value, :boolean, required: true
+  attr :value_form, :any, required: true
+
+  # Where a credential's value comes from, and for a pasted one, pasting it.
+  defp value_line(assigns) do
+    ~H"""
+    <div id="credential-source" class="mt-1.5 text-[12px] text-ink">
+      <%= case @found.source do %>
+        <% {:minted, command} -> %>
+          <p class="flex flex-wrap items-center gap-1.5">
+            Minted when needed by a command <.where place={:machine} />
+          </p>
+          <code class="mt-1.5 block break-all rounded-md bg-deep/60 px-2 py-1.5 font-mono text-[11px]">
+            {command}
+          </code>
+        <% _stored -> %>
+          <p :if={@has_value} class="text-ok-strong">Stored in your vault</p>
+          <p :if={not @has_value} class="text-warn-strong">
+            No value yet: every use is refused until you paste it.
+          </p>
+      <% end %>
+    </div>
+    <.form
+      :if={@found.source == :stored}
+      for={@value_form}
+      id="credential-value-form"
+      phx-submit="set_credential_value"
+      class="mt-2.5 flex items-center gap-2"
+    >
+      <input type="hidden" name="value[credential]" value={@found.id} />
+      <input
+        type="password"
+        name="value[value]"
+        id="credential-value"
+        autocomplete="off"
+        placeholder={if(@has_value, do: "Replace the value", else: "Paste the value")}
+        class="min-w-0 flex-1 rounded-lg border border-line-soft bg-deep/40 px-3 py-1.5 font-mono text-xs text-ink focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/15"
+      />
+      <.button id="credential-value-save" type="submit">Save</.button>
+    </.form>
+    """
+  end
+
+  # The console, set to speak as the credential.
+  defp try_path({:credential, id}), do: "/tools/sandbox/grants?tab=console&with=#{id}"
+  defp try_path(_resource), do: "/tools/sandbox/grants?tab=console"
 
   attr :found, :any, required: true
   attr :has_value, :boolean, required: true
@@ -398,25 +789,9 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
 
   defp what_it_is(%{found: %Credential{}} = assigns) do
     ~H"""
-    <dl class="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-2.5 text-xs">
-      <dt class="text-muted">Its value</dt>
-      <dd id="credential-source" class="text-ink">
-        <%= case @found.source do %>
-          <% {:minted, command} -> %>
-            Minted on this machine when needed, by
-            <code class="block break-all rounded bg-deep px-1.5 py-1 font-mono text-[11px]">
-              {command}
-            </code>
-          <% _stored -> %>
-            <span :if={@has_value} class="text-ok-strong">Stored in your vault</span>
-            <span :if={not @has_value} class="text-warn-strong">No value yet: paste one below</span>
-        <% end %>
-      </dd>
-      <dt class="text-muted">In the VM</dt>
-      <dd class="text-ink">
-        <code class="font-mono text-[11px]">mwt exec {@found.id} -- COMMAND</code>
-        gives that command placeholders only.
-      </dd>
+    <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[12px]">
+      <dt class="text-muted">Command</dt>
+      <dd class="select-all font-mono text-[11px] text-ink">mwt exec {@found.id} -- COMMAND</dd>
       <dt :if={@found.env != []} class="text-muted">Variables</dt>
       <dd :if={@found.env != []} class="font-mono text-[11px] text-ink">
         {Enum.join(@found.env, ", ")}
@@ -426,26 +801,11 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
         {Enum.join(@found.file_env, ", ")}
       </dd>
       <dt :if={@found.git} class="text-muted">Git</dt>
-      <dd :if={@found.git} class="text-ink">MWT's credential helper answers for its hosts</dd>
+      <dd :if={@found.git} class="text-ink">over HTTPS, from MWT's helper</dd>
     </dl>
-    <.form
-      :if={@found.source == :stored}
-      for={@value_form}
-      id="credential-value-form"
-      phx-submit="set_credential_value"
-      class="mt-4 flex items-center gap-2 border-t border-line-soft pt-3"
-    >
-      <input type="hidden" name="value[credential]" value={@found.id} />
-      <input
-        type="password"
-        name="value[value]"
-        id="credential-value"
-        autocomplete="off"
-        placeholder={if(@has_value, do: "Replace the value", else: "Paste the value")}
-        class="min-w-0 flex-1 rounded-md border border-line bg-deep px-2.5 py-1.5 font-mono text-xs text-ink focus:border-accent focus:outline-none"
-      />
-      <.button id="credential-value-save" type="submit">Save</.button>
-    </.form>
+    <p class="mt-2 text-[11px] leading-4 text-faint">
+      Only that command and its children get placeholders, worthless outside MWT.
+    </p>
     """
   end
 
@@ -475,7 +835,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp what_it_is(%{found: :machine} = assigns) do
     ~H"""
     <p class="text-xs leading-5 text-muted">
-      This machine: where your saved commands run, and what the projects' git, the shared folders and the workspace reach. A command an agent writes needs no grant: you approve each one, and while your machine is locked it is refused at once.
+      Code run on this machine for agents: your saved commands, which run only your own script, and the commands agents write, which you approve one by one (Commands agents write). Locked, nothing an agent asks runs here; the VM, the projects' git, the shared folders and the workspace go on, since they are MWT's own.
     </p>
     """
   end
@@ -483,7 +843,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp what_it_is(%{found: :mwt} = assigns) do
     ~H"""
     <p class="text-xs leading-5 text-muted">
-      Your notes, diagrams and flash cards in MWT, which agents read and write through mwt mcp, as its grants allow.
+      What MWT does for agents with its own code: your notes, diagrams and flash cards, which agents read and write through mwt mcp; and the projects' git, syncing the shared folders and copying the workspace. Each as its grants allow.
     </p>
     """
   end
@@ -650,7 +1010,10 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
         kind: assigns.form_state.kind,
         form: assigns.form_state.form,
         errors: assigns.form_state.errors,
-        editing: assigns.form_state.editing
+        editing: assigns.form_state.editing,
+        presets: Map.get(assigns.form_state, :presets, []),
+        preset: Map.get(assigns.form_state, :preset),
+        step: Map.get(assigns.form_state, :step, :form)
       )
 
     ~H"""
@@ -682,7 +1045,21 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
             <.icon name="hero-x-mark" class="size-4" />
           </button>
         </header>
+        <div :if={@step == :pick} class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <.preset_picker
+            id="resource-presets"
+            presets={@presets}
+            event="pick_resource_preset"
+            by_hand={
+              if(@kind == :credential,
+                do: "Any token or API key, or a command that mints one: you fill in every field.",
+                else: "Its destinations, DNS server and interface: you fill in every field."
+              )
+            }
+          />
+        </div>
         <.form
+          :if={@step != :pick}
           for={@form}
           id="resource-form"
           phx-change="validate_resource"
@@ -690,9 +1067,63 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
           class="flex min-h-0 flex-1 flex-col"
         >
           <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-            <.input field={@form[:name]} label="Name" placeholder={name_placeholder(@kind)} />
+            <div :if={@preset} class="flex items-center gap-2 text-[11px] text-muted">
+              <.icon name={@preset.icon} class="size-3.5" /> From the preset
+              <span class="font-medium text-ink">{@preset.name}</span>
+              <button
+                :if={is_nil(@editing)}
+                type="button"
+                id="resource-preset-change"
+                phx-click="resource_preset_back"
+                class="cursor-pointer text-accent hover:underline"
+              >
+                Change
+              </button>
+            </div>
+            <input :if={@preset} type="hidden" name="resource[preset]" value={@preset.id} />
+            <details
+              :if={@preset && @preset.guide != []}
+              id="resource-preset-guide"
+              class="group rounded-lg border border-line-soft"
+            >
+              <summary class="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-xs text-muted transition-colors hover:text-ink">
+                <.icon
+                  name="hero-chevron-right-micro"
+                  class="size-3.5 transition-transform group-open:rotate-90"
+                /> How to set it up
+              </summary>
+              <ol class="space-y-1.5 border-t border-line-soft px-3 py-2.5">
+                <li
+                  :for={{step, index} <- Enum.with_index(@preset.guide, 1)}
+                  class="flex gap-2 text-xs leading-5 text-ink"
+                >
+                  <span class="w-4 shrink-0 text-right text-faint">{index}.</span>
+                  <span>{step}</span>
+                </li>
+              </ol>
+            </details>
+            <div :if={@preset && @preset.fill != []} id="resource-preset-fill" class="space-y-3">
+              <div :for={field <- @preset.fill}>
+                <label
+                  class="mb-1 block text-[11px] font-medium uppercase tracking-wide text-muted"
+                  for={"resource-fill-#{field.name}"}
+                >
+                  {field.label}
+                </label>
+                <input
+                  type="text"
+                  name={"resource[fill][#{field.name}]"}
+                  id={"resource-fill-#{field.name}"}
+                  value={get_in(@form.params, ["fill", field.name])}
+                  placeholder={field.example}
+                  class="w-full rounded-md border border-line bg-deep px-2.5 py-1.5 text-xs text-ink transition-colors placeholder:text-faint focus:border-accent focus:outline-none"
+                />
+              </div>
+              <.field_error errors={@errors} field={:fill} />
+            </div>
+            <.text_field field={@form[:name]} label="Name" placeholder={name_placeholder(@kind)} />
             <.field_error errors={@errors} field={:name} />
-            <.input
+            <.text_field
               field={@form[:purpose]}
               type="textarea"
               label="What it is"
@@ -724,65 +1155,219 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   attr :editing, :any, required: true
 
   defp credential_fields(assigns) do
-    assigns = assign(assigns, minted?: assigns.form[:source].value == "minted")
+    assigns =
+      assign(assigns,
+        minted?: assigns.form[:source].value == "minted",
+        adapter: to_string(assigns.form[:adapter].value || "bearer"),
+        adapters: MWTClient.Sandbox.Adapter.all()
+      )
 
     ~H"""
-    <div>
-      <p class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted">Its value</p>
-      <div class="flex flex-wrap gap-4 text-xs text-ink">
-        <label class="flex items-center gap-1.5">
-          <input
-            type="radio"
-            name={@form[:source].name}
-            id="resource-source-stored"
-            value="stored"
-            checked={not @minted?}
-          /> Pasted, kept in your vault
-        </label>
-        <label class="flex items-center gap-1.5">
-          <input
-            type="radio"
-            name={@form[:source].name}
-            id="resource-source-minted"
-            value="minted"
-            checked={@minted?}
-          /> Minted by a command on this machine
-        </label>
-      </div>
-    </div>
+    <.choice_field
+      id="resource-source"
+      name={@form[:source].name}
+      label="Its value"
+      options={[
+        {"stored", "Pasted, kept in your vault"},
+        {"minted", "Minted by a command on this machine"}
+      ]}
+      value={if(@minted?, do: "minted", else: "stored")}
+    />
     <div :if={not @minted? and is_nil(@editing)}>
-      <.input field={@form[:value]} type="password" label="Value" autocomplete="off" />
+      <.text_field
+        field={@form[:value]}
+        type="password"
+        label="Value (optional now)"
+        autocomplete="off"
+        placeholder="Until you paste it, every use is refused"
+      />
       <.field_error errors={@errors} field={:value} />
     </div>
     <p :if={not @minted? and @editing} class="text-[11px] text-muted">
       Replace its value on its page.
     </p>
     <div :if={@minted?}>
-      <.input
+      <.text_field
         field={@form[:mint]}
-        label="Command that prints a short-lived value"
-        placeholder="gcloud auth print-access-token"
+        label={
+          if(@adapter == "github" and app?(@form),
+            do: "Command that prints the App's private key",
+            else: "Command that prints a short-lived value"
+          )
+        }
+        placeholder={
+          if(@adapter == "github" and app?(@form),
+            do: "pass show github/app-key",
+            else: "gcloud auth print-access-token"
+          )
+        }
       />
+      <p id="resource-mint-where" class="mt-1 flex items-center gap-1.5 text-[10px] text-faint">
+        <.where place={:machine} /> each time a value is needed, as you, never in the VM
+      </p>
       <.field_error errors={@errors} field={:mint} />
     </div>
-    <.input
-      field={@form[:env]}
-      label="Variables holding its placeholder, under mwt exec"
-      placeholder="GH_TOKEN, GITHUB_TOKEN"
-    />
-    <.field_error errors={@errors} field={:env} />
-    <.input
-      field={@form[:file_env]}
-      label="Variables naming a file that holds it"
-      placeholder="GOOGLE_OAUTH_ACCESS_TOKEN_FILE"
-    />
-    <.input
-      field={@form[:git]}
-      type="checkbox"
-      label="Git over HTTPS gets it from MWT's credential helper"
-    />
+    <div>
+      <.text_field
+        field={@form[:env]}
+        label="Variables holding its placeholder"
+        placeholder="API_KEY, SERVICE_TOKEN"
+      />
+      <p class="mt-1 text-[10px] leading-4 text-faint">
+        Only under mwt exec, and only its placeholder: MWT swaps the real value in on the way out.
+      </p>
+      <.field_error errors={@errors} field={:env} />
+    </div>
+    <.advanced
+      id="resource-advanced"
+      set={credential_advanced_set(@form, @adapter, @editing)}
+      open={
+        Enum.any?(
+          [
+            :adapter,
+            :app,
+            :keep_minutes,
+            :prefix,
+            :present_project,
+            :present_email,
+            :present_id_header
+          ],
+          &Map.has_key?(@errors, &1)
+        )
+      }
+    >
+      <div>
+        <label
+          for="resource-adapter"
+          class="mb-1.5 block text-[11px] font-medium uppercase tracking-wide text-muted"
+        >
+          The service it is for
+        </label>
+        <select
+          id="resource-adapter"
+          name={@form[:adapter].name}
+          class="w-full rounded-md border border-line bg-deep px-2.5 py-1.5 text-xs text-ink transition-colors focus:border-accent focus:outline-none"
+        >
+          <option
+            :for={adapter <- @adapters}
+            value={adapter.id()}
+            selected={Atom.to_string(adapter.id()) == @adapter}
+          >
+            {adapter_label(adapter.id())}
+          </option>
+        </select>
+        <p class="mt-1 text-[10px] leading-4 text-faint">
+          How MWT reads a minted value, what a grant over it may narrow by, and the grant presets offered for it.
+        </p>
+        <.field_error errors={@errors} field={:adapter} />
+      </div>
+      <div :if={@adapter == "github"} id="resource-github-app" class="space-y-2">
+        <p class="text-[11px] text-muted">
+          A GitHub App: with both ids, the command prints the App's private key, and MWT trades it for an hour's installation token.
+        </p>
+        <div class="grid gap-2 sm:grid-cols-2">
+          <.text_field
+            field={@form[:app_id]}
+            label="App's client id or app id"
+            placeholder="Iv23liABCD1234"
+          />
+          <.text_field
+            field={@form[:installation_id]}
+            label="Installation's id"
+            placeholder="12345678"
+          />
+        </div>
+        <.field_error errors={@errors} field={:app} />
+      </div>
+      <div :if={@minted?}>
+        <.text_field
+          field={@form[:keep_minutes]}
+          type="number"
+          label="Mint again after at most (minutes)"
+          placeholder="Until a minute before it expires"
+        />
+        <.field_error errors={@errors} field={:keep_minutes} />
+      </div>
+      <.text_field
+        field={@form[:file_env]}
+        label="Variables naming a file that holds it"
+        placeholder="SERVICE_TOKEN_FILE"
+      />
+      <.text_field
+        :if={is_nil(@editing)}
+        field={@form[:prefix]}
+        label="Its placeholder starts with"
+        placeholder="mwt_ (some tools check a token's shape: ghp_, sk-…)"
+      />
+      <.check_field
+        field={@form[:git]}
+        label="Git over HTTPS gets it from MWT's credential helper"
+        hint="For a token git sends as a password, with any git host over HTTPS: the helper answers with the placeholder for the hosts a grant over it lists."
+      />
+      <div :if={@adapter == "google"} id="resource-google" class="space-y-3">
+        <.check_field
+          field={@form[:present_login]}
+          label="A Google login file, for tools that refresh a login themselves"
+        />
+        <.text_field
+          :if={@form[:present_login].value in ["true", true]}
+          field={@form[:present_id_header]}
+          label="Header the tool sends the ID token in (optional)"
+          placeholder="X-Id-Token"
+        />
+        <.check_field
+          field={@form[:present_metadata]}
+          label="A metadata server, for Google's client libraries"
+        />
+        <div
+          :if={@form[:present_metadata].value in ["true", true]}
+          class="grid gap-2 sm:grid-cols-2"
+        >
+          <.text_field field={@form[:present_project]} label="Project" placeholder="my-project" />
+          <.text_field
+            field={@form[:present_email]}
+            label="Account it reports (optional)"
+            placeholder="sa@my-project.iam.gserviceaccount.com"
+          />
+        </div>
+        <.field_error errors={@errors} field={:present_project} />
+        <.field_error errors={@errors} field={:present_email} />
+        <.field_error errors={@errors} field={:present_id_header} />
+      </div>
+    </.advanced>
     """
   end
+
+  # What a credential's Advanced holds that is set, for its summary.
+  defp credential_advanced_set(form, adapter, editing) do
+    text = &(form[&1].value |> to_string() |> String.trim())
+
+    [
+      adapter != "bearer" &&
+        case MWTClient.Sandbox.Adapter.find(adapter) do
+          {:ok, found} -> found.name()
+          :error -> adapter
+        end,
+      app?(form) && "a GitHub App",
+      text.(:keep_minutes) != "" && "minted again after #{text.(:keep_minutes)} min",
+      text.(:file_env) != "" && "a token file",
+      (is_nil(editing) and text.(:prefix) not in ["", "mwt_"]) && "placeholder #{text.(:prefix)}…",
+      form[:git].value in ["true", true] && "git over HTTPS",
+      form[:present_login].value in ["true", true] && "a Google login file",
+      form[:present_metadata].value in ["true", true] && "a metadata server"
+    ]
+    |> Enum.filter(&is_binary/1)
+  end
+
+  # Whether the form names a GitHub App: either of its ids given.
+  defp app?(form),
+    do: Enum.any?([form[:app_id].value, form[:installation_id].value], &(&1 not in [nil, ""]))
+
+  defp adapter_label(:bearer), do: "Any service: a bearer token or API key"
+  defp adapter_label(:github), do: "GitHub: a token, or a GitHub App"
+  defp adapter_label(:google), do: "Google: gcloud and Google's APIs"
+  defp adapter_label(:hex), do: "Hex: an API key"
+  defp adapter_label(other), do: to_string(other)
 
   attr :form, :any, required: true
   attr :errors, :map, required: true
@@ -790,17 +1375,21 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp network_fields(assigns) do
     ~H"""
     <div>
-      <.input
+      <.text_field
         field={@form[:destinations]}
         type="textarea"
         label="Destinations, one a line"
-        placeholder="10.20.0.0/16\ndb.corp.example:5432\n*.corp.example:443"
+        placeholder={Enum.join(["10.20.0.0/16", "db.corp.example:5432", "*.corp.example:443"], "\n")}
       />
       <.field_error errors={@errors} field={:destinations} />
     </div>
-    <.input field={@form[:resolver]} label="DNS server (optional)" placeholder="10.8.0.1" />
+    <.text_field field={@form[:resolver]} label="DNS server (optional)" placeholder="10.8.0.1" />
     <.field_error errors={@errors} field={:resolver} />
-    <.input field={@form[:anchor]} label="Interface it goes through (optional)" placeholder="wg0" />
+    <.text_field
+      field={@form[:anchor]}
+      label="Interface it goes through (optional)"
+      placeholder="wg0"
+    />
     <.field_error errors={@errors} field={:anchor} />
     """
   end
@@ -836,7 +1425,15 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
       "git" => to_string(credential.git),
       "keep_minutes" =>
         if(credential.keep_minutes, do: Integer.to_string(credential.keep_minutes), else: ""),
-      "mint_per" => Atom.to_string(credential.mint_per)
+      "mint_per" => Atom.to_string(credential.mint_per),
+      "adapter" => Atom.to_string(credential.adapter),
+      "app_id" => (credential.app && credential.app.app_id) || "",
+      "installation_id" => (credential.app && credential.app.installation_id) || "",
+      "present_login" => to_string(Map.has_key?(credential.presents, :login)),
+      "present_id_header" => get_in(credential.presents, [:login, :header]) || "",
+      "present_metadata" => to_string(Map.has_key?(credential.presents, :metadata)),
+      "present_project" => get_in(credential.presents, [:metadata, :project]) || "",
+      "present_email" => get_in(credential.presents, [:metadata, :email]) || ""
     }
   end
 
@@ -850,7 +1447,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
     }
   end
 
-  def form_fields(:credential), do: %{"source" => "stored"}
+  def form_fields(:credential), do: %{"source" => "stored", "adapter" => "bearer"}
   def form_fields(:network), do: %{}
 
   ## A resource's lock
@@ -858,13 +1455,12 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   attr :resource, :any, required: true
   attr :locks, :map, required: true
   attr :name, :string, required: true
-  attr :labelled, :boolean, default: false, doc: "says Open beside the switch while it is open"
 
   @doc """
-  A resource's lock: on reads as open, as a resource is by default; locked,
-  it is off, beside a badge saying by whom. A lock only the isolation
-  holds ends as you release the VM, on the Firewall page: the switch can't
-  end it.
+  A resource's lock: a Lock button while it is open, as a resource is by
+  default; locked, a tag saying by whom and Unlock. A lock only the
+  isolation holds ends as you release the VM, on the Firewall page: the
+  button can't end it.
   """
   def lock_switch(assigns) do
     {kind, id} =
@@ -887,9 +1483,6 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
 
     ~H"""
     <span class="inline-flex shrink-0 items-center gap-2">
-      <span :if={@labelled and not @locked?} id={"#{@dom}-open"} class="text-[11px] text-muted">
-        Open
-      </span>
       <span
         :if={@locked?}
         id={"#{@dom}-locked"}
@@ -910,21 +1503,29 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
         <.icon name="hero-lock-closed-micro" class="size-3" />
         {if(@isolation? and not @mine?, do: "Isolated", else: "Locked")}
       </span>
-      <.switch
+      <button
+        type="button"
         id={@dom}
-        on={not @locked?}
+        aria-pressed={to_string(@locked?)}
         disabled={@isolation? and not @mine?}
-        label={
+        title={
           cond do
-            @mine? -> "Unlock #{@name}"
+            @mine? -> "Unlock #{@name}: its grants give its uses again"
             @isolation? -> "#{@name} is locked by the isolation: release the VM on the Firewall page"
-            true -> "Lock #{@name}"
+            true -> "Lock #{@name}: every use of it is refused, whatever its grants say"
           end
         }
         phx-click={if(@mine?, do: "unlock_resource", else: "lock_resource")}
         phx-value-kind={@kind}
         phx-value-id={@rid}
-      />
+        class="inline-flex cursor-pointer items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] font-medium text-muted transition-colors hover:border-bad/50 hover:text-bad disabled:cursor-default disabled:opacity-40"
+      >
+        <.icon
+          name={if(@locked?, do: "hero-lock-open-micro", else: "hero-lock-closed-micro")}
+          class="size-3.5"
+        />
+        {if(@mine?, do: "Unlock", else: "Lock")}
+      </button>
     </span>
     """
   end
@@ -956,6 +1557,21 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp built_in?(found) when found in [:machine, :mwt], do: true
   defp built_in?(_found), do: false
 
+  # A mint an agent wrote runs as you, unconfined, whenever the value is
+  # needed: read like a command's script.
+  defp mint_hints(%Credential{source: {:minted, command}}, grants),
+    do: [
+      "It runs on this machine as you, outside any bubble, each time the value is needed, with no ask."
+      | MWTClient.Sandbox.HostCommand.hints(command, grants)
+    ]
+
+  defp to_review?(%{proposal: %{reviewed_at: nil}}), do: true
+  defp to_review?(_found), do: false
+
+  defp kind_word({:credential, _id}), do: "credential"
+  defp kind_word({:network, _id}), do: "network"
+  defp kind_word(_built_in), do: "resource"
+
   defp purpose(%Network{internet: true}), do: Network.internet().purpose
   defp purpose(%{purpose: purpose}) when is_binary(purpose), do: purpose
   defp purpose(_found), do: ""
@@ -968,7 +1584,8 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp resource_tone(:machine), do: "bg-violet/15 text-violet"
   defp resource_tone(:mwt), do: "bg-ok-soft/50 text-ok-strong"
 
-  defp credential_summary(%Credential{} = credential) do
+  @doc "What a credential is, in a line: how its value is made and what the VM gets."
+  def credential_summary(%Credential{} = credential) do
     how =
       case credential.source do
         {:minted, _command} -> "minted on this machine"
@@ -978,10 +1595,11 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
     "mwt exec #{credential.id} · #{how}"
   end
 
-  defp network_summary(%Network{internet: true} = network),
+  @doc "What a network is, in a line."
+  def network_summary(%Network{internet: true} = network),
     do: "Every public address" <> blocked_summary(network)
 
-  defp network_summary(%Network{} = network) do
+  def network_summary(%Network{} = network) do
     Enum.join(
       [
         Enum.join(network.destinations, ", "),
@@ -1010,8 +1628,10 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp grants_subtitle({:network, _id}),
     do: "What the VM may reach on it, all of it or some hosts, and how each use is approved."
 
-  defp grants_subtitle(:machine), do: "MWT's built-in grants for your machine."
-  defp grants_subtitle(:mwt), do: "Reading, creating and changing, each a grant of its own."
+  defp grants_subtitle(:machine),
+    do: "Your saved commands, and Commands agents write, which always asks."
+
+  defp grants_subtitle(:mwt), do: "Built in: each of MWT's tools a grant of its own."
 
   defp no_grants_words({:credential, _id}),
     do: "No grant over it yet: its value goes nowhere until one is on."
@@ -1021,21 +1641,13 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
 
   defp no_grants_words(_built_in), do: "None."
 
-  defp add_grant_preset({:credential, _id}), do: "token"
+  # What a resource's Add grant starts from: over a credential, choosing
+  # its kind first (`pick_over`); over a network, open use; over your
+  # machine, a saved command.
+  defp add_grant_preset({:credential, _id}), do: "over"
   defp add_grant_preset({:network, _id}), do: "network"
+  defp add_grant_preset(:machine), do: "saved_command"
   defp add_grant_preset(_built_in), do: nil
-
-  defp actions_preset({:credential, _id}), do: "request_action"
-  defp actions_preset(:machine), do: "saved_command"
-  defp actions_preset(_other), do: nil
-
-  defp actions_subtitle({:credential, _id}),
-    do:
-      "Requests MWT sends itself with its value; each also needs a grant over its host's network."
-
-  defp actions_subtitle(:machine),
-    do:
-      "Your own scripts, which agents call by id; each run is approved unless you auto-approve it."
 
   defp host_id(host), do: host |> String.replace(~r/[^a-z0-9]+/, "-") |> String.trim("-")
 
@@ -1052,9 +1664,9 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
     do:
       "Addresses, ranges and names the VM may reach through this machine, as a VPN or your LAN does. Grants over it open it."
 
-  defp name_placeholder(:credential), do: "GitHub personal"
+  defp name_placeholder(:credential), do: "Stripe test key"
   defp name_placeholder(:network), do: "Prod VPN"
 
-  defp purpose_placeholder(:credential), do: "My GitHub token, for gh and the API"
+  defp purpose_placeholder(:credential), do: "A Stripe test key, for the checkout tests"
   defp purpose_placeholder(:network), do: "The production network, through the company VPN"
 end

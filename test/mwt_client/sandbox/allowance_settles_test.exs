@@ -45,7 +45,7 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
   defp still_waiting?(username, id),
     do: Enum.any?(Sandbox.snapshot(username).waiting, &(&1.id == id))
 
-  defp corp(username, ceiling \\ :allow) do
+  defp corp(username) do
     {:ok, corp} =
       Sandbox.create_grant(username, %{
         "kind" => "network",
@@ -54,7 +54,6 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
         "destinations" => "*.corp.example:443"
       })
 
-    {:ok, _} = Sandbox.set_ceiling(username, corp.id, ceiling)
     {:ok, _} = Sandbox.turn_on(username, corp.id, 60, :ask)
     corp
   end
@@ -70,8 +69,14 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
     assert admin_card.grant_id == corp.id
 
     :ok = Sandbox.decide(username, wiki_card.id, {:allow, :all, 60})
-    assert {:ok, _} = Task.await(wiki)
-    assert {:ok, _} = Task.await(admin)
+    # Each answer says what decided it: you, on the card you decided; the
+    # allowance your choice there made, on the card it settled.
+    wiki_card_id = wiki_card.id
+    assert {:ok, _, %{by: :you, card: ^wiki_card_id}} = Task.await(wiki)
+
+    assert {:ok, _, %{by: :allowance, card: ^wiki_card_id, allowance: %{origin: %{kind: :card}}}} =
+             Task.await(admin)
+
     refute still_waiting?(username, admin_card.id)
   end
 
@@ -83,7 +88,7 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
     admin_card = waiting_for(username, "admin.corp.example")
 
     :ok = Sandbox.decide(username, card.id, {:allow, :similar, 60})
-    assert {:ok, _} = Task.await(first)
+    assert {:ok, _, %{by: :you}} = Task.await(first)
     assert still_waiting?(username, admin_card.id)
 
     :ok = Sandbox.decide(username, admin_card.id, :deny)
@@ -97,25 +102,8 @@ defmodule MWTClient.Sandbox.AllowanceSettlesTest do
     card = waiting_for(username, "admin.corp.example")
 
     {:ok, _} = Sandbox.set_mode(username, corp.id, :all)
-    assert {:ok, _} = Task.await(admin)
+    assert {:ok, _, %{by: :allowance, allowance: %{origin: %{kind: :auto}}}} = Task.await(admin)
     refute still_waiting?(username, card.id)
-  end
-
-  test "a grant that always asks takes no allowance: the card goes once, and the host asks again",
-       %{username: username} do
-    corp = corp(username, :ask)
-    admin = held(username, request("admin.corp.example", "/", corp.id))
-    card = waiting_for(username, "admin.corp.example")
-
-    assert {:error, _} = Sandbox.decide(username, card.id, {:allow, :all, 60})
-    :ok = Sandbox.decide(username, card.id, :allow_once)
-    assert {:ok, _} = Task.await(admin)
-
-    again = held(username, request("admin.corp.example", "/", corp.id))
-    next = waiting_for(username, "admin.corp.example")
-    refute next.id == card.id
-    :ok = Sandbox.decide(username, next.id, :deny)
-    Task.await(again)
   end
 
   test "an add past the hour's limit is settled by no allowance, only by you",

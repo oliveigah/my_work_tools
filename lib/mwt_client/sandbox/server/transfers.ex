@@ -37,7 +37,12 @@ defmodule MWTClient.Sandbox.Server.Transfers do
       values: stored_values(credentials, state.values),
       built_in:
         Enum.map(built_in, fn g ->
-          %{id: g.id, start: g.start, ceiling: g.ceiling, host_rules: g.host_rules}
+          %{
+            id: g.id,
+            start: g.start,
+            host_rules: g.host_rules,
+            except: g.except
+          }
         end),
       presets: presets(state.username),
       settings: %{
@@ -416,10 +421,14 @@ defmodule MWTClient.Sandbox.Server.Transfers do
             start =
               if settings.start in Grant.starts(grant), do: settings.start, else: grant.start
 
-            ceiling =
-              if settings.ceiling in [:ask, :allow], do: settings.ceiling, else: grant.ceiling
+            # The hosts it leaves out: the file's, replacing; both, merging.
+            except =
+              case mode do
+                :replace -> settings.except
+                :merge -> Enum.uniq(grant.except ++ settings.except)
+              end
 
-            %{grant | start: start, ceiling: ceiling, host_rules: rules}
+            %{grant | start: start, host_rules: rules, except: except}
         end
       end)
     end)

@@ -69,6 +69,37 @@ defmodule MWTClient.Sandbox.WhyTest do
     text
   end
 
+  test "a host the Internet's grant leaves out: not reached, unless a grant over it is on" do
+    internet = %{internet() | except: ["myhost.xpto.com"]}
+
+    text = why("myhost.xpto.com", world([internet]))
+    assert text =~ "myhost.xpto.com:443: not reached now"
+    refute text =~ "the Internet grant opens it"
+    assert text =~ "leaves it out (myhost.xpto.com)"
+    assert text =~ "Only a grant over the host itself gives it"
+
+    myhost = %Grant{
+      id: "myhost",
+      name: "My host",
+      kind: :network,
+      network: "internet",
+      state: :on,
+      purpose: "Asks each time",
+      scope: ["myhost.xpto.com"],
+      destinations: ["myhost.xpto.com"]
+    }
+
+    text =
+      why(
+        "myhost.xpto.com",
+        world([internet, myhost])
+        |> answered(%{{93, 184, 216, 34} => ["myhost.xpto.com"]})
+      )
+
+    assert text =~ "A grant naming it gives it instead"
+    assert text =~ "My host"
+  end
+
   test "a private address under an off network grant says which, and how to ask" do
     text = why("10.1.2.3:5432", world([internet(), lan(:off, ["10.0.0.0/8:5432"])]))
     assert text =~ "10.1.2.3:5432: not reached now"

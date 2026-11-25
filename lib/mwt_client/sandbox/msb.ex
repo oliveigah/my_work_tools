@@ -349,6 +349,27 @@ defmodule MWTClient.Sandbox.Msb do
     end
   end
 
+  @doc """
+  Runs `msb` with `args` as `run/3` does, for a command whose status and
+  output are both the answer (the VM console, `MWTClient.Sandbox.Console`):
+  `{:ok, output, status}`, at most `max` bytes of stdout, or `{:error,
+  :timeout | {:too_long, head} | message}`.
+  """
+  @spec run_status(String.t(), [String.t()], pos_integer(), pos_integer()) ::
+          {:ok, String.t(), non_neg_integer()} | {:error, term()}
+  def run_status(username, args, seconds, max) do
+    if executable(), do: ensure_home!(username)
+
+    with :ok <- written(write_launcher(username)) do
+      env = [{"MWT_MSB_NETWORK", false}, {"MWT_MSB_READ", false}]
+
+      case Bounded.cmd(confined(username), args, max: max, seconds: seconds, env: env) do
+        {:ok, output, _errors, status} -> {:ok, output, status}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
   defp written(:ok), do: :ok
   defp written({:error, :no_runtime}), do: {:error, "MWT's msb is missing"}
 

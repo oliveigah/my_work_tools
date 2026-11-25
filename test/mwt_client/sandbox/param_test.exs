@@ -1,11 +1,12 @@
 defmodule MWTClient.Sandbox.ParamTest do
   @moduledoc """
-  An action's parameters: how they are written, which values each shape
-  takes, and what a script must do with them.
+  A fixed call's parameters: how they are written (a JSON Schema, or
+  `NAME: shape: what it is` lines), MWT's floor under every value, which
+  values each shorthand takes, and what a script must do with them.
   """
   use ExUnit.Case, async: true
 
-  alias MWTClient.Sandbox.Param
+  alias MWTClient.Sandbox.{Param, ParamSchema}
 
   doctest Param
 
@@ -14,11 +15,17 @@ defmodule MWTClient.Sandbox.ParamTest do
     params
   end
 
+  # Whether a value fits a parameter of the shorthand `shape`.
+  defp fits?(shape, value) do
+    [param] = params!("P: #{shape}: a parameter")
+    match?({:ok, _}, Param.check([param], %{"P" => value}))
+  end
+
   describe "a word" do
     test "is a name, a version, or parts joined by slashes" do
       for value <- ~w(klife oliveigah/klife v1.2.0 feature/login-v2 lib/app.ex user@host a:b a+b
                       .github/workflows _private 42) do
-        assert Param.fits?(:word, value), value
+        assert fits?("word", value), value
       end
     end
 
@@ -59,30 +66,45 @@ defmodule MWTClient.Sandbox.ParamTest do
             "",
             String.duplicate("a", 201)
           ] do
-        refute Param.fits?(:word, value), inspect(value)
+        refute fits?("word", value), inspect(value)
       end
     end
   end
 
-  test "a number is digits only" do
-    assert Param.fits?(:number, "0") and Param.fits?(:number, "123456789012345678")
+  test "a number is a whole number, 0 or more" do
+    assert fits?("number", "0") and fits?("number", "123456789012345678")
 
-    for value <- ["", "-1", "1.5", "1e3", " 1", "0x10", "1234567890123456789"],
-        do: refute(Param.fits?(:number, value), value)
+    for value <- ["", "-1", "1.5", "1e3", " 1", "0x10", "one"],
+        do: refute(fits?("number", value), value)
   end
 
   test "a list takes its own values and nothing else" do
-    shape = {:one_of, ["staging", "production"]}
-    assert Param.fits?(shape, "staging")
-    for value <- ["Staging", "staging ", "dev", ""], do: refute(Param.fits?(shape, value))
+    assert fits?("staging|production", "staging")
+
+    for value <- ["Staging", "staging ", "dev", ""],
+        do: refute(fits?("staging|production", value))
   end
 
-  test "text is anything that isn't empty and doesn't start with a dash" do
-    assert Param.fits?(:text, "Fix the login page; see #12 & \"quotes\" $(not run)")
-    assert Param.fits?(:text, "two\nlines")
+  test "text is anything that isn't blank, doesn't start with a dash and doesn't go up a folder" do
+    assert fits?("text", "Fix the login page; see #12 & \"quotes\" $(not run)")
+    assert fits?("text", "two\nlines")
+    assert fits?("text", "v1..v2 and a/b")
 
-    for value <- ["", "   ", "-m", " --force", String.duplicate("a", 4097)],
-        do: refute(Param.fits?(:text, value), inspect(value))
+    for value <- [
+          "",
+          "   ",
+          "-m",
+          " --force",
+          "../etc/passwd",
+          "a/../b",
+          String.duplicate("a", 4097)
+        ],
+        do: refute(fits?("text", value), inspect(value))
+  end
+
+  test "a negative number is no option" do
+    [amount] = params!("AMOUNT: decimal: how much")
+    assert {:ok, [{"AMOUNT", "-12.50"}]} = Param.check([amount], %{"AMOUNT" => "-12.50"})
   end
 
   describe "a call's values" do
@@ -95,7 +117,7 @@ defmodule MWTClient.Sandbox.ParamTest do
                {:ok, [{"REPO", "o/r"}, {"PR", "12"}]}
     end
 
-    test "are refused when one is missing, unknown, of another shape, or hides something",
+    test "are refused when one is missing, unknown, of another type, or hides something",
          %{params: params} do
       assert {:error, {:missing, %Param{name: "PR"}}} = Param.check(params, %{"REPO" => "o/r"})
       assert {:error, {:missing, %Param{name: "REPO"}}} = Param.check(params, nil)
@@ -103,10 +125,10 @@ defmodule MWTClient.Sandbox.ParamTest do
       assert {:error, {:unknown, "BRANCH"}} =
                Param.check(params, %{"REPO" => "o/r", "PR" => "1", "BRANCH" => "x"})
 
-      assert {:error, {:shape, %Param{name: "PR"}}} =
+      assert {:error, {:type, %Param{name: "PR"}}} =
                Param.check(params, %{"REPO" => "o/r", "PR" => "one"})
 
-      assert {:error, {:shape, %Param{name: "PR"}}} =
+      assert {:error, {:type, %Param{name: "PR"}}} =
                Param.check(params, %{"REPO" => "o/r", "PR" => 1})
 
       hidden = "o/r" <> <<0x200B::utf8>>
@@ -116,8 +138,8 @@ defmodule MWTClient.Sandbox.ParamTest do
     end
 
     test "each refusal says what the parameter takes", %{params: [repo, _pr]} do
-      assert Param.explain({:shape, repo}) =~ "REPO is a word"
-      assert Param.explain({:shape, repo}) =~ "It is: the repository"
+      assert Param.explain({:type, repo}) =~ "REPO is a word"
+      assert Param.explain({:type, repo}) =~ "It is: the repository"
       assert Param.explain({:missing, repo}) =~ "REPO=value"
     end
 
@@ -129,9 +151,13 @@ defmodule MWTClient.Sandbox.ParamTest do
   end
 
   describe "parameters as you write them" do
-    test "round-trip through their lines" do
-      text = "REPO: word: the repository\nTARGET: staging|production: where\nNOTE: text: a note"
-      assert text |> params!() |> Enum.map_join("\n", &Param.line/1) == text
+    test "lines make a schema, which round-trips through its text" do
+      params =
+        params!(
+          "REPO: word: the repository\nTARGET: staging|production: where\nNOTE: text: a note"
+        )
+
+      assert {:ok, ^params} = params |> ParamSchema.text() |> ParamSchema.parse()
     end
 
     test "a name is in capitals and means nothing else already" do
@@ -182,20 +208,23 @@ defmodule MWTClient.Sandbox.ParamTest do
   end
 
   test "dates, times and decimals" do
-    assert {:ok, [%Param{shape: :date}, %Param{shape: :time}, %Param{shape: :decimal}]} =
+    assert {:ok, [day, at, amount]} =
              Param.parse("DAY: date: the day\nAT: time: when\nAMOUNT: decimal: how much")
 
-    assert Param.fits?(:date, "2026-11-17")
-    refute Param.fits?(:date, "2026-02-30")
-    refute Param.fits?(:date, "2026-11-17T00:00:00Z")
-    assert Param.fits?(:time, "2026-11-17T12:00:00Z")
-    assert Param.fits?(:time, "2026-11-17T12:00:00.123-03:00")
-    refute Param.fits?(:time, "2026-11-17 noon")
-    refute Param.fits?(:time, "2026-11-17T25:00:00Z")
-    assert Param.fits?(:decimal, "-12.50")
-    assert Param.fits?(:decimal, "7")
-    refute Param.fits?(:decimal, "1e9")
-    refute Param.fits?(:decimal, "12.")
-    assert Param.shape_words(:date) =~ "YYYY-MM-DD"
+    assert day.schema == %{"type" => "string", "format" => "date"}
+    assert at.schema == %{"type" => "string", "format" => "date-time"}
+    assert amount.schema == %{"type" => "number"}
+
+    assert fits?("date", "2026-11-17")
+    refute fits?("date", "2026-02-30")
+    refute fits?("date", "2026-11-17T00:00:00Z")
+    assert fits?("time", "2026-11-17T12:00:00Z")
+    assert fits?("time", "2026-11-17T12:00:00.123-03:00")
+    refute fits?("time", "2026-11-17 noon")
+    refute fits?("time", "2026-11-17T25:00:00Z")
+    assert fits?("decimal", "-12.50")
+    assert fits?("decimal", "7")
+    refute fits?("decimal", "12.x")
+    assert ParamSchema.words(day.schema) =~ "YYYY-MM-DD"
   end
 end

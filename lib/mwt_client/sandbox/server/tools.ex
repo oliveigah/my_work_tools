@@ -53,12 +53,12 @@ defmodule MWTClient.Sandbox.Server.Tools do
       {:refuse, :no_mwt_grant} ->
         {{:error, "MWT has no grant for #{use.tool}. Tell the user."}, state}
 
-      {:refuse, {:locked, _resource, grant}} ->
+      {:refuse, {:locked, resource, grant}} ->
         state =
           State.log(state, event(grant, :refused, "#{MwtTools.about(use).title} · locked", use))
 
         {{:error,
-          MWTClient.Sandbox.Resource.locked_words(:machine) <>
+          MWTClient.Sandbox.Resource.locked_words(resource) <>
             " Tell the user what you were doing."}, state}
 
       {:allow, grant, allowance, about} ->
@@ -74,7 +74,13 @@ defmodule MWTClient.Sandbox.Server.Tools do
               state
               |> record(use, now_ms)
               |> State.used(grant.id)
-              |> State.log(event(grant, :tool, "#{about.title} · #{why}", use))
+              |> State.log(
+                Map.put(
+                  event(grant, :tool, "#{about.title} · #{why}", use),
+                  :decision,
+                  MWTClient.Sandbox.Decision.allowance(grant, allowance)
+                )
+              )
 
             {:ok, state}
 
@@ -109,7 +115,7 @@ defmodule MWTClient.Sandbox.Server.Tools do
             Map.put(
               Event.asked_by(approval.agent, approval.thread),
               :details,
-              Approval.details(approval, text)
+              Approval.details(approval)
             )
           )
         )

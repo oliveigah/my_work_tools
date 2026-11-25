@@ -17,6 +17,10 @@ defmodule MWTClient.Sandbox.Guest do
     * `exec` - runs a command, given as words, and returns its output
       (stdout), at most `MWTClient.Sandbox.Msb.max_output/0` bytes of it:
       what a command in the VM prints is the VM's to decide;
+    * `run` - runs a command, given as words, for at most a number of
+      seconds, taking at most a number of bytes of its output, and returns
+      the output and the exit status, whatever it is: what the VM console
+      shows (`MWTClient.Sandbox.Console`);
     * `git_url` - the address of the repository at a path there, for
       `git push` and `git fetch` on this machine;
     * `env` - what git needs in its environment to use that address;
@@ -34,6 +38,8 @@ defmodule MWTClient.Sandbox.Guest do
   @type t :: %{
           root: Path.t(),
           exec: ([String.t()] -> {:ok, String.t()} | {:error, String.t()}),
+          run: ([String.t()], pos_integer(), pos_integer() ->
+                  {:ok, String.t(), non_neg_integer()} | {:error, term()}),
           git_url: (Path.t() -> String.t()),
           env: [{String.t(), String.t()}],
           stream: ([String.t()] -> [String.t()]),
@@ -47,6 +53,9 @@ defmodule MWTClient.Sandbox.Guest do
     %{
       root: "/work",
       exec: fn words -> Msb.run(username, ["exec", name, "--" | words], 300) end,
+      run: fn words, seconds, max ->
+        Msb.run_status(username, ["exec", name, "--" | words], seconds, max)
+      end,
       # git's `ext` transport: a command whose input and output carry the
       # protocol. `%s` becomes upload-pack or receive-pack.
       git_url: fn path ->
@@ -90,6 +99,12 @@ defmodule MWTClient.Sandbox.Guest do
 
           {:error, {:too_long, _head}} ->
             {:error, "#{command} printed too much"}
+        end
+      end,
+      run: fn [command | args], seconds, max ->
+        case Bounded.cmd(command, args, max: max, seconds: seconds, env: git_env()) do
+          {:ok, output, _errors, status} -> {:ok, output, status}
+          {:error, reason} -> {:error, reason}
         end
       end,
       git_url: fn path -> path end,

@@ -1,18 +1,18 @@
 {
   "id": "github",
-  "kind": "token",
-  "name": "GitHub",
+  "makes": "credential",
+  "adapter": "github",
+  "name": "GitHub token",
   "icon": "git-branch",
-  "blurb": "gh, git over HTTPS and the REST and GraphQL APIs.",
+  "blurb": "A personal or fine-grained token, for gh, git over HTTPS and the GitHub API.",
   "guide": [
     "Create a fine-grained token at github.com/settings/personal-access-tokens with an expiry.",
     "Give it only the repositories the agent works on, and only what it needs: Contents read and write to push, Pull requests to open them.",
-    "Paste it below. In the VM, use mwt exec GRANT_ID -- gh … or git … to give only that command a placeholder."
+    "Paste it below. In the VM, mwt exec CREDENTIAL -- gh … or git … gives only that command a placeholder. Then add a grant over it: where it may go."
   ],
-  "grant": {
-    "purpose": "GitHub: gh, git over HTTPS and the GitHub API.",
+  "fields": {
+    "purpose": "My GitHub token: gh, git over HTTPS and the GitHub API.",
     "env": "GITHUB_TOKEN, GH_TOKEN",
-    "hosts": "api.github.com, github.com, uploads.github.com",
     "git": "true",
     "prefix": "ghp_",
     "source": "stored"

@@ -106,8 +106,8 @@ logged in:
    later.
 3. If none fits, ask for what's missing:
    `mwt request --need "the access, and the service or host it is for" --reason "why"`.
-   When you know exactly what it takes, propose the grant itself instead:
-   read `mwt help propose` first.
+   When you know exactly what it takes, propose it instead (a resource,
+   then grants over it): read `mwt help propose` first.
 4. Don't follow the tool's usual instructions. They don't apply here:
     - no login commands (`gh auth login`, `gcloud auth login`, `npm login`,
       `docker login`, `mix hex.user auth`, `codex login --with-api-key`, …);
@@ -135,8 +135,9 @@ minutes: wait, and never retry in a loop.
 
 **Running a command you write on the user's machine** is the last resort,
 for what no action and no grant can do (their SSH keys, a kubeconfig,
-their VPN, tools only they have). It needs no grant, and the user approves
-each one: read `mwt help run` before you ask for one.
+their VPN, tools only they have). Commands agents write (`agent-commands`)
+lets you ask while it is on; the user approves every run, and none gets a
+credential's value. Read `mwt help run` before you ask for one.
 
 ## When MWT says no
 

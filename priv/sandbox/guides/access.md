@@ -35,13 +35,14 @@ for one before anything else.
 - **You send an id and values, never a command or a request.** A saved
   command is the user's own script: it runs on their machine, in the
   folder they chose, and reads your values as variables. Its output comes
-  back, with its exit status. One that runs with a credential also needs
-  a grant over it that allows the user's machine.
-- **A request action is a request MWT sends itself,** with its
-  credential's real value: no tool or placeholder needed in the VM. It
-  also needs a grant over its host's network. The answer's body comes
-  back on stdout and its HTTP status on stderr; `mwt` exits 0 for a 2xx
-  answer, 22 for any other.
+  back, with its exit status.
+- **A request action is a request MWT builds** and sends through its
+  proxy, as your requests go, with its credential's real value put in on
+  the way out: no tool or placeholder needed in the VM. An answer that
+  echoes the value is cut. The body comes back on stdout, the HTTP status
+  on stderr; `mwt` exits 0 for 2xx, 22 for any other.
+- **It covers its credential for its own call, nothing else;** its
+  request goes out as yours would: a network grant must let its host out.
 - **It has a switch of its own.** One that is off: `mwt request ID`. The
   user approves every call, unless its line says it runs without asking.
 - **A value has a shape**, which its line says: a word (letters, digits and

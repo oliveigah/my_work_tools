@@ -45,6 +45,11 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   attr :now, DateTime, required: true
   attr :focus, :string, default: nil, doc: "the approval a desktop notification opened"
 
+  attr :kept_card, :any,
+    default: nil,
+    doc:
+      "a card a line of the activity log opened, as it was decided: `%{card: approval, choice: words}`, `:gone` when no longer kept"
+
   attr :credentials, :list,
     default: [],
     doc: "the credentials, to name the resources grants are over"
@@ -60,6 +65,33 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     </.page_header>
 
     <div class="space-y-6">
+      <section :if={@kept_card} id="kept-card" class="space-y-2">
+        <div class="flex items-center gap-2">
+          <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
+            A decided card, from the activity log
+          </h2>
+          <.link
+            patch={~p"/tools/sandbox/approvals"}
+            id="kept-card-close"
+            class="text-[11px] text-muted hover:text-ink"
+          >
+            Close
+          </.link>
+        </div>
+        <%= if @kept_card == :gone do %>
+          <p id="kept-card-gone" class="text-xs text-muted">
+            This card is no longer kept: every line of the log that named it is gone.
+          </p>
+        <% else %>
+          <.approval
+            approval={@kept_card.card}
+            grant={@kept_card.card.grant_id && @grants[@kept_card.card.grant_id]}
+            now={@now}
+            kept
+            kept_choice={@kept_card[:choice]}
+          />
+        <% end %>
+      </section>
       <.running :if={@running != []} running={@running} now={@now} />
 
       <section id="waiting-approvals" aria-label="Waiting for a decision" class="space-y-3">
@@ -136,6 +168,15 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     default: false,
     doc: "ringed and scrolled into view: the one a desktop notification opened"
 
+  attr :kept, :boolean,
+    default: false,
+    doc:
+      "a card as the activity log kept it once decided (`MWTClient.Sandbox.Decision`): read-only, its choices replaced by what was chosen"
+
+  attr :kept_choice, :string,
+    default: nil,
+    doc: "what was chosen on a kept card, in the log's words"
+
   def approval(%{approval: %Approval{kind: :activation}} = assigns), do: activation_card(assigns)
 
   def approval(%{approval: %Approval{kind: :command, stage: :output}} = assigns),
@@ -150,6 +191,11 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   attr :approval, Approval, required: true
   attr :now, DateTime, required: true
   attr :focused, :boolean, default: false
+
+  attr :grant, :any,
+    default: nil,
+    doc: "the grant a request or an ask is for: one over a credential says where its uses run"
+
   attr :alarm, :boolean, default: false, doc: "drawn in red: text the agent wrote, to run as you"
   attr :title_class, :any, default: "text-sm"
   attr :rest, :global
@@ -158,14 +204,19 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   slot :title, doc: "what would happen"
   slot :subtitle
   slot :inner_block, doc: "the thing itself, then the facts and the agent's words"
+  attr :kept, :boolean, default: false, doc: "read-only, as the activity log kept it"
+  attr :kept_choice, :string, default: nil
   slot :footer, required: true, doc: "your choices"
 
   # Every approval is this card: the same parts in the same places, so each
-  # kind reads alike and nothing is said twice.
+  # kind reads alike and nothing is said twice. Its meta line ends with
+  # where what it approves is carried out (`card_place/2`).
   defp shell(assigns) do
+    assigns = assign(assigns, :place, card_place(assigns.approval, assigns.grant))
+
     ~H"""
     <article
-      id={"approval-#{@approval.id}"}
+      id={if(@kept, do: "kept-approval-#{@approval.id}", else: "approval-#{@approval.id}")}
       class={[
         "rounded-xl border bg-panel shadow-sm shadow-black/5 transition-shadow hover:shadow-md dark:shadow-black/30",
         if(@alarm, do: "border-bad/50 border-l-4", else: "border-line"),
@@ -179,6 +230,12 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         <div class="min-w-0 flex-1">
           <p class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] leading-4 text-muted">
             {render_slot(@meta)}
+            <.kind_badge
+              :if={@approval.kind == :activation and @grant != nil}
+              id={"approval-kind-badge-#{@approval.id}"}
+              kind={Grant.kind_of(@grant)}
+            />
+            <.where :if={@place} id={"approval-where-#{@approval.id}"} place={@place} />
           </p>
           <h3
             :if={@title != []}
@@ -191,6 +248,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
           </div>
         </div>
         <p
+          :if={not @kept}
           class="flex shrink-0 items-center gap-1 pt-px font-mono text-xs text-muted"
           title="It gives up on its own then, and the agent hears no."
         >
@@ -209,12 +267,35 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         {render_slot(@inner_block)}
       </div>
 
-      <footer class="flex flex-wrap items-center gap-2 rounded-b-xl border-t border-line-soft bg-deep/40 px-4 py-2.5">
+      <footer
+        :if={not @kept}
+        class="flex flex-wrap items-center gap-2 rounded-b-xl border-t border-line-soft bg-deep/40 px-4 py-2.5"
+      >
         {render_slot(@footer)}
+      </footer>
+      <footer
+        :if={@kept}
+        id={"kept-choice-#{@approval.id}"}
+        class="flex flex-wrap items-center gap-2 rounded-b-xl border-t border-line-soft bg-deep/40 px-4 py-2.5 text-xs text-ink"
+      >
+        <.icon name="hero-check-badge-micro" class="size-4 text-muted" />
+        {String.capitalize(@kept_choice || "decided")}{if @approval.requested_at,
+          do: " · asked #{Calendar.strftime(@approval.requested_at, "%Y-%m-%d %H:%M:%S")} UTC"}
       </footer>
     </article>
     """
   end
+
+  # Where what a card approves runs, said of an ask to turn on a grant
+  # whose uses are commands on your machine (`Grant.host_command?/1`); a
+  # command's own card says it beside its script.
+  defp card_place(%Approval{kind: :activation, resource: resource}, _grant) when resource != nil,
+    do: nil
+
+  defp card_place(%Approval{kind: :activation}, %Grant{} = grant),
+    do: if(Grant.host_command?(grant), do: :machine)
+
+  defp card_place(%Approval{}, _grant), do: nil
 
   attr :icon, :string, required: true
   attr :tone, :atom, values: [:use, :ask, :alarm], required: true
@@ -355,10 +436,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     </button>
 
     <details
-      :if={
-        (@similar || (@grant && is_nil(@approval.host_entry))) && not always_asks?(@grant) &&
-          not Enum.any?(@others, &always_asks?/1)
-      }
+      :if={@similar || (@grant && is_nil(@approval.host_entry))}
       id={"allow-more-#{@approval.id}"}
       class="group relative"
     >
@@ -453,11 +531,6 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     </button>
     """
   end
-
-  # A grant whose ceiling is `:ask` takes no allowance: its uses are
-  # allowed once.
-  defp always_asks?(%Grant{} = grant), do: Grant.ceiling(grant) == :ask
-  defp always_asks?(_none), do: false
 
   attr :id, :string, required: true
   attr :approval, Approval, required: true
@@ -608,7 +681,14 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       )
 
     ~H"""
-    <.shell approval={@approval} now={@now} focused={@focused}>
+    <.shell
+      kept={@kept}
+      kept_choice={@kept_choice}
+      approval={@approval}
+      now={@now}
+      focused={@focused}
+      grant={@grant}
+    >
       <:tile><.grant_tile icon={Presets.icon(@grant)} on={true} /></:tile>
       <:meta>
         <span class="font-medium text-ink/80">
@@ -835,7 +915,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       )
 
     ~H"""
-    <.shell approval={@approval} now={@now} focused={@focused}>
+    <.shell kept={@kept} kept_choice={@kept_choice} approval={@approval} now={@now} focused={@focused}>
       <:tile><.grant_tile icon={Presets.icon(@grant)} on={true} /></:tile>
       <:meta>
         <span class="font-medium text-ink/80">{(@grant && @grant.name) || "Removed grant"}</span>
@@ -918,6 +998,8 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
 
     ~H"""
     <.shell
+      kept={@kept}
+      kept_choice={@kept_choice}
       approval={@approval}
       now={@now}
       focused={@focused}
@@ -974,20 +1056,24 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         >
           <.icon name="hero-shield-check-micro" class="mt-0.5 size-3.5 shrink-0 text-violet" />
           <span>
-            {if(@approval.call,
-              do:
-                "Your own request, as you saved it, sent by MWT with the real value. The agent sent only values.",
-              else:
+            {cond do
+              @approval.call ->
+                "Your own request, as you saved it, built by MWT and sent through its proxy with the real value. The agent sent only values."
+
+              @approval.repin ->
+                "Your own script, in your folder, but a file it runs changed since it was pinned: this run waits for you, whatever its setting."
+
+              true ->
                 "Your own script, as you saved it, in your folder. The agent sent no text: it only chose when."
-            )}
+            end}
             <.link
-              :if={@grant}
+              :if={@grant && not @approval.repin}
               navigate={~p"/tools/sandbox/grants/#{@grant.id}"}
               class="text-accent underline-offset-2 hover:underline"
             >
               Auto-approve it on its page
             </.link>
-            <span :if={@grant}>to skip this card while it's on.</span>
+            <span :if={@grant && not @approval.repin}>to skip this card while it's on.</span>
           </span>
         </p>
         <div :if={@approval.values != []} id={"approval-values-#{@approval.id}"}>
@@ -1048,6 +1134,9 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         </div>
         <.script id={@approval.id} script={@approval.script} label={script_label(@approval)} />
       <% end %>
+
+      <.warnings id={"approval-warnings-#{@approval.id}"} warnings={@approval.warnings} />
+      <.pinned id={"approval-pins-#{@approval.id}"} pins={@approval.pins} />
 
       <.evidence approval={@approval} facts={@facts} hints={@approval.hints} />
 
@@ -1125,7 +1214,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         name={if(@saved, do: "hero-bookmark-square-micro", else: "hero-exclamation-triangle-micro")}
         class="size-3"
       />
-      {if(@saved, do: "Action", else: "Ad-hoc command")}
+      {if(@saved, do: "Fixed call", else: "Ad-hoc command")}
     </span>
     """
   end
@@ -1135,6 +1224,8 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
 
     ~H"""
     <.shell
+      kept={@kept}
+      kept_choice={@kept_choice}
       approval={@approval}
       now={@now}
       focused={@focused}
@@ -1318,7 +1409,9 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     >
       <div class="flex items-center gap-2 border-b border-line-soft px-3 py-1">
         <.icon name="hero-command-line-micro" class="size-3.5 text-faint" />
-        <p class="flex-1 text-[11px] text-muted">{@label}</p>
+        <p class="flex flex-1 items-center gap-2 text-[11px] text-muted">
+          {@label} <.where id={"command-where-#{@id}"} place={:machine} />
+        </p>
         <.copy_button
           id={"copy-script-#{@id}"}
           target={"copy-script-text-#{@id}"}
@@ -1426,6 +1519,61 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   end
 
   attr :id, :string, required: true
+  attr :warnings, :list, required: true
+
+  # What the card can't show, said louder than a hint: the files the
+  # command runs, the VM's first, and code it downloads and runs
+  # (`MWTClient.Sandbox.HostCommand.warnings/2`).
+  defp warnings(assigns) do
+    ~H"""
+    <div
+      :if={@warnings != []}
+      id={@id}
+      class="rounded-lg border border-bad/40 bg-bad-soft/30 px-3 py-2"
+    >
+      <p class="mb-1 flex items-center gap-1 text-[11px] font-semibold text-bad">
+        <.icon name="hero-shield-exclamation-micro" class="size-3.5" /> What this card can't show you
+      </p>
+      <ul class="space-y-1">
+        <li
+          :for={warning <- @warnings}
+          class="whitespace-pre-wrap break-words text-xs leading-5 text-ink"
+          phx-no-format
+        >{warning}</li>
+      </ul>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :pins, :list, required: true
+
+  # Each file the command runs, as it is now: what you approve, and all
+  # that runs (`MWTClient.Sandbox.Pins`).
+  defp pinned(assigns) do
+    ~H"""
+    <div :if={Enum.any?(@pins, &(&1.hash != nil))} id={@id} class="space-y-2">
+      <details
+        :for={pin <- @pins}
+        :if={pin.hash}
+        class="rounded-lg border border-line-soft bg-deep/40"
+      >
+        <summary class="cursor-pointer px-3 py-1.5 text-[11px] font-medium text-ink">
+          <span class="font-mono">{pin.file}</span>
+          <span class="text-faint">
+            · {pin.size} bytes{if pin.vm?, do: " · written by the VM"} · pinned
+          </span>
+        </summary>
+        <pre
+          class="max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-line-soft p-2 font-mono text-[11px] text-ink"
+          phx-no-format
+        >{pin.content}</pre>
+      </details>
+    </div>
+    """
+  end
+
+  attr :id, :string, required: true
   attr :hints, :list, required: true
 
   defp hints(assigns) do
@@ -1474,7 +1622,14 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       )
 
     ~H"""
-    <.shell approval={@approval} now={@now} focused={@focused}>
+    <.shell
+      kept={@kept}
+      kept_choice={@kept_choice}
+      approval={@approval}
+      now={@now}
+      focused={@focused}
+      grant={@grant}
+    >
       <:tile>
         <.tile icon={if @grant, do: Presets.icon(@grant), else: "hero-sparkles"} tone={:ask} />
       </:tile>
@@ -1490,6 +1645,12 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       </:meta>
       <:title>
         <%= cond do %>
+          <% @approval.resource -> %>
+            Review the {elem(@approval.resource, 0)} “{String.replace_prefix(
+              @approval.title,
+              "Review ",
+              ""
+            )}”, {if @approval.proposal && @approval.proposal.updated, do: "changed", else: "proposed"} by {@approval.agent}
           <% @grant && @approval.proposal && Grant.to_review?(@grant) -> %>
             Review “{@grant.name}”, {if @approval.proposal.updated, do: "changed", else: "proposed"} by {@approval.agent}
           <% @grant && Grant.to_review?(@grant) -> %>
@@ -1521,7 +1682,14 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
             {Instructions.usage(@grant) |> String.replace_prefix("use: ", "")}
           </dd>
         </dl>
-        <div :if={is_nil(@grant)} id={"approval-need-#{@approval.id}"}>
+        <p
+          :if={@approval.resource}
+          id={"approval-resource-#{@approval.id}"}
+          class="text-xs leading-5 text-ink"
+        >
+          A resource first, on its own: grants over it give its uses, each reviewed apart. A credential's value is yours to paste, now or later.
+        </p>
+        <div :if={is_nil(@grant) and is_nil(@approval.resource)} id={"approval-need-#{@approval.id}"}>
           <p class="max-h-48 overflow-y-auto overscroll-contain break-words rounded-lg border border-line-soft bg-deep/50 px-3 py-2 text-xs leading-5 text-ink">
             {@approval.need}
           </p>
@@ -1534,6 +1702,19 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
 
       <:footer>
         <%= cond do %>
+          <% @approval.resource -> %>
+            <.link
+              patch={MWTClient.Sandbox.Resource.path(@approval.resource)}
+              id={"review-ask-#{@approval.id}"}
+              class="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-violet px-3 py-1.5 text-xs font-semibold text-deep transition-all hover:brightness-110 active:brightness-95"
+            >
+              <.icon name="hero-eye-micro" class="size-3.5" /> Review on its page
+            </.link>
+            <span id={"review-note-#{@approval.id}"} class="text-[11px] leading-4 text-muted">
+              It is saved until you accept it there. Declining removes it, with what was proposed over it.
+            </span>
+            <div class="flex-1"></div>
+            <.decline_button approval={@approval} />
           <% @grant && Grant.to_review?(@grant) -> %>
             <.link
               patch={~p"/tools/sandbox/grants/#{@grant.id}"}
@@ -1562,7 +1743,6 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
                 checked={@approval.minutes}
               />
               <.pills
-                :if={Grant.auto_approvable?(@grant)}
                 id={"activation-uses-#{@approval.id}"}
                 name={@form[:uses].name}
                 options={[{"ask", "Ask each time"}, {"all", "Auto-approve"}]}
@@ -1608,7 +1788,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       id={"save-command-#{@approval.id}#{if @primary, do: "-suggested"}"}
       phx-click="save_command"
       phx-value-id={@approval.id}
-      title="Save it as an action: agents then call it by id, without the escape hatch. Turn what varies into parameters. This card still waits."
+      title="Save it as a fixed call: agents then call it by id, without the escape hatch. Turn what varies into parameters. This card still waits."
       class={[
         "inline-flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
         if(@primary,
@@ -1618,7 +1798,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         )
       ]}
     >
-      <.icon name="hero-bookmark-square-micro" class="size-3.5" /> Save as an action
+      <.icon name="hero-bookmark-square-micro" class="size-3.5" /> Save as a fixed call
     </button>
     """
   end
@@ -1797,6 +1977,11 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
     do: "refused: its grant was edited while it waited"
 
   def decision_words(%Approval{decision: :isolated}), do: "refused: the VM was isolated"
+  def decision_words(%Approval{decision: :locked}), do: "refused: you locked what it reaches"
+
+  def decision_words(%Approval{decision: :pin_changed}),
+    do: "refused: a file it runs changed after you approved it"
+
   def decision_words(%Approval{decision: :decline}), do: "declined"
   def decision_words(%Approval{decision: :simpler}), do: "declined, asked for a simpler one"
 

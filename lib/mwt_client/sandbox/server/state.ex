@@ -24,6 +24,7 @@ defmodule MWTClient.Sandbox.Server.State do
     Approval,
     Build,
     CertificateAuthority,
+    Decision,
     Event,
     EventDetails,
     Grant,
@@ -242,12 +243,23 @@ defmodule MWTClient.Sandbox.Server.State do
   after making its change, so a grant's event shows the grant changed.
   """
   def log(state, attrs) do
-    details =
-      (Map.get(attrs, :details) || []) ++ grant_details(state, Map.get(attrs, :grant_id))
+    # Who or what decided it (`MWTClient.Sandbox.Decision`): said where it
+    # was logged, or, for a refusal or a card that timed out, by its
+    # outcome. The card and the grant's version go beside the line.
+    {decision, attrs} = Map.pop(attrs, :decision)
+
+    {decision, state} =
+      case decision || inferred(state, attrs) do
+        nil -> {nil, state}
+        decision -> keep_decided(state, decision)
+      end
+
+    # The grant is the audit's to say, by a link (`MWTClient.Sandbox.Decision`).
+    details = Map.get(attrs, :details) || []
 
     event =
       Event
-      |> struct!(Map.merge(%{id: Event.new_id(), at: now()}, attrs))
+      |> struct!(Map.merge(%{id: Event.new_id(), at: now(), decision: decision}, attrs))
       |> then(&%{&1 | details: EventDetails.new(details)})
       |> then(&%{&1 | detailed?: Event.details(&1) != nil})
 
@@ -260,13 +272,46 @@ defmodule MWTClient.Sandbox.Server.State do
     Map.put(state, :recent_events, Enum.take([event | recent_events(state)], @recent_events))
   end
 
-  defp grant_details(_state, nil), do: []
-
-  defp grant_details(state, id) do
-    case Enum.find(state.grants, &(&1.id == id)) do
-      nil -> []
-      grant -> Grant.details(grant)
+  # What decided an action its line didn't say: a refusal or a timeout by
+  # its outcome; a lookup, a connection or a request read let through, by
+  # the grant it went under, on.
+  defp inferred(state, attrs) do
+    with nil <- Decision.inferred(attrs[:outcome], attrs[:summary] || ""),
+         outcome when outcome in [:read, :tunnel, :lookup, :tool] <- attrs[:outcome],
+         id when is_binary(id) <- attrs[:grant_id],
+         %Grant{} = grant <- Enum.find(state.grants, &(&1.id == id)) do
+      Decision.grant(grant)
+    else
+      %{} = decision -> decision
+      _none -> nil
     end
+  end
+
+  @doc """
+  The decision the last line about card `id` was logged with, or nil:
+  for a line that follows it, such as the request its allowing lets go.
+  """
+  def card_decision(state, id), do: state |> Map.get(:card_decisions, %{}) |> Map.get(id)
+
+  # The card a decision names, kept in the journal; and what decided each
+  # card's line, for the lines that follow it, a few hundred at most, the
+  # oldest let go.
+  defp keep_decided(state, decision) do
+    {decision, card} = Decision.kept(decision)
+    if card, do: Journal.record_card(state.username, card.card.id, card)
+
+    state =
+      case decision[:settled] || decision[:card] do
+        nil ->
+          state
+
+        id ->
+          decisions = Map.get(state, :card_decisions, %{})
+          decisions = if map_size(decisions) >= 500, do: %{}, else: decisions
+          Map.put(state, :card_decisions, Map.put(decisions, id, decision))
+      end
+
+    {decision, state}
   end
 
   @doc """
@@ -549,6 +594,9 @@ defmodule MWTClient.Sandbox.Server.State do
       # The last events logged, newest first, kept for the record an
       # isolation makes at once, with no wait on the journal.
       recent_events: [],
+      # The console's runs, newest first, in memory only
+      # (`MWTClient.Sandbox.ConsoleHistory`).
+      console_runs: [],
       # The ids of the grants live after the last message: one that leaves
       # closes what it let through (`MWTClient.Sandbox.Server.Grants.close_ended/1`).
       live: MapSet.new(),

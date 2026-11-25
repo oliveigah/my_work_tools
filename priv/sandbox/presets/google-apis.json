@@ -1,0 +1,16 @@
+{
+  "id": "google-apis",
+  "makes": "grant",
+  "over": ["google"],
+  "name": "Google APIs",
+  "icon": "hero-cloud",
+  "blurb": "gcloud and Google's APIs, on every googleapis.com host.",
+  "guide": [
+    "What the login or service account may do is the limit: Google enforces its roles, whatever this grant says.",
+    "For a service of your own the tool calls (behind Identity-Aware Proxy, say), add its host. To sign JWTs as a service account, as a client of such a service does, name it under May sign as."
+  ],
+  "fields": {
+    "purpose": "Google: gcloud and Google APIs.",
+    "hosts": "*.googleapis.com"
+  }
+}

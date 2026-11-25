@@ -184,13 +184,12 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
     assert_receive {:host_got, "GET /free " <> _}
   end
 
-  test "a grant over a host that always asks holds nothing the Internet lets through", %{
+  test "a grant over a host that asks holds nothing the Internet lets through", %{
     username: username,
     ca: ca,
     proxy: proxy
   } do
     asking = host_grant(username, "example.com")
-    {:ok, _} = Sandbox.set_ceiling(username, asking.id, :ask)
     {:ok, _} = Sandbox.turn_on(username, asking.id, 60, :ask)
 
     # Grants only give: the Internet, auto-approving, lets it through.

@@ -345,7 +345,8 @@ defmodule MWTClient.Sandbox.Channel do
   the `values` of a call, a map of texts checked against the action's
   parameters (`MWTClient.Sandbox.Param`); `params`, `headers` and what a
   proposed grant lists (`hosts`, `env`, `file_env`, `carriers`,
-  `signs_as`, `destinations`) are lists of texts.
+  `signs_as`, `destinations`) are lists of texts; a proposal's `set` and
+  `fill`, maps of texts.
   """
   @lists ~w(params headers hosts env file_env carriers signs_as destinations)
 
@@ -356,6 +357,7 @@ defmodule MWTClient.Sandbox.Channel do
         Map.new(ask, fn
           {"script", value} when is_binary(value) -> {"script", value}
           {"values", %{} = values} -> {"values", texts(values)}
+          {key, %{} = pairs} when key in ["set", "fill"] -> {key, shown(pairs)}
           {key, list} when key in @lists and is_list(list) -> {key, lines(list)}
           {key, value} when is_binary(value) -> {key, Shown.text(value)}
           {key, value} when is_integer(value) or is_boolean(value) -> {key, value}
@@ -371,6 +373,13 @@ defmodule MWTClient.Sandbox.Channel do
   defp texts(values) do
     for {name, value} <- Enum.take(values, 32), is_binary(name), is_binary(value), into: %{} do
       {name, value}
+    end
+  end
+
+  # A proposal's FIELD=VALUE pairs: texts, as the user will read them.
+  defp shown(pairs) do
+    for {name, value} <- Enum.take(pairs, 32), is_binary(name), is_binary(value), into: %{} do
+      {name, Shown.text(value)}
     end
   end
 
@@ -1172,6 +1181,7 @@ defmodule MWTClient.Sandbox.Channel do
       destinations: List.wrap(ask["destinations"]),
       resolver: ask["resolver"],
       anchor: ask["via"],
+      over: ask["over"],
       minutes: ask["minutes"],
       reason: ask["reason"],
       agent: ask["agent"],
@@ -1180,13 +1190,14 @@ defmodule MWTClient.Sandbox.Channel do
       folder: ask["folder"]
     }
 
-    case Server.call(username, {:propose, request}) do
-      {:ok, approval} ->
-        {status, text} = await(username, approval.id, wait(ask))
-        {status, proposed_words(approval, status) <> text}
-
-      {:error, reason} ->
-        {1, proposal_refusal(reason, ask)}
+    with {:ok, set} <- pairs(ask["set"], "--set"),
+         {:ok, fill} <- pairs(ask["fill"], "--fill"),
+         {:ok, approval} <-
+           Server.call(username, {:propose, Map.merge(request, %{set: set, fill: fill})}) do
+      {status, text} = await(username, approval.id, wait(ask))
+      {status, proposed_words(approval, status) <> text}
+    else
+      {:error, reason} -> {1, proposal_refusal(reason, ask)}
     end
   end
 
@@ -1660,6 +1671,15 @@ defmodule MWTClient.Sandbox.Channel do
      """}
   end
 
+  defp settled(%Approval{status: :allowed, resource: {kind, id}}, _grant),
+    do:
+      {0,
+       """
+       The user accepted the #{kind} #{id}: it is theirs now. A grant over it gives its uses: \
+       the one you proposed over it waits for them, or propose one with mwt propose grant --over #{id} ....
+       #{if kind == :credential, do: "A pasted value is theirs to paste: until they do, every use of it is refused (mwt_no_value).\n", else: ""}\
+       """}
+
   defp settled(%Approval{status: :denied, decision: :grant_off}, _grant),
     do: {3, "The grant was removed while you waited."}
 
@@ -1727,6 +1747,19 @@ defmodule MWTClient.Sandbox.Channel do
 
   # What the agent hears first of what it proposed: where it is, and that
   # nothing turns it on until the user accepts it.
+  defp proposed_words(%Approval{resource: {kind, id}, proposal: proposal}, status) do
+    saved =
+      if Map.get(proposal || %{}, :updated),
+        do: "Your proposal of the #{kind} #{id} is changed: still to review.",
+        else: "Saved as the #{kind} #{id}, for the user to review on its page in MWT."
+
+    if status == 2,
+      do:
+        saved <>
+          " Nothing over it is accepted or turns on until they accept it; the answer below says when.\n",
+      else: saved <> "\n"
+  end
+
   defp proposed_words(%Approval{grant_id: id, proposal: proposal}, status) do
     saved =
       if Map.get(proposal || %{}, :updated),
@@ -1740,13 +1773,46 @@ defmodule MWTClient.Sandbox.Channel do
       else: saved <> "\n"
   end
 
+  # FIELD=VALUE pairs as the CLI sends them, an object of texts: none is
+  # an empty one; anything else is refused, never read in part.
+  defp pairs(nil, _option), do: {:ok, %{}}
+
+  defp pairs(%{} = pairs, option) do
+    if Enum.all?(pairs, fn {key, value} -> is_binary(key) and is_binary(value) end),
+      do: {:ok, pairs},
+      else: {:error, {:proposal, "#{option} takes NAME=VALUE pairs of text."}}
+  end
+
+  defp pairs(_other, option),
+    do: {:error, {:proposal, "#{option} takes NAME=VALUE pairs of text."}}
+
+  @propose_what "A new resource is mwt propose credential ... or mwt propose network ...; a grant over one, mwt propose grant --over RESOURCE ...; a request action over a credential, mwt propose CREDENTIAL ...; a command to run on the user's machine, a saved command: mwt propose machine ..."
+
   defp proposal_refusal(:unknown_grant, ask),
-    do:
-      ~s[Nothing is called "#{ask["grant"]}". A new grant is mwt propose token ... or mwt propose network ...; a request action is proposed over a credential: mwt propose CREDENTIAL ...; a command to run on the user's machine is a saved command: mwt propose machine ... See mwt help.]
+    do: ~s[Nothing is called "#{ask["grant"]}". #{@propose_what} See mwt help propose.]
 
   defp proposal_refusal({:no_actions, name}, _ask),
     do:
-      "#{name} takes no actions: only a credential (request actions) and the user's machine (saved commands) do. A new grant is mwt propose token ... or mwt propose network ...; a command to run on the user's machine is a saved command: mwt propose machine ..."
+      "#{name} takes no actions: only a credential (request actions) and the user's machine (saved commands) do. #{@propose_what}"
+
+  defp proposal_refusal(:token_split, _ask),
+    do:
+      "mwt propose token is gone: a credential and the grants over it are proposed apart. " <>
+        "Propose the credential (mwt propose credential --name ... --for ... [--preset ID]), " <>
+        "then a grant over it (mwt propose grant --over ITS_NAME --name ... --for ... --host ...); " <>
+        "send both now: the user accepts the credential first. See mwt help propose."
+
+  defp proposal_refusal(:no_over, _ask),
+    do:
+      "Say which resource the grant is over: --over CREDENTIAL_OR_NETWORK, by id or name (mwt grants lists them, mwt why names a host's)."
+
+  defp proposal_refusal({:unknown_resource, name}, _ask),
+    do:
+      ~s[No credential or network is called "#{name}". Propose it first (mwt propose credential ... or mwt propose network ...), then the grant over it.]
+
+  defp proposal_refusal({:no_grants, name}, _ask),
+    do:
+      "#{name}, the user's machine, takes saved commands, not grants: mwt propose machine --name ... --for ... -- 'SCRIPT'."
 
   defp proposal_refusal(:no_name, _ask),
     do: ~s[Name it: --name NAME, a few words that say what it does, like "gh repo view".]
@@ -1761,9 +1827,9 @@ defmodule MWTClient.Sandbox.Channel do
   defp proposal_refusal({:proposal, message}, _ask),
     do: "Not proposed: #{message} See mwt help for what mwt propose takes."
 
-  defp proposal_refusal({:no_preset, id, kind}, _ask),
+  defp proposal_refusal({:no_preset, id, thing}, _ask),
     do:
-      "No #{kind} preset is called #{id}. Leave out --preset and give its hosts, variables or destinations yourself."
+      "No preset for #{MWTClient.Sandbox.FormFields.name(thing)} is called #{id}. Leave out --preset and give its fields yourself, with its options or --set FIELD=VALUE."
 
   defp proposal_refusal(:too_many_proposals, _ask),
     do:
@@ -1785,14 +1851,6 @@ defmodule MWTClient.Sandbox.Channel do
   defp run_refusal({:takes_no_values, _id}),
     do:
       ~s[A command you write takes no values: mwt run --reason "..." -- COMMAND. Values go to an action: mwt call ID NAME=value.]
-
-  defp run_refusal({:not_on_machine, credential, nil}),
-    do:
-      "It runs with the credential #{credential}, and no grant over it allows the user's machine. Tell the user: a token grant over #{credential} can allow it."
-
-  defp run_refusal({:not_on_machine, credential, %Grant{} = grant}),
-    do:
-      ~s[It runs with the credential #{credential}: #{grant.name} would allow it on the user's machine, and is off. Ask for it with: mwt request #{grant.id} --reason "..."]
 
   defp run_refusal(:no_reason),
     do:

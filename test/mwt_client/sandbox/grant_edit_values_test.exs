@@ -34,14 +34,12 @@ defmodule MWTClient.Sandbox.GrantEditValuesTest do
   # Mints one value per run, and counts its runs in `dir`.
   defp mint(dir, account), do: ~s(echo x >> #{dir}/runs; echo "token-of-#{account}-0123456789")
 
+  # How a value is made is its credential's, edited on its own.
   defp edit(username, grant, attrs) do
-    Sandbox.update_grant(
+    Sandbox.update_resource(
       username,
-      grant.id,
-      Map.merge(
-        %{"name" => "Cloud", "purpose" => "Cloud APIs", "hosts" => "api.example.com"},
-        attrs
-      )
+      {:credential, MWTClient.Sandbox.Grant.credential_id(grant)},
+      Map.merge(%{"name" => "Cloud", "purpose" => "Cloud APIs", "source" => "minted"}, attrs)
     )
   end
 

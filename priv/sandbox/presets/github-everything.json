@@ -1,0 +1,16 @@
+{
+  "id": "github-everything",
+  "makes": "grant",
+  "over": ["github"],
+  "name": "Everything it reaches",
+  "icon": "git-branch",
+  "blurb": "gh, git over HTTPS and the GitHub API, on whatever the token itself reaches.",
+  "guide": [
+    "The token's own permissions and repositories are the limit: GitHub enforces them, whatever this grant says.",
+    "Narrow it further with an attribute, github.repository = owner/name, or start from One repository."
+  ],
+  "fields": {
+    "purpose": "GitHub: gh, git over HTTPS and the GitHub API, as far as the token reaches.",
+    "hosts": "api.github.com, github.com, uploads.github.com"
+  }
+}

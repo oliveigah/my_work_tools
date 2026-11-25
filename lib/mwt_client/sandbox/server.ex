@@ -75,6 +75,7 @@ defmodule MWTClient.Sandbox.Server do
     CertificateAuthority,
     Credential,
     CredentialEndpoint,
+    Decision,
     Disks,
     Event,
     EventDetails,
@@ -96,6 +97,7 @@ defmodule MWTClient.Sandbox.Server do
     Project,
     Projects,
     Resources,
+    SavedRequest,
     Secrets,
     Settings,
     Share,
@@ -811,17 +813,21 @@ defmodule MWTClient.Sandbox.Server do
       nil ->
         {:reply, {:error, :not_found}, state}
 
-      # Proposed by an agent: only accepting it on its page turns it on.
-      %Grant{proposal: %{reviewed_at: nil}} ->
-        {:reply, {:error, :to_review}, state}
-
       grant ->
-        state =
-          state
-          |> Grants.turn_on(grant, minutes, uses, "")
-          |> Approvals.settle_activations(id, minutes, uses)
+        # Proposed by an agent, only accepting it on its page turns it on;
+        # over a resource to review or a credential with no value, nothing.
+        case Grants.turn_on_refusal(state, grant) do
+          nil ->
+            state =
+              state
+              |> Grants.turn_on(grant, minutes, uses, "")
+              |> Approvals.settle_activations(id, minutes, uses)
 
-        {:reply, {:ok, Enum.find(state.grants, &(&1.id == id))}, state}
+            {:reply, {:ok, Enum.find(state.grants, &(&1.id == id))}, state}
+
+          refusal ->
+            {:reply, {:error, refusal}, state}
+        end
     end
   end
 
@@ -851,9 +857,6 @@ defmodule MWTClient.Sandbox.Server do
           not Grant.on?(grant, State.now()) ->
             {:reply, {:error, :off}, state}
 
-          mode == :all and not Grant.auto_approvable?(grant) ->
-            {:reply, {:error, :every_run_asks}, state}
-
           true ->
             state = Grants.set_mode(state, grant, mode)
             {:reply, {:ok, Enum.find(state.grants, &(&1.id == id))}, state}
@@ -868,27 +871,28 @@ defmodule MWTClient.Sandbox.Server do
         {:reply, {:error, :not_found}, state}
 
       %Grant{} = grant ->
-        if start in Grant.starts(grant) do
-          state = Grants.set_start(state, grant, start)
-          {:reply, {:ok, Enum.find(state.grants, &(&1.id == id))}, state}
-        else
-          {:reply, {:error, :every_run_asks}, state}
+        cond do
+          start in Grant.starts(grant) ->
+            state = Grants.set_start(state, grant, start)
+            {:reply, {:ok, Enum.find(state.grants, &(&1.id == id))}, state}
+
+          Grant.always_asks?(grant) ->
+            {:reply, {:error, :always_asks}, state}
+
+          true ->
+            {:reply, {:error, :to_review}, state}
         end
     end
   end
 
-  defp answer({:set_ceiling, id, ceiling}, _from, state) when ceiling in [:ask, :allow] do
+  defp answer({:set_except, id, entries}, _from, state) when is_list(entries) do
     case Enum.find(state.grants, &(&1.id == id)) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
+      %Grant{kind: :network} = grant ->
+        state = Grants.set_except(state, grant, entries)
+        {:reply, {:ok, Enum.find(state.grants, &(&1.id == id))}, state}
 
-      %Grant{} = grant ->
-        if ceiling in Grant.ceilings(grant) do
-          state = Grants.set_ceiling(state, grant, ceiling)
-          {:reply, {:ok, Enum.find(state.grants, &(&1.id == id))}, state}
-        else
-          {:reply, {:error, :not_offered}, state}
-        end
+      _other ->
+        {:reply, {:error, :not_found}, state}
     end
   end
 
@@ -907,17 +911,34 @@ defmodule MWTClient.Sandbox.Server do
     {:reply, :ok, state}
   end
 
-  # How a request would be decided now (`MWTClient.Sandbox.Explain`), for
-  # Try a use: sends nothing, keeps nothing of what was asked.
-  defp answer({:explain_request, url, method, credential}, _from, state) do
-    world = %{
-      snapshot: State.policy(state),
-      isolated: Firewall.isolated?(state),
-      now: State.now()
-    }
-
-    {:reply, MWTClient.Sandbox.Explain.request(url, method, credential, world), state}
+  # The console (`MWTClient.Sandbox.Console`): a command you typed goes
+  # into the VM only if it carries none of your real values, and each run
+  # is in the activity log, its output not, and in the console's history
+  # (`MWTClient.Sandbox.ConsoleHistory`), its output with it, in memory.
+  defp answer({:console_check, command}, _from, state) do
+    case Values.carried(state, [command]) do
+      nil -> {:reply, :ok, state}
+      name -> {:reply, {:error, {:carries_value, name}}, state}
+    end
   end
+
+  defp answer({:console_ran, run}, _from, state) do
+    state =
+      state
+      |> State.log(%{outcome: :vm, summary: MWTClient.Sandbox.Console.summary(run)})
+      |> State.change(
+        :console_runs,
+        &MWTClient.Sandbox.ConsoleHistory.add(Map.get(&1, :console_runs, []), run)
+      )
+
+    {:reply, {:ok, hd(state.console_runs)}, state}
+  end
+
+  defp answer(:console_runs, _from, state),
+    do: {:reply, Map.get(state, :console_runs, []), state}
+
+  defp answer(:clear_console_runs, _from, state),
+    do: {:reply, :ok, State.change(state, :console_runs, fn _state -> [] end)}
 
   # Locks a resource (`Grant.resource/1`): every use of it is refused,
   # whatever the grants say, until you unlock it. Its connections close,
@@ -982,9 +1003,7 @@ defmodule MWTClient.Sandbox.Server do
   defp answer({:allow_all, id, duration}, _from, state) do
     case Enum.find(state.grants, &(&1.id == id)) do
       %Grant{state: :on} = grant ->
-        if Grant.ceiling(grant) == :ask,
-          do: {:reply, {:error, :every_run_asks}, state},
-          else: allow_all(state, grant, duration)
+        allow_all(state, grant, duration)
 
       %Grant{} ->
         {:reply, {:error, :off}, state}
@@ -1008,33 +1027,13 @@ defmodule MWTClient.Sandbox.Server do
         _type_or_none -> nil
       end
 
-    # A token grant over a credential you already have takes its value and
-    # how it is made from it: only its own scope comes from the form.
-    over =
-      if attrs["kind"] == "token",
-        do: Enum.find(Map.get(state, :credentials, []), &(&1.id == attrs["credential"]))
-
-    attrs = if over, do: credential_attrs(attrs, over), else: attrs
-
-    case Grants.build_grant(attrs, state.grants,
-           preset: preset,
-           valueless: over != nil,
-           credentials: Map.get(state, :credentials, [])
-         ) do
+    case Grants.build_new(state, attrs, preset) do
       {:ok, grant, value} ->
-        grant =
-          cond do
-            over -> Credential.attach(grant, over)
-            grant.kind == :token -> %{grant | credential: grant.id}
-            true -> grant
-          end
+        grant = pinned(state, grant)
 
-        # One over a network you already have: over all of it, or over the
-        # hosts its form lists (`scope`).
-        grant = over_network(state, grant, attrs)
-
+        # A value pasted only for a credential the grant makes.
         values =
-          if value && is_nil(over),
+          if value,
             do: Map.put(state.values, Grant.credential_id(grant), value),
             else: state.values
 
@@ -1060,6 +1059,8 @@ defmodule MWTClient.Sandbox.Server do
     with %Grant{} = grant <- Enum.find(state.grants, &(&1.id == id)),
          {:ok, updated} <-
            Grants.edit_grant(grant, attrs, state.grants, Map.get(state, :credentials, [])) do
+      updated = pinned(state, updated)
+
       state =
         state
         |> State.replace_grant(updated)
@@ -1190,10 +1191,18 @@ defmodule MWTClient.Sandbox.Server do
   # the agent waits on an ask that turning it on answers.
   defp answer({:propose, ask}, _from, state) do
     case Approvals.proposal(state, ask) do
-      {:ok, grant, approval, previous} ->
+      {:ok, made, approval, previous} ->
         case Firewall.observe(state, {:ask, ask_key(approval), approval.title}) do
           {:pass, state} ->
-            state = Grants.save_proposed(state, grant, previous)
+            state =
+              case made do
+                {:grant, grant} ->
+                  Grants.save_proposed(state, grant, previous)
+
+                resource ->
+                  MWTClient.Sandbox.Server.Resources.save_proposed(state, resource, previous)
+              end
+
             {state, held} = Approvals.hold_activation(state, approval)
 
             # Proposed again while its ask waited: that ask, now for the
@@ -1217,6 +1226,14 @@ defmodule MWTClient.Sandbox.Server do
     end
   end
 
+  # You accept a resource an agent proposed, on its page.
+  defp answer({:review_resource, resource, revision}, _from, state) do
+    case MWTClient.Sandbox.Server.Resources.review(state, resource, revision) do
+      {:ok, state, reviewed} -> {:reply, {:ok, reviewed}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   # You accept a grant an agent proposed, on its page: reviewed, and, with
   # `{minutes, uses}`, turned on, which answers the agent waiting for it.
   defp answer({:review, id, enable, revision}, _from, state) do
@@ -1234,8 +1251,16 @@ defmodule MWTClient.Sandbox.Server do
           not MWTClient.Sandbox.Proposal.accepts?(grant.proposal, revision) ->
             {:reply, {:error, :changed}, state}
 
-          enable != :keep_off and grant.kind == :token and grant.source == :stored and
-              not Map.has_key?(state.values, Grant.credential_id(grant)) ->
+          # Its resource first: you accept a grant over what you have.
+          MWTClient.Sandbox.Resource.to_review?(
+            Grant.resource(grant),
+            Map.get(state, :credentials, []),
+            Map.get(state, :networks, [])
+          ) ->
+            {:reply, {:error, :resource_to_review}, state}
+
+          enable != :keep_off and
+              Grants.turn_on_refusal(state, %{grant | proposal: nil}) == :no_value ->
             {:reply, {:error, :no_value}, state}
 
           true ->
@@ -1284,7 +1309,7 @@ defmodule MWTClient.Sandbox.Server do
       state = HostRuns.auto_approve(state, held)
       {:reply, {:ok, Enum.find(state.approvals, &(&1.id == held.id)) || held}, state}
     else
-      {:error, reason} -> {:reply, {:error, reason}, state}
+      {:error, reason} -> {:reply, {:error, reason}, refused_values(state, reason, ask)}
       {_refused, state} -> {:reply, {:error, :firewall}, state}
     end
   end
@@ -1304,8 +1329,11 @@ defmodule MWTClient.Sandbox.Server do
           state = HostRuns.auto_approve(state, held)
           {:reply, {:ok, Enum.find(state.approvals, &(&1.id == held.id)) || held}, state}
         else
-          {{:error, reason}, state} -> {:reply, {:error, reason}, state}
-          {:error, reason} -> {:reply, {:error, reason}, state}
+          {{:error, reason}, state} ->
+            {:reply, {:error, reason}, refused_values(state, reason, ask)}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, refused_values(state, reason, ask)}
         end
     end
   end
@@ -1631,17 +1659,19 @@ defmodule MWTClient.Sandbox.Server do
 
   # A request on a connection a network grant opened, which the grant would
   # ask you about (`Gate.authorize/2`): a card of its own, the request in
-  # full, as a token grant's request has. `{:ok, grant_id}` once allowed.
+  # full, as a token grant's request has. `{:ok, grant_id, decision}` once
+  # allowed, with what allowed it (`MWTClient.Sandbox.Decision`).
   defp answer({:authorize_network, request}, from, state) do
     snapshot = State.policy(state)
     now = State.now()
 
     case Policy.decide(snapshot, {:network_request, request}, now) do
       :pass ->
-        {:reply, {:ok, nil}, state}
+        {:reply, {:ok, nil, Decision.passed(state.grants, now)}, state}
 
-      {:allow, grant, _allowance, _about} ->
-        {:reply, {:ok, grant.id}, State.used(state, grant.id)}
+      {:allow, grant, allowance, _about} ->
+        {:reply, {:ok, grant.id, Decision.allowance(grant, allowance)},
+         State.used(state, grant.id)}
 
       {:refuse, reason} ->
         world = %{snapshot: snapshot, isolated: false, now: now}
@@ -1690,6 +1720,68 @@ defmodule MWTClient.Sandbox.Server do
   defp answer({:authorize, _request}, _from, state)
        when is_map_key(state, :firewall) and state.firewall.isolated != nil,
        do: {:reply, Values.isolated(), Firewall.refused(state)}
+
+  defp answer({:authorize_fixed, _request, _fixed}, _from, state)
+       when is_map_key(state, :firewall) and state.firewall.isolated != nil,
+       do: {:reply, Values.isolated(), Firewall.refused(state)}
+
+  # A request MWT built from a fixed call, on a connection it opened itself
+  # (`MWTClient.Sandbox.Egress.FixedCall`): decided by the call, again, as
+  # it leaves. Its action still there as it was approved, still allowing
+  # it, and the request the one it builds; then the values MWT fetched for
+  # it go in, where its template marks them, and the answer is looked
+  # through for them as any request's.
+  defp answer({:authorize_fixed, request, fixed}, _from, state) do
+    action = Enum.find(state.grants, &(&1.id == fixed.grant_id and &1.kind == :request))
+
+    decision =
+      action && Policy.decide(State.policy(state), {:call, %{grant: action.id}}, State.now())
+
+    refuse = fn why ->
+      state =
+        State.log(
+          state,
+          Values.request_event(request, action, :refused, "Fixed call #{fixed.name} · #{why}")
+        )
+
+      {:reply, Values.deny(403, "mwt_denied", "MWT refused this fixed call: #{why}.", action),
+       state}
+    end
+
+    cond do
+      is_nil(action) or Approval.digest(Grant.definition(action)) != fixed.definition ->
+        refuse.("it was edited or removed since it was called")
+
+      match?({:refuse, _}, decision) ->
+        refuse.("a grant it needs no longer gives it, or you locked what it reaches")
+
+      String.downcase(request.host || "") != String.downcase(SavedRequest.host(action) || "") or
+          request.method != action.method ->
+        refuse.("it isn't the request the call builds")
+
+      true ->
+        values = for s <- fixed.swaps, do: {s.label, s.placeholder, s.value, s.within}
+
+        # As its call was decided, which the call's own line says.
+        state =
+          State.log(
+            state,
+            Map.put(
+              Values.request_event(
+                request,
+                action,
+                :swapped,
+                "Fixed call · #{action.name} · built by MWT from the agent's values"
+              ),
+              :decision,
+              State.card_decision(state, fixed[:card])
+            )
+          )
+
+        {:reply, {:forward, Values.replace(values), Values.scan(state, request.host, action)},
+         state}
+    end
+  end
 
   # A real value in what the VM wrote is refused before anything else, so
   # nothing of the request (its path included) is described or logged.
@@ -1806,6 +1898,7 @@ defmodule MWTClient.Sandbox.Server do
       :pass ->
         state =
           State.log(state, %{
+            decision: Decision.passed(state.grants, State.now()),
             outcome: :read,
             summary: "Read by MWT, no credential in it",
             host: request.host,
@@ -1831,12 +1924,13 @@ defmodule MWTClient.Sandbox.Server do
 
       # Let through by a network grant alone: no credential in it, nothing
       # to put in.
-      {:allow, %Grant{kind: :network} = grant, _allowance, about} ->
+      {:allow, %Grant{kind: :network} = grant, allowance, about} ->
         state =
           state
           |> State.used(grant.id)
           |> used_through(about)
           |> State.log(%{
+            decision: Decision.allowance(grant, allowance),
             outcome: :read,
             summary: "#{about.title} · let through by #{grant.name}",
             host: request.host,
@@ -1859,7 +1953,13 @@ defmodule MWTClient.Sandbox.Server do
         state =
           state
           |> used_through(about)
-          |> State.log(Values.request_event(request, grant, :swapped, "#{about.title} · #{why}"))
+          |> State.log(
+            Map.put(
+              Values.request_event(request, grant, :swapped, "#{about.title} · #{why}"),
+              :decision,
+              Decision.allowance(grant, allowance)
+            )
+          )
 
         {:noreply, Values.let_through(state, grant, request, from)}
 
@@ -2307,6 +2407,41 @@ defmodule MWTClient.Sandbox.Server do
     :ok
   end
 
+  # A call refused for its values (MWT's floor, a type, or a schema they
+  # don't keep to), in the log: which action, which parameter and why,
+  # never the value, which is the agent's text.
+  defp refused_values(state, {:values, %Grant{} = grant, problem}, ask) do
+    why =
+      case problem do
+        {:rule, param, _words} ->
+          "#{param.name} isn't #{MWTClient.Sandbox.ParamSchema.words(param.schema)}"
+
+        {:type, param} ->
+          "#{param.name} isn't #{MWTClient.Sandbox.ParamSchema.words(param.schema)}"
+
+        {:floor, param, why} ->
+          "#{param.name}: #{why}"
+
+        {:missing, param} ->
+          "#{param.name} is missing"
+
+        {:unknown, name} ->
+          "it has no parameter #{name}"
+
+        {:hidden, param, _what} ->
+          "#{param.name} holds what doesn't show"
+      end
+
+    State.log(state, %{
+      outcome: :refused,
+      summary: "Call of #{grant.name} · refused before anything ran: #{why}",
+      grant_id: grant.id,
+      agent: Map.get(ask, :agent)
+    })
+  end
+
+  defp refused_values(state, _reason, _ask), do: state
+
   defp deliberate?(:normal), do: true
 
   defp deliberate?(:shutdown), do: true
@@ -2344,6 +2479,21 @@ defmodule MWTClient.Sandbox.Server do
           State.log(state, %{
             outcome: :blocked,
             summary: "#{host} · locked by you",
+            host: host,
+            port: port,
+            grant_id: grant.id
+          })
+
+        {:reply, {:deny, summary}, state}
+
+      {:refuse, {:excepted, grant, entry}} ->
+        host = Map.get(seen, :name) || address
+        summary = Gate.excepted_words(grant, entry, host)
+
+        state =
+          State.log(state, %{
+            outcome: :blocked,
+            summary: summary,
             host: host,
             port: port,
             grant_id: grant.id
@@ -2416,7 +2566,7 @@ defmodule MWTClient.Sandbox.Server do
   end
 
   # What a lockable resource is called, or nil when there is none.
-  defp resource_name(_state, :machine), do: "Your machine"
+  defp resource_name(_state, :machine), do: "Host commands"
   defp resource_name(_state, :mwt), do: "MWT's tools"
 
   defp resource_name(state, {:credential, id}) do
@@ -2437,40 +2587,6 @@ defmodule MWTClient.Sandbox.Server do
 
   # A network grant over a network you already have (`attrs["network"]`):
   # over all of it, its fields copied, or over the hosts its form lists.
-  defp over_network(state, %Grant{kind: :network} = grant, %{"network" => id})
-       when is_binary(id) and id != "" do
-    alias MWTClient.Sandbox.Network
-
-    case Enum.find(Map.get(state, :networks, []), &(&1.id == id)) do
-      nil ->
-        grant
-
-      network ->
-        scope = if attrs_part?(grant, network), do: grant.destinations
-
-        Network.attach(%{grant | network: network.id, scope: scope, internet: false}, network)
-    end
-  end
-
-  defp over_network(_state, grant, _attrs), do: grant
-
-  # A grant whose form lists destinations other than its network's is over
-  # those alone.
-  defp attrs_part?(grant, network),
-    do: grant.destinations != [] and grant.destinations != network.destinations
-
-  # A form for a grant over an existing credential: how its value is made
-  # is the credential's, so the form's own fields for it give way.
-  defp credential_attrs(attrs, %Credential{} = credential) do
-    minted =
-      case credential.source do
-        {:minted, command} -> %{"source" => "minted", "mint" => command}
-        :stored -> %{"source" => "stored"}
-      end
-
-    Map.merge(attrs, minted)
-  end
-
   defp resource_reply({:ok, state, resource}, _before), do: {:reply, {:ok, resource}, state}
   defp resource_reply({:error, reason}, state), do: {:reply, {:error, reason}, state}
 
@@ -2479,6 +2595,14 @@ defmodule MWTClient.Sandbox.Server do
     do: [{"Asks you", "#{entry} is set to Ask on #{grant.name}"}]
 
   defp host_entry_fact(_about, _grant), do: []
+
+  # A saved command, pinned as you save it: the files it runs, as they are
+  # now (`MWTClient.Sandbox.Pins`). A run that finds one changed asks.
+  defp pinned(state, %Grant{kind: :command, script: script, dir: dir} = grant)
+       when is_binary(script) and is_binary(dir),
+       do: %{grant | pins: MWTClient.Sandbox.Pins.of(script, dir, ShareSync.root(state))}
+
+  defp pinned(_state, grant), do: grant
 
   # An ask about to wait for you, shown to the firewall first: the text of a
   # command the agent wrote, and whether you declined the same before.
@@ -2499,17 +2623,31 @@ defmodule MWTClient.Sandbox.Server do
     {_verdict, state} = Firewall.observe(state, {:declined, ask_key(approval)})
 
     # Declining what an agent proposed removes it, unless you accepted it
-    # since: then it is yours.
-    case approval.proposal && Enum.find(state.grants, &(&1.id == approval.grant_id)) do
-      %Grant{proposal: %{reviewed_at: nil}} = grant ->
-        Grants.delete(state, grant, "#{grant.name} removed: you declined it")
+    # since: then it is yours. A resource goes with what was proposed over
+    # it.
+    cond do
+      approval.resource &&
+          MWTClient.Sandbox.Resource.to_review?(
+            approval.resource,
+            Map.get(state, :credentials, []),
+            Map.get(state, :networks, [])
+          ) ->
+        MWTClient.Sandbox.Server.Resources.decline(state, approval.resource)
 
-      _other ->
+      grant = approval.proposal && Enum.find(state.grants, &(&1.id == approval.grant_id)) ->
+        if Grant.to_review?(grant),
+          do: Grants.delete(state, grant, "#{grant.name} removed: you declined it"),
+          else: state
+
+      true ->
         state
     end
   end
 
   defp declined(state, _approval, _decision), do: state
+
+  defp ask_key(%Approval{kind: :activation, resource: {_kind, _id} = resource}),
+    do: {:resource, resource}
 
   defp ask_key(%Approval{kind: :activation, grant_id: nil, need: need}),
     do: {:need, squish(String.downcase(need || ""))}

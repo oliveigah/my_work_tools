@@ -1,31 +1,48 @@
 defmodule MWTClient.Sandbox.Presets do
   @moduledoc """
-  What the add dialog offers: the grant types, and presets that fill a
-  type's form for tools whose details are known. A command grant is a
-  saved command, your own script (`:saved_command`): a command an agent
-  writes needs no grant.
+  What the add dialogs offer: the types, and presets that fill a form for
+  services whose details are known. A command grant is a saved command,
+  your own script (`:saved_command`): a command an agent writes needs no
+  grant.
 
   A preset is a JSON file (since 2026-11-17): MWT's own under
-  `priv/sandbox/presets/`, yours in the identity's folder (`dir/1`). It
-  fills the form's fields (`grant`), with fields of yours to fill first
-  (`fill`, each `{name}` in them), and can carry what the form doesn't: a
-  token grant's default request headers for its actions, the tools it
-  serves, and actions. Everything it gives is copied onto the
-  grant: nothing in MWT looks at which preset made it again.
+  `priv/sandbox/presets/`, yours in the identity's folder (`dir/1`). Each
+  says what it `makes` (since 2026-11-25), as you add things: a resource
+  first, then grants over it.
+
+    * `credential` - a credential's form: the service it is for
+      (`adapter`), how its value is made, how tools find it, the request
+      headers its actions start from and the tools it serves;
+    * `grant` - a grant over a credential: where its value goes, what it
+      narrows by, and the actions it adds beside it. `over` lists the
+      adapters and credential presets it is for; none, any credential;
+    * `network` - a network's form; `command` - a saved command's.
+
+  Its `fields` are the form's (`MWTClient.Sandbox.FormFields`), with fields
+  of yours to fill first (`fill`, each `{name}` in them). Everything it
+  gives is copied onto what it makes: nothing in MWT looks at which preset
+  made it again, but the grant presets offered over a credential, by the
+  preset it came from.
+
+  A file written before 2026-11-25 has a `kind` and a `grant` object, a
+  credential and a grant in one: it is read as a credential preset under
+  its id and a grant preset over it (`ID-grant`), each with the fields of
+  its own.
 
   The VM-side details come from the checks of 2026-11-11: `gh` sends
   `Authorization: token`, git sends the token as the Basic password after a
   401, Hex sends the whole header value, gcloud reads a bearer token from the
   file `CLOUDSDK_AUTH_ACCESS_TOKEN_FILE` names. See `docs/agent_sandbox.md`.
   """
-
   @typedoc """
-  A type or a preset. `fields` are the add form's params it starts from:
-  `"purpose"`, `"env"`, `"file_env"`, `"hosts"`, `"git"`, `"prefix"`,
-  `"source"`, `"mint"`, `"destinations"`, `"path"`.
+  A type or a preset. `fields` are the form's params it starts from
+  (`MWTClient.Sandbox.FormFields`). A preset says what it `makes`, and a
+  grant preset which credentials it is `over`.
   """
   @type t :: %{
           required(:id) => atom() | String.t(),
+          optional(:makes) => :credential | :grant | :network | :command,
+          optional(:over) => [String.t()],
           optional(atom()) => term(),
           required(:kind) => MWTClient.Sandbox.Grant.kind(),
           required(:name) => String.t(),
@@ -92,9 +109,23 @@ defmodule MWTClient.Sandbox.Presets do
       fields: %{}
     },
     %{
+      id: :agent_commands,
+      kind: :agent_commands,
+      name: "Commands agents write",
+      icon: "hero-command-line",
+      blurb:
+        "Built in: agents ask to run a command they write on your machine, and you approve every run.",
+      guide: [
+        "An agent sends the text with mwt run, and you read it on a card before anything runs.",
+        "Every run waits for you: no setting lets one through unasked. Off, agents can't ask.",
+        "It is handed no credential's value: a command that needs one is a saved command."
+      ],
+      fields: %{}
+    },
+    %{
       id: :request_action,
       kind: :request,
-      name: "Request action",
+      name: "Fixed request",
       icon: "hero-paper-airplane",
       blurb:
         "One request MWT sends itself with this grant's real value. Agents call it by id, and send only values.",
@@ -148,8 +179,8 @@ defmodule MWTClient.Sandbox.Presets do
     Enum.reduce(files, {[], []}, fn path, {presets, errors} ->
       with {:ok, text} <- File.read(path),
            {:ok, json} <- decode(text),
-           {:ok, preset} <- preset(json) do
-        {presets ++ [preset], errors}
+           {:ok, read} <- read(json) do
+        {presets ++ read, errors}
       else
         {:error, reason} when is_binary(reason) -> {presets, errors ++ [{path, reason}]}
         {:error, reason} -> {presets, errors ++ [{path, inspect(reason)}]}
@@ -166,22 +197,38 @@ defmodule MWTClient.Sandbox.Presets do
   end
 
   @kinds %{"token" => :token, "network" => :network, "command" => :command}
+  @makes %{
+    "credential" => {:credential, :token, :credential},
+    "grant" => {:grant, :token, :credential_grant},
+    "network" => {:network, :network, :network},
+    "command" => {:command, :command, :command_action}
+  }
   @id ~r/\A[a-z0-9][a-z0-9-]{0,40}\z/
   @fill ~r/\A[a-z][a-z0-9_]{0,30}\z/
 
   @doc """
-  A preset from what its file holds, or what is wrong with it.
+  The presets a file holds, or what is wrong with it: one, or two from a
+  file written before presets said what they make (a credential and a
+  grant over it).
 
-      iex> {:ok, preset} = MWTClient.Sandbox.Presets.preset(%{"id" => "acme", "kind" => "token",
-      ...>   "name" => "Acme", "grant" => %{"hosts" => "api.acme.test"}})
-      iex> {preset.id, preset.kind, preset.fields}
-      {"acme", :token, %{"hosts" => "api.acme.test"}}
-      iex> MWTClient.Sandbox.Presets.preset(%{"id" => "x", "kind" => "rocket", "name" => "X", "grant" => %{}})
-      {:error, "kind is one of token, network, command"}
+      iex> alias MWTClient.Sandbox.Presets
+      iex> {:ok, [preset]} = Presets.read(%{"id" => "acme", "makes" => "credential",
+      ...>   "adapter" => "bearer", "name" => "Acme", "fields" => %{"env" => "ACME_KEY"}})
+      iex> {preset.id, preset.makes, preset.fields}
+      {"acme", :credential, %{"adapter" => "bearer", "env" => "ACME_KEY"}}
+      iex> {:ok, [credential, grant]} = Presets.read(%{"id" => "acme", "kind" => "token",
+      ...>   "name" => "Acme", "grant" => %{"hosts" => "api.acme.test", "env" => "ACME_KEY"}})
+      iex> {credential.fields, grant.id, grant.over, grant.fields}
+      {%{"adapter" => "bearer", "env" => "ACME_KEY"}, "acme-grant", ["acme"], %{"hosts" => "api.acme.test"}}
+      iex> Presets.read(%{"id" => "x", "makes" => "grant", "name" => "X", "fields" => %{"value" => "v"}})
+      {:error, "value is yours to set, as you review it."}
+      iex> Presets.read(%{"id" => "x", "kind" => "rocket", "name" => "X", "grant" => %{}})
+      {:error, "makes is one of credential, grant, network, command"}
   """
-  @spec preset(map()) :: {:ok, t()} | {:error, String.t()}
-  def preset(json) do
+  @spec read(map()) :: {:ok, [t()]} | {:error, String.t()}
+  def read(json) do
     fill = List.wrap(json["fill"])
+    legacy? = not Map.has_key?(json, "makes") and Map.has_key?(json, "kind")
 
     cond do
       not (is_binary(json["id"]) and json["id"] =~ @id) ->
@@ -190,14 +237,15 @@ defmodule MWTClient.Sandbox.Presets do
       json["id"] in Enum.map(@types, &Atom.to_string(&1.id)) ->
         {:error, "id #{json["id"]} is a type's"}
 
-      not Map.has_key?(@kinds, json["kind"]) ->
-        {:error, "kind is one of token, network, command"}
+      not (Map.has_key?(@makes, json["makes"]) or
+               (legacy? and Map.has_key?(@kinds, json["kind"]))) ->
+        {:error, "makes is one of credential, grant, network, command"}
 
       not (is_binary(json["name"]) and String.trim(json["name"]) != "") ->
         {:error, "it needs a name"}
 
-      not is_map(json["grant"]) ->
-        {:error, "grant is an object of the add form's fields"}
+      not is_map(if(legacy?, do: json["grant"], else: json["fields"] || %{})) ->
+        {:error, "fields is an object of the form's fields"}
 
       not Enum.all?(fill, &(is_map(&1) and is_binary(&1["name"]) and &1["name"] =~ @fill)) ->
         {:error, "each field to fill has a name: lowercase letters, digits and underscores"}
@@ -205,33 +253,226 @@ defmodule MWTClient.Sandbox.Presets do
       Enum.any?(fill, &(&1["name"] == "token")) ->
         {:error, "{token} stands for the real value: name the field otherwise"}
 
-      true ->
-        kind = @kinds[json["kind"]]
+      legacy? ->
+        {:ok, legacy(json)}
 
-        {:ok,
-         %{
-           id: json["id"],
-           kind: kind,
-           name: String.trim(json["name"]),
-           icon: text(json["icon"]) || type(kind).icon,
-           blurb: text(json["blurb"]) || "",
-           guide: Enum.filter(List.wrap(json["guide"]), &is_binary/1),
-           fields: Map.new(json["grant"], fn {key, value} -> {key, field(value)} end),
-           fill:
-             for(
-               field <- fill,
-               do: %{
-                 name: field["name"],
-                 label: text(field["label"]) || field["name"],
-                 example: text(field["example"]) || ""
-               }
-             ),
-           request_headers: text(json["request_headers"]),
-           tools: Enum.filter(List.wrap(json["tools"]), &is_binary/1),
-           # `subgrants` in a preset written before actions were called so.
-           actions: Enum.filter(List.wrap(json["actions"] || json["subgrants"]), &is_map/1)
-         }}
+      true ->
+        {makes, _kind, thing} = @makes[json["makes"]]
+        fields = Map.new(json["fields"] || %{}, fn {key, value} -> {key, field(value)} end)
+
+        with :ok <- MWTClient.Sandbox.FormFields.check(thing, fields),
+             {:ok, adapter} <- preset_adapter(makes, json["adapter"]) do
+          fields = if adapter, do: Map.put(fields, "adapter", adapter), else: fields
+          {:ok, [made(json, makes, fields)]}
+        end
     end
+  end
+
+  # A credential preset's adapter: one MWT has, `bearer` when it names none.
+  defp preset_adapter(:credential, nil), do: {:ok, "bearer"}
+
+  defp preset_adapter(:credential, id) do
+    case MWTClient.Sandbox.Adapter.find(id) do
+      {:ok, adapter} -> {:ok, Atom.to_string(adapter.id())}
+      :error -> {:error, "adapter is one of #{adapter_ids()}"}
+    end
+  end
+
+  defp preset_adapter(_makes, _id), do: {:ok, nil}
+
+  defp adapter_ids,
+    do: Enum.map_join(MWTClient.Sandbox.Adapter.all(), ", ", &Atom.to_string(&1.id()))
+
+  # A file written before presets said what they make: a token one is a
+  # credential and a grant over it, each with its own fields of the old
+  # form's; a network or command one makes what it says.
+  defp legacy(json) do
+    fields = Map.new(json["grant"], fn {key, value} -> {key, field(value)} end)
+
+    case @kinds[json["kind"]] do
+      :token ->
+        alias MWTClient.Sandbox.FormFields
+
+        credential_fields = Map.take(fields, FormFields.of(:credential))
+
+        adapter =
+          MWTClient.Sandbox.Adapter.of(%{
+            preset: json["id"],
+            app: if(fields["app_id"], do: %{}),
+            signs_as: if(fields["signs_as"] not in [nil, ""], do: [fields["signs_as"]], else: []),
+            presents: if(fields["present_login"] == "true", do: %{login: %{}}, else: %{})
+          })
+
+        credential =
+          made(
+            json,
+            :credential,
+            Map.put(credential_fields, "adapter", Atom.to_string(adapter.id()))
+          )
+
+        grant =
+          made(
+            Map.merge(json, %{"id" => json["id"] <> "-grant", "over" => [json["id"]]}),
+            :grant,
+            Map.take(fields, FormFields.of(:credential_grant))
+          )
+
+        [%{credential | actions: []}, %{grant | request_headers: nil, tools: []}]
+
+      :network ->
+        [made(json, :network, Map.take(fields, MWTClient.Sandbox.FormFields.of(:network)))]
+
+      :command ->
+        [
+          made(
+            json,
+            :command,
+            Map.take(fields, MWTClient.Sandbox.FormFields.of(:command_action))
+          )
+        ]
+    end
+  end
+
+  defp made(json, makes, fields) do
+    {_makes, kind, _thing} = Enum.find_value(@makes, fn {_k, v} -> elem(v, 0) == makes && v end)
+
+    %{
+      id: json["id"],
+      makes: makes,
+      kind: kind,
+      name: String.trim(json["name"]),
+      icon: text(json["icon"]) || type(kind).icon,
+      blurb: text(json["blurb"]) || "",
+      guide: Enum.filter(List.wrap(json["guide"]), &is_binary/1),
+      fields: fields,
+      fill:
+        for(
+          field <- List.wrap(json["fill"]),
+          do: %{
+            name: field["name"],
+            label: text(field["label"]) || field["name"],
+            example: text(field["example"]) || ""
+          }
+        ),
+      over: if(makes == :grant, do: Enum.filter(List.wrap(json["over"]), &is_binary/1), else: []),
+      request_headers: text(json["request_headers"]),
+      tools: Enum.filter(List.wrap(json["tools"]), &is_binary/1),
+      # `subgrants` in a preset written before actions were called so.
+      actions: Enum.filter(List.wrap(json["actions"] || json["subgrants"]), &is_map/1)
+    }
+  end
+
+  @doc """
+  The presets that make `makes` (`:credential`, `:grant`, `:network`,
+  `:command`), yours included when `username` is given.
+  """
+  @spec making(atom(), String.t() | nil) :: [t()]
+  def making(makes, username \\ nil),
+    do: Enum.filter(presets(username), &(Map.get(&1, :makes) == makes))
+
+  @doc """
+  What a preset sets, in a few words each, for choosing one without
+  opening it: a credential preset's service, where its value comes from,
+  how tools find it; a grant preset's hosts and what it narrows by. A
+  blank of yours shows as what you give.
+
+      iex> {:ok, preset} = MWTClient.Sandbox.Presets.find("github-app")
+      iex> MWTClient.Sandbox.Presets.summary(preset)
+      ["GitHub", "minted by a command you give", "GITHUB_TOKEN, GH_TOKEN", "git over HTTPS", "a GitHub App"]
+      iex> {:ok, preset} = MWTClient.Sandbox.Presets.find("github-repository")
+      iex> MWTClient.Sandbox.Presets.summary(preset)
+      ["api.github.com +2", "only github.repository = the repository you give"]
+  """
+  @spec summary(t()) :: [String.t()]
+  def summary(%{makes: :credential, fields: fields}) do
+    adapter =
+      case MWTClient.Sandbox.Adapter.find(fields["adapter"]) do
+        {:ok, adapter} -> adapter.name()
+        :error -> nil
+      end
+
+    [
+      adapter,
+      if(fields["source"] == "minted",
+        do:
+          if(blank?(fields["mint"]),
+            do: "minted by a command you give",
+            else: "minted by " <> fields["mint"]
+          ),
+        else: "a value you paste"
+      ),
+      present(fields["env"]),
+      present(fields["file_env"]) && "a token file",
+      fields["git"] == "true" && "git over HTTPS",
+      fields["app_id"] && "a GitHub App",
+      fields["present_login"] == "true" && "a Google login file"
+    ]
+    |> Enum.filter(&is_binary/1)
+  end
+
+  def summary(%{makes: :grant, fields: fields}) do
+    hosts =
+      fields["hosts"] |> to_string() |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+
+    [
+      case hosts do
+        [] -> nil
+        [one] -> one
+        [first | rest] -> "#{first} +#{length(rest)}"
+      end,
+      present(fields["attributes"]) && "only " <> with_blanks(fields["attributes"])
+    ]
+    |> Enum.filter(&is_binary/1)
+  end
+
+  def summary(_preset), do: []
+
+  @doc """
+  What a preset asks you for before it can make anything: each blank's
+  label (`fill`).
+  """
+  @spec needs(t()) :: [String.t()]
+  def needs(preset), do: Enum.map(Map.get(preset, :fill, []), & &1.label)
+
+  defp present(value) do
+    case value |> to_string() |> String.trim() do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp blank?(value), do: value |> to_string() |> String.contains?("{")
+
+  defp with_blanks(text),
+    do:
+      Regex.replace(~r/\{([a-z_]+)\}/, text, fn _, name ->
+        "the #{String.replace(name, "_", " ")} you give"
+      end)
+
+  @doc """
+  The grant presets offered over `credential`: those for its adapter or
+  the preset it came from, and those for any credential.
+
+      iex> alias MWTClient.Sandbox.{Credential, Presets}
+      iex> credential = %Credential{id: "gh", name: "GitHub", adapter: :github, preset: "github-app"}
+      iex> credential |> Presets.over() |> Enum.map(& &1.id)
+      ["github-everything", "github-repository"]
+  """
+  @spec over(MWTClient.Sandbox.Credential.t() | map(), String.t() | nil) :: [t()]
+  def over(credential, username \\ nil), do: for_credential(presets(username), credential)
+
+  @doc """
+  The grant presets among `presets` offered over `credential` (`over/2`).
+  """
+  @spec for_credential([t()], MWTClient.Sandbox.Credential.t() | map()) :: [t()]
+  def for_credential(presets, credential) do
+    names = [to_string(Map.get(credential, :adapter)), to_string(Map.get(credential, :preset))]
+
+    Enum.filter(
+      presets,
+      &(Map.get(&1, :makes) == :grant and
+          (&1.over == [] or Enum.any?(&1.over, fn over -> over in names end)))
+    )
   end
 
   defp text(value) when is_binary(value), do: value

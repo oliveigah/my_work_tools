@@ -41,6 +41,7 @@ defmodule MWTClient.Sandbox.Network do
     internet: false,
     preset: nil,
     icon: nil,
+    proposal: nil,
     limits: %HostLimits{}
   ]
 
@@ -54,6 +55,7 @@ defmodule MWTClient.Sandbox.Network do
           internet: boolean(),
           preset: String.t() | nil,
           icon: String.t() | nil,
+          proposal: MWTClient.Sandbox.Grant.proposal() | nil,
           limits: HostLimits.t()
         }
 
@@ -72,6 +74,70 @@ defmodule MWTClient.Sandbox.Network do
   def id_of(%Grant{kind: :network, network: id}) when is_binary(id), do: id
   def id_of(%Grant{internet: true}), do: @internet_id
   def id_of(%Grant{id: id}), do: id
+
+  @doc """
+  The entry of a network grant's exceptions (`Grant.except`) that covers
+  one of `names`, or nil: a grant leaves out a use that may be for any
+  host it excepts, as a network's limits block one (`HostLimits`).
+
+      iex> alias MWTClient.Sandbox.{Grant, Network}
+      iex> grant = %Grant{id: "internet", name: "Internet", kind: :network, except: ["paste.example"]}
+      iex> {Network.excepted(grant, ["api.paste.example"]), Network.excepted(grant, ["github.com"])}
+      {"paste.example", nil}
+  """
+  @spec excepted(Grant.t(), [String.t() | nil]) :: String.t() | nil
+  def excepted(%Grant{kind: :network, except: [_ | _] = except}, names) do
+    Enum.find_value(names, fn
+      name when is_binary(name) ->
+        name = name |> String.downcase() |> String.trim_trailing(".")
+        Enum.find(except, &HostRules.covers?(&1, name))
+
+      _none ->
+        nil
+    end)
+  end
+
+  def excepted(%Grant{}, _names), do: nil
+
+  @doc """
+  A network grant's exceptions from a form's text, one host a line or
+  comma-separated, each as `HostRules.entry/1` writes it, repeats
+  dropped; or why one can't be. At most #{200} of them.
+
+      iex> MWTClient.Sandbox.Network.except_entries("https://Paste.Example/x, *.tracker.example, paste.example")
+      {:ok, ["paste.example", "*.tracker.example"]}
+      iex> MWTClient.Sandbox.Network.except_entries("10.0.0.1")
+      {:error, "10.0.0.1 is an address: entries are host names, as clients ask for them."}
+  """
+  @spec except_entries(String.t() | [String.t()] | nil) ::
+          {:ok, [String.t()]} | {:error, String.t()}
+  def except_entries(nil), do: {:ok, []}
+
+  def except_entries(text) when is_binary(text),
+    do: text |> String.split([",", "\n"]) |> except_entries()
+
+  def except_entries(lines) when is_list(lines) do
+    lines
+    |> Enum.map(&String.trim(to_string(&1)))
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.reduce_while({:ok, []}, fn line, {:ok, done} ->
+      case HostRules.entry(line) do
+        {:ok, entry} ->
+          {:cont,
+           {:ok, if(Enum.any?(done, &same_names?(&1, entry)), do: done, else: done ++ [entry])}}
+
+        {:error, message} ->
+          {:halt, {:error, message}}
+      end
+    end)
+    |> case do
+      {:ok, entries} when length(entries) > 200 -> {:error, "At most 200 hosts."}
+      result -> result
+    end
+  end
+
+  defp same_names?(one, other),
+    do: String.trim_leading(one, "*.") == String.trim_leading(other, "*.")
 
   @doc "Whether the grant covers only part of its network (`Grant.scope`)."
   @spec part?(Grant.t()) :: boolean()
@@ -237,7 +303,9 @@ defmodule MWTClient.Sandbox.Network do
       state: :on,
       start: :auto,
       minutes: :until_off,
-      allowances: [%Allowance{id: "allowance-#{id}", pattern: :all, until: nil}]
+      allowances: [
+        %Allowance{id: "allowance-#{id}", pattern: :all, until: nil, origin: %{kind: :start}}
+      ]
     }
   end
 

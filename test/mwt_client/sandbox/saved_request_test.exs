@@ -348,4 +348,42 @@ defmodule MWTClient.Sandbox.SavedRequestTest do
       assert run.cut == 0 and run.bytes == byte_size(run.output)
     end
   end
+
+  describe "a call built for MWT's proxy" do
+    test "holds a placeholder of its own where each value goes, never the value" do
+      call = %{
+        method: "POST",
+        url: "https://pm.example.run.app/policies",
+        host: "pm.example.run.app",
+        headers: [
+          {"Authorization", "Bearer {token}"},
+          {"X-User-Assertion", "{id_token}"},
+          {"X-Proof", "{signed_jwt}"}
+        ],
+        body: ~s({"a": 1})
+      }
+
+      {built, swaps} =
+        SavedRequest.build(
+          call,
+          %{token: "tok-real", id_token: "id-real", jwts: %{one: "jwt-real"}},
+          "PM"
+        )
+
+      assert [token, id_token, jwt] = swaps
+      assert %{label: "PM", value: "tok-real", within: ["authorization"]} = token
+      assert %{label: "PM's ID token", value: "id-real", within: ["x-user-assertion"]} = id_token
+      assert %{value: "jwt-real", within: ["x-proof"]} = jwt
+
+      assert {"Authorization", "Bearer " <> placeholder} =
+               List.keyfind(built.headers, "Authorization", 0)
+
+      assert placeholder == token.placeholder and String.starts_with?(placeholder, "mwt-fixed-")
+      refute inspect(built) =~ "real"
+
+      # What the service needs to read it: its type, and a client's name.
+      assert {"content-type", "application/json"} in built.headers
+      assert {"user-agent", "MWT"} in built.headers
+    end
+  end
 end

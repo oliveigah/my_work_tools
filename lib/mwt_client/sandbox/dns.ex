@@ -45,7 +45,7 @@ defmodule MWTClient.Sandbox.Dns do
 
   require Logger
 
-  alias MWTClient.Sandbox.{EventDetails, Gate, Grant, Routes, Server, Sockets}
+  alias MWTClient.Sandbox.{Decision, EventDetails, Gate, Grant, Routes, Server, Sockets}
   alias MWTClient.Vault.Store
 
   @answer_within 5_000
@@ -273,9 +273,9 @@ defmodule MWTClient.Sandbox.Dns do
   defp answer(message, username, seen) do
     case query(message) do
       {:ok, name, type, query} ->
-        screened(username, query, name, type, seen, fn way ->
+        screened(username, query, name, type, seen, fn way, decided ->
           result = forward(query, way)
-          :ok = note(username, seen, name, type, nil, answered(result, name, type, way))
+          :ok = note(username, seen, name, type, nil, answered(result, name, type, way), decided)
           result
         end)
 
@@ -300,7 +300,9 @@ defmodule MWTClient.Sandbox.Dns do
   defp screened(username, message, name, type, seen, pass_on) do
     case Gate.lookup(username, name) do
       :ok ->
-        with {:ok, answer} <- pass_on.(resolver()) do
+        decided = with %{} = grant <- Gate.opened_by(username, name), do: Decision.grant(grant)
+
+        with {:ok, answer} <- pass_on.(resolver(), decided) do
           Gate.remember_trusted(username, name, answer)
           Gate.remember_listed(username, name, answer)
           {:ok, answer}
@@ -309,7 +311,7 @@ defmodule MWTClient.Sandbox.Dns do
       {:covered, grant} ->
         case way(grant) do
           {:ok, way} ->
-            with {:ok, answer} <- pass_on.(way) do
+            with {:ok, answer} <- pass_on.(way, Decision.grant(grant)) do
               case addresses(answer, name) do
                 {[], _seconds} -> :ok
                 {addresses, seconds} -> Gate.answered(username, name, addresses, seconds)
@@ -336,6 +338,17 @@ defmodule MWTClient.Sandbox.Dns do
 
       {:refuse, {:host_blocked, _network, entry}} ->
         note(username, seen, name, type, "Not looked up (#{type}): #{entry} is blocked by you")
+        {:ok, refused(message)}
+
+      {:refuse, {:excepted, grant, entry}} ->
+        note(
+          username,
+          seen,
+          name,
+          type,
+          "Not looked up (#{type}): #{grant.name} leaves out #{entry}, and no other grant on names it"
+        )
+
         {:ok, refused(message)}
     end
   catch
@@ -366,7 +379,7 @@ defmodule MWTClient.Sandbox.Dns do
     end
   end
 
-  defp note(username, seen, name, type, summary, details \\ []) do
+  defp note(username, seen, name, type, summary, details \\ [], decision \\ nil) do
     now = System.monotonic_time(:second)
 
     {outcome, key} =
@@ -386,6 +399,7 @@ defmodule MWTClient.Sandbox.Dns do
           username,
           {:log,
            %{
+             decision: decision,
              outcome: outcome,
              summary: summary || "Looked up (#{type})",
              host: name,

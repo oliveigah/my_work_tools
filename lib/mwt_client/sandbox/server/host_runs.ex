@@ -13,16 +13,21 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
 
   alias MWTClient.Sandbox.{
     Approval,
+    Credential,
     Event,
     Grant,
     HostRun,
     Inbound,
+    Decision,
+    Openness,
     Param,
+    Pins,
     Policy,
     SavedRequest,
     Shares
   }
 
+  alias MWTClient.Sandbox.Egress.FixedCall
   alias MWTClient.Sandbox.Server.{Approvals, Firewall, ShareSync, State, Values}
 
   # A command waits as long for your go-ahead, and once it ran with its
@@ -31,11 +36,12 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
   @max_waiting_commands 10
 
   @doc """
-  What an ask to run goes through: a command the agent wrote needs no
-  grant, takes its text and asks you about every run (`{:ok, nil, ask,
-  []}`); a saved command, named by its id, runs your text in its folder,
-  takes none from the agent, and its grant and those of the credentials it
-  runs with decide (`MWTClient.Sandbox.Policy`).
+  What an ask to run goes through: a command the agent wrote takes its
+  text and asks you about every run, while Commands agents write is on
+  (`{:ok, nil, ask, []}`); a saved command, named by its id, runs your
+  text in its folder, takes none from the agent, and its own grant
+  decides, for the credentials it runs with too
+  (`MWTClient.Sandbox.Policy`).
   """
   def command_grant(state, ask) do
     case Policy.decide(
@@ -158,6 +164,9 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
       is_nil(grant) and not agents? ->
         {:refused, :grant_off}
 
+      Pins.changed(approval.pins) != [] ->
+        {:refused, :pin_changed}
+
       grant && Approval.digest(Grant.definition(grant)) != approval.definition ->
         {:refused, :changed}
 
@@ -193,6 +202,11 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
       "not carried out: its grant was edited while it waited, so the card no longer says what would run"
 
   def refused_words(:isolated), do: "not carried out: the VM is isolated"
+
+  def refused_words(:pin_changed),
+    do:
+      "not carried out: a file it runs changed since you approved it (MWTClient.Sandbox.Pins); ask again to see it as it is now"
+
   def refused_words(:locked), do: "not carried out: you locked what it reaches"
 
   # How a saved command runs, fixed into its card as it is asked: what the
@@ -254,6 +268,18 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
 
             true ->
               {:ok, accounts} = signing
+              username = state.username
+
+              # The call's mark, for the proxy it goes through: the action
+              # covers its credential in this request alone, and goes out
+              # as the agent's own would (`MWTClient.Sandbox.Egress.FixedCall`).
+              mark = %{
+                grant_id: grant.id,
+                card: approval.id,
+                name: grant.name,
+                definition: approval.definition,
+                network: Policy.network_of_host(State.policy(state), SavedRequest.host(grant))
+              }
 
               state
               |> State.used(grant.id)
@@ -262,12 +288,9 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
                 # its own time.
                 case sign_all(adapter, value, accounts, needs.accounts, call) do
                   {:ok, jwts} ->
-                    SavedRequest.send(
-                      call,
-                      %{token: value, id_token: id_token, jwts: jwts},
-                      name,
-                      timeout
-                    )
+                    values = %{token: value, id_token: id_token, jwts: jwts}
+                    {built, swaps} = SavedRequest.build(call, values, name)
+                    FixedCall.send(username, built, Map.put(mark, :swaps, swaps), timeout)
 
                   {:error, message} ->
                     %{
@@ -315,19 +338,20 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
   @doc """
   Runs a confined saved command (`MWTClient.Sandbox.Confine`) once the
   real values of the credentials it names are at hand, fetched one after
-  the other (minted where they are), each through a token grant over it
-  that is on and allows your machine. Without one, it ends there, and the
+  the other (minted where they are). The saved command is the grant for
+  them: a fixed call covers the credentials it names, and no other grant
+  over them has a say. A credential gone since, it ends there, and the
   agent hears why. Each value goes in the variables the VM sees that
   credential's placeholder in, and in its token file,
   `/mnt/mwt/tokens/<id>`, as in the VM. `confine` is how its card says it
   runs (`Approval.confine`), fixed as it was asked.
   """
   def run_confined(state, approval, job, %{with: with} = confine) do
-    withs = for id <- with, found = token(state, id), found != nil, do: found
+    withs = for id <- with, found = credential_view(state, id), found != nil, do: found
 
     if length(withs) != length(with) do
       finished_command(state, approval.id, %{
-        error: "no grant that allows your machine is on for a credential it runs with"
+        error: "a credential it runs with is gone: #{Enum.join(with, ", ")}"
       })
     else
       fetch_all(state, withs, [], fn state, result ->
@@ -337,7 +361,6 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
             id = approval.id
             reads = Map.get(state.settings, :confine_reads)
             job = Map.put(job, :confine, %{confine(confine, pairs) | reads: reads})
-            state = Enum.reduce(withs, state, &State.used(&2, &1.id))
 
             State.task(state, {:command, id}, fn ->
               HostRun.run(job, fn group -> send(server, {:command_started, id, group}) end)
@@ -350,13 +373,17 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     end
   end
 
-  # The token grant over credential `id` its value is used through on your
-  # machine: on, and allowing it.
-  defp token(state, id) do
-    Enum.find(state.grants, fn g ->
-      g.kind == :token and Grant.credential_id(g) == id and g.machine and
-        Grant.on?(g, State.now())
-    end)
+  # Credential `id` as a grant over it reads, for its value to be fetched
+  # (`Credential.attach/2`): where it comes from and how it is minted are
+  # the credential's. Nil once it is gone.
+  defp credential_view(state, id) do
+    case Enum.find(Map.get(state, :credentials, []), &(&1.id == id)) do
+      nil ->
+        nil
+
+      credential ->
+        Credential.attach(%Grant{id: id, name: credential.name, kind: :token}, credential)
+    end
   end
 
   defp fetch_all(state, [], pairs, k), do: k.(state, {:ok, Enum.reverse(pairs)})
@@ -407,6 +434,9 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
   command the agent wrote.
   """
   def command_approval(state, checked, grant) do
+    pins = Map.get(checked, :pins, [])
+    moved = moved(grant, pins)
+
     waiting =
       Enum.filter(state.approvals, &(&1.status == :waiting and &1.kind == :command))
 
@@ -446,8 +476,11 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
              true ->
                [{"Grant", grant.name}, {"Script", "Yours, saved as #{grant.name}"}]
            end ++
-             runs_fact(state, grant) ++ checked.facts,
+             runs_fact(state, grant) ++ openness_fact(grant) ++ checked.facts,
          hints: checked.hints,
+         pins: pins,
+         repin: moved != [],
+         warnings: moved_warnings(grant, moved) ++ Map.get(checked, :warnings, []),
          claims:
            [{"Reason", checked.reason}] ++
              if(checked[:suggest_save],
@@ -493,7 +526,7 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     # A saved command or a call goes unasked only when every resource it
     # goes through lets it through unasked (`MWTClient.Sandbox.Policy`): a
     # command the agent wrote never does.
-    if approval.script_from == :grant and
+    if approval.script_from == :grant and not approval.repin and
          match?(
            {:allow, _, _, _},
            Policy.decide(State.policy(state), use_of(approval), State.now())
@@ -503,6 +536,18 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
   end
 
   def auto_approve(state, _approval), do: state
+
+  @doc """
+  What let a card's command or call run unasked (`auto_approve/2`): the
+  allowance of its grant that covers it, as the policy decides it now
+  (`MWTClient.Sandbox.Decision`); nil when none does any more.
+  """
+  def auto_decision(state, approval) do
+    case Policy.decide(State.policy(state), use_of(approval), State.now()) do
+      {:allow, grant, allowance, _about} -> Decision.allowance(grant, allowance)
+      _other -> nil
+    end
+  end
 
   @doc """
   Notes that the command an agent wrote, on an approval, is now the
@@ -629,6 +674,69 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
 
   defp runs_fact(_state, _grant), do: []
 
+  # The files a saved command runs that changed since it was pinned: as
+  # it was saved, or as its last run you allowed found them. Nothing to
+  # compare for a command the agent wrote, or one pinned before pins.
+  defp moved(%Grant{kind: :command, pins: [_ | _] = pinned}, pins) do
+    by_path = Map.new(pinned, &{&1.path, &1})
+
+    for pin <- pins,
+        was = Map.get(by_path, pin.path, %{pin | hash: nil, content: ""}),
+        was.hash != pin.hash,
+        do: {was, pin}
+  end
+
+  defp moved(_grant, _pins), do: []
+
+  defp moved_warnings(_grant, []), do: []
+
+  defp moved_warnings(grant, moved) do
+    for {was, now} <- moved do
+      lines =
+        was.content
+        |> Pins.diff(now.content)
+        |> Enum.map_join("\n", fn {kind, line} ->
+          if(kind == :ins, do: "+ ", else: "- ") <> line
+        end)
+
+      "#{now.file} changed since #{grant.name} was pinned: this run asks, whatever its setting, and running it pins what is there now." <>
+        if(lines == "", do: "", else: "\n" <> lines)
+    end
+  end
+
+  @doc """
+  Pins what a saved command's run found (`Approval.pins`) on its grant, as
+  you let that run go: the next run compares against it.
+  """
+  def repin(state, %Approval{script_from: :grant, pins: pins} = approval) do
+    case State.grant_of(state, approval) do
+      %Grant{kind: :command} = grant when grant.pins != pins ->
+        state |> State.replace_grant(%{grant | pins: pins}) |> State.changed()
+
+      _other ->
+        state
+    end
+  end
+
+  def repin(state, _approval), do: state
+
+  # How open the fixed call is (`MWTClient.Sandbox.Openness`): said on
+  # every card it raises, a warning beside the rest, never a decision.
+  defp openness_fact(%Grant{} = grant) do
+    case Openness.grade(grant) do
+      %{grade: grade, why: why} ->
+        [
+          {"How open",
+           Enum.join([Openness.words(grade) <> ": " <> Openness.meaning(grade) | why], " ")}
+        ]
+
+      nil ->
+        []
+    end
+  end
+
+  defp openness_fact(nil), do: []
+
   # What would enter the VM, looked through: an answer to a request
   # action with every grant's value written out first, then shapes; a
   # command's output for values and shapes alike.
@@ -729,11 +837,14 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
   @doc """
   The log's event for something that happened to a command.
   """
-  def command_event(approval, how) do
+  def command_event(approval, how, decision \\ nil) do
+    # A request action's call is no command on your machine: its lines
+    # say *Fixed call*, beside the request it sent through the proxy.
     Map.merge(Event.asked_by(approval.agent, approval.thread), %{
-      outcome: :command,
+      decision: decision,
+      outcome: if(approval.call, do: :call, else: :command),
       summary: "#{approval.title} · #{how}",
-      details: Approval.details(approval, how)
+      details: Approval.details(approval)
     })
   end
 

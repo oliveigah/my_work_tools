@@ -31,7 +31,7 @@ defmodule MWTClientWeb.SandboxLive.Activity do
 
   import MWTClientWeb.SandboxLive.Components
 
-  alias MWTClient.Sandbox.{EventDetails, EventStats, Exchange}
+  alias MWTClient.Sandbox.{Decision, EventDetails, EventStats, Exchange}
 
   # The most of a body shown on the page; Copy as JSON takes all that was
   # kept.
@@ -242,6 +242,19 @@ defmodule MWTClientWeb.SandboxLive.Activity do
         </option>
         <option :for={thread <- @threads} value={thread.id} selected={@filters.thread == thread.id}>
           {thread_label(thread)}
+        </option>
+      </select>
+      <select
+        name="decided"
+        id="activity-decided"
+        class="rounded-md border border-line bg-deep px-2 py-1.5 text-xs text-ink outline-none focus:border-accent/60"
+      >
+        <option
+          :for={{value, label} <- decided_options()}
+          value={value}
+          selected={Map.get(@filters, :decided, "") == value}
+        >
+          {label}
         </option>
       </select>
       <select
@@ -1018,49 +1031,45 @@ defmodule MWTClientWeb.SandboxLive.Activity do
     ~H"""
     <div class="border-t border-line-soft/70 bg-deep/40 px-4 py-3">
       <div class="flex items-start gap-4">
-        <dl class="grid min-w-0 flex-1 grid-cols-[7rem_minmax(0,1fr)] gap-x-4 gap-y-1 pl-[4.75rem] text-[11px]">
-          <dt class="text-faint">Event</dt>
-          <dd id={"event-meaning-#{@event.id}"} class="text-muted">
-            {outcome_meaning(@event.outcome)}
-          </dd>
-          <dt class="text-faint">What happened</dt>
-          <dd class="text-ink">{@event.summary}</dd>
+        <dl
+          id={"event-context-#{@event.id}"}
+          class="grid min-w-0 flex-1 grid-cols-[6rem_minmax(0,1fr)] gap-x-4 gap-y-1 pl-[4.75rem] text-[11px]"
+        >
           <dt class="text-faint">When</dt>
           <dd class="font-mono text-[10px] text-muted">
             {Calendar.strftime(@event.at, "%Y-%m-%d %H:%M:%S")} UTC · {ago(@event.at, @now)}
           </dd>
           <%= if @event.host do %>
-            <dt class="text-faint">Destination</dt>
-            <dd class="font-mono text-[10px] text-ink">
-              {@event.host}<span :if={@event.port}>:{@event.port}</span>
-            </dd>
-          <% end %>
-          <%= if @event.method || @event.path do %>
-            <dt class="text-faint">Request</dt>
+            <dt class="text-faint">Where</dt>
             <dd class="break-all font-mono text-[10px] text-ink">
-              {@event.method} {@event.path}
+              {@event.host}<span :if={@event.port}>:{@event.port}</span>
+              <span :if={@event.method || @event.path} class="text-muted">
+                · {@event.method} {@event.path}
+              </span>
             </dd>
           <% end %>
-          <%= if @event.grant_id do %>
-            <dt class="text-faint">Grant</dt>
+          <%= if @event.up || @event.down || @event.ms do %>
+            <dt class="text-faint">Traffic</dt>
+            <dd class="font-mono text-[10px] text-muted">
+              <span :if={@event.up || @event.down}>
+                ↑ {exact(@event.up)} · ↓ {exact(@event.down)} bytes
+              </span>
+              <span :if={@event.ms}>· open {took(@event.ms)}</span>
+            </dd>
+          <% end %>
+          <%= if @event.agent || @event.thread_id do %>
+            <dt class="text-faint">Asked by</dt>
             <dd class="text-ink">
+              {@event.agent || "An agent"}
               <.link
-                patch={~p"/tools/sandbox/grants/#{@event.grant_id}"}
+                :if={@event.thread_id}
+                patch={"/tools/sandbox/activity?thread=#{@event.thread_id}"}
+                id={"event-thread-#{@event.id}"}
                 class="text-accent hover:underline"
               >
-                {@grant_names[@event.grant_id] || @event.grant_id}
+                · {thread_label(%{id: @event.thread_id, title: @event.thread, agent: nil})}
               </.link>
             </dd>
-          <% end %>
-          <%= if @event.up || @event.down do %>
-            <dt class="text-faint">Sent / received</dt>
-            <dd class="font-mono text-[10px] text-muted">
-              {exact(@event.up)} / {exact(@event.down)} bytes
-            </dd>
-          <% end %>
-          <%= if @event.ms do %>
-            <dt class="text-faint">Open for</dt>
-            <dd class="font-mono text-[10px] text-muted">{took(@event.ms)}</dd>
           <% end %>
         </dl>
         <div class="flex shrink-0 items-center gap-1.5">
@@ -1126,11 +1135,25 @@ defmodule MWTClientWeb.SandboxLive.Activity do
       </div>
       <pre id={"event-json-#{@event.id}"} hidden phx-no-curly-interpolation><%= event_json(@event) %></pre>
 
-      <.event_details
+      <.audit event={@event} grants={@grants} grant_names={@grant_names} />
+      <.event_page event={@event} />
+
+      <details
         :if={is_list(@event.details) and @event.details != []}
-        id={"event-details-#{@event.id}"}
-        details={@event.details}
-      />
+        id={"event-more-#{@event.id}"}
+        class="group mt-2 pl-[4.75rem]"
+      >
+        <summary class="inline-flex cursor-pointer select-none items-center gap-1 text-[11px] text-muted transition-colors hover:text-ink">
+          <.icon
+            name="hero-chevron-right-micro"
+            class="size-3.5 transition-transform group-open:rotate-90"
+          /> More about it
+          <span class="text-faint">
+            ({Enum.map_join(@event.details, ", ", &lower_first(&1.title))})
+          </span>
+        </summary>
+        <.event_details id={"event-details-#{@event.id}"} details={@event.details} />
+      </details>
       <p
         :if={@event.detailed? and is_nil(@event.details)}
         id={"event-details-#{@event.id}"}
@@ -1370,6 +1393,131 @@ defmodule MWTClientWeb.SandboxLive.Activity do
     end)
     |> Jason.encode!(pretty: true)
   end
+
+  ## How it was decided
+
+  attr :event, :any, required: true
+  attr :grants, :list, required: true
+  attr :grant_names, :map, required: true
+
+  # The audit (`MWTClient.Sandbox.Decision`): one small card, the same rows
+  # for every action, with links to know more: the grant's page (marked
+  # when it changed since it decided), and the card as it was decided.
+  defp audit(assigns) do
+    decision = assigns.event.decision
+    grant = decision && Enum.find(assigns.grants, &(&1.id == decision[:grant]))
+
+    assigns =
+      assign(assigns,
+        decision: decision,
+        grant_name: decision && Map.get(assigns.grant_names, decision[:grant]),
+        changed?:
+          decision != nil and decision[:version] != nil and grant != nil and
+            Decision.version_id(grant) != decision.version
+      )
+
+    ~H"""
+    <dl
+      :if={@decision}
+      id={"event-audit-#{@event.id}"}
+      class="mt-3 ml-[4.75rem] grid max-w-2xl grid-cols-[6rem_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-lg border border-line-soft bg-panel px-3 py-2.5 text-[11px] leading-4"
+    >
+      <dt class="col-span-2 mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+        Audit
+      </dt>
+      <dt class="text-faint">Outcome</dt>
+      <dd id={"event-audit-outcome-#{@event.id}"} class={outcome_class(@decision, @event.outcome)}>
+        {if(Decision.allowed?(@decision, @event.outcome), do: "Allowed", else: "Not allowed")}
+      </dd>
+      <dt class="text-faint">Decided by</dt>
+      <dd id={"event-decided-by-#{@event.id}"} class="text-ink">{Decision.by_words(@decision)}</dd>
+      <dt class="text-faint">Because</dt>
+      <dd id={"event-audit-because-#{@event.id}"} class="text-ink">{Decision.because(@decision)}</dd>
+      <dt :if={@decision[:grant]} class="text-faint">Grant</dt>
+      <dd :if={@decision[:grant]} class="flex flex-wrap items-center gap-x-2">
+        <.link
+          :if={@grant_name}
+          navigate={"/tools/sandbox/grants/#{@decision[:grant]}"}
+          id={"event-audit-grant-#{@event.id}"}
+          class="font-medium text-accent hover:underline"
+        >
+          {@grant_name}
+        </.link>
+        <span :if={is_nil(@grant_name)} class="text-faint">{@decision[:grant]}, removed since</span>
+        <.link
+          :if={@changed?}
+          navigate={"/tools/sandbox/activity?group=changes&grant=#{@decision[:grant]}"}
+          id={"event-audit-changed-#{@event.id}"}
+          class="text-warn-strong hover:underline"
+        >
+          changed since
+        </.link>
+      </dd>
+      <dt :if={@decision[:card]} class="text-faint">Card</dt>
+      <dd :if={@decision[:card]}>
+        <.link
+          navigate={"/tools/sandbox/approvals?card=#{@decision[:card]}"}
+          id={"event-audit-card-#{@event.id}"}
+          class="font-medium text-accent hover:underline"
+        >
+          {if(@decision.by == :allowance, do: "The card where you allowed it", else: "The card")}
+        </.link>
+      </dd>
+    </dl>
+    """
+  end
+
+  defp outcome_class(decision, outcome) do
+    if Decision.allowed?(decision, outcome),
+      do: "font-medium text-ok-strong",
+      else: "font-medium text-bad"
+  end
+
+  attr :event, :any, required: true
+
+  # The page an event belongs to, when it has one of its own.
+  defp event_page(assigns) do
+    assigns = assign(assigns, :page, page_of(assigns.event))
+
+    ~H"""
+    <.link
+      :if={@page}
+      navigate={elem(@page, 1)}
+      id={"event-page-#{@event.id}"}
+      class="mt-2 ml-[4.75rem] inline-flex items-center gap-1 text-[11px] font-medium text-accent hover:underline"
+    >
+      <.icon name="hero-arrow-top-right-on-square-micro" class="size-3 text-faint" />
+      {elem(@page, 0)}
+    </.link>
+    """
+  end
+
+  # A section's title in a sentence: its first letter lowercase, an
+  # acronym (MWT) left as it is.
+  defp lower_first(<<first::utf8, second::utf8, _::binary>> = title)
+       when first in ?A..?Z and second in ?A..?Z,
+       do: title
+
+  defp lower_first(<<first::utf8, rest::binary>>), do: String.downcase(<<first::utf8>>) <> rest
+  defp lower_first(title), do: title
+
+  # The page an event belongs to, when it has one of its own: `{words, path}`.
+  defp page_of(%{outcome: :handoff}), do: {"Handoffs", "/tools/sandbox/handoffs"}
+  defp page_of(%{outcome: :project}), do: {"Projects", "/tools/sandbox/projects"}
+  defp page_of(%{outcome: :firewall}), do: {"Firewall", "/tools/sandbox/firewall"}
+  defp page_of(%{outcome: :vm}), do: {"The VM", "/tools/sandbox"}
+  defp page_of(_event), do: nil
+
+  # The Decided by filter's choices (`MWTClient.Sandbox.Decision.all/0`).
+  defp decided_options,
+    do: [
+      {"", "Decided by anyone"},
+      {"you", "You, on a card"},
+      {"allowance", "Auto-approved"},
+      {"grant", "A grant that is on"},
+      {"refused", "Refused by MWT"},
+      {"timeout", "Timed out"}
+    ]
 
   ## Details
 

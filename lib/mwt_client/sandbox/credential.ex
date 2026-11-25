@@ -14,12 +14,21 @@ defmodule MWTClient.Sandbox.Credential do
       placeholders it had before (two credentials merged into one keep
       both of theirs), recognized as its own, never handed out again;
       `login_aliases`, a login file's refresh placeholders the same way.
+    * `adapter` - the service it is for (`MWTClient.Sandbox.Adapter`):
+      `:github`, `:google`, `:hex` or `:bearer`, any other. It decides how
+      a mint's output is read (a GitHub App's key traded for a token), the
+      fields its form shows (`app`, a Google login) and the grant presets
+      offered over it. Chosen when it is made; one saved before it was
+      chosen gets the one its preset and fields said (`upgrade/1`).
     * how values are made and kept (`mint_per`, `keep_minutes`), what
       `mwt exec` presents (`env`, `file_env`, `git`, `presents`), and what
       a preset gave (`preset`, `icon`, `request_headers`, `cli_tools`).
     * `locked` - nil, or when you locked it: a locked credential's value
       goes nowhere, whatever its grants say. A lock is yours alone: agents
       can ask for a grant, never for a lock to end.
+    * `proposal` - nil, or who proposed it, when an agent did
+      (`t:MWTClient.Sandbox.Grant.proposal/0`): until you accept it on its
+      page, no grant over it can be accepted or turned on.
 
   A token grant keeps a copy of its credential's fields (`copied/0`),
   filled in by `attach/2` whenever either changes, so code that reads a
@@ -40,6 +49,8 @@ defmodule MWTClient.Sandbox.Credential do
     :icon,
     :request_headers,
     :locked,
+    :proposal,
+    adapter: :bearer,
     purpose: "",
     source: :stored,
     mint_per: :grant,
@@ -63,6 +74,8 @@ defmodule MWTClient.Sandbox.Credential do
           icon: String.t() | nil,
           request_headers: String.t() | nil,
           locked: DateTime.t() | nil,
+          proposal: Grant.proposal() | nil,
+          adapter: atom(),
           source: Grant.source(),
           mint_per: :grant | :host,
           keep_minutes: pos_integer() | nil,
@@ -91,7 +104,8 @@ defmodule MWTClient.Sandbox.Credential do
     :cli_tools,
     :aliases,
     :login_aliases,
-    :app
+    :app,
+    :adapter
   ]
 
   @doc "The fields a token grant copies from its credential (`attach/2`)."
@@ -115,7 +129,12 @@ defmodule MWTClient.Sandbox.Credential do
 
     struct(
       __MODULE__,
-      Map.merge(fields, %{id: grant.id, name: grant.name, purpose: grant.purpose || ""})
+      Map.merge(fields, %{
+        id: grant.id,
+        name: grant.name,
+        purpose: grant.purpose || "",
+        adapter: grant.adapter || MWTClient.Sandbox.Adapter.of(grant).id()
+      })
     )
   end
 
@@ -347,7 +366,27 @@ defmodule MWTClient.Sandbox.Credential do
   def placeholders(%{placeholder: placeholder, aliases: aliases}),
     do: Enum.reject([placeholder | aliases || []], &is_nil/1)
 
-  @doc "A credential saved by an older MWT, brought up to date."
+  @doc """
+  A credential saved by an older MWT, brought up to date: one saved before
+  it named its adapter gets the one its preset and fields said
+  (`MWTClient.Sandbox.Adapter.of/1`).
+
+      iex> alias MWTClient.Sandbox.Credential
+      iex> Credential.upgrade(%{id: "gh", name: "GitHub", preset: "github"}).adapter
+      :github
+      iex> Credential.upgrade(%{id: "k", name: "Key", adapter: :hex}).adapter
+      :hex
+  """
   @spec upgrade(map()) :: t()
-  def upgrade(%{} = saved), do: struct(__MODULE__, Map.delete(saved, :__struct__))
+  def upgrade(%{} = saved) do
+    fields = Map.delete(saved, :__struct__)
+    credential = struct(__MODULE__, Map.put(fields, :adapter, nil))
+
+    adapter =
+      if is_atom(fields[:adapter]) and not is_nil(fields[:adapter]),
+        do: fields[:adapter],
+        else: MWTClient.Sandbox.Adapter.of(credential).id()
+
+    %{credential | adapter: adapter}
+  end
 end

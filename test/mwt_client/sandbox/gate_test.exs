@@ -167,6 +167,36 @@ defmodule MWTClient.Sandbox.GateTest do
       assert {:deny, _} = Gate.destination(username, @public, 22)
     end
 
+    test "a host the Internet's grant leaves out is never looked up, unless a grant over it is on",
+         %{username: username} do
+      {:ok, _} = Sandbox.set_except(username, "internet", "myhost.xpto.com")
+
+      assert {:refuse, {:excepted, %{id: "internet"}, "myhost.xpto.com"}} =
+               Gate.lookup(username, "api.myhost.xpto.com")
+
+      assert :ok = Gate.lookup(username, "example.com")
+
+      {:ok, part} =
+        Sandbox.create_grant(username, %{
+          "kind" => "network",
+          "network" => "internet",
+          "name" => "My host",
+          "purpose" => "Asks before anything reaches it",
+          "destinations" => "myhost.xpto.com"
+        })
+
+      assert part.scope == ["myhost.xpto.com"]
+      # Off, it gives nothing: still refused.
+      assert {:refuse, {:excepted, _, _}} = Gate.lookup(username, "myhost.xpto.com")
+
+      {:ok, _} = Sandbox.turn_on(username, part.id, :until_off, :ask)
+      assert :ok = Gate.lookup(username, "myhost.xpto.com")
+
+      assert {:error, %{except: _}} = Sandbox.set_except(username, "internet", "10.0.0.1")
+      {:ok, internet} = Sandbox.set_except(username, "internet", "")
+      assert internet.except == []
+    end
+
     test "off, DNS answers no public name, a token grant's hosts included; a network grant's only while it is on",
          %{username: username} do
       _grant = github(username)

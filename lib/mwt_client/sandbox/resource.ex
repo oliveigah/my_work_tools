@@ -33,14 +33,14 @@ defmodule MWTClient.Sandbox.Resource do
   def name({:network, id}, _credentials, networks),
     do: Enum.find_value(networks, id, &(&1.id == id && &1.name))
 
-  def name(:machine, _credentials, _networks), do: "Your machine"
+  def name(:machine, _credentials, _networks), do: "Host commands"
   def name(:mwt, _credentials, _networks), do: "MWT's tools"
 
   @doc "What kind of resource it is, in a word."
   @spec kind_words(id()) :: String.t()
   def kind_words({:credential, _id}), do: "Credential"
   def kind_words({:network, _id}), do: "Network"
-  def kind_words(:machine), do: "Your machine"
+  def kind_words(:machine), do: "Host commands"
   def kind_words(:mwt), do: "MWT's tools"
 
   @doc "The resource's path on MWT's pages."
@@ -57,6 +57,19 @@ defmodule MWTClient.Sandbox.Resource do
   def from_path("machine", _id), do: :machine
   def from_path("mwt", _id), do: :mwt
   def from_path(_kind, _id), do: nil
+
+  @doc """
+  Whether `resource` is one an agent proposed that you haven't accepted
+  yet: nothing over it can be accepted or turned on until you do.
+  """
+  @spec to_review?(id(), [Credential.t()], [Network.t()]) :: boolean()
+  def to_review?({:credential, id}, credentials, _networks),
+    do: match?(%{proposal: %{reviewed_at: nil}}, Enum.find(credentials, &(&1.id == id)))
+
+  def to_review?({:network, id}, _credentials, networks),
+    do: match?(%{proposal: %{reviewed_at: nil}}, Enum.find(networks, &(&1.id == id)))
+
+  def to_review?(_built_in, _credentials, _networks), do: false
 
   @doc "The grants over `resource` among `grants`."
   @spec grants([Grant.t()], id()) :: [Grant.t()]
@@ -75,9 +88,9 @@ defmodule MWTClient.Sandbox.Resource do
 
   def locked_words(:machine),
     do:
-      "The user's machine is locked: nothing is carried out there (commands, git, shared folders) until they unlock it."
+      "Host commands are locked by the user: nothing an agent asks runs on their machine, a command it writes or a saved one, until they unlock them."
 
   def locked_words(:mwt),
     do:
-      "MWT's tools are locked by the user: no note, diagram or card is read or written until they unlock them."
+      "MWT's tools are locked by the user: no note, diagram or card is read or written, and no git fetch, handoff, sync or workspace copy happens, until they unlock them."
 end

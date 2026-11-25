@@ -115,6 +115,25 @@ defmodule MWTClient.Storage.JournalTest do
     assert count.() == [[0]]
   end
 
+  test "a card is kept while a line names it, and goes after it", %{username: username} do
+    card = %{card: %{id: "card-1", title: "GET api.github.com/user"}, choice: "you allowed once"}
+
+    Journal.record(username, Map.merge(row(1), %{card_id: "card-1"}))
+    Journal.record_card(username, "card-1", card)
+    assert Journal.card(username, "card-1") == card
+
+    # The line goes with the retention rule, and the card with it.
+    Journal.trim(username, %{days: 1, gb: nil}, DateTime.utc_now())
+    assert Journal.card(username, "card-1") == nil
+
+    # A Clear takes them too.
+    Journal.record(username, Map.merge(row(2), %{card_id: "card-2"}))
+    Journal.record_card(username, "card-2", card)
+    :ok = Journal.flush(username)
+    :ok = MWTClient.Storage.Maintenance.clear(username, "agent_activity")
+    assert Journal.card(username, "card-2") == nil
+  end
+
   # The journal can't be written while its table is away: every insert
   # fails at once, as one held past the busy timeout fails after it.
   defp unwritable(username),

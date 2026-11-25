@@ -11,15 +11,29 @@ defmodule MWTClient.Sandbox.Allowance do
       connection. A `*` in its path stands for any one segment: *Allow
       similar, any id* widens the endpoint's ids (`widen/1`), so one
       allowance covers a REST resource whatever its ids.
+
+  `origin` is where it came from, for the activity log's audit
+  (`MWTClient.Sandbox.Decision`): `%{kind: :auto}`, you turned the grant on
+  with Auto-approve or set it so; `:start`, its start setting as MWT
+  started; `:card`, your choice on the card `card`; `:you`, every use
+  allowed from the grant's page; `:mwt`, a rule of MWT's own. `at` is
+  when. Nil for one from before origins were kept.
   """
 
   @enforce_keys [:id, :pattern]
-  defstruct [:id, :pattern, :until]
+  defstruct [:id, :pattern, :until, :origin]
+
+  @type origin :: %{
+          required(:kind) => :auto | :start | :card | :you | :mwt,
+          optional(:card) => String.t() | nil,
+          optional(:at) => DateTime.t() | nil
+        }
 
   @type t :: %__MODULE__{
           id: String.t(),
           pattern: String.t() | :all,
-          until: DateTime.t() | nil
+          until: DateTime.t() | nil,
+          origin: origin() | nil
         }
 
   @doc """

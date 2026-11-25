@@ -60,7 +60,7 @@ defmodule MWTClient.Storage.Journal do
   @reason_chars 200
 
   @columns ~w(id at outcome summary grant_id host port method path up down ms agent thread_id
-              thread exchange_id detailed search_text)a
+              thread exchange_id detailed search_text decided_by card_id decision)a
 
   @typedoc """
   One event, as its columns hold it: `:id`, `:at` (microseconds since
@@ -114,6 +114,37 @@ defmodule MWTClient.Storage.Journal do
       nil -> :ok
       pid -> GenServer.cast(pid, {:details, event_id, Values.term(details)})
     end
+  end
+
+  @doc """
+  Keeps a card you decided, or that timed out (`MWTClient.Sandbox.Approval`),
+  whole, to be written with the next batch: what a line whose decision
+  names it opens, read-only (`MWTClient.Sandbox.Decision`). Kept again
+  under the same id, the later one stays.
+  """
+  @spec record_card(String.t(), String.t(), struct()) :: :ok
+  def record_card(username, id, card) do
+    case Store.whereis(__MODULE__, username) do
+      nil -> :ok
+      pid -> GenServer.cast(pid, {:kept, {:card, id, now(), Values.term(card)}})
+    end
+  end
+
+  defp now, do: Values.time(DateTime.utc_now())
+
+  @doc "A card kept by `record_card/3`, or nil: never kept, or gone with every line naming it."
+  @spec card(String.t(), String.t()) :: struct() | nil
+  def card(username, id), do: kept(username, "SELECT card FROM events_cards WHERE id = ?", id)
+
+  defp kept(username, query, id) do
+    :ok = flush(username)
+
+    Storage.run(username, :journal, fn repo ->
+      case repo.query!(query, [id]).rows do
+        [[blob]] -> Values.from_term(blob)
+        [] -> nil
+      end
+    end)
   end
 
   @doc "The details kept for an event, or nil: none were, or they are gone with it."
@@ -171,7 +202,19 @@ defmodule MWTClient.Storage.Journal do
       end
 
     by_size = if rule[:gb], do: trim_to(username, rule.gb * 1_000_000_000, 0), else: 0
+    if by_age + by_size > 0, do: unnamed_gone(username)
     by_age + by_size
+  end
+
+  # The cards no line names any more.
+  defp unnamed_gone(username) do
+    Storage.run(username, :journal, fn repo ->
+      repo.query!(
+        "DELETE FROM events_cards WHERE id NOT IN (SELECT card_id FROM events WHERE card_id IS NOT NULL)"
+      )
+    end)
+
+    :ok
   end
 
   defp delete_before(username, cutoff, removed) do
@@ -230,6 +273,8 @@ defmodule MWTClient.Storage.Journal do
        rows: [],
        exchanges: [],
        details: [],
+       # Cards to keep, `{:card, id, at, blob}`.
+       kept: [],
        count: 0,
        bytes: 0,
        timer: nil,
@@ -251,6 +296,17 @@ defmodule MWTClient.Storage.Journal do
     waiting(%{
       state
       | exchanges: [{exchange_id, blob} | state.exchanges],
+        count: state.count + 1,
+        bytes: state.bytes + byte_size(blob)
+    })
+  end
+
+  def handle_cast({:kept, record}, state) do
+    blob = elem(record, tuple_size(record) - 1) |> elem(1)
+
+    waiting(%{
+      state
+      | kept: [record | state.kept],
         count: state.count + 1,
         bytes: state.bytes + byte_size(blob)
     })
@@ -302,20 +358,23 @@ defmodule MWTClient.Storage.Journal do
     :ok
   end
 
-  defp write(%{rows: [], exchanges: [], details: [], lost: nil} = state), do: cancel(state)
+  defp write(%{rows: [], exchanges: [], details: [], kept: [], lost: nil} = state),
+    do: cancel(state)
 
   defp write(state) do
     state = cancel(state)
     rows = Enum.reverse(state.rows)
     exchanges = Enum.reverse(state.exchanges)
     details = Enum.reverse(state.details)
+    kept = Enum.reverse(state.kept)
 
     try do
       Storage.transaction(state.username, :journal, fn repo ->
         if state.lost, do: insert(repo, [lost_row(state.lost)])
-        for chunk <- Enum.chunk_every(rows, 50), do: insert(repo, chunk)
+        for chunk <- Enum.chunk_every(rows, 40), do: insert(repo, chunk)
         for {exchange_id, blob} <- exchanges, do: insert_exchange(repo, exchange_id, blob)
         for {event_id, blob} <- details, do: insert_details(repo, event_id, blob)
+        for record <- kept, do: insert_kept(repo, record)
       end)
 
       if state.lost do
@@ -330,6 +389,7 @@ defmodule MWTClient.Storage.Journal do
         | rows: [],
           exchanges: [],
           details: [],
+          kept: [],
           count: 0,
           bytes: 0,
           failures: 0,
@@ -357,7 +417,7 @@ defmodule MWTClient.Storage.Journal do
   end
 
   # What waits goes, and is added to the gap the log will say.
-  defp drop(%{rows: rows, exchanges: exchanges, details: details} = state) do
+  defp drop(%{rows: rows, exchanges: exchanges, details: details, kept: kept} = state) do
     times = for row <- rows, is_integer(row[:at]), do: row.at
     reason = state.failed || "unknown"
 
@@ -365,7 +425,7 @@ defmodule MWTClient.Storage.Journal do
       merge_lost(state.lost, %{
         events: length(rows),
         exchanges: length(exchanges),
-        details: length(details),
+        details: length(details) + length(kept),
         from: Enum.min(times, fn -> nil end),
         to: Enum.max(times, fn -> nil end),
         why: reason |> String.split("\n", parts: 2) |> hd() |> String.slice(0, @reason_chars)
@@ -377,7 +437,17 @@ defmodule MWTClient.Storage.Journal do
       system: :storage
     )
 
-    %{state | rows: [], exchanges: [], details: [], count: 0, bytes: 0, failures: 0, lost: lost}
+    %{
+      state
+      | rows: [],
+        exchanges: [],
+        details: [],
+        kept: [],
+        count: 0,
+        bytes: 0,
+        failures: 0,
+        lost: lost
+    }
   end
 
   defp merge_lost(nil, lost), do: lost
@@ -441,6 +511,17 @@ defmodule MWTClient.Storage.Journal do
     )
   end
 
+  # A card kept again replaces the one before: a later state of it.
+  defp insert_kept(repo, {:card, id, at, blob}) do
+    repo.query!(
+      """
+      INSERT INTO events_cards (id, at, card) VALUES (?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET at = excluded.at, card = excluded.card
+      """,
+      [id, at, blob]
+    )
+  end
+
   # Once for each event that names it; for none, nothing.
   defp insert_exchange(repo, exchange_id, blob) do
     repo.query!(
@@ -453,7 +534,7 @@ defmodule MWTClient.Storage.Journal do
     )
   end
 
-  # Fifty rows to a statement, under SQLite's limit on parameters. An id
+  # Forty rows to a statement, under SQLite's limit on parameters. An id
   # recorded twice is written once.
   defp insert(repo, rows) do
     one = "(" <> Enum.map_join(@columns, ", ", fn _column -> "?" end) <> ")"

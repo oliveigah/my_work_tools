@@ -13,18 +13,21 @@ defmodule MWTClient.Sandbox.Grant do
       credential helper answers for the hosts of the grants over it.
       Ordinary VM processes receive no credential exports. MWT swaps the
       real value on requests to `hosts`, only in its `carriers`: the
-      headers it travels in (`carriers/1`). With `machine`, its value may
-      also be used by the saved commands that run with its credential
-      (`with`), on your machine. Reaching its hosts is a network grant's
-      to give, not its own.
+      headers it travels in (`carriers/1`). Reaching its hosts is a
+      network grant's to give, not its own. A saved command that runs with
+      its credential (`with`) needs none: the saved command covers it.
     * `:network` - reachability to `destinations`, over its network
       (`MWTClient.Sandbox.Network`); nothing to hold. One is built in, the
       Internet's (`internet/0`, `internet: true`): every public address,
       on and auto-approving as MWT starts unless you choose otherwise.
     * `:command` - a saved command: a script of yours, run on your machine
       in `dir` when an agent calls it by id; its runs can be
-      auto-approved while it is on. A command an agent writes needs no
-      grant: you approve each one (`MWTClient.Sandbox.Server.HostRuns`).
+      auto-approved while it is on.
+    * `:agent_commands` - Commands agents write (`agent_commands/0`),
+      built in: open use of host commands, the text the agent sends with
+      `mwt run`. On, an agent may ask; every run waits for you, whatever
+      else is set (`always_asks?/1`), and is handed no credential's value.
+      Off, it can't ask (`MWTClient.Sandbox.Server.HostRuns`).
     * `:request` - a request action: one HTTP request MWT sends itself
       with its credential's real value (`credential`; `method`, `url`,
       `headers`, `body`; see `MWTClient.Sandbox.SavedRequest`).
@@ -89,7 +92,12 @@ defmodule MWTClient.Sandbox.Grant do
   it blocks; the grant holds a copy of the first three
   (`Network.attach/2`). `scope` is the part of the network it covers,
   destinations as the network's are written, or nil for all of it, whose
-  destinations it then copies.
+  destinations it then copies. `except` is the hosts it leaves out of
+  that, host names as `MWTClient.Sandbox.HostRules.entry/1` writes them
+  (`example.com` and every name under it): another grant over the network
+  may cover them, on its own terms, so the Internet's grant can let
+  everything through but one host, which a grant of its own asks about
+  (`Network.excepted/2`).
 
   `host_rules` is what a network grant held before networks were resources
   of their own, 2026-11-24: as MWT starts, its Block and Ask entries go to
@@ -119,10 +127,6 @@ defmodule MWTClient.Sandbox.Grant do
   `keep_minutes`, for a minted token grant, is the longest a value it
   minted is kept before it is minted again, whatever the mint says of its
   expiry; nil keeps it as the mint says (`Values.minted/1`).
-
-  `ceiling` is whether it always asks (`ceiling/1`): `:ask`, every use
-  waits for you and is allowed once, no allowance or Auto-approve covering
-  one; `:allow`, allowances as you choose.
 
   `attributes` narrow a token grant beyond its hosts: by method, path,
   gRPC method, GraphQL operation, git direction, GitHub repository
@@ -159,10 +163,9 @@ defmodule MWTClient.Sandbox.Grant do
     purpose: "",
     state: :off,
     start: :off,
-    ceiling: :allow,
-    machine: false,
     params: [],
     confined: false,
+    pins: [],
     with: [],
     writes_dir: false,
     mint_per: :grant,
@@ -185,6 +188,7 @@ defmodule MWTClient.Sandbox.Grant do
     destinations: [],
     network: nil,
     scope: nil,
+    except: [],
     host_rules: [],
     allowances: [],
     aliases: [],
@@ -192,10 +196,11 @@ defmodule MWTClient.Sandbox.Grant do
     attributes: %{},
     covers_unread: true,
     app: nil,
+    adapter: nil,
     uses: 0
   ]
 
-  @type kind :: :token | :network | :command | :request | :mwt
+  @type kind :: :token | :network | :command | :request | :mwt | :agent_commands
   @type source :: :stored | {:minted, String.t()}
 
   @typedoc "Whether a grant gives what it covers (on) or has no say (off)."
@@ -203,9 +208,6 @@ defmodule MWTClient.Sandbox.Grant do
 
   @typedoc "The state a grant is put in when MWT starts; `:auto` is enabled and auto-approved."
   @type start :: :off | :on | :auto
-
-  @typedoc "The most automation a grant accepts: always asks, or allowances as you choose."
-  @type ceiling :: :ask | :allow
 
   @typedoc """
   Who proposed a grant, when an agent did: the agent's name, its thread
@@ -253,11 +255,11 @@ defmodule MWTClient.Sandbox.Grant do
           attributes: %{String.t() => [String.t()]},
           covers_unread: boolean(),
           app: %{app_id: String.t(), installation_id: String.t()} | nil,
+          adapter: atom() | nil,
           start: start(),
-          ceiling: ceiling(),
-          machine: boolean(),
           params: [Param.t()],
           confined: boolean(),
+          pins: [MWTClient.Sandbox.Pins.pin()],
           with: [String.t()],
           writes_dir: boolean(),
           mint_per: :grant | :host,
@@ -297,6 +299,7 @@ defmodule MWTClient.Sandbox.Grant do
           destinations: [String.t()],
           network: String.t() | nil,
           scope: [String.t()] | nil,
+          except: [String.t()],
           host_rules: [host_rule()],
           allowances: [Allowance.t()],
           uses: non_neg_integer()
@@ -304,7 +307,10 @@ defmodule MWTClient.Sandbox.Grant do
 
   @kinds [:token, :network, :command, :request, :mwt]
 
-  @doc "Every type a grant can have."
+  @doc """
+  Every type of grant a form can make. Commands agents write
+  (`:agent_commands`) is MWT's, built in, and made by none.
+  """
   @spec kinds() :: [kind()]
   def kinds, do: @kinds
 
@@ -397,19 +403,51 @@ defmodule MWTClient.Sandbox.Grant do
   def saved_command?(%__MODULE__{}), do: false
 
   @doc """
-  Whether a grant is an action: one fixed use of its resource, called by
-  id: a request action, or a saved command.
+  Whether a grant is an action, a *fixed call*: one fixed use of its
+  resource, called by id with values: a request MWT sends, or a saved
+  command. Any other grant gives *open use*: agents' own tools, in the VM,
+  their requests checked by MWT as they leave it.
   """
   @spec action?(t()) :: boolean()
   def action?(%__MODULE__{kind: kind}), do: kind in [:request, :command]
 
   @doc """
+  What kind of grant it is, by who builds what it lets through: `:open`,
+  the agent (a token or network grant: its own tools' requests; Commands
+  agents write: its own text); or `:fixed`, MWT, from the agent's values (a
+  request action, a saved command, its own tools). Where that runs is
+  another matter (`host_command?/1`): a command the agent writes is open
+  use, and runs on your machine. The screens say every grant's kind.
+
+      iex> MWTClient.Sandbox.Grant.kind_of(%MWTClient.Sandbox.Grant{id: "g", name: "G", kind: :request})
+      :fixed
+  """
+  @spec kind_of(t()) :: :open | :fixed
+  def kind_of(%__MODULE__{kind: kind}) when kind in [:token, :network, :agent_commands],
+    do: :open
+
+  def kind_of(%__MODULE__{}), do: :fixed
+
+  @doc """
+  Whether what a grant lets through is a command run on your machine, as
+  you: a saved command, or Commands agents write. The screens say so
+  wherever its script or command shows ("Runs on host"). Anything else is
+  a request through a network, or a call of MWT's tools.
+
+      iex> alias MWTClient.Sandbox.Grant
+      iex> {Grant.host_command?(%Grant{id: "c", name: "C", kind: :command}), Grant.host_command?(%Grant{id: "r", name: "R", kind: :request})}
+      {true, false}
+  """
+  @spec host_command?(t()) :: boolean()
+  def host_command?(%__MODULE__{kind: kind}), do: kind in [:command, :agent_commands]
+
+  @doc """
   The resource a grant mediates, which you can lock
   (`MWTClient.Sandbox.Resource`): the credential a token grant or a
-  request action is over, the network a network grant is over, your
-  machine for a saved command and MWT's tools for the projects' git, the
-  shared folders and the workspace, and MWT's tools for notes, diagrams
-  and flash cards.
+  request action is over, the network a network grant is over, host
+  commands for a saved command and Commands agents write, and MWT for its
+  own tools: notes, diagrams and flash cards, the projects' git, the
+  shared folders and the workspace, all MWT's own code.
   """
   @spec resource(t()) :: MWTClient.Sandbox.Resource.id()
   def resource(%__MODULE__{kind: kind} = grant) when kind in [:token, :request],
@@ -418,8 +456,7 @@ defmodule MWTClient.Sandbox.Grant do
   def resource(%__MODULE__{kind: :network} = grant),
     do: {:network, MWTClient.Sandbox.Network.id_of(grant)}
 
-  def resource(%__MODULE__{kind: :mwt, tools: tools}) when tools in [:read, :create, :change],
-    do: :mwt
+  def resource(%__MODULE__{kind: :mwt}), do: :mwt
 
   def resource(%__MODULE__{}), do: :machine
 
@@ -476,6 +513,7 @@ defmodule MWTClient.Sandbox.Grant do
   @spec how_made(t()) :: map()
   def how_made(%__MODULE__{} = grant),
     do: %{
+      adapter: grant.adapter,
       app: grant.app,
       source: grant.source,
       mint_per: grant.mint_per,
@@ -484,15 +522,26 @@ defmodule MWTClient.Sandbox.Grant do
     }
 
   @doc """
-  The states a grant can be put in when MWT starts. Enabled and
-  auto-approved (`:auto`) only where uses can be auto-approved: not one
-  that always asks. One to review only starts off.
+  The states a grant can be put in when MWT starts: off, on and asking,
+  or on and auto-approved. One to review only starts off.
   """
   @spec starts(t()) :: [start()]
   def starts(%__MODULE__{proposal: %{reviewed_at: nil}}), do: [:off]
+  def starts(%__MODULE__{kind: :agent_commands}), do: [:off, :on]
+  def starts(%__MODULE__{}), do: [:off, :on, :auto]
 
-  def starts(%__MODULE__{} = grant),
-    do: if(auto_approvable?(grant), do: [:off, :on, :auto], else: [:off, :on])
+  @doc """
+  Whether every use of a grant waits for you, whatever is set: Commands
+  agents write. A command the agent wrote can do anything you can, and
+  MWT sees nothing of it once it runs, so nothing lets one through
+  unasked: no start setting, no auto-approve, no allowance.
+
+      iex> alias MWTClient.Sandbox.Grant
+      iex> {Grant.always_asks?(Grant.agent_commands()), Grant.always_asks?(Grant.internet())}
+      {true, false}
+  """
+  @spec always_asks?(t()) :: boolean()
+  def always_asks?(%__MODULE__{kind: kind}), do: kind == :agent_commands
 
   @doc """
   How an agent calls an action, without the reason: its id, then each
@@ -500,7 +549,7 @@ defmodule MWTClient.Sandbox.Grant do
 
       iex> alias MWTClient.Sandbox.{Grant, Param}
       iex> Grant.signature(%Grant{id: "gh-repo-view", name: "gh repo view", kind: :command,
-      ...>   params: [%Param{name: "REPO_NAME", shape: :word, about: "the repository"}]})
+      ...>   params: [%Param{name: "REPO_NAME", about: "the repository", schema: %{}}]})
       "mwt call gh-repo-view REPO_NAME=…"
   """
   @spec signature(t()) :: String.t()
@@ -516,50 +565,12 @@ defmodule MWTClient.Sandbox.Grant do
   def former_command_ids, do: ["commands", "any-command"]
 
   @doc """
-  Whether its uses can be auto-approved: every use going through without
-  asking while it stays on. Every grant, unless its ceiling is `:ask`.
-  """
-  @spec auto_approvable?(t()) :: boolean()
-  def auto_approvable?(%__MODULE__{} = grant), do: ceiling(grant) != :ask
-
-  @ceilings [:ask, :allow]
-
-  @doc """
-  The ceilings a grant can take. The Internet's never always asks: only
-  `:allow` (it can ask each time). Every other grant and action may always
-  ask, or not.
-
-      iex> alias MWTClient.Sandbox.Grant
-      iex> Grant.ceilings(Grant.internet())
-      [:allow]
-  """
-  @spec ceilings(t()) :: [ceiling()]
-  def ceilings(%__MODULE__{internet: true}), do: [:allow]
-  def ceilings(%__MODULE__{}), do: @ceilings
-
-  @doc """
-  The ceiling a grant has: the one it was given, or, when it can't take
-  that one, the one it can.
-
-      iex> alias MWTClient.Sandbox.Grant
-      iex> Grant.ceiling(%{Grant.internet() | ceiling: :ask})
-      :allow
-      iex> Grant.ceiling(%Grant{id: "t", name: "T", kind: :token})
-      :allow
-  """
-  @spec ceiling(t()) :: ceiling()
-  def ceiling(%__MODULE__{ceiling: wanted} = grant) do
-    takes = ceilings(grant)
-    if wanted in takes, do: wanted, else: List.last(takes)
-  end
-
-  @doc """
   Whether every use goes through without asking at `now`: it is on, and an
   allowance for every use covers it (`Auto-approve`).
   """
   @spec auto_approved?(t(), DateTime.t()) :: boolean()
   def auto_approved?(%__MODULE__{} = grant, now \\ DateTime.utc_now()) do
-    auto_approvable?(grant) and on?(grant, now) and
+    on?(grant, now) and
       Enum.any?(grant.allowances, &(&1.pattern == :all and not Allowance.ended?(&1, now)))
   end
 
@@ -665,6 +676,29 @@ defmodule MWTClient.Sandbox.Grant do
     end
   end
 
+  @doc """
+  Commands agents write, as MWT makes it: open use of host commands, built
+  in, on as MWT starts. An agent may ask to run a command it writes
+  (`mwt run`), and you approve every run (`always_asks?/1`). Off, it
+  can't ask.
+  """
+  @spec agent_commands() :: t()
+  def agent_commands,
+    do: %__MODULE__{
+      id: "agent-commands",
+      name: "Commands agents write",
+      kind: :agent_commands,
+      purpose:
+        "Lets agents ask to run a command they write on your machine, as you. " <>
+          "Every run waits for you, and none is handed a credential's value. Off, agents can't ask.",
+      start: :on,
+      state: :off
+    }
+
+  @doc "Whether a grant is Commands agents write, built in."
+  @spec agent_commands?(t()) :: boolean()
+  def agent_commands?(%__MODULE__{kind: kind}), do: kind == :agent_commands
+
   @internet_id "internet"
   @internet_purpose "Gives the VM every public address on the internet, but the hosts it blocks. Off, the VM reaches only the hosts other grants over the Internet list, and DNS answers only their names."
 
@@ -714,7 +748,7 @@ defmodule MWTClient.Sandbox.Grant do
   @doc "Whether a grant is built in: never removed, its words MWT's."
   @spec built_in?(t()) :: boolean()
   def built_in?(%__MODULE__{} = grant),
-    do: mwt_tools?(grant) or internet?(grant)
+    do: mwt_tools?(grant) or internet?(grant) or agent_commands?(grant)
 
   @doc "Where the VM finds a token grant's placeholder as a file."
   @spec token_file(t()) :: String.t()
@@ -794,23 +828,29 @@ defmodule MWTClient.Sandbox.Grant do
       # Disabled, from 2026-11-24 until the same day, is off now: off has
       # no say, as it had before.
       state: if(fields[:state] == :on, do: :on, else: :off),
-      # "YOLO may not open it" (`:auto`) is gone: such a grant now always
-      # asks, the nearer of the two left. YOLO itself is gone (2026-11-18):
-      # what it could open now just takes allowances (`:allow`).
-      ceiling:
-        case fields[:ceiling] do
-          :auto -> :ask
-          :ask -> :ask
-          _yolo_or_none -> :allow
-        end,
       proposal: upgrade_proposal(fields[:proposal]),
-      machine: fields[:machine] == true
+      # Hosts as entries (`HostRules.entry/1`), each checked again: one
+      # from a file that isn't one is dropped.
+      except:
+        for(
+          text <- List.wrap(fields[:except]),
+          is_binary(text),
+          {:ok, entry} <- [MWTClient.Sandbox.HostRules.entry(text)],
+          uniq: true,
+          do: entry
+        )
     }
 
     # Gone: `rest` and `askable` (disabled and a host's block, 2026-11-24),
-    # and `reach` (a token grant only its actions used, which
-    # `MWTClient.Sandbox.Server.State` drops, its actions kept).
-    struct(__MODULE__, fields |> Map.drop([:rest, :askable, :reach]) |> Map.merge(upgraded))
+    # `reach` (a token grant only its actions used, which
+    # `MWTClient.Sandbox.Server.State` drops, its actions kept), and
+    # `ceiling` (*Never allow without asking*, 2026-11-25): a grant that
+    # always asked keeps asking, as Ask does, until you let a card allow
+    # more; nothing it had goes through unasked.
+    struct(
+      __MODULE__,
+      fields |> Map.drop([:rest, :askable, :reach, :ceiling]) |> Map.merge(upgraded)
+    )
   end
 
   @doc """
@@ -818,13 +858,14 @@ defmodule MWTClient.Sandbox.Grant do
   changed between them on 2026-11-24, when each grant came to mediate one
   resource:
 
-    * Ask to run commands goes: a command an agent writes needs no grant.
+    * Ask to run commands goes: Commands agents write, built in, takes its
+      place (`agent_commands/0`).
     * A request action names its credential, its token grant's, rather
       than the token grant it was under (`parent`); a token grant only its
       actions used (`reach: :actions`) gave the VM nothing and goes.
     * A saved command runs with credentials (`with`), named by
-      credential; the token grants it ran with allow your machine
-      (`machine`).
+      credential, which it covers itself: no token grant over them needs
+      to allow your machine (`machine`, which goes).
     * A grant over part of a network that blocked its hosts (off, agents
       not allowed to ask) or always asked becomes a Block entry of a host
       list on the grant over all of that network, which
@@ -839,15 +880,14 @@ defmodule MWTClient.Sandbox.Grant do
       ...>   %{id: "gcp", name: "GCP", kind: :token, credential: "google"},
       ...>   %{id: "bq", name: "bq", kind: :command, script: "bq ls", with: ["gcp"]}
       ...> ]
-      iex> Enum.map(Grant.upgrade_all(saved), &{&1.id, &1.credential, &1.machine, &1.with})
-      [{"gh-view", "gh", false, []}, {"gcp", "google", true, []}, {"bq", nil, false, ["google"]}]
+      iex> Enum.map(Grant.upgrade_all(saved), &{&1.id, &1.credential, &1.with})
+      [{"gh-view", "gh", []}, {"gcp", "google", []}, {"bq", nil, ["google"]}]
   """
   @spec upgrade_all([map()]) :: [t()]
   def upgrade_all(saved) when is_list(saved) do
     saved = Enum.map(saved, &Map.delete(&1, :__struct__))
     tokens = for %{kind: kind} = g <- saved, kind in [:token, :http], into: %{}, do: {g[:id], g}
     credential_of = fn token -> token[:credential] || token[:id] end
-    runs_with = MapSet.new(for %{kind: :command} = g <- saved, id <- g[:with] || [], do: id)
     blocks = part_blocks(saved)
 
     saved
@@ -876,12 +916,6 @@ defmodule MWTClient.Sandbox.Grant do
             Map.update(g, :with, [], fn ids ->
               Enum.map(ids || [], &if(t = tokens[&1], do: credential_of.(t), else: &1))
             end)
-
-          # Saved before a token grant could allow your machine, so
-          # before `machine` was a field: one saved since keeps its own.
-          g[:kind] in [:token, :http] and not Map.has_key?(g, :machine) and
-              MapSet.member?(runs_with, g[:id]) ->
-            Map.put(g, :machine, true)
 
           g[:kind] == :network ->
             Map.update(g, :host_rules, Map.get(blocks.wholes, g[:id], []), fn rules ->
@@ -1023,8 +1057,6 @@ defmodule MWTClient.Sandbox.Grant do
       {"For", grant.purpose},
       {"State", state_words(grant)},
       {"When MWT starts", start_words(grant.start)},
-      {"Always ask me", grant.ceiling == :ask && "on"},
-      {"On your machine", grant.machine && "its value, in the saved commands that run with it"},
       {"Hosts", {:list, grant.hosts}},
       {"Destinations", {:list, grant.destinations}},
       {"Host list",

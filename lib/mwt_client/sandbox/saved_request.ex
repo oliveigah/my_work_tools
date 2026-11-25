@@ -437,7 +437,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
   """
   @spec build(Grant.t(), [{String.t(), String.t()}]) :: call()
   def build(%Grant{} = grant, values) do
-    shapes = Map.new(grant.params, &{&1.name, &1.shape})
+    schemas = Map.new(grant.params, &{&1.name, &1.schema})
     given = Map.new(values)
     {start, path_and_query} = split_url(grant.url)
 
@@ -447,7 +447,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
         [path] -> {path, nil}
       end
 
-    path = fill(path, given, fn name, value -> encode_path(value, shapes[name]) end)
+    path = fill(path, given, fn name, value -> encode_path(value, schemas[name]) end)
     query = query && fill(query, given, fn _name, value -> encode(value) end)
     url = start <> path <> if(query, do: "?" <> query, else: "")
 
@@ -456,7 +456,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
       url: url,
       host: host(grant),
       headers: grant.headers,
-      body: body(grant.body, given, shapes)
+      body: body(grant.body, given, schemas)
     }
   end
 
@@ -472,41 +472,50 @@ defmodule MWTClient.Sandbox.SavedRequest do
     end)
   end
 
-  # A word may hold `/`, so `owner/name` stays two segments; its shape
-  # rules out `..` and a leading `/`, so it only goes deeper.
-  defp encode_path(value, :word), do: URI.encode(value, &(URI.char_unreserved?(&1) or &1 == ?/))
-  defp encode_path(value, _shape), do: encode(value)
+  # A word may hold `/`, so `owner/name` stays two segments; its format
+  # rules out `..` and a leading `/`, so it only goes deeper. Any other
+  # value is one segment, its `/` encoded.
+  defp encode_path(value, %{"format" => "word"}),
+    do: URI.encode(value, &(URI.char_unreserved?(&1) or &1 == ?/))
+
+  defp encode_path(value, _schema), do: encode(value)
 
   defp encode(value), do: URI.encode(value, &URI.char_unreserved?/1)
 
-  defp body(nil, _given, _shapes), do: nil
-  defp body("", _given, _shapes), do: nil
+  defp body(nil, _given, _schemas), do: nil
+  defp body("", _given, _schemas), do: nil
 
-  defp body(template, given, shapes) do
+  defp body(template, given, schemas) do
     case String.trim(template) do
       "" -> nil
-      text -> text |> Jason.decode!() |> put_values(given, shapes) |> Jason.encode!()
+      text -> text |> Jason.decode!() |> put_values(given, schemas) |> Jason.encode!()
     end
   end
 
-  defp put_values(%{} = map, given, shapes),
-    do: Map.new(map, fn {key, value} -> {key, put_values(value, given, shapes)} end)
+  defp put_values(%{} = map, given, schemas),
+    do: Map.new(map, fn {key, value} -> {key, put_values(value, given, schemas)} end)
 
-  defp put_values(list, given, shapes) when is_list(list),
-    do: Enum.map(list, &put_values(&1, given, shapes))
+  defp put_values(list, given, schemas) when is_list(list),
+    do: Enum.map(list, &put_values(&1, given, schemas))
 
-  defp put_values(text, given, shapes) when is_binary(text) do
+  # A parameter alone goes in as its schema types it: a number, true or
+  # false, or a string.
+  defp put_values(text, given, schemas) when is_binary(text) do
     case whole(text) do
       nil ->
         text
 
       name ->
         value = Map.fetch!(given, name)
-        if shapes[name] == :number, do: String.to_integer(value), else: value
+
+        case MWTClient.Sandbox.ParamSchema.typed(schemas[name] || %{}, value) do
+          {:ok, typed} -> typed
+          :error -> value
+        end
     end
   end
 
-  defp put_values(other, _given, _shapes), do: other
+  defp put_values(other, _given, _schemas), do: other
 
   @doc """
   An agent's call, checked and described for its approval card: the shape
@@ -619,22 +628,7 @@ defmodule MWTClient.Sandbox.SavedRequest do
 
   def send(call, %{} = values, grant_name, timeout) do
     jwts = Map.get(values, :jwts, %{})
-
-    headers =
-      Enum.map(call.headers, fn {name, header} ->
-        filled =
-          header
-          |> replace_mark(@token, values[:token])
-          |> replace_mark(@id_token, values[:id_token])
-          |> then(
-            &Regex.replace(@signed_jwt, &1, fn
-              _all, "" -> jwts[:one] || ""
-              _all, account -> jwts[String.downcase(account)] || ""
-            end)
-          )
-
-        {name, filled}
-      end)
+    headers = fill(call.headers, values)
 
     # Each real value with the words it is written out as, longest first,
     # so a value that holds another is written out whole.
@@ -707,6 +701,108 @@ defmodule MWTClient.Sandbox.SavedRequest do
         message = error |> Exception.message() |> written_out(secrets)
         %{exit: nil, status: nil, output: "", bytes: 0, cut: 0, timed_out: false, error: message}
     end
+  end
+
+  @doc """
+  The request a call builds to send through MWT's proxy
+  (`MWTClient.Sandbox.Egress.FixedCall`), and the swaps the proxy makes
+  in it on the way out. Each value of `values` (as `send/4` takes them)
+  stands in the request as a placeholder made for this call alone, in the
+  headers its mark is in; each swap says that placeholder, the real
+  value, the name it is logged as, and those headers. A real value is
+  never in the request itself.
+  """
+  @spec build(call(), map(), String.t()) :: {map(), [map()]}
+  def build(call, %{} = values, grant_name) do
+    jwts = Map.get(values, :jwts, %{})
+
+    marked = fn mark ->
+      for {name, header} <- call.headers, mark?(header, mark), do: String.downcase(name)
+    end
+
+    wanted =
+      [
+        {:token, @token, values[:token], grant_name},
+        {:id_token, @id_token, values[:id_token], "#{grant_name}'s ID token"}
+      ] ++
+        Enum.map(jwts, fn {account, jwt} ->
+          mark = if account == :one, do: {:jwt, ""}, else: {:jwt, account}
+
+          label =
+            if account == :one, do: "#{grant_name}'s JWT", else: "the JWT signed as #{account}"
+
+          {account, mark, jwt, label}
+        end)
+
+    swaps =
+      for {key, mark, value, label} <- wanted,
+          is_binary(value),
+          value != "",
+          (within = marked.(mark)) != [] do
+        %{
+          key: key,
+          label: label,
+          placeholder:
+            "mwt-fixed-" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false),
+          value: value,
+          within: within
+        }
+      end
+
+    placeholder = fn key -> Enum.find_value(swaps, &(&1.key == key && &1.placeholder)) end
+
+    stand_ins = %{
+      token: placeholder.(:token),
+      id_token: placeholder.(:id_token),
+      jwts: for({account, _jwt} <- jwts, into: %{}, do: {account, placeholder.(account)})
+    }
+
+    headers = fill(call.headers, stand_ins)
+    named? = fn name -> Enum.any?(headers, &(String.downcase(elem(&1, 0)) == name)) end
+
+    headers =
+      if call.body && not named?.("content-type"),
+        do: headers ++ [{"content-type", "application/json"}],
+        else: headers
+
+    # Services such as GitHub's API refuse a request that names no client:
+    # one the template doesn't set says MWT sent it.
+    headers = if named?.("user-agent"), do: headers, else: headers ++ [{"user-agent", "MWT"}]
+
+    {%{method: call.method, url: call.url, headers: headers, body: call.body},
+     Enum.map(swaps, &Map.delete(&1, :key))}
+  end
+
+  defp mark?(header, {:jwt, ""}),
+    do: Enum.any?(Regex.scan(@signed_jwt, header), &(Enum.at(&1, 1) in [nil, ""]))
+
+  defp mark?(header, {:jwt, account}),
+    do:
+      Enum.any?(
+        Regex.scan(@signed_jwt, header),
+        &(String.downcase(Enum.at(&1, 1) || "") == String.downcase(to_string(account)))
+      )
+
+  defp mark?(header, mark), do: String.contains?(header, mark)
+
+  # The headers with each value in place of its mark.
+  defp fill(headers, values) do
+    jwts = Map.get(values, :jwts, %{})
+
+    Enum.map(headers, fn {name, header} ->
+      filled =
+        header
+        |> replace_mark(@token, values[:token])
+        |> replace_mark(@id_token, values[:id_token])
+        |> then(
+          &Regex.replace(@signed_jwt, &1, fn
+            _all, "" -> jwts[:one] || ""
+            _all, account -> jwts[String.downcase(account)] || ""
+          end)
+        )
+
+      {name, filled}
+    end)
   end
 
   defp replace_mark(header, _mark, nil), do: header

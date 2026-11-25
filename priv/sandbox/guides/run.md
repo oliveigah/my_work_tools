@@ -7,9 +7,12 @@ needs the user's SSH keys, a kubeconfig, a signing key, their VPN, or tools
 only their machine has. Use a grant whenever one fits: through it the
 user sees what each request does, while a command shows only its text.
 
-It needs no grant: you may always ask. You write the text, as below, and
-the user reads and approves every run, on a card; none runs unattended.
-While the user's machine is locked, an ask is refused at once.
+It goes under Commands agents write (`agent-commands`), built in: while
+it is on you may ask (off: `mwt request agent-commands`). You write the
+text, as below, and the user reads and approves every run, on a card;
+none runs unattended, and none is handed a credential's value: a job
+that needs one is a saved command. While host commands are locked, an ask
+is refused at once.
 
 So keep the command the smallest that gets what you need:
 
@@ -40,8 +43,9 @@ So keep the command the smallest that gets what you need:
    once it ends, MWT syncs that folder's copy, so what it wrote there
    reaches yours; `mwt sync PATH` waits for that. Anything else runs in the
    user's home folder.
-4. Prefer text the user can read to a script file: `mwt run -- ./x.sh` runs
-   whatever the file holds when they click, and the card says so.
+4. Prefer text the user can read to a script file. `mwt run -- ./x.sh`
+   puts the file on the card, as a warning, and pins it: changed before
+   it runs, nothing runs. One you wrote in `from-vm` is flagged loudest.
 5. When you expect to run the same again, don't run it ad hoc: propose it
    as a saved command (`mwt help propose`), then call it. The user can also
    save a run as an action from its card; `mwt run` then says its id:

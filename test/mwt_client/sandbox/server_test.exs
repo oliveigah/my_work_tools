@@ -77,12 +77,14 @@ defmodule MWTClient.Sandbox.ServerTest do
 
   test "a new identity starts empty, with a CA and a default Containerfile", %{username: username} do
     snapshot = Sandbox.snapshot(username)
-    # Nothing but the Internet's grant, built in, always on: a command the
-    # agent writes needs none.
+    # Nothing but the Internet's grant, built in, always on, and Commands
+    # agents write, on and asking.
     {mwt_tools, grants} = Enum.split_with(snapshot.grants, &(&1.kind == :mwt))
 
-    assert [%{id: "internet", kind: :network, internet: true, state: :on, start: :auto}] =
-             grants
+    assert [
+             %{id: "internet", kind: :network, internet: true, state: :on, start: :auto},
+             %{id: "agent-commands", kind: :agent_commands, state: :on, start: :on}
+           ] = grants
 
     # MWT's own tools, built in: reading and adding always on, changing on
     # and asking; the projects' Git (fetching, fetching remotes on this
@@ -1234,15 +1236,6 @@ defmodule MWTClient.Sandbox.ServerTest do
              authorize(username, request(grant))
   end
 
-  test "a grant's ceiling survives locking", %{username: username, key: key} do
-    grant = github(username)
-    {:ok, _} = Sandbox.set_ceiling(username, grant.id, :ask)
-    :ok = Store.close(username)
-    :ok = Store.open(username, key)
-
-    assert %{ceiling: :ask} = Enum.find(Sandbox.snapshot(username).grants, &(&1.id == grant.id))
-  end
-
   describe "when MWT starts" do
     alias MWTClient.Sandbox.Grant
 
@@ -1293,17 +1286,15 @@ defmodule MWTClient.Sandbox.ServerTest do
       assert %{state: :off} = token(username)
     end
 
-    test "always on is only for what can be auto-approved", %{username: username} do
+    test "a grant starts off, on and asking, or on and auto-approved", %{username: username} do
       grant = github(username)
-      {:ok, asking} = Sandbox.set_ceiling(username, grant.id, :ask)
-      assert Grant.starts(asking) == [:off, :on]
-      assert {:error, :every_run_asks} = Sandbox.set_start(username, grant.id, :auto)
-      # It can start on: every use then asks.
+      assert Grant.starts(grant) == [:off, :on, :auto]
+      # On: every use then asks.
       assert {:ok, %{state: :on, allowances: []}} = Sandbox.set_start(username, grant.id, :on)
       assert {:error, :not_found} = Sandbox.set_start(username, "nope", :on)
     end
 
-    test "a grant over a host that always asks, and a token grant your machine may not use, stay as they are",
+    test "a grant over a host, and a token grant a saved command runs with, stay as they are",
          %{username: username, key: key} do
       {:ok, host} =
         Sandbox.create_grant(username, %{
@@ -1313,8 +1304,6 @@ defmodule MWTClient.Sandbox.ServerTest do
           "purpose" => "One host, asked about",
           "destinations" => "example.com"
         })
-
-      {:ok, _} = Sandbox.set_ceiling(username, host.id, :ask)
 
       {:ok, stripe} =
         Sandbox.create_grant(username, %{
@@ -1341,11 +1330,15 @@ defmodule MWTClient.Sandbox.ServerTest do
 
       snapshot = Sandbox.snapshot(username)
 
-      assert %{ceiling: :ask, scope: ["example.com"]} =
+      assert %{scope: ["example.com"]} =
                Enum.find(snapshot.grants, &(&1.id == host.id))
 
       assert %{limits: %{rules: []}} = Enum.find(snapshot.networks, &(&1.id == "internet"))
-      assert %{machine: false} = Enum.find(snapshot.grants, &(&1.id == stripe.id))
+      # The saved command covers Stripe's key: the token grant is as it was.
+      assert %{kind: :token, credential: credential} =
+               Enum.find(snapshot.grants, &(&1.id == stripe.id))
+
+      assert credential == stripe.credential
     end
 
     test "a setting that turns it on answers an agent waiting for it; off answers nobody", %{
@@ -1417,15 +1410,34 @@ defmodule MWTClient.Sandbox.ServerTest do
     alias MWTClient.Sandbox.Grant
     alias MWTClient.Sandbox.Server.Grants
 
-    test "are MWT's tools and the Internet's, none for the commands agents write" do
+    test "are MWT's tools, the Internet's and Commands agents write" do
       token = %Grant{id: "gh", name: "GitHub", kind: :token}
       assert [^token | others] = Grants.with_built_in([token])
-      {mwt_tools, [internet]} = Enum.split_with(others, &Grant.mwt_tools?/1)
+      {mwt_tools, [internet, written]} = Enum.split_with(others, &Grant.mwt_tools?/1)
 
       assert Enum.map(mwt_tools, & &1.id) ==
                ~w(mwt-read mwt-create mwt-change git-fetch git-fetch-remote git-handoff share-sync workspace)
 
       assert %Grant{id: "internet", internet: true, state: :on} = internet
+
+      # On, asking: it can be turned off, never made to let a run through
+      # unasked.
+      assert %Grant{id: "agent-commands", kind: :agent_commands, state: :on, allowances: []} =
+               written
+
+      assert Grant.starts(written) == [:off, :on]
+      assert Grant.always_asks?(written)
+    end
+
+    test "Commands agents write takes no allowance, however asked", %{username: username} do
+      {:ok, _} = Sandbox.set_start(username, "agent-commands", :on)
+      assert {:error, :always_asks} = Sandbox.set_start(username, "agent-commands", :auto)
+      {:ok, _} = Sandbox.turn_on(username, "agent-commands", :until_off, :all)
+      {:ok, _} = Sandbox.set_mode(username, "agent-commands", :all)
+
+      written = Enum.find(Sandbox.snapshot(username).grants, &(&1.id == "agent-commands"))
+      assert %Grant{state: :on, allowances: []} = written
+      refute Grant.auto_approved?(written)
     end
 
     test "a running server brings its state up to date when its code changes", %{

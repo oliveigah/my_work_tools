@@ -123,7 +123,7 @@ defmodule MWTClient.Sandbox.EventDetailsTest do
         }
       }
 
-      details = Approval.details(approval, "you ran it")
+      details = Approval.details(approval)
       titles = Enum.map(details, & &1.title)
 
       assert titles == [
@@ -138,7 +138,8 @@ defmodule MWTClient.Sandbox.EventDetailsTest do
       assert {"Script", {:code, "kubectl get pods -n prod"}} in rows.("Command")
       assert {"Exit", {:text, "0"}} in rows.("How it ran")
       assert {"Output", {:text, "412 bytes"}} in rows.("How it ran")
-      assert {"Decided", {:text, "you ran it"}} in rows.("The ask")
+      # How it was decided is the audit's (`Decision`), not the details'.
+      refute Enum.any?(rows.("The ask"), &match?({"Decided", _}, &1))
 
       assert %{by: :agent, rows: agent} =
                Enum.find(details, &(&1.title == "In the agent's words"))
@@ -158,7 +159,7 @@ defmodule MWTClient.Sandbox.EventDetailsTest do
         proposal: %{kind: :command, parent_name: "Ask to run commands", updated: false}
       }
 
-      assert Enum.any?(Approval.details(approval, "declined"), &(&1.title == "Action proposed"))
+      assert Enum.any?(Approval.details(approval), &(&1.title == "Action proposed"))
     end
 
     test "a grant: as it is, never its value; an edit, before and after" do
@@ -177,12 +178,11 @@ defmodule MWTClient.Sandbox.EventDetailsTest do
       assert {"Hosts", {:list, ["api.github.com"]}} in rows
       assert {"State", {:text, "on, until turned off"}} in rows
 
-      edited = %{grant | hosts: ["api.github.com", "uploads.github.com"], ceiling: :ask}
+      edited = %{grant | hosts: ["api.github.com", "uploads.github.com"]}
 
       assert [%{title: "What changed", rows: changed}] = Grant.changes(grant, edited)
 
       assert {"Hosts", {:change, "api.github.com", "api.github.com, uploads.github.com"}} in changed
-      assert {"Always ask me", {:change, nil, "on"}} in changed
       assert Grant.changes(grant, grant) == []
     end
 

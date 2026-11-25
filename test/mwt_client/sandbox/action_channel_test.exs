@@ -33,7 +33,12 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       grant = action(context)
 
       assert Grant.resource(grant) == :machine and Grant.action?(grant)
-      assert [%{name: "WORD", shape: :word}, %{name: "TIMES", shape: :number}] = grant.params
+
+      assert [
+               %{name: "WORD", schema: %{"format" => "word"}},
+               %{name: "TIMES", schema: %{"type" => "integer"}}
+             ] = grant.params
+
       assert grant.state == :off
 
       {:ok, _} = Sandbox.turn_on(context.username, grant.id, 60, :ask)
@@ -57,7 +62,7 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       assert {"said: feature/login x3\n", 0} = Task.await(asking)
     end
 
-    test "a call is checked before it waits: every value given, known, and of its shape",
+    test "a call is checked before it waits: every value given, known, over MWT's floor and of its schema",
          context do
       grant = action(context)
       {:ok, _} = Sandbox.turn_on(context.username, grant.id, 60, :all)
@@ -65,13 +70,13 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       for {args, says} <- [
             {["WORD=hello"], "TIMES is missing"},
             {["WORD=hello", "TIMES=3", "EXTRA=1"], "It has no parameter EXTRA"},
-            {["WORD=hello", "TIMES=three"], "TIMES isn't of its shape"},
-            {["WORD=hello world", "TIMES=3"], "WORD isn't of its shape"},
-            {["WORD=--help", "TIMES=3"], "WORD isn't of its shape"},
-            {["WORD=../../etc/passwd", "TIMES=3"], "WORD isn't of its shape"},
-            {["WORD=/etc/passwd", "TIMES=3"], "WORD isn't of its shape"},
-            {["WORD=$(id)", "TIMES=3"], "WORD isn't of its shape"},
-            {["WORD=a;id", "TIMES=3"], "WORD isn't of its shape"}
+            {["WORD=hello", "TIMES=three"], "TIMES isn't of its type"},
+            {["WORD=hello world", "TIMES=3"], "WORD doesn't keep to its schema"},
+            {["WORD=--help", "TIMES=3"], "WORD can't be that: it starts with -"},
+            {["WORD=../../etc/passwd", "TIMES=3"], "WORD can't be that: it goes up a folder"},
+            {["WORD=/etc/passwd", "TIMES=3"], "WORD doesn't keep to its schema"},
+            {["WORD=$(id)", "TIMES=3"], "WORD doesn't keep to its schema"},
+            {["WORD=a;id", "TIMES=3"], "WORD doesn't keep to its schema"}
           ] do
         assert {output, 122} = mwt(context, ["call", "say"] ++ args ++ ["--reason", "r"])
         assert output =~ says, inspect(args)
@@ -236,7 +241,10 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
     end
 
     # Answers as the service would, and tells the test what it got.
-    defp service(context, status \\ 200) do
+    # The service: it answers with what it got, and with the token itself
+    # when asked to (`echo: true`), as a service that echoes what it was
+    # sent would.
+    defp service(context, status \\ 200, echo \\ false) do
       test = self()
 
       Req.Test.stub(SavedRequest, fn conn ->
@@ -253,7 +261,10 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
 
         conn
         |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.send_resp(status, ~s({"number": 7, "echo": "#{@value}"}))
+        |> Plug.Conn.send_resp(
+          status,
+          if(echo, do: ~s({"number": 7, "echo": "#{@value}"}), else: ~s({"number": 7}))
+        )
       end)
 
       # The request goes out from a task of the identity's server.
@@ -290,16 +301,37 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       assert_received {:sent, "GET", "/repos/oliveigah/klife/pulls/7", "", ["Bearer " <> @value],
                        ""}
 
-      # The answer comes back, the value written out of it.
+      # The answer comes back.
       assert output =~ "HTTP 200 from api.github.com"
-      assert output =~ ~s({"number": 7, "echo": "[GitHub's token]"})
-      refute output =~ @value
+      assert output =~ ~s({"number": 7})
 
+      # A call's lines are its own, among the credentials' uses.
       summaries =
-        Enum.map(Sandbox.events(context.username, %{group: "commands"}), & &1.summary)
+        Enum.map(Sandbox.events(context.username, %{group: "credentials"}), & &1.summary)
 
       assert Enum.any?(summaries, &(&1 =~ "HTTP 200"))
       refute Enum.any?(summaries, &(&1 =~ @value))
+
+      # It went through MWT's proxy, as the VM's own requests do: its line
+      # in the log is labelled as the fixed call's.
+      assert Enum.any?(
+               Sandbox.events(context.username, %{limit: 50}),
+               &(&1.summary =~ "Fixed call · pr view" and &1.grant_id == sub.id)
+             )
+    end
+
+    test "an answer that echoes the token is cut, as the VM's own requests' are", context do
+      github(context)
+      sub = pr_view(context)
+      {:ok, _} = Sandbox.set_start(context.username, sub.id, :auto)
+      service(context, 200, true)
+
+      assert {output, code} =
+               mwt(context, ["call", "pr-view", "REPO=o/r", "PR=7", "--reason", "r"])
+
+      assert code != 0
+      assert output =~ "MWT cut the answer: it held GitHub's real value"
+      refute output =~ @value
     end
 
     test "sends the ID token its credential's mint printed, where its headers say", context do
@@ -337,7 +369,7 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
 
       Req.Test.stub(SavedRequest, fn conn ->
         send(test, {:assertion, Plug.Conn.get_req_header(conn, "x-user-assertion")})
-        Plug.Conn.send_resp(conn, 200, "idtok-real-0123456789")
+        Plug.Conn.send_resp(conn, 200, "listed")
       end)
 
       :ok = Req.Test.allow(SavedRequest, self(), Store.whereis(Server, context.username))
@@ -348,7 +380,7 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       :ok = Sandbox.decide(context.username, approval.id, {:run, :send})
       assert {output, 0} = Task.await(asking, 10_000)
       assert_received {:assertion, ["idtok-real-0123456789"]}
-      assert output =~ "[PM's ID token]"
+      assert output =~ "listed"
       refute output =~ "idtok-real"
     end
 
@@ -401,32 +433,54 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       assert output =~ "PRIVATE KEY"
     end
 
-    test "goes by the most permissive of itself and the token grants listing its host, while its network gives the host",
+    test "goes by itself for its credential, and by its host's network as the agent's own request would",
          context do
       grant = github(context)
       sub = pr_view(context)
       service(context)
       call = ["call", "pr-view", "REPO=o/r", "PR=3", "--reason", "r"]
 
-      # The action off, a token grant over its credential listing the host
-      # gives the call.
+      # The action off, a token grant over its credential auto-approving
+      # gives nothing: open use of a credential is never a fixed call's.
       {:ok, _} = Sandbox.turn_on(context.username, grant.id, 60, :all)
-      assert {_output, 0} = mwt(context, call, stderr: false)
-      assert_received {:sent, "GET", "/repos/o/r/pulls/3", "", ["Bearer " <> @value], ""}
+      assert {output, code} = mwt(context, call)
+      assert code in [121, 122]
+      assert output =~ "mwt request pr-view"
+      refute_received {:sent, _, _, _, _, _}
 
-      # The token grant asks, the action auto-approves: the most permissive
-      # counts, and it goes unasked.
-      {:ok, _} = Sandbox.set_mode(context.username, grant.id, :ask)
+      # The action auto-approving, the Internet's grant on: it goes unasked.
       {:ok, _} = Sandbox.set_start(context.username, sub.id, :auto)
       assert {_output, 0} = mwt(context, call, stderr: false)
       assert Sandbox.snapshot(context.username).waiting == []
-      assert_received {:sent, "GET", "/repos/o/r/pulls/3", "", _, ""}
+      assert_received {:sent, "GET", "/repos/o/r/pulls/3", "", ["Bearer " <> @value], ""}
 
-      # With the Internet off, nothing gives api.github.com: refused, unsent.
+      # With the Internet's grant off, the agent couldn't send it, and
+      # nor can the call: refused, unsent, naming the grant to ask for.
       {:ok, _} = Sandbox.turn_off(context.username, "internet")
       assert {output, code} = mwt(context, call)
       assert code in [121, 122]
       assert output =~ "mwt request internet"
+      refute_received {:sent, _, _, _, _, _}
+
+      # A grant over just its host lets it out again, as it would the
+      # agent's own request.
+      {:ok, api} =
+        Sandbox.create_grant(context.username, %{
+          "kind" => "network",
+          "network" => "internet",
+          "name" => "GitHub's API",
+          "purpose" => "The API host",
+          "destinations" => "api.github.com"
+        })
+
+      {:ok, _} = Sandbox.turn_on(context.username, api.id, 60, :all)
+      assert {_output, 0} = mwt(context, call, stderr: false)
+      assert_received {:sent, "GET", "/repos/o/r/pulls/3", "", _, ""}
+
+      # The Internet locked, refused, unsent.
+      :ok = Sandbox.lock(context.username, {:network, "internet"})
+      assert {_output, code} = mwt(context, call)
+      assert code in [121, 122]
       refute_received {:sent, _, _, _, _, _}
     end
 
@@ -491,7 +545,7 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
                        _, _}
 
       assert {output, 122} = mwt(context, ["call", "search", "Q=-x", "--reason", "r"])
-      assert output =~ "Q isn't of its shape"
+      assert output =~ "Q can't be that: it starts with -"
       refute_received {:sent, _, _, _, _, _}
     end
 
@@ -613,7 +667,7 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
         end)
 
       ask = waiting(context.username, &(&1.kind == :activation))
-      assert %{kind: :request, parent_name: "github"} = ask.proposal
+      assert %{kind: :request, parent_name: "GitHub"} = ask.proposal
 
       sub = Enum.find(Sandbox.snapshot(context.username).grants, &(&1.id == ask.grant_id))
       assert %Grant{kind: :request, method: "GET", credential: "github"} = sub
@@ -691,7 +745,8 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       assert {:error, :not_found} = Sandbox.update_grant(context.username, "nope", %{})
     end
 
-    test "a token grant keeps its placeholder and value", context do
+    test "a token grant keeps its placeholder and value; its credential's fields stay the credential's",
+         context do
       {:ok, grant} =
         Sandbox.create_grant(context.username, %{
           "kind" => "token",
@@ -713,7 +768,8 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
 
       assert edited.id == grant.id and edited.placeholder == grant.placeholder
       assert edited.hosts == ["api.example.com", "uploads.example.com"]
-      assert edited.env == ["API_TOKEN", "EXAMPLE_TOKEN"]
+      # How tools find it is its credential's, edited on its own.
+      assert edited.env == ["API_TOKEN"]
       assert Sandbox.snapshot(context.username).values[grant.id] == true
     end
   end

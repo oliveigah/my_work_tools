@@ -103,57 +103,71 @@ mwt - ask MWT, the user's control panel, for access
       one first. The user approves every call, unless its line says it runs
       without asking; ask for one that is off with mwt request ID.
 
-  Proposing a grant: mwt propose saves what you propose at once in the
-  user's grants, off, tagged as proposed by you and to review. Nothing
-  turns it on until they read it on its page and accept it, which answers
-  you as mwt request does (exit 0 once on; 2 while it waits, then mwt wait
-  ID; 3 if they decline it, which removes it). Proposing again under the
-  same --name, before they review it, changes it. It never holds a value,
-  a check, an approval mode or a start setting: those are the user's.
-  Propose one when no grant fits and you know what the work needs; design
-  it for the person approving it: the narrowest access that does the job,
-  a name that says what it is, --for in words for any time it is used.
+  Proposing: mwt propose saves what you propose at once in the user's
+  MWT, tagged as proposed by you and to review, as they add things: a
+  resource (a credential, a network) first, then grants over it. Nothing
+  is usable until they read it on its page and accept it, which answers
+  you as mwt request does (exit 0 once accepted, a grant once on; 2 while
+  it waits, then mwt wait ID; 3 if they decline it, which removes it).
+  Proposing again under the same --name, before they review it, changes
+  it. Each kind starts from a preset of what it makes (--preset ID, its
+  blanks filled with --fill NAME=VALUE), its options set their fields,
+  and --set FIELD=VALUE sets any field its form has, over both (a field
+  you name wrong, or one of the user's, is refused with the list). It
+  never holds a value, an approval mode or a start setting: those are
+  the user's. Propose when nothing fits and you know what the work needs;
+  design it for the person approving it: the narrowest access that does
+  the job, a name that says what it is, --for in words for any time.
 
-  mwt propose token --name NAME --for "what it is for" --host HOST [--host ...] [--env VAR ...] [--file-env VAR ...] [--carrier HEADER ...] [--git] [--mint 'COMMAND' [--keep-minutes N]] [--sign-as ACCOUNT ...] [--login-file [--id-token-header HEADER]] [--metadata-project PROJECT [--metadata-account EMAIL]] [--preset ID] --reason "why you need it"
-      Example: mwt propose token --name "GitHub, read-only, klife" --for "gh and git over HTTPS, reading oliveigah/klife" --preset github --reason "..."
-      Propose a token grant: a credential MWT keeps and swaps into requests
-      to the hosts it lists (*.example.com for its subdomains); reaching
-      those hosts is a network grant's to give (the Internet's). In the
-      Authorization header unless --carrier names others. The VM gets a
-      placeholder in each --env variable, and the path of a file holding it
-      in each --file-env one, only under mwt exec. --git lets git's
-      credential helper answer for its hosts. --mint is a command the user's
-      machine runs to print a short-lived value (gcloud auth print-access-token),
-      instead of one they paste; --keep-minutes mints a new one after at most
-      N minutes, for a service that takes a token only while it is young.
-      --sign-as names a service account MWT may sign a JWT as for it: a
-      client of a service behind Identity-Aware Proxy that calls IAM
-      Credentials' signJwt gets a placeholder JWT, which goes only to the
-      host its aud names (a host the grant lists); the VM may then act as
-      that account there. --login-file gives it a Google login file
-      (GOOGLE_APPLICATION_CREDENTIALS, under mwt exec), for a tool that
-      refreshes a login itself, as one needing an ID token does: MWT answers
-      the refresh from the mint, which then prints {"value": ..., "id_token":
-      ..., "expires_in": ...} or gcloud config config-helper's JSON;
-      --id-token-header names the header the tool sends the ID token in,
-      when not the one the token goes in. --metadata-project runs a cloud metadata
-      server under mwt exec, for Google's client libraries that look for
-      default credentials instead of reading a token file: it serves the
-      placeholder as the access token of PROJECT, and --metadata-account
-      names the service account it reports (empty for the default one).
-      --preset starts from one of the user's presets (github,
-      google, hex, or theirs), whose fields you override. Say in --for what the token should be allowed to do: the user
-      creates it, as narrow as the service allows, and pastes it as they
-      review it.
+  mwt propose credential --name NAME --for "what it is" [--preset ID [--fill NAME=VALUE ...]] [--env VAR ...] [--file-env VAR ...] [--git] [--mint 'COMMAND' [--keep-minutes N]] [--login-file [--id-token-header HEADER]] [--metadata-project PROJECT [--metadata-account EMAIL]] [--set FIELD=VALUE ...] --reason "why you need it"
+      Example: mwt propose credential --name "GitHub App" --for "My App's installation token" --preset github-app --fill app_id=Iv23li... --fill installation_id=123 --fill key_command='pass show github/app-key' --reason "..."
+      Propose a credential: a secret MWT keeps and the VM never holds. The
+      VM gets a placeholder in each --env variable, and the path of a file
+      holding it in each --file-env one, only under mwt exec CREDENTIAL;
+      --git lets git's credential helper answer for the hosts its grants
+      list. --mint is a command the user's machine runs to print a
+      short-lived value (gcloud auth print-access-token) instead of one
+      they paste; --keep-minutes mints again after at most N minutes, for a
+      service that takes a token only while it is young. --login-file
+      gives a Google login file (GOOGLE_APPLICATION_CREDENTIALS) for a
+      tool that refreshes a login itself, the mint printing {"value",
+      "id_token", "expires_in"} or gcloud config config-helper's JSON;
+      --id-token-header names the header the tool sends the ID token in.
+      --metadata-project runs a cloud metadata server for Google's client
+      libraries, serving the placeholder as PROJECT's token, and
+      --metadata-account names the account it reports. --set adapter=ID
+      says the service it is for (github, google, hex, bearer); a GitHub
+      App is adapter=github with app_id, installation_id and a --mint
+      that prints its private key (MWT trades it for an hour's token).
+      Presets: github, github-app, google, google-login, hex, or the
+      user's. A pasted value is the user's: they create it as narrow as
+      the service allows and paste it whenever they have it; until then
+      every use of it is refused (mwt_no_value).
 
-  mwt propose network --name NAME --for "what it is for" --destination 'HOST_OR_RANGE:PORTS' [--destination ...] [--resolver ADDRESS] [--via INTERFACE] --reason "why you need it"
-      Example: mwt propose network --name "Staging database" --for "Postgres on the staging network" --destination 'db.staging.corp:5432' --resolver 10.8.0.1 --via wg0 --reason "..."
-      Propose a network grant: what the VM may reach on a private network,
-      each destination a name (db.corp.example:5432), every name under one
+  mwt propose network --name NAME --for "what it is" --destination 'HOST_OR_RANGE:PORTS' [--destination ...] [--resolver ADDRESS] [--via INTERFACE] [--set FIELD=VALUE ...] --reason "why you need it"
+      Example: mwt propose network --name "Staging" --for "The staging network, through the VPN" --destination 'db.staging.corp:5432' --resolver 10.8.0.1 --via wg0 --reason "..."
+      Propose a network: what lies on a private network, each destination
+      a name (db.corp.example:5432), every name under one
       (*.corp.example:443), an address or a range (10.20.0.0/16:443,5432).
       --resolver is the DNS server that answers its names; --via the
-      interface they are reached through on the user's machine (their VPN's,
-      wg0 or tun0).
+      interface they are reached through on the user's machine (wg0,
+      tun0). A grant over it opens it.
+
+  mwt propose grant --over RESOURCE --name NAME --for "what it gives" [--preset ID [--fill NAME=VALUE ...]] [--host HOST ...] [--carrier HEADER ...] [--sign-as ACCOUNT ...] [--destination ...] [--set FIELD=VALUE ...] --reason "why you need it"
+      Example: mwt propose grant --over "GitHub App" --name "klife only" --for "gh and git on oliveigah/klife" --preset github-repository --fill repository=oliveigah/klife --reason "..."
+      Propose a grant over a credential or a network, by its id or name,
+      one you just proposed included: the user accepts the resource first.
+      Over a credential: the hosts its value may go to (--host, repeated;
+      *.example.com for its subdomains; reaching them is a network
+      grant's, the Internet's for public hosts), in the Authorization
+      header unless --carrier names others; --sign-as names a service
+      account MWT may sign a JWT as with it (signJwt, for a client of a
+      service behind Identity-Aware Proxy; the JWT goes only to the host
+      its aud names); --set attributes='github.repository = owner/name'
+      narrows it further. Presets over a GitHub credential:
+      github-everything, github-repository; Google: google-apis; Hex:
+      hex-packages. Over a network: all of it, or the --destination it
+      lists.
 
   mwt propose commands --name NAME --for "what it does, any time it runs" [--param 'NAME:shape:what it is' ...] [--dir DIR] --reason "why you need it" [--minutes 60] [--wait 60] -- 'SCRIPT'
       Example: mwt propose commands --name "gh repo view" --for "Shows a GitHub repository: description, default branch, visibility" --param 'REPO_NAME:word:the repository, as owner/name' --reason "..." -- 'gh repo view "$REPO_NAME"'
@@ -969,8 +983,10 @@ wrong=1
 [ "$command" = call ] && wrong=122
 
 grant="" need="" reason="" minutes=60 wait=60 id="" dir="" timeout=120 timeout_given="" title="" body="" onto="" from="" suggest_save="" save_for="" no_checks="" name="" purpose="" method="" url="" data="" watch=0 with_credential="" recent=""
-preset="" mint="" keep_minutes="" metadata_project="" metadata_account="" resolver="" via="" git=false login_file=false id_token_header=""
+preset="" mint="" keep_minutes="" metadata_project="" metadata_account="" resolver="" via="" git=false login_file=false id_token_header="" over=""
 headers=()
+sets=()
+fills=()
 params=()
 hosts=()
 envs=()
@@ -1050,6 +1066,12 @@ while [ $# -gt 0 ]; do
     --resolver=*) resolver=${1#*=}; shift ;;
     --via) via=${2-}; shift 2 || shift ;;
     --via=*) via=${1#*=}; shift ;;
+    --over) over=${2-}; shift 2 || shift ;;
+    --over=*) over=${1#*=}; shift ;;
+    --set) sets+=("${2-}"); shift 2 || shift ;;
+    --set=*) sets+=("${1#*=}"); shift ;;
+    --fill) fills+=("${2-}"); shift 2 || shift ;;
+    --fill=*) fills+=("${1#*=}"); shift ;;
     --timeout) timeout=$(number --timeout "${2-}" "$wrong") || exit "$wrong"; timeout_given=1; shift 2 || shift ;;
     --timeout=*) timeout=$(number --timeout "${1#*=}" "$wrong") || exit "$wrong"; timeout_given=1; shift ;;
     --watch) watch=1; shift ;;
@@ -1198,10 +1220,10 @@ case $command in
     send_run "{\"command\":\"call\",\"grant\":$(json "$grant"),\"values\":{${given#,}},\"timeout\":$call_timeout,\"reason\":$(json "$reason"),\"wait\":$wait,$(identity)}"
     ;;
   propose)
-    if [ "$grant" = token ] || [ "$grant" = network ]; then
-      # A new grant has no script.
+    if [ "$grant" = credential ] || [ "$grant" = network ] || [ "$grant" = grant ] || [ "$grant" = token ]; then
+      # A resource or a grant has no script.
       if [ ${#words[@]} -gt 0 ]; then
-        echo "mwt: a $grant grant takes no script. See: mwt help" >&2
+        echo "mwt: mwt propose $grant takes no script. See: mwt help propose" >&2
         exit 1
       fi
       script=""
@@ -1236,10 +1258,24 @@ case $command in
       for item in "$@"; do out="$out,$(json "$item")"; done
       printf '[%s]' "${out#,}"
     }
+    # FIELD=VALUE pairs, each a JSON object; one without = is refused.
+    json_pairs() {
+      local option=$1 out="" pair
+      shift
+      for pair in "$@"; do
+        case $pair in
+          *=*) out="$out,$(json "${pair%%=*}"):$(json "${pair#*=}")" ;;
+          *) echo "mwt: $option takes NAME=VALUE: $pair" >&2; return 1 ;;
+        esac
+      done
+      printf '{%s}' "${out#,}"
+    }
+    set_json=$(json_pairs --set ${sets[@]+"${sets[@]}"}) || exit 1
+    fill_json=$(json_pairs --fill ${fills[@]+"${fills[@]}"}) || exit 1
     identify
     [ -z "$dir" ] && dir=$PWD
     dir=$( (cd "$dir" 2>/dev/null && pwd -P) || printf '%s' "$dir")
-    send "{\"command\":\"propose\",\"grant\":$(json "$grant"),\"name\":$(json "$name"),\"for\":$(json "$purpose"),\"script\":$(json "$script"),\"params\":[${listed#,}],\"dir\":$(json "$dir"),\"method\":$(json "$method"),\"url\":$(json "$url"),\"headers\":[${sent#,}],\"data\":$(json "$data"),\"preset\":$(json "$preset"),\"hosts\":$(json_list ${hosts[@]+"${hosts[@]}"}),\"env\":$(json_list ${envs[@]+"${envs[@]}"}),\"file_env\":$(json_list ${file_envs[@]+"${file_envs[@]}"}),\"carriers\":$(json_list ${carriers[@]+"${carriers[@]}"}),\"git\":$git,\"mint\":$(json "$mint"),\"keep_minutes\":$(json "$keep_minutes"),\"signs_as\":$(json_list ${signs_as[@]+"${signs_as[@]}"}),\"login_file\":$login_file,\"id_token_header\":$(json "$id_token_header"),\"metadata_project\":$(json "$metadata_project"),\"metadata_account\":$(json "$metadata_account"),\"destinations\":$(json_list ${destinations[@]+"${destinations[@]}"}),\"resolver\":$(json "$resolver"),\"via\":$(json "$via"),\"reason\":$(json "$reason"),\"minutes\":$minutes,\"wait\":$wait,$(identity)}"
+    send "{\"command\":\"propose\",\"over\":$(json "$over"),\"set\":$set_json,\"fill\":$fill_json,\"grant\":$(json "$grant"),\"name\":$(json "$name"),\"for\":$(json "$purpose"),\"script\":$(json "$script"),\"params\":[${listed#,}],\"dir\":$(json "$dir"),\"method\":$(json "$method"),\"url\":$(json "$url"),\"headers\":[${sent#,}],\"data\":$(json "$data"),\"preset\":$(json "$preset"),\"hosts\":$(json_list ${hosts[@]+"${hosts[@]}"}),\"env\":$(json_list ${envs[@]+"${envs[@]}"}),\"file_env\":$(json_list ${file_envs[@]+"${file_envs[@]}"}),\"carriers\":$(json_list ${carriers[@]+"${carriers[@]}"}),\"git\":$git,\"mint\":$(json "$mint"),\"keep_minutes\":$(json "$keep_minutes"),\"signs_as\":$(json_list ${signs_as[@]+"${signs_as[@]}"}),\"login_file\":$login_file,\"id_token_header\":$(json "$id_token_header"),\"metadata_project\":$(json "$metadata_project"),\"metadata_account\":$(json "$metadata_account"),\"destinations\":$(json_list ${destinations[@]+"${destinations[@]}"}),\"resolver\":$(json "$resolver"),\"via\":$(json "$via"),\"reason\":$(json "$reason"),\"minutes\":$minutes,\"wait\":$wait,$(identity)}"
     ;;
   wait)
     if [ -z "$id" ]; then

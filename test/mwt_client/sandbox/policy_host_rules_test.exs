@@ -42,14 +42,13 @@ defmodule MWTClient.Sandbox.PolicyHostRulesTest do
     }
   end
 
-  defp lan(mode, ceiling, rules, allowances) do
+  defp lan(mode, rules, allowances) do
     %Grant{
       id: "lan",
       name: "LAN",
       kind: :network,
       state: :on,
       destinations: ["10.0.0.0/8"],
-      ceiling: ceiling,
       host_rules: rules,
       allowances: if(mode == :auto, do: [allowance(:all, nil)], else: []) ++ allowances
     }
@@ -161,13 +160,12 @@ defmodule MWTClient.Sandbox.PolicyHostRulesTest do
 
   describe "a request on another network" do
     test "is refused for a blocked host, else goes as the most permissive grant covering it" do
-      for %{host: host, rules: rules, mode: mode, similar?: similar?} = one <- cases(),
-          ceiling <- [:allow, :ask] do
+      for %{host: host, rules: rules, mode: mode, similar?: similar?} = one <- cases() do
         allowances = if similar?, do: [allowance(similar(host), @later)], else: []
 
         decided =
           Policy.decide(
-            world([lan(mode, ceiling, rules, allowances)]),
+            world([lan(mode, rules, allowances)]),
             {:network_request, request(host, "lan")},
             @now
           )
@@ -180,12 +178,11 @@ defmodule MWTClient.Sandbox.PolicyHostRulesTest do
             # The grant over the host auto-approves, whatever the
             # network's grant would ask.
             :auto in actions -> :allow
-            ceiling == :ask -> :ask
             mode == :auto or similar? -> :allow
             true -> :ask
           end
 
-        assert kind(decided) == expected, inspect(Map.put(one, :ceiling, ceiling))
+        assert kind(decided) == expected, inspect(one)
       end
     end
   end

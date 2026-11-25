@@ -48,6 +48,11 @@ defmodule MWTClient.Sandbox.Approval do
   changed meanwhile is refused (`decision: :changed`), never run with the
   old script under the new grant.
 
+  An activation with a `resource` asks you to accept a resource an agent
+  proposed (`{:credential, id}` or `{:network, id}`): accepting it on its
+  page answers it, declining it removes the resource and what was
+  proposed over it.
+
   An activation with a `proposal` is an agent proposing an action: the
   grant it would sit under (`parent`), its `name`, what it is for
   (`purpose`), its `params`, and what it does: for a command (`kind:
@@ -77,6 +82,7 @@ defmodule MWTClient.Sandbox.Approval do
     :id,
     :kind,
     :grant_id,
+    :resource,
     :title,
     :method,
     :host,
@@ -114,6 +120,9 @@ defmodule MWTClient.Sandbox.Approval do
     facts: [],
     claims: [],
     hints: [],
+    warnings: [],
+    pins: [],
+    repin: false,
     retries: 0,
     status: :waiting
   ]
@@ -200,7 +209,7 @@ defmodule MWTClient.Sandbox.Approval do
 
   @typedoc "An action as an agent proposes it."
   @type proposal :: %{
-          kind: :command | :request,
+          kind: :command | :request | :token | :network | :credential,
           parent: String.t(),
           parent_name: String.t(),
           name: String.t(),
@@ -219,6 +228,7 @@ defmodule MWTClient.Sandbox.Approval do
           id: String.t(),
           kind: kind(),
           grant_id: String.t() | nil,
+          resource: MWTClient.Sandbox.Resource.id() | nil,
           also: [String.t()],
           title: String.t(),
           method: String.t() | nil,
@@ -382,16 +392,17 @@ defmodule MWTClient.Sandbox.Approval do
 
   @doc """
   What an event about this approval says when its line opens
-  (`MWTClient.Sandbox.EventDetails`): what was asked and how it was
-  decided (`how`, in words), the command and how it ran, the tool call or
-  the action proposed, what MWT worked out, and apart, what the agent
-  wrote. Never a command's output: only its size and what was found in it.
+  (`MWTClient.Sandbox.EventDetails`): what was asked, the command and how
+  it ran, the tool call or the action proposed, what MWT worked out, and
+  apart, what the agent wrote. How it was decided is the audit's
+  (`MWTClient.Sandbox.Decision`). Never a command's output: only its size
+  and what was found in it.
   """
-  @spec details(t(), String.t() | nil) :: MWTClient.Sandbox.EventDetails.t()
-  def details(%__MODULE__{} = approval, how) do
+  @spec details(t()) :: MWTClient.Sandbox.EventDetails.t()
+  def details(%__MODULE__{} = approval) do
     EventDetails.safely("an approval", fn ->
       EventDetails.new([
-        ask_section(approval, how),
+        ask_section(approval),
         command_section(approval),
         run_section(approval.run),
         tool_section(approval.tool),
@@ -402,7 +413,7 @@ defmodule MWTClient.Sandbox.Approval do
     end)
   end
 
-  defp ask_section(approval, how) do
+  defp ask_section(approval) do
     EventDetails.section("The ask", [
       {"Kind", kind_words(approval)},
       {"What", approval.title},
@@ -411,8 +422,7 @@ defmodule MWTClient.Sandbox.Approval do
       {"For how long", approval.minutes && "#{approval.minutes} min"},
       {"Allow similar covers", approval.pattern},
       {"Asked at", time_words(approval.requested_at)},
-      {"Waited", waited_words(approval)},
-      {"Decided", how}
+      {"Waited", waited_words(approval)}
     ])
   end
 

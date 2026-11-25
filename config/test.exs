@@ -88,6 +88,12 @@ config :phoenix,
 config :mwt_client, MWTClient.Sandbox.SavedRequest,
   plug: {Req.Test, MWTClient.Sandbox.SavedRequest}
 
+# A fixed call goes through MWT's proxy: its upstream, in tests, is a
+# server on the loopback that answers with that stub
+# (`MWTClient.FixedCallUpstream`).
+config :mwt_client, MWTClient.Sandbox.Egress.FixedCall,
+  upstream: {MWTClient.FixedCallUpstream, :upstream}
+
 # A GitHub App's installation token is traded for at GitHub: in tests a stub
 # answers (`Req.Test.stub(MWTClient.Sandbox.Adapter.GitHub, ...)`).
 config :mwt_client, MWTClient.Sandbox.Adapter.GitHub,

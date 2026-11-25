@@ -1,56 +1,73 @@
-# Proposing a grant or an action
+# Proposing a resource, a grant or an action
 
-Read this before you run `mwt propose`: when no grant fits and you know
+Read this before you run `mwt propose`: when nothing fits and you know
 exactly what the work needs, or when you will need the same job on the
 user's machine again.
 
-`mwt propose` saves what you propose at once in the user's grants: off,
-never on at startup, tagged as proposed by you and to review. Nothing
-turns it on until the user reads it on its page and accepts it; meanwhile
-`mwt propose` waits as `mwt request` does (exit 2 and an ask id for
-`mwt wait` while it waits, 0 once it is on, 3 if they decline it, which
-removes it). Proposing again under the same `--name`, before they review
-it, changes it. It never carries a value, an approval mode or a start
-setting: those are the user's.
+`mwt propose` saves what you propose at once in the user's MWT, tagged
+as proposed by you and to review, the way they add things: a resource
+(a credential, a network) first, then grants over it. Nothing is usable
+until the user reads it on its page and accepts it; meanwhile `mwt
+propose` waits as `mwt request` does (exit 2 and an ask id for `mwt
+wait` while it waits, 0 once accepted, a grant once on, 3 if they
+decline it, which removes it). Proposing again under the same `--name`,
+before they review it, changes it. It never carries a value, an
+approval mode or a start setting: those are the user's.
 
-A whole grant, when none fits and you know what the work needs:
+A credential and a grant over it, sent together: the user accepts the
+credential first, then the grant.
 
-    mwt propose token --name "GitHub, read-only, klife" \
-        --for "gh and git over HTTPS, reading oliveigah/klife" \
-        --preset github \
-        --reason "I need the open issues of klife for this task"
+    mwt propose credential --name "GitHub App" \
+        --for "My App's installation token, for gh and git" \
+        --preset github-app --fill app_id=Iv23liABCD \
+        --fill installation_id=12345678 \
+        --fill key_command='pass show github/app-key' \
+        --reason "The task opens pull requests on klife"
 
-    mwt propose network --name "Staging database" \
-        --for "Postgres on the staging network" \
+    mwt propose grant --over "GitHub App" --name "klife only" \
+        --for "gh and git on oliveigah/klife" \
+        --preset github-repository --fill repository=oliveigah/klife \
+        --reason "The task opens pull requests on klife"
+
+    mwt propose network --name "Staging" \
+        --for "The staging network, through the VPN" \
         --destination 'db.staging.corp:5432' --resolver 10.8.0.1 --via wg0 \
         --reason "The migration has to be checked against staging"
 
-A token grant is over a credential. It lists the hosts its value may go
-to (`--host`, repeated; reaching them is a network grant's, the
-Internet's for public hosts), the variables its placeholder is in under
-`mwt exec` (`--env`, `--file-env`), the headers it travels in when not
-`Authorization` (`--carrier`), `--git` for git over HTTPS, or
-`--mint 'COMMAND'` for a short-lived value the user's machine prints.
-Google's client libraries (Python's `google.auth` among them) look for
-default credentials, not a token file: `--metadata-project PROJECT` gives
-them a metadata server under `mwt exec`, and `--metadata-account EMAIL`
-the service account it reports. A client of a service behind
-Identity-Aware Proxy that has Google sign a JWT as a service account
-(`signJwt`) needs `--sign-as ACCOUNT` and the service's host;
-`--keep-minutes N` mints again after at most N minutes, for a service
-that takes a token only while it is young.
-A tool that refreshes a Google login itself, as one sending an ID token
-does, needs `--login-file` (and `--id-token-header HEADER` when it sends
-the ID token in a header of its own), with a `--mint` that prints the ID
-token too: `gcloud config config-helper --force-auth-refresh --format=json`
-(`--preset google-login`). Google's token and signing endpoints are
-implied: don't list them. `--preset` starts from one of MWT's (`github`,
-`github-app`, `google`, `google-login`, `hex`). Say in `--for` what the
-token should be allowed to do: the user creates it, as narrow as the
-service allows, and pastes it as they review it. A network grant lists
-its destinations (`--destination`, repeated), the DNS server for their
-names (`--resolver`) and the interface they go through on the user's
-machine (`--via`). Propose the narrowest access that does the job.
+Each starts from a preset of what it makes, when you name one; its
+options set their fields; `--set FIELD=VALUE` sets any field of its form
+over both, and `--fill NAME=VALUE` fills a preset's blanks. A field you
+name wrong, or one of the user's, is refused with the list of fields.
+
+A credential says the service it is for (`--set adapter=github`,
+`google`, `hex` or `bearer`), the variables its placeholder is in under
+`mwt exec CREDENTIAL` (`--env`, `--file-env`), `--git` for git over
+HTTPS, or `--mint 'COMMAND'` for a short-lived value the user's machine
+prints. A GitHub App is `adapter=github` with `app_id`,
+`installation_id` and a `--mint` that prints its private key: MWT trades
+it for an hour's token. Google's client libraries look for default
+credentials: `--metadata-project PROJECT` gives them a metadata server,
+and `--metadata-account EMAIL` the account it reports. A tool that
+refreshes a Google login itself needs `--login-file` (and
+`--id-token-header HEADER` when it sends the ID token in a header of its
+own), with a `--mint` that prints the ID token too (`--preset
+google-login`). `--keep-minutes N` mints again after at most N minutes.
+Credential presets: `github`, `github-app`, `google`, `google-login`,
+`hex`. A pasted value is the user's: say in `--for` what it should be
+allowed to do, and they create it as narrow as the service allows.
+
+A grant over a credential lists the hosts its value may go to (`--host`,
+repeated; reaching them is a network grant's, the Internet's for public
+hosts), the headers it travels in when not `Authorization`
+(`--carrier`), and the service accounts MWT may sign a JWT as with it
+for a client of a service behind Identity-Aware Proxy (`--sign-as`).
+`--set attributes='github.repository = owner/name'` narrows it further.
+Grant presets: `github-everything`, `github-repository`, `google-apis`,
+`hex-packages`. A network lists its destinations (`--destination`), the
+DNS server for their names (`--resolver`) and the interface they go
+through on the user's machine (`--via`); a grant over it opens all of
+it, or the destinations it lists. Propose the narrowest access that
+does the job.
 
 When you expect to need the same job again, propose a saved command, an
 action on the user's machine, instead of asking to run it ad hoc each
@@ -78,6 +95,10 @@ everything it could ever do:
 - **The narrowest shape that works:** a number for a number, a list
   (`staging|production`) when the values are few and known, a word for a
   name; `text` only for what must hold spaces. Say what each one is.
+- **A schema where a wrong value would hurt:** `--set schema='…'`, one
+  JSON Schema for all the parameters, instead of `--param` lines
+  (`"pattern"`, `"enum"`, `"minimum"`…).
+  `mwt help resources` says how to write it, resources and grants.
 - **Read each parameter in double quotes,** `"$NAME"`, and give the script
   in single quotes so your shell leaves `$NAME` alone. Every parameter has
   to appear in the script.

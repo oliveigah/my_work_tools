@@ -42,7 +42,8 @@ defmodule MWTClient.Sandbox.Adapter do
   @adapters [
     MWTClient.Sandbox.Adapter.Bearer,
     MWTClient.Sandbox.Adapter.GitHub,
-    MWTClient.Sandbox.Adapter.Google
+    MWTClient.Sandbox.Adapter.Google,
+    MWTClient.Sandbox.Adapter.Hex
   ]
 
   @doc "Every adapter MWT ships."
@@ -50,10 +51,29 @@ defmodule MWTClient.Sandbox.Adapter do
   def all, do: @adapters
 
   @doc """
+  The adapter whose id is `id`, given as an atom or as its text, as a form
+  or a preset names it; `:error` for none.
+
+      iex> MWTClient.Sandbox.Adapter.find("github")
+      {:ok, MWTClient.Sandbox.Adapter.GitHub}
+      iex> MWTClient.Sandbox.Adapter.find("nope")
+      :error
+  """
+  @spec find(atom() | String.t() | nil) :: {:ok, module()} | :error
+  def find(id) do
+    case Enum.find(@adapters, &(Atom.to_string(&1.id()) == to_string(id))) do
+      nil -> :error
+      adapter -> {:ok, adapter}
+    end
+  end
+
+  @doc """
   The adapter for a credential, or a token grant over it: the one it
-  names, else the one its preset or its fields say (Google's when it signs,
-  presents a login file or a metadata server, or comes from a Google
-  preset; GitHub's from a GitHub preset), else `bearer`.
+  names (`Credential.adapter`), else the one its preset or its fields say
+  (GitHub's with an App; Google's when it signs, presents a login file or
+  a metadata server, or comes from a Google preset; GitHub's or Hex's from
+  theirs), else `bearer`. Only what was saved before credentials named
+  their adapter, or is still being built, goes by what it says.
 
       iex> alias MWTClient.Sandbox.{Adapter, Grant}
       iex> Adapter.of(%Grant{id: "g", name: "G", kind: :token, preset: "github"})
@@ -81,6 +101,9 @@ defmodule MWTClient.Sandbox.Adapter do
 
       String.starts_with?(preset, "github") ->
         MWTClient.Sandbox.Adapter.GitHub
+
+      String.starts_with?(preset, "hex") ->
+        MWTClient.Sandbox.Adapter.Hex
 
       true ->
         MWTClient.Sandbox.Adapter.Bearer

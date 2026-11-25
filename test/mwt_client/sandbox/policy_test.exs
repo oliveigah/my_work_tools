@@ -486,9 +486,13 @@ defmodule MWTClient.Sandbox.PolicyTest do
     }
   end
 
-  # What names the agent's own command: no id, or one Ask to run commands
-  # had.
-  @own_ids ["", "commands", "any-command"]
+  # What names the agent's own command: no id, Commands agents write's, or
+  # one Ask to run commands had.
+  @own_ids ["", "agent-commands", "commands", "any-command"]
+
+  # Commands agents write, built in, on: an agent may ask.
+  defp written(state \\ :on, allowances \\ []),
+    do: %{Grant.agent_commands() | state: state, allowances: allowances}
 
   defp command_cases do
     for {state, expires_at, on?} <- @states,
@@ -500,7 +504,8 @@ defmodule MWTClient.Sandbox.PolicyTest do
           [allowance("run abc", @later)]
         ],
         named <-
-          [nil, "", "deploy", "DEPLOY", " Deploy ", "nope", "commands", "any-command", 42, %{}],
+          [nil, "", "deploy", "DEPLOY", " Deploy ", "nope", "agent-commands", "commands"] ++
+            ["any-command", 42, %{}],
         sent <- [nil, "", "   ", "rm -rf ~", 42] do
       %{
         grant: command_grant(state, expires_at, allowances),
@@ -517,7 +522,8 @@ defmodule MWTClient.Sandbox.PolicyTest do
       for one <- command_cases() do
         expected =
           cond do
-            # The agent's own: no grant gives it, you approve each one.
+            # The agent's own: Commands agents write lets it ask, and you
+            # approve each one.
             one.named in @own_ids and one.sent? -> :ask
             one.named in @own_ids -> {:refuse, :name_a_grant}
             # A saved command by its exact id: a name is not enough.
@@ -528,15 +534,31 @@ defmodule MWTClient.Sandbox.PolicyTest do
             true -> :ask
           end
 
-        answer = Policy.decide(snapshot([one.grant]), {:command, one.ask}, @now)
+        answer = Policy.decide(snapshot([one.grant, written()]), {:command, one.ask}, @now)
         assert kind(answer) == expected, inspect(one)
       end
     end
 
     test "the agent writes is asked about, with nothing of a grant's, whatever grants allow" do
+      # Commands agents write's allowances, had it any, let nothing through.
+      every = [allowance(:all, nil)]
+
       for one <- command_cases(), one.named in @own_ids, one.sent? do
-        assert Policy.decide(snapshot([one.grant]), {:command, one.ask}, @now) ==
+        assert Policy.decide(
+                 snapshot([one.grant, written(:on, every)]),
+                 {:command, one.ask},
+                 @now
+               ) ==
                  {:ask, nil, %{script: nil, dir: nil, pattern: nil}}
+      end
+    end
+
+    test "the agent writes can't even ask while Commands agents write is off, or missing" do
+      run = {:command, %{grant: nil, script: "ls"}}
+
+      for grants <- [[written(:off)], []] do
+        assert {:refuse, {:grant_off, %Grant{id: "agent-commands"}}} =
+                 Policy.decide(snapshot(grants), run, @now)
       end
     end
 
@@ -569,149 +591,60 @@ defmodule MWTClient.Sandbox.PolicyTest do
       for one <- command_cases() do
         answer = Policy.decide(snapshot(others), {:command, one.ask}, @now)
 
+        # The agent's own needs Commands agents write, which isn't there.
         if one.named in @own_ids and one.sent?,
-          do: assert(kind(answer) == :ask),
+          do: assert({:refuse, {:grant_off, %Grant{id: "agent-commands"}}} = answer),
           else: assert(match?({:refuse, _}, answer), inspect(one))
       end
     end
 
-    test "is refused at once while your machine is locked, the agent's own included" do
+    test "is refused at once while host commands are locked, the agent's own included" do
       deploy = command_grant(:on, nil, [allowance(:all, nil)])
-      locked = Map.put(snapshot([deploy]), :locks, %{machine: %{you: @now}})
+      locked = Map.put(snapshot([deploy, written()]), :locks, %{machine: %{you: @now}})
 
-      assert {:refuse, {:locked, :machine, nil}} =
+      assert {:refuse, {:locked, :machine, %Grant{id: "agent-commands"}}} =
                Policy.decide(locked, {:command, %{grant: nil, script: "ls"}}, @now)
 
       assert {:refuse, {:locked, :machine, %Grant{id: "deploy"}}} =
                Policy.decide(locked, {:command, %{grant: "deploy", script: nil}}, @now)
     end
 
-    test "saved runs with a credential only where a token grant on over it allows your machine" do
+    test "saved covers the credentials it runs with: no grant over them has a say, a lock does" do
       deploy = %{command_grant(:on, nil, [allowance(:all, nil)]) | with: ["github"]}
-
-      token = %{
-        token_grant(:on, nil, ["api.example.com"], [allowance(:all, nil)])
-        | machine: true
-      }
-
       run = {:command, %{grant: "deploy", script: nil}}
       decide = fn grants -> Policy.decide(snapshot([deploy | grants]), run, @now) end
 
-      assert {:allow, %Grant{id: "github"}, _, %{through: ["deploy"]}} = decide.([token])
+      # With no grant over the credential, or one off or asking: the saved
+      # command's own say.
+      for token <- [
+            [],
+            [token_grant(:off, nil, ["api.example.com"], [])],
+            [token_grant(:on, nil, ["api.example.com"], [])]
+          ] do
+        assert {:allow, %Grant{id: "deploy"}, _, _} = decide.(token)
+      end
 
-      # Not allowing your machine, or off, it gives nothing there.
-      assert {:refuse, {:not_on_machine, "github", nil}} =
-               decide.([%{token | machine: false}])
-
-      assert {:refuse, {:not_on_machine, "github", %Grant{id: "github"}}} =
-               decide.([%{token | state: :off}])
-
-      # Asking, one card names both, the credential's first.
-      assert {:ask, %Grant{id: "github"}, about} = decide.([%{token | allowances: []}])
-      assert about.asking == ["github"]
-      assert about.through == ["deploy"]
+      assert {:ask, %Grant{id: "deploy"}, _} =
+               Policy.decide(snapshot([%{deploy | allowances: []}]), run, @now)
 
       # Its credential locked, refused.
-      locked =
-        Map.put(snapshot([deploy, token]), :locks, %{{:credential, "github"} => %{you: @now}})
+      locked = Map.put(snapshot([deploy]), :locks, %{{:credential, "github"} => %{you: @now}})
 
-      assert {:refuse, {:locked, {:credential, "github"}, %Grant{id: "github"}}} =
+      assert {:refuse, {:locked, {:credential, "github"}, %Grant{id: "deploy"}}} =
                Policy.decide(locked, run, @now)
     end
   end
 
-  describe "a ceiling" do
-    # Every request case, at each ceiling.
-    defp ceiling_cases do
-      for one <- Enum.take_every(request_cases(), 3), ceiling <- [:ask, :allow] do
-        {%{one | grant: %{one.grant | ceiling: ceiling}}, ceiling}
+  describe "a grant saved when it could always ask" do
+    test "keeps asking as Ask does, its ceiling gone: nothing it had goes through unasked" do
+      fields = %{id: "g", name: "G", kind: :token, state: :on, allowances: []}
+
+      for ceiling <- [:ask, :auto, :yolo, :allow] do
+        grant = Grant.upgrade(Map.put(fields, :ceiling, ceiling))
+        refute Map.has_key?(grant, :ceiling)
+        refute Grant.auto_approved?(grant, @now)
+        assert Grant.starts(grant) == [:off, :on, :auto]
       end
-    end
-
-    defp decide_with(one),
-      do:
-        Policy.decide(
-          snapshot([one.grant, other_token_grant(), internet_on()]),
-          {:request, one.request},
-          @now
-        )
-
-    test "always asks never allows a request, whatever its allowances" do
-      for {one, :ask} <- ceiling_cases() do
-        answer = decide_with(one)
-        refute kind(answer) == :allow, inspect(one)
-
-        # Refusals stay what they were; what was let through or asked
-        # about asks.
-        expected =
-          case kind(decide_request(%{one | grant: %{one.grant | ceiling: :allow}})) do
-            :allow -> :ask
-            other -> other
-          end
-
-        assert kind(answer) == expected, inspect(one)
-      end
-    end
-
-    test "allowing, it answers as the rules for requests say" do
-      for {one, :allow} <- ceiling_cases() do
-        assert decide_with(one) == decide_request(one)
-      end
-    end
-
-    test "connections and MWT's tools follow it too" do
-      ip = {10, 1, 2, 3}
-      lan = network_grant(:on, nil, ["10.0.0.0/8"], [allowance(:all, nil)])
-
-      assert {:allow, _, _, _} =
-               Policy.decide(snapshot([lan]), {:connection, ip, 443}, @now)
-
-      assert {:ask, _, _} =
-               Policy.decide(snapshot([%{lan | ceiling: :ask}]), {:connection, ip, 443}, @now)
-
-      tools = %Grant{
-        id: "mwt-create",
-        name: "MWT: create",
-        kind: :mwt,
-        tools: :create,
-        state: :on,
-        allowances: [allowance(:all, nil)]
-      }
-
-      use = %{grant: :create, tool: "create_note", kind: :note, over_limit: false}
-
-      assert {:allow, _, _, _} = Policy.decide(snapshot([tools]), {:tool, use}, @now)
-
-      assert {:ask, _, _} =
-               Policy.decide(snapshot([%{tools | ceiling: :ask}]), {:tool, use}, @now)
-
-      # Past the hour's limit, adding asks whatever the allowances say.
-      assert {:ask, _, _} =
-               Policy.decide(snapshot([tools]), {:tool, %{use | over_limit: true}}, @now)
-    end
-
-    test "which ceilings a grant takes, and what always asks takes away" do
-      token = token_grant(:on, nil, ["api.example.com"], [allowance(:all, nil)])
-      assert Grant.ceilings(token) == [:ask, :allow]
-      assert Grant.auto_approvable?(token)
-      assert Grant.auto_approved?(token, @now)
-
-      asks = %{token | ceiling: :ask}
-      refute Grant.auto_approvable?(asks)
-      refute Grant.auto_approved?(asks, @now)
-      assert Grant.starts(asks) == [:off, :on]
-
-      assert Grant.ceilings(Grant.internet()) == [:allow]
-      assert Grant.ceiling(%{Grant.internet() | ceiling: :ask}) == :allow
-    end
-
-    test "a grant saved with YOLO's ceiling, or none, now takes allowances; one that YOLO couldn't open asks" do
-      fields = %{id: "g", name: "G", kind: :token}
-
-      assert Grant.upgrade(Map.put(fields, :ceiling, :yolo)).ceiling == :allow
-      assert Grant.upgrade(fields).ceiling == :allow
-      assert Grant.upgrade(Map.put(fields, :ceiling, :auto)).ceiling == :ask
-      assert Grant.upgrade(Map.put(fields, :ceiling, :ask)).ceiling == :ask
     end
   end
 

@@ -285,16 +285,30 @@ defmodule MWTClient.Sandbox.Explain do
         ],
         else: []
 
-    covering =
-      for %Grant{kind: :network} = g <- world.snapshot.grants,
-          MWTClient.Sandbox.Network.id_of(g) == network,
-          not MWTClient.Sandbox.Network.part?(g) or names?(g, host),
-          do: g
+    {covering, left_out} =
+      for(
+        %Grant{kind: :network} = g <- world.snapshot.grants,
+        MWTClient.Sandbox.Network.id_of(g) == network,
+        not MWTClient.Sandbox.Network.part?(g) or names?(g, host),
+        do: g
+      )
+      |> Enum.split_with(&is_nil(MWTClient.Sandbox.Network.excepted(&1, [host])))
+
+    # A grant that leaves the host out has no say: another grant over the
+    # host gives it, on its own terms.
+    left_out =
+      for g <- left_out,
+          do: %{
+            grant: g,
+            say: :excepted,
+            line:
+              "#{label(g)}: nothing, it leaves out #{MWTClient.Sandbox.Network.excepted(g, [host])}, as the user set it"
+          }
 
     %{
       title:
         "The network #{network}: a grant over it that is on and covers the host gives it; the most permissive counts.",
-      says: blocked ++ Enum.map(covering, &say(&1, about, world)),
+      says: blocked ++ Enum.map(covering, &say(&1, about, world)) ++ left_out,
       empty: "no grant over it covers #{host}"
     }
   end
@@ -331,9 +345,6 @@ defmodule MWTClient.Sandbox.Explain do
       cond do
         not Grant.on?(grant, now) ->
           {nil, "off: it gives nothing"}
-
-        Grant.ceiling(grant) == :ask ->
-          {:ask, "on, Always ask me: every use waits for the user"}
 
         Enum.any?(grant.allowances, &Allowance.covers?(&1, :all, now)) ->
           {:yes, "on, auto-approved"}
@@ -420,6 +431,9 @@ defmodule MWTClient.Sandbox.Explain do
   defp refusal_words(:internet_off),
     do: "no grant that is on covers this public host: the Internet's grant is off"
 
+  defp refusal_words({:excepted, %Grant{} = grant, entry}),
+    do: "#{grant.name} leaves out #{entry}, and no other grant that is on covers that host"
+
   defp refusal_words({:outside, %Grant{} = grant}),
     do: "no grant over #{grant.name}'s network covers that host"
 
@@ -447,6 +461,11 @@ defmodule MWTClient.Sandbox.Explain do
         %{say: :blocked} ->
           [
             "The user blocked this host: asking for a grant changes nothing. Don't work around it; tell the user if you need it."
+          ]
+
+        %{grant: %Grant{} = g, say: :excepted} ->
+          [
+            "#{g.name} leaves this host out, as the user set it: only a grant over the host itself gives it. Ask for one (mwt request --need \"...\") if the task needs it."
           ]
 
         %{grant: %Grant{} = g, say: :ask} ->

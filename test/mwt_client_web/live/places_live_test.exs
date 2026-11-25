@@ -39,20 +39,15 @@ defmodule MWTClientWeb.PlacesLiveTest do
   end
 
   test "the sandbox keeps its filters and searches", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
-    view |> element("#grant-search") |> render_change(%{"term" => "github"})
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
 
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    view
+    |> form("#grant-filters", %{term: "github", status: "all"})
+    |> render_change()
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
     assert has_element?(view, ~s(#grant-search-term[value="github"]))
-    assert has_element?(view, "#clear-grant-search")
-  end
-
-  test "the grants enabled on startup stay open once opened", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
-    refute has_element?(view, "#enabled-startup-list")
-    view |> element("#enabled-startup-toggle") |> render_click()
-
-    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
-    assert has_element?(view, "#enabled-startup-list")
+    assert has_element?(view, "#grant-status-all input[checked]")
+    assert has_element?(view, "#grant-filters-clear")
   end
 end

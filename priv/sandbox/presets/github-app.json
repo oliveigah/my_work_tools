@@ -1,23 +1,23 @@
 {
   "id": "github-app",
-  "kind": "token",
+  "makes": "credential",
+  "adapter": "github",
   "name": "GitHub App",
   "icon": "git-branch",
   "blurb": "An installation token of your GitHub App: an hour, no person's, narrowed by the App's installation.",
   "guide": [
     "Create a GitHub App (github.com/settings/apps) with only the permissions the agent needs, and install it on only the repositories it works on.",
     "Its installation id is in the URL of the installation's Configure page: github.com/settings/installations/ID.",
-    "Give a command that prints the App's private key on this machine, from where you keep it (a password manager, a file only you read). MWT signs a JWT with it as the App and trades it for an installation token, which lasts an hour; the key never leaves this machine."
+    "Give a command that prints the App's private key on this machine, from where you keep it (a password manager, a file only you read). MWT signs a JWT with it as the App and trades it for an installation token, which lasts an hour; the key never leaves this machine. Then add a grant over it: where it may go."
   ],
   "fill": [
     {"name": "app_id", "label": "The App's client id or app id", "example": "Iv23liABCD1234"},
     {"name": "installation_id", "label": "The installation's id", "example": "12345678"},
     {"name": "key_command", "label": "A command that prints the App's private key", "example": "pass show github/app-key"}
   ],
-  "grant": {
-    "purpose": "GitHub, as my App: gh, git over HTTPS and the GitHub API, on the repositories its installation selects.",
+  "fields": {
+    "purpose": "My GitHub App: gh, git over HTTPS and the GitHub API, on the repositories its installation selects.",
     "env": "GITHUB_TOKEN, GH_TOKEN",
-    "hosts": "api.github.com, github.com, uploads.github.com",
     "git": "true",
     "prefix": "ghs_",
     "source": "minted",

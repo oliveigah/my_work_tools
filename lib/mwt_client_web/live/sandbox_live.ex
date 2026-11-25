@@ -21,6 +21,7 @@ defmodule MWTClientWeb.SandboxLive do
 
   alias MWTClient.Sandbox.{
     AgentThreads,
+    Decision,
     Event,
     Grant,
     HandoffRecords,
@@ -29,7 +30,6 @@ defmodule MWTClientWeb.SandboxLive do
     Instructions,
     Leftovers,
     Monitor,
-    Param,
     Presets,
     SavedRequest,
     Projects,
@@ -96,14 +96,24 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(:modes, %{})
      |> assign(:adding, nil)
      |> assign(:resource_form, nil)
-     |> assign(:grants_tab, "on")
+     |> assign(:resource_form_then, nil)
+     |> assign(:grant_settings, nil)
+     |> assign(:resource_settings, nil)
+     |> assign(:grants_tab, "grants")
      |> assign(:resource, nil)
      |> assign(:grant_term, "")
      |> assign(:grant_filters, Grants.filters())
+     |> assign(:resource_filters, ResourcePages.resource_filters())
+     |> assign(:resource_page, 1)
      |> assign(:grant_page, 1)
-     |> assign(:startup_open, false)
-     |> assign(:tried, nil)
-     |> assign(:tried_with, %{})
+     |> assign(:console_history, [])
+     |> assign(:console_term, "")
+     |> assign(:console_page, 1)
+     |> assign(:console_open, nil)
+     |> assign(:console_decisions, [])
+     |> assign(:console_error, nil)
+     |> assign(:console_running, nil)
+     |> assign(:console_with, %{})
      |> assign(:credentials, [])
      |> assign(:networks, [])
      |> assign(:locks, %{})
@@ -111,7 +121,14 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(:create_dialog, nil)
      |> assign(:memory_review, nil)
      |> assign(:name_error, nil)
-     |> assign(:filters, %{q: "", group: "all", grant: "", thread: "", window: "day"})
+     |> assign(:filters, %{
+       q: "",
+       group: "all",
+       grant: "",
+       thread: "",
+       decided: "",
+       window: "day"
+     })
      |> assign(:activity_threads, [])
      |> assign(:activity, %{cursors: [], older?: false, shown: 0, oldest: nil, fresh: 0})
      |> assign(:activity_stats, nil)
@@ -160,19 +177,33 @@ defmodule MWTClientWeb.SandboxLive do
 
   @impl MWTClientWeb.Hooks.Places
   def place(socket),
-    do: Map.take(socket.assigns, [:filters, :grant_term, :startup_open, :monitor_by])
+    do:
+      Map.take(socket.assigns, [
+        :filters,
+        :grant_term,
+        :grant_filters,
+        :resource_filters,
+        :monitor_by
+      ])
 
   # Back where it was left (`MWTClientWeb.Hooks.Places`). The page comes
   # back by its address; this is what the address doesn't say: the
-  # activity filters, the grant search, whether the grants enabled on
-  # startup are open and how the monitor sorts.
+  # activity filters, the grants list's search and filters, and how the
+  # monitor sorts.
   defp restore_place(socket) do
     place = Places.recall(socket.assigns.username, :sandbox)
 
     socket
     |> update(:filters, &Map.merge(&1, Map.take(place[:filters] || %{}, Map.keys(&1))))
     |> assign(:grant_term, Map.get(place, :grant_term, ""))
-    |> assign(:startup_open, Map.get(place, :startup_open, false))
+    |> update(
+      :grant_filters,
+      &Map.merge(&1, Map.take(place[:grant_filters] || %{}, Map.keys(&1)))
+    )
+    |> update(
+      :resource_filters,
+      &Map.merge(&1, Map.take(place[:resource_filters] || %{}, Map.keys(&1)))
+    )
     |> assign(:monitor_by, Map.get(place, :monitor_by, :cpu))
   end
 
@@ -186,7 +217,24 @@ defmodule MWTClientWeb.SandboxLive do
           assign(socket, :grant_id, params["id"])
 
         :grants ->
-          assign(socket, :grants_tab, Grants.tab(params["tab"]))
+          socket = assign(socket, :grants_tab, Grants.tab(params["tab"]))
+
+          # All grants and On now, the tabs Grants replaced: the list,
+          # showing every grant or what is on.
+          socket =
+            case params["tab"] do
+              status when status in ["all", "on"] ->
+                update(socket, :grant_filters, &%{&1 | status: status})
+
+              _other ->
+                socket
+            end
+
+          # Opened to try something as the VM: with the credential it names.
+          case params["with"] do
+            id when is_binary(id) -> update(socket, :console_with, &Map.put(&1, "with", id))
+            _none -> socket
+          end
 
         :resource ->
           assign(
@@ -199,6 +247,8 @@ defmodule MWTClientWeb.SandboxLive do
           socket
           |> assign(:reading_open, false)
           |> group_from(params["group"])
+          |> grant_from(params["grant"])
+          |> thread_from(params["thread"])
           |> reset_events()
           |> load_stats()
           |> load_threads()
@@ -209,7 +259,20 @@ defmodule MWTClientWeb.SandboxLive do
           socket
 
         :approvals ->
-          assign(socket, :focus, params["focus"])
+          # A card a line of the activity log opened, as it was decided
+          # (`MWTClient.Sandbox.Decision`), read-only.
+          card_id = params["card"]
+
+          kept =
+            case is_binary(card_id) && Sandbox.audit_card(socket.assigns.username, card_id) do
+              false -> nil
+              nil -> :gone
+              # Kept before it was kept with its choice.
+              %MWTClient.Sandbox.Approval{} = card -> %{card: card, choice: nil}
+              kept -> kept
+            end
+
+          assign(socket, focus: params["focus"], kept_card: kept)
 
         :handoffs ->
           id = handoff_id(params["id"])
@@ -286,6 +349,9 @@ defmodule MWTClientWeb.SandboxLive do
                   settings={@settings}
                   memory={@memory}
                   grants={@grants}
+                  credentials={@credentials}
+                  networks={@networks}
+                  locks={@locks}
                   waiting={@waiting}
                   recent={@recent}
                   stats={@stats}
@@ -307,6 +373,7 @@ defmodule MWTClientWeb.SandboxLive do
                   marks={@marks}
                   now={@now}
                   focus={@focus}
+                  kept_card={assigns[:kept_card]}
                 />
               <% :grants -> %>
                 <Grants.page
@@ -315,15 +382,29 @@ defmodule MWTClientWeb.SandboxLive do
                   credentials={@credentials}
                   networks={@networks}
                   locks={@locks}
-                  tried={@tried}
-                  tried_with={@tried_with}
                   durations={@durations}
                   modes={@modes}
                   now={@now}
                   term={@grant_term}
                   filters={@grant_filters}
                   page={@grant_page}
-                  startup_open={@startup_open}
+                  resource_filters={@resource_filters}
+                  resource_page={@resource_page}
+                  console={
+                    %{
+                      history: @console_history,
+                      term: @console_term,
+                      page: @console_page,
+                      open: @console_open,
+                      decisions: @console_decisions,
+                      error: @console_error,
+                      now: @now,
+                      running: @console_running,
+                      vm_running: match?({:ok, _}, MWTClient.Sandbox.Projects.guest(@username, @vm)),
+                      with: @console_with,
+                      waiting: @waiting
+                    }
+                  }
                 />
               <% :grant -> %>
                 <%= if @grant do %>
@@ -338,6 +419,9 @@ defmodule MWTClientWeb.SandboxLive do
                     grants={@grants}
                     credentials={@credentials}
                     networks={@networks}
+                    locks={@locks}
+                    credential_values={@credential_values}
+                    settings={@grant_settings}
                   />
                 <% else %>
                   <div id="grant-missing" class="rounded-xl border border-dashed border-line">
@@ -362,6 +446,7 @@ defmodule MWTClientWeb.SandboxLive do
                   durations={@durations}
                   modes={@modes}
                   now={@now}
+                  settings={@resource_settings}
                 />
               <% :activity -> %>
                 <Activity.page
@@ -590,7 +675,7 @@ defmodule MWTClientWeb.SandboxLive do
             :if={id == :grants and @grants_on > 0}
             class="rounded-full bg-ok-soft px-1.5 py-px text-[10px] font-semibold tabular-nums text-ok-strong"
           >
-            {@grants_on} enabled
+            {@grants_on} on
           </span>
           <span
             :if={id == :firewall and @isolated}
@@ -885,9 +970,6 @@ defmodule MWTClientWeb.SandboxLive do
         {:ok, _grant} ->
           socket
 
-        {:error, :every_run_asks} ->
-          put_notice(socket, :info, "Every run asks", body: "Nothing auto-approves this one.")
-
         {:error, _off} ->
           put_notice(socket, :info, "It is off already")
       end
@@ -903,24 +985,13 @@ defmodule MWTClientWeb.SandboxLive do
         {:ok, _grant} ->
           socket
 
-        {:error, :every_run_asks} ->
-          put_notice(socket, :info, "Every use asks", body: "Nothing auto-approves this one.")
+        {:error, :to_review} ->
+          put_notice(socket, :info, "Review it first",
+            body: "An agent proposed it: it starts off until you accept it."
+          )
 
         {:error, :not_found} ->
           put_notice(socket, :info, "It was removed")
-      end
-
-    {:noreply, refresh(socket)}
-  end
-
-  # The most automation a grant accepts; lowering it takes effect now.
-  def handle_event("set_ceiling", %{"id" => id, "ceiling" => ceiling}, socket)
-      when ceiling in ["ask", "allow"] do
-    socket =
-      case Sandbox.set_ceiling(socket.assigns.username, id, String.to_existing_atom(ceiling)) do
-        {:ok, _grant} -> socket
-        {:error, :not_offered} -> put_notice(socket, :info, "Not for this grant")
-        {:error, :not_found} -> put_notice(socket, :info, "It was removed")
       end
 
     {:noreply, refresh(socket)}
@@ -945,6 +1016,9 @@ defmodule MWTClientWeb.SandboxLive do
           put_notice(socket, :info, "Review it first",
             body: "An agent proposed it. Accept it on its page, then it can turn on."
           )
+
+        {:error, refusal} ->
+          turn_on_notice(socket, refusal)
       end
 
     {:noreply, socket |> update(:modes, &Map.delete(&1, id)) |> refresh()}
@@ -976,15 +1050,13 @@ defmodule MWTClientWeb.SandboxLive do
               )
           )
 
-        {:error, :no_value} ->
-          put_notice(socket, :info, "Paste its value first",
-            body: "A token grant needs its value before it can turn on."
-          )
-
         {:error, :changed} ->
           put_notice(socket, :error, "The agent changed this proposal as you read it",
             body: "Nothing was accepted. Read it again as it is now, then accept it."
           )
+
+        {:error, refusal} when refusal in [:no_value, :resource_to_review] ->
+          turn_on_notice(socket, refusal)
 
         {:error, _reason} ->
           socket
@@ -998,18 +1070,78 @@ defmodule MWTClientWeb.SandboxLive do
     {:noreply, refresh(socket)}
   end
 
-  # Try a use: the request decided as it would be now, nothing sent, and
-  # nothing of what was typed kept beyond this page's answer.
-  def handle_event("try_use", %{"try" => params}, socket) do
-    answer =
-      Sandbox.explain_request(
-        socket.assigns.username,
-        to_string(params["url"]),
-        params["method"],
-        params["with"]
-      )
+  # Try it as the VM: one command at a time, run in the VM from here. Each
+  # run goes into the console's history (`Sandbox.console_runs/1`), kept by
+  # the server, so it is there when you come back; the newest opens, with
+  # what MWT decided while it ran.
+  def handle_event("console_change", %{"console" => params}, socket),
+    do: {:noreply, assign(socket, console_with: params, console_error: nil)}
 
-    {:noreply, socket |> assign(:tried, answer) |> assign(:tried_with, params)}
+  # Stopped from here: the run ends where MWT waits for it, and is kept as
+  # stopped; what it started in the VM may finish there.
+  def handle_event("console_stop", _params, socket) do
+    socket = cancel_async(socket, :console)
+
+    socket =
+      case socket.assigns.console_running do
+        %{command: command, credential: credential, started_at: started_at} ->
+          {:ok, run} =
+            Sandbox.console_stopped(socket.assigns.username, command, credential, started_at)
+
+          socket |> assign(console_term: "", console_page: 1) |> open_console_run(run.id)
+
+        nil ->
+          socket
+      end
+
+    {:noreply, assign(socket, :console_running, nil)}
+  end
+
+  def handle_event("console_run", %{"console" => params}, socket),
+    do: {:noreply, run_console(socket, params)}
+
+  # Run again: as it ran, the form showing it.
+  def handle_event("console_again", %{"id" => id}, socket) do
+    case Enum.find(socket.assigns.console_history, &(to_string(&1.id) == id)) do
+      nil ->
+        {:noreply, socket}
+
+      run ->
+        params = %{"mode" => "command", "command" => run.command, "with" => run.credential || ""}
+        {:noreply, run_console(socket, params)}
+    end
+  end
+
+  def handle_event("console_open", %{"id" => id}, socket) do
+    case Integer.parse(to_string(id)) do
+      {id, ""} when id == socket.assigns.console_open ->
+        {:noreply, assign(socket, console_open: nil, console_decisions: [])}
+
+      {id, ""} ->
+        {:noreply, open_console_run(socket, id)}
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_event("console_search", %{"term" => term}, socket),
+    do: {:noreply, assign(socket, console_term: term, console_page: 1)}
+
+  def handle_event("console_page", %{"page" => page}, socket) do
+    case page_asked(page) do
+      nil -> {:noreply, socket}
+      number -> {:noreply, assign(socket, :console_page, number)}
+    end
+  end
+
+  def handle_event("console_clear", _params, socket) do
+    :ok = Sandbox.clear_console_runs(socket.assigns.username)
+
+    {:noreply,
+     socket
+     |> assign(console_open: nil, console_decisions: [], console_term: "", console_page: 1)
+     |> load_console_runs()}
   end
 
   # Locking a resource stops every use of it, whatever its grants say;
@@ -1033,14 +1165,64 @@ defmodule MWTClientWeb.SandboxLive do
       when kind in ["credential", "network"] do
     kind = String.to_existing_atom(kind)
 
+    # Opened from the add-grant dialog too: the resource comes first, so
+    # that dialog gives way, and comes back over the new resource once it
+    # is added, still answering the ask it was opened from.
+    then_grant =
+      case socket.assigns[:adding] do
+        %{editing: id} when is_binary(id) -> nil
+        %{} = adding -> %{approval_id: adding[:approval_id]}
+        nil -> nil
+      end
+
     {:noreply,
-     assign(socket, :resource_form, %{
+     socket
+     |> assign(:adding, nil)
+     |> assign(:resource_form, %{
        kind: kind,
        editing: nil,
        form: to_form(ResourcePages.form_fields(kind), as: :resource),
-       errors: %{}
+       errors: %{},
+       presets: Presets.making(kind, socket.assigns.username),
+       preset: nil,
+       step: if(Presets.making(kind, socket.assigns.username) == [], do: :form, else: :pick),
+       then_grant: then_grant
      })}
   end
+
+  # A preset the new resource starts from, or none ("by hand"): it fills
+  # the form, and its blanks wait to be filled.
+  def handle_event("pick_resource_preset", params, socket) do
+    form_state = socket.assigns.resource_form
+
+    preset =
+      Enum.find(Map.get(form_state, :presets, []), &(&1.id == params["preset"]))
+
+    fields =
+      case preset do
+        nil ->
+          ResourcePages.form_fields(form_state.kind)
+
+        preset ->
+          Map.merge(ResourcePages.form_fields(form_state.kind), preset.fields)
+          |> Map.merge(%{"name" => preset.name, "preset" => preset.id})
+      end
+
+    {:noreply,
+     assign(
+       socket,
+       :resource_form,
+       Map.merge(form_state, %{
+         form: to_form(fields, as: :resource),
+         errors: %{},
+         preset: preset,
+         step: :form
+       })
+     )}
+  end
+
+  def handle_event("resource_preset_back", _params, socket),
+    do: {:noreply, update(socket, :resource_form, &Map.put(&1, :step, :pick))}
 
   def handle_event("edit_resource", %{"kind" => kind, "id" => id}, socket)
       when kind in ["credential", "network"] do
@@ -1060,7 +1242,9 @@ defmodule MWTClientWeb.SandboxLive do
            kind: String.to_existing_atom(kind),
            editing: id,
            form: to_form(ResourcePages.form_fields(found), as: :resource),
-           errors: %{}
+           errors: %{},
+           presets: [],
+           preset: nil
          })}
     end
   end
@@ -1076,6 +1260,9 @@ defmodule MWTClientWeb.SandboxLive do
     %{kind: kind, editing: editing} = socket.assigns.resource_form
     username = socket.assigns.username
 
+    socket =
+      assign(socket, :resource_form_then, Map.get(socket.assigns.resource_form, :then_grant))
+
     result =
       if editing,
         do: Sandbox.update_resource(username, {kind, editing}, params),
@@ -1083,11 +1270,30 @@ defmodule MWTClientWeb.SandboxLive do
 
     case result do
       {:ok, resource} ->
-        {:noreply,
-         socket
-         |> assign(:resource_form, nil)
-         |> put_notice(:success, "#{resource.name} #{if(editing, do: "saved", else: "added")}")
-         |> push_navigate(to: MWTClient.Sandbox.Resource.path({kind, resource.id}))}
+        socket =
+          socket
+          |> assign(:resource_form, nil)
+          |> put_notice(:success, "#{resource.name} #{if(editing, do: "saved", else: "added")}")
+
+        case socket.assigns.resource_form_then do
+          # Added from the add-grant dialog: back to it, over the new one.
+          %{approval_id: approval_id} ->
+            socket =
+              socket
+              |> assign(:resource_form_then, nil)
+              |> refresh()
+              |> assign(:adding, %{step: :pick, approval_id: approval_id})
+
+            handle_event(
+              "pick_over",
+              %{"kind" => Atom.to_string(kind), "id" => resource.id},
+              socket
+            )
+
+          nil ->
+            {:noreply,
+             push_navigate(socket, to: MWTClient.Sandbox.Resource.path({kind, resource.id}))}
+        end
 
       {:error, errors} when is_map(errors) ->
         {:noreply,
@@ -1100,6 +1306,87 @@ defmodule MWTClientWeb.SandboxLive do
       {:error, _reason} ->
         {:noreply, socket |> assign(:resource_form, nil) |> put_notice(:info, "It was removed")}
     end
+  end
+
+  # A resource's settings on its page: changed in place, kept once saved.
+  def handle_event("resource_settings_change", %{"resource" => params}, socket) do
+    {:noreply,
+     update(socket, :resource_settings, fn settings ->
+       %{settings | form: to_form(params, as: :resource), dirty: true}
+     end)}
+  end
+
+  def handle_event("resource_settings_cancel", _params, socket),
+    do: {:noreply, socket |> assign(:resource_settings, nil) |> resource_settings()}
+
+  def handle_event("resource_settings_save", %{"resource" => params}, socket) do
+    case Sandbox.update_resource(socket.assigns.username, socket.assigns.resource, params) do
+      {:ok, resource} ->
+        {:noreply,
+         socket
+         |> put_notice(:success, "#{resource.name} saved")
+         |> assign(:resource_settings, nil)
+         |> refresh()}
+
+      {:error, %{} = errors} ->
+        {:noreply,
+         update(
+           socket,
+           :resource_settings,
+           &%{&1 | form: to_form(params, as: :resource), errors: errors}
+         )}
+
+      {:error, _gone} ->
+        {:noreply, socket |> put_notice(:info, "It can't be changed") |> refresh()}
+    end
+  end
+
+  # A resource an agent proposed, accepted on its page as it showed it.
+  def handle_event("accept_resource", %{"kind" => kind, "id" => id} = params, socket)
+      when kind in ["credential", "network"] do
+    resource = MWTClient.Sandbox.Resource.from_path(kind, id)
+
+    case Sandbox.review_resource(socket.assigns.username, resource, params["revision"]) do
+      {:ok, accepted} ->
+        {:noreply,
+         socket
+         |> put_notice(:success, "#{accepted.name} is yours now",
+           body:
+             if(match?(%MWTClient.Sandbox.Credential{source: :stored}, accepted),
+               do: "Paste its value when you have it: until then every use of it is refused.",
+               else: "The agent that proposed it hears so. Grants over it give its uses."
+             )
+         )
+         |> refresh()}
+
+      {:error, :changed} ->
+        {:noreply,
+         socket
+         |> put_notice(:error, "The agent changed this proposal as you read it",
+           body: "Read it again before you accept it."
+         )
+         |> refresh()}
+
+      {:error, _gone} ->
+        {:noreply, socket |> put_notice(:info, "That was already settled") |> refresh()}
+    end
+  end
+
+  # Declined on its page: its card's answer, or, the card gone, removed.
+  def handle_event("decline_resource", %{"kind" => kind, "id" => id}, socket)
+      when kind in ["credential", "network"] do
+    resource = MWTClient.Sandbox.Resource.from_path(kind, id)
+    username = socket.assigns.username
+
+    case Enum.find(socket.assigns.waiting, &(&1.resource == resource)) do
+      nil -> Sandbox.delete_resource(username, resource)
+      ask -> Sandbox.decide(username, ask.id, :decline)
+    end
+
+    {:noreply,
+     socket
+     |> put_notice(:info, "Declined and removed")
+     |> push_navigate(to: ~p"/tools/sandbox/grants?tab=resources")}
   end
 
   def handle_event("confirm_delete_resource", %{"kind" => kind, "id" => id}, socket)
@@ -1293,6 +1580,18 @@ defmodule MWTClientWeb.SandboxLive do
     {:noreply, socket |> decide(id, {:turn_on, minutes, uses}) |> refresh()}
   end
 
+  # From a credential's page: its kind comes first, as picking it does.
+  def handle_event("open_add_grant", %{"preset" => "over", "over" => over} = params, socket) do
+    case ResourcePages.over_from(over) do
+      {kind, id} ->
+        socket = assign(socket, :adding, %{step: :pick, approval_id: params["approval"]})
+        handle_event("pick_over", %{"kind" => Atom.to_string(kind), "id" => id}, socket)
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
   def handle_event("open_add_grant", %{"preset" => preset} = params, socket) do
     socket =
       assign(socket, :adding, %{
@@ -1302,6 +1601,70 @@ defmodule MWTClientWeb.SandboxLive do
       })
 
     handle_event("pick_preset", %{"preset" => preset}, socket)
+  end
+
+  # A grant's settings on its page: changed in place, kept only once saved.
+  def handle_event("grant_settings_change", %{"grant" => params}, socket) do
+    {:noreply,
+     update(socket, :grant_settings, fn settings ->
+       %{settings | form: to_form(params, as: :grant), dirty: true}
+     end)}
+  end
+
+  def handle_event("grant_settings_cancel", _params, socket) do
+    {:noreply,
+     case socket.assigns[:grant] do
+       %Grant{} = grant -> assign(socket, :grant_settings, settings_of(grant))
+       nil -> socket
+     end}
+  end
+
+  def handle_event("grant_settings_save", %{"grant" => params}, socket) do
+    username = socket.assigns.username
+    grant = socket.assigns.grant
+
+    # The grant's own fields, then when it starts and whether it always
+    # asks, each only when it changed.
+    # A built-in grant's own fields are MWT's, but for the hosts the
+    # Internet's leaves out.
+    saved =
+      cond do
+        Grant.internet?(grant) -> Sandbox.set_except(username, grant.id, params["except"])
+        Grant.built_in?(grant) -> {:ok, grant}
+        true -> Sandbox.update_grant(username, grant.id, Map.drop(params, ["start"]))
+      end
+
+    with {:ok, grant} <- saved,
+         {:ok, grant} <- changed_start(username, grant, params["start"]) do
+      {:noreply,
+       socket
+       |> assign(:grant_settings, settings_of(grant))
+       |> put_notice(:success, "#{grant.name} saved")
+       |> refresh()}
+    else
+      {:error, %{} = errors} ->
+        {:noreply,
+         update(
+           socket,
+           :grant_settings,
+           &%{&1 | form: to_form(params, as: :grant), errors: errors}
+         )}
+
+      {:error, :to_review} ->
+        {:noreply,
+         put_notice(socket, :info, "Review it first",
+           body: "An agent proposed it: it starts off until you accept it."
+         )}
+
+      {:error, :always_asks} ->
+        {:noreply,
+         put_notice(socket, :info, "It always asks",
+           body: "A command an agent writes can do anything you can: every run waits for you."
+         )}
+
+      {:error, _gone} ->
+        {:noreply, socket |> put_notice(:info, "It can't be changed") |> refresh()}
+    end
   end
 
   # A grant or action changed in the form it was added with, filled in.
@@ -1373,12 +1736,33 @@ defmodule MWTClientWeb.SandboxLive do
       |> assign(:grant_page, 1)
 
     # Filtered from another tab (Show them, of what agents proposed): the
-    # catalog is in All grants.
+    # list is in Grants.
     {:noreply,
-     if(socket.assigns.grants_tab == "all",
+     if(socket.assigns.grants_tab == "grants",
        do: socket,
-       else: push_patch(socket, to: ~p"/tools/sandbox/grants?tab=all")
+       else: push_patch(socket, to: ~p"/tools/sandbox/grants")
      )}
+  end
+
+  # The Resources tab's filters, and its pages.
+  def handle_event("filter_resources", params, socket),
+    do:
+      {:noreply,
+       assign(socket,
+         resource_filters: ResourcePages.resource_filters(params),
+         resource_page: 1
+       )}
+
+  def handle_event("clear_resource_filters", _params, socket),
+    do:
+      {:noreply,
+       assign(socket, resource_filters: ResourcePages.resource_filters(), resource_page: 1)}
+
+  def handle_event("resources_page", %{"page" => page}, socket) do
+    case page_asked(page) do
+      nil -> {:noreply, socket}
+      number -> {:noreply, assign(socket, :resource_page, number)}
+    end
   end
 
   def handle_event("clear_grant_search", _params, socket),
@@ -1395,15 +1779,49 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
-  def handle_event("toggle_startup_grants", _params, socket),
-    do: {:noreply, update(socket, :startup_open, &(not &1))}
-
   def handle_event("close_add_grant", _params, socket),
     do: {:noreply, assign(socket, :adding, nil)}
 
   def handle_event("add_grant_back", _params, socket) do
     {:noreply, update(socket, :adding, &%{step: :pick, approval_id: &1.approval_id})}
   end
+
+  # The resource a new grant is over, picked in the dialog: a grant over a
+  # credential or a network starts from its type, its presets offered.
+  def handle_event("pick_over", %{"kind" => kind, "id" => id}, socket)
+      when kind in ["credential", "network"] do
+    resource = {String.to_existing_atom(kind), id}
+
+    socket =
+      update(socket, :adding, &Map.merge(&1, %{over: resource, picked: true}))
+
+    # Over a credential, its kind comes first: open use or a fixed call.
+    if kind == "credential",
+      do: {:noreply, update(socket, :adding, &Map.put(&1, :step, :kind))},
+      else: handle_event("pick_preset", %{"preset" => "network"}, socket)
+  end
+
+  # The kind of a new grant over a credential: open use, from a grant
+  # preset for its service when there are some, or a fixed call.
+  def handle_event("pick_kind", %{"kind" => "fixed"}, socket),
+    do: handle_event("pick_preset", %{"preset" => "request_action"}, socket)
+
+  def handle_event("pick_kind", %{"kind" => "open"}, socket) do
+    presets =
+      with {:credential, id} <- socket.assigns.adding[:over],
+           %{} = credential <- Enum.find(socket.assigns.credentials, &(&1.id == id)),
+           do: Presets.over(credential, socket.assigns.username),
+           else: (_ -> [])
+
+    if presets == [],
+      do: handle_event("pick_preset", %{"preset" => "token"}, socket),
+      else: {:noreply, update(socket, :adding, &Map.put(&1, :step, :preset))}
+  end
+
+  # By hand, from the grant presets' step: a grant over the credential,
+  # as its type's form starts.
+  def handle_event("pick_preset", params, socket) when not is_map_key(params, "preset"),
+    do: handle_event("pick_preset", %{"preset" => "token"}, socket)
 
   def handle_event("pick_preset", %{"preset" => id}, socket) do
     {:ok, preset} = Presets.find(id, socket.assigns.username)
@@ -1718,6 +2136,11 @@ defmodule MWTClientWeb.SandboxLive do
       group: if(Map.has_key?(Event.groups(), params["group"]), do: params["group"], else: "all"),
       grant: params["grant"] || "",
       thread: params["thread"] || "",
+      decided:
+        if(params["decided"] in Enum.map(Decision.all(), &Atom.to_string/1),
+          do: params["decided"],
+          else: ""
+        ),
       window: if(Map.has_key?(@windows, params["window"]), do: params["window"], else: "day")
     }
 
@@ -1804,7 +2227,7 @@ defmodule MWTClientWeb.SandboxLive do
   # its details, are read now, and the line drawn again with them.
   def handle_event("open_event", %{"id" => id}, socket) when is_binary(id) do
     case Sandbox.event(socket.assigns.username, id) do
-      %Event{exchange: nil, details: []} -> {:noreply, socket}
+      %Event{exchange: nil, details: [], decision: nil} -> {:noreply, socket}
       %Event{} = event -> {:noreply, stream_insert(socket, :events, event)}
       nil -> {:noreply, socket}
     end
@@ -2524,6 +2947,14 @@ defmodule MWTClientWeb.SandboxLive do
   ## Broadcasts
 
   @impl true
+  # What the run kept open decided, read again a moment after it ended:
+  # the requests it made are logged as they go, the last ones a little
+  # after it.
+  def handle_info({:console_decisions, id}, socket) do
+    {:noreply,
+     if(socket.assigns.console_open == id, do: open_console_run(socket, id), else: socket)}
+  end
+
   def handle_info({:sandbox_changed, _area}, socket), do: {:noreply, schedule_refresh(socket)}
 
   # A thread of an MWT agent opened, closed, started or ended a turn.
@@ -2573,6 +3004,25 @@ defmodule MWTClientWeb.SandboxLive do
     do: {:noreply, assign(socket, :monitor, snapshot)}
 
   @impl true
+  def handle_async(:console, {:ok, {:ok, run}}, socket) do
+    Process.send_after(self(), {:console_decisions, run.id}, 1_500)
+
+    {:noreply,
+     socket
+     |> assign(console_running: nil, console_term: "", console_page: 1)
+     |> open_console_run(run.id)}
+  end
+
+  def handle_async(:console, {:ok, {:error, reason}}, socket),
+    do: {:noreply, assign(socket, console_running: nil, console_error: console_error(reason))}
+
+  def handle_async(:console, {:exit, {:shutdown, :cancel}}, socket), do: {:noreply, socket}
+
+  def handle_async(:console, {:exit, reason}, socket) do
+    {:noreply,
+     assign(socket, console_running: nil, console_error: "It stopped: #{inspect(reason)}")}
+  end
+
   def handle_async(:leftovers, {:ok, result}, socket),
     do: {:noreply, assign(socket, :leftovers, result)}
 
@@ -2976,11 +3426,20 @@ defmodule MWTClientWeb.SandboxLive do
 
         socket
         |> assign(:grant, grant)
+        |> grant_settings(grant)
         |> assign_new(:value_form, fn -> to_form(%{"value" => ""}, as: :value) end)
         |> assign(
           :grant_events,
           if(grant, do: Sandbox.events(username, %{grant: grant.id, limit: 10}), else: [])
         )
+
+      :resource ->
+        resource_settings(socket)
+
+      # The console's history, while its tab shows: another page's runs
+      # join it as they end.
+      :grants ->
+        if socket.assigns.grants_tab == "console", do: load_console_runs(socket), else: socket
 
       # Your layer's versions: the page says when MWT moved your recipe
       # into them, and lists them when you open them.
@@ -2994,9 +3453,76 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
+  # A grant's settings on its page, as its form shows them: taken again
+  # from the grant unless you changed them and haven't saved yet.
+  defp grant_settings(socket, nil), do: assign(socket, :grant_settings, nil)
+
+  defp grant_settings(socket, %Grant{} = grant) do
+    case socket.assigns[:grant_settings] do
+      %{id: id, dirty: true} when id == grant.id -> socket
+      _other -> assign(socket, :grant_settings, settings_of(grant))
+    end
+  end
+
+  defp settings_of(%Grant{} = grant) do
+    fields =
+      grant
+      |> edit_fields()
+      |> Map.put("start", Atom.to_string(grant.start))
+
+    %{
+      id: grant.id,
+      form: to_form(fields, as: :grant),
+      errors: %{},
+      preset: Presets.type_or_preset(grant),
+      dirty: false
+    }
+  end
+
+  # A resource's settings on its page, as its form shows them: taken again
+  # from it unless you changed them and haven't saved yet.
+  defp resource_settings(socket) do
+    found =
+      case socket.assigns[:resource] do
+        {:credential, id} -> Enum.find(socket.assigns.credentials, &(&1.id == id))
+        {:network, id} -> Enum.find(socket.assigns.networks, &(&1.id == id))
+        _built_in -> nil
+      end
+
+    case {found, socket.assigns[:resource_settings]} do
+      {nil, _settings} ->
+        assign(socket, :resource_settings, nil)
+
+      {found, %{id: id, dirty: true}} when id == {found.__struct__, found.id} ->
+        socket
+
+      {found, _settings} ->
+        assign(socket, :resource_settings, resource_settings_of(found))
+    end
+  end
+
+  defp resource_settings_of(found) do
+    %{
+      id: {found.__struct__, found.id},
+      form: to_form(ResourcePages.form_fields(found), as: :resource),
+      errors: %{},
+      dirty: false
+    }
+  end
+
   defp reset_events(socket), do: load_events(socket, [])
 
   # The activity page opened on a group, as the Firewall page links to it.
+  defp grant_from(socket, id) when is_binary(id) and id != "",
+    do: update(socket, :filters, &%{&1 | grant: id})
+
+  defp grant_from(socket, _none), do: socket
+
+  defp thread_from(socket, id) when is_binary(id) and id != "",
+    do: update(socket, :filters, &%{&1 | thread: id})
+
+  defp thread_from(socket, _none), do: socket
+
   defp group_from(socket, group) do
     if is_binary(group) and Map.has_key?(Event.groups(), group),
       do: update(socket, :filters, &%{&1 | group: group}),
@@ -3239,6 +3765,90 @@ defmodule MWTClientWeb.SandboxLive do
 
   # Whether the add dialog saves the command of a card waiting for you.
   # A grant's own fields, as its form shows them.
+  # A run, unless one is going on: the form as it ran, the run kept by
+  # the server when it ends (`handle_async/3`).
+  defp run_console(socket, params) do
+    username = socket.assigns.username
+    command = MWTClientWeb.SandboxLive.VmConsole.command(params, socket.assigns.credentials)
+    credential = if params["with"] in [nil, ""], do: nil, else: params["with"]
+
+    if socket.assigns.console_running do
+      socket
+    else
+      socket
+      |> assign(
+        console_running: %{
+          command: command,
+          credential: credential,
+          started_at: DateTime.utc_now()
+        },
+        console_with: params,
+        console_error: nil
+      )
+      |> start_async(:console, fn -> Sandbox.console(username, command, credential) end)
+    end
+  end
+
+  defp load_console_runs(socket),
+    do: assign(socket, :console_history, Sandbox.console_runs(socket.assigns.username))
+
+  # A run of the history opened, the history read again first: what it
+  # printed is kept with it, what MWT decided read from the activity log.
+  defp open_console_run(socket, id) do
+    socket = load_console_runs(socket)
+
+    case Enum.find(socket.assigns.console_history, &(&1.id == id)) do
+      nil ->
+        assign(socket, console_open: nil, console_decisions: [])
+
+      run ->
+        assign(socket, console_open: id, console_decisions: console_decisions(socket, run))
+    end
+  end
+
+  # The requests MWT decided while a console run ran, and in the moment
+  # after it, oldest first: an agent's of the same moments among them, as
+  # the proxy can't tell.
+  defp console_decisions(socket, run) do
+    socket.assigns.username
+    |> Sandbox.events(%{
+      since: run.started_at,
+      until: DateTime.add(run.finished_at, 2, :second),
+      limit: 50
+    })
+    |> Enum.filter(&is_binary(&1.host))
+    |> Enum.reverse()
+  end
+
+  defp console_error(:vm_not_running), do: "The VM isn't running."
+  defp console_error(message) when is_binary(message), do: message
+  defp console_error(other), do: inspect(other)
+
+  defp changed_start(username, %Grant{} = grant, start) do
+    case Enum.find([:off, :on, :auto], &(Atom.to_string(&1) == start)) do
+      nil -> {:ok, grant}
+      same when same == grant.start -> {:ok, grant}
+      start -> Sandbox.set_start(username, grant.id, start)
+    end
+  end
+
+  # Why a grant didn't turn on, or wasn't accepted, said where you clicked.
+  defp turn_on_notice(socket, :no_value),
+    do:
+      put_notice(socket, :info, "Paste its value first",
+        body:
+          "Its credential has no value yet: every use would be refused. Paste it on the credential's page."
+      )
+
+  defp turn_on_notice(socket, :resource_to_review),
+    do:
+      put_notice(socket, :info, "Accept its resource first",
+        body:
+          "An agent proposed the credential or network it is over. Accept that on its page, then this grant."
+      )
+
+  defp turn_on_notice(socket, _other), do: socket
+
   defp edit_fields(%Grant{} = grant) do
     %{
       "name" => grant.name,
@@ -3267,22 +3877,30 @@ defmodule MWTClientWeb.SandboxLive do
           {:minted, command} -> command
           _stored -> ""
         end,
-      "destinations" => Enum.join(grant.destinations, "\n"),
+      # A grant over all of its network lists none: its targets are the
+      # network's, and empty says so.
+      "destinations" =>
+        if(
+          grant.kind == :network and is_binary(grant.network) and
+            not MWTClient.Sandbox.Network.part?(grant),
+          do: "",
+          else: Enum.join(grant.destinations, "\n")
+        ),
+      "except" => Enum.join(grant.except, "\n"),
       "path" => grant.path && Path.basename(grant.path),
       "script" => grant.script,
       "dir" => grant.dir,
-      "params" => Enum.map_join(grant.params, "\n", &Param.line/1),
+      "schema" => MWTClient.Sandbox.ParamSchema.text(grant.params),
       "confined" => to_string(grant.confined),
       "writes_dir" => to_string(grant.writes_dir),
       "with" => Enum.join(grant.with, ", "),
-      "machine" => to_string(grant.machine),
       "method" => grant.method,
       "url" => grant.url,
       "headers" => SavedRequest.header_lines(grant.headers),
       "body" => grant.body || "",
       # A request action's credential; a token grant's own form edits
       # what its credential presents, as it always did.
-      "credential" => if(grant.kind == :request, do: grant.credential),
+      "credential" => if(grant.kind in [:request, :token], do: Grant.credential_id(grant)),
       "network" => if(grant.kind == :network, do: grant.network),
       "start" => Atom.to_string(grant.start)
     }

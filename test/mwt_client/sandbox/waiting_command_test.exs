@@ -196,15 +196,15 @@ defmodule MWTClient.Sandbox.WaitingCommandTest do
     assert {refused.decision, refused.run} == {:changed, nil}
   end
 
-  test "a call whose host its network no longer gives is refused at Run, before any mint",
+  test "a call whose host's network no longer lets it out is refused at Run, before any mint",
        context do
     marker = Path.join(context.base, "minted")
     {_token, sub} = token(context, "touch #{marker}; exit 1")
     card = call(context.username, sub.id)
 
-    # Its URL's host is on the Internet, whose grant you turn off.
+    # Its URL's host is on the Internet, whose grant you turn off: its
+    # request would go out as the agent's own, which that grant lets out.
     {:ok, _} = Sandbox.turn_off(context.username, "internet")
-
     assert waiting?(context.username, card.id)
     :ok = Sandbox.decide(context.username, card.id, {:run, :send})
     assert %{decision: :grant_off, run: nil} = final(context.username, card.id)

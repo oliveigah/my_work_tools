@@ -50,7 +50,7 @@ defmodule MWTClient.Preferences do
   @impl true
   def handle_call({:put, key, value}, _from, state) do
     path = path()
-    :ok = File.mkdir_p(Path.dirname(path))
+    :ok = MWTClient.Files.mkdir_p(Path.dirname(path))
     :ok = write(path, Map.put(read(path), key, value))
     {:reply, :ok, state}
   end
@@ -64,8 +64,10 @@ defmodule MWTClient.Preferences do
     {:reply, :ok, state}
   end
 
+  # Read on every page's first render: with `MWTClient.Files`, past
+  # Erlang's one file server, so a busy one never holds a page.
   defp read(path) do
-    with {:ok, body} <- File.read(path),
+    with {:ok, body} <- MWTClient.Files.read(path),
          {:ok, values} when is_map(values) <- Jason.decode(body) do
       Map.merge(@defaults, values)
     else
@@ -74,6 +76,6 @@ defmodule MWTClient.Preferences do
   end
 
   defp write(path, values) do
-    File.write(path, Jason.encode!(values, pretty: true))
+    MWTClient.Files.write(path, Jason.encode!(values, pretty: true))
   end
 end

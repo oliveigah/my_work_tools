@@ -1,0 +1,20 @@
+{
+  "id": "github-repository",
+  "makes": "grant",
+  "over": ["github"],
+  "name": "One repository",
+  "icon": "git-branch",
+  "blurb": "gh, git over HTTPS and the GitHub API, on one repository only.",
+  "guide": [
+    "MWT reads the repository from each request's URL: the REST API's /repos/OWNER/NAME and git's /OWNER/NAME. A GraphQL query names it in its body, which MWT doesn't read as a repository: it is refused.",
+    "Requests that name no repository (your user, search) aren't covered: add another grant for them if a task needs them."
+  ],
+  "fill": [
+    {"name": "repository", "label": "The repository, as owner/name", "example": "oliveigah/klife"}
+  ],
+  "fields": {
+    "purpose": "GitHub, on {repository} only: gh, git over HTTPS and the GitHub API.",
+    "hosts": "api.github.com, github.com, uploads.github.com",
+    "attributes": "github.repository = {repository}"
+  }
+}
