@@ -48,7 +48,7 @@ defmodule MWTClientWeb.SandboxMwtToolsLiveTest do
        %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
     # MWT's own tools, by their resource.
-    view |> form("#grant-filters", %{resource: "mwt"}) |> render_change()
+    view |> form("#grant-filters", %{labels: ["resource:mwt"]}) |> render_change()
 
     for id <- ~w(mwt-read mwt-create mwt-change) do
       assert has_element?(view, "#grant-row-#{id}", "Starts on")

@@ -1,34 +1,41 @@
 defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
   @moduledoc """
-  The answer to a request MWT put a real value in, read as HTTP on its way
-  back to the VM, so that none of the value reaches it. Pure: bytes from
+  An answer MWT looks through for real values, read as HTTP on its way
+  back to the VM, so that none of them reaches it. Pure: bytes from
   upstream go in (`feed/2`), bytes for the VM come out.
 
   A service may quote what it was sent: a header copied into its answer, an
-  error page or a debug route echoing the request. So each form the value
-  left in (`echo`, a `MWTClient.Sandbox.Secrets`) is looked for in the
+  error page or a debug route echoing the request. And it may hand back a
+  value it holds: config vars, a secret manager, a file in a repository.
+  So two sets of forms are looked for (`MWTClient.Sandbox.Secrets`):
+  `echo`, each form a value MWT put in this request left in, and
+  `values`, every value MWT holds, whatever the request carried. In the
   whole answer:
 
     * **every head**: `1xx` answers (`103 Early Hints`), the final head, a
-      chunked body's trailers. Each value is replaced with its own
+      chunked body's trailers. Each form of `echo` is replaced with its own
       placeholder: a request may carry a grant's value and values made
-      from it (`MWTClient.Sandbox.Made`).
+      from it (`MWTClient.Sandbox.Made`). Any other value there cuts the
+      answer before the head goes: MWT gave the VM no placeholder for it.
     * **the body**, through its framing (`Content-Length`, chunked, or up to
       the close), with gzip and deflate decoded for the look only. Found,
       the answer is cut there, before any byte of the value goes
       (`{:cut, {:found, label}, bytes}`): replacing it would change the
       body's length. A chunked body is written out again in chunks of
       MWT's own, so a value split by the framing is held back like any
-      other. Without encoding, the bytes that could start the value wait
+      other. Without encoding, the bytes that could start a value wait
       for what follows (`MWTClient.Sandbox.Egress.Scanner`); the caller
       lets them go when the stream pauses (`release/1`) or ends.
     * after `101 Switching Protocols`, the bytes that follow, the same way.
 
   What can't be read this way is refused, not passed on: a head over 64
   KiB, framing that doesn't parse, an encoding other than gzip or deflate
-  (MWT asked for none). `{:refuse, message}` while nothing has gone to the
-  VM, for a `502`; a cut after. Once the final answer is whole, the
-  connection ends (`{:done, bytes}`): one request, one answer.
+  (MWT asks for no other). `{:refuse, message}` while nothing has gone to
+  the VM, for a `502`; a cut after. Once the final answer is whole,
+  `{:done, bytes, beyond, keep?}`: `beyond`, what the host sent past its
+  end, and `keep?`, whether its connection may carry the next request
+  (HTTP/1.1, framed, no `Connection: close`). The caller decides whether
+  it does: one MWT put a value in never does.
   """
 
   alias MWTClient.Sandbox.Egress.AnswerBody
@@ -37,37 +44,64 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
   @head_limit 64 * 1024
   @line_limit 4096
 
+  # `echo` is replaced in heads; `look`, the echo's forms and every
+  # value's, cuts wherever it is found; `keep?`, the final head's word on
+  # its connection; `started?`, once any byte came.
   @derive {Inspect, only: [:phase, :sent?]}
   defstruct [
     :echo,
+    :look,
     :placeholders,
     :head_only?,
     :body,
     phase: :head,
     buffer: "",
-    sent?: false
+    sent?: false,
+    started?: false,
+    keep?: false
   ]
 
   @opaque t :: %__MODULE__{}
 
   @type result ::
           {:more, iodata(), t()}
-          | {:done, iodata()}
+          | {:done, iodata(), binary(), boolean()}
           | {:cut, {:found, Secrets.label()} | :unreadable, iodata()}
           | {:refuse, String.t()}
 
   @doc """
-  The answer to a `method` request whose values go by the forms in `echo`,
-  each replaced in heads by the placeholder `placeholders` holds for its
-  label.
+  The answer to a `method` request whose values went in by the forms in
+  `echo` (nil for none), each replaced in heads by the placeholder
+  `placeholders` holds for its label, and which none of `values` (every
+  value MWT holds, or nil) may reach the VM in.
   """
-  @spec new(String.t(), Secrets.t(), String.t()) :: t()
-  def new(method, echo, placeholders) when is_map(placeholders),
-    do: %__MODULE__{echo: echo, placeholders: placeholders, head_only?: method == "HEAD"}
+  @spec new(String.t(), Secrets.t() | nil, map(), Secrets.t() | nil) :: t()
+  def new(method, echo, placeholders, values \\ nil) when is_map(placeholders),
+    do: %__MODULE__{
+      echo: echo,
+      look: Secrets.union(echo, values),
+      placeholders: placeholders,
+      head_only?: method == "HEAD"
+    }
+
+  @doc "The same answer, none of it read: the request goes again on a new link."
+  @spec restart(t()) :: t()
+  def restart(%__MODULE__{} = response),
+    do: %__MODULE__{
+      echo: response.echo,
+      look: response.look,
+      placeholders: response.placeholders,
+      head_only?: response.head_only?
+    }
 
   @doc "The next bytes from upstream."
   @spec feed(t(), binary()) :: result()
-  def feed(%__MODULE__{} = response, data), do: step(response, data, [])
+  def feed(%__MODULE__{} = response, data),
+    do: step(%{response | started?: response.started? or data != ""}, data, [])
+
+  @doc "Whether any byte of the answer has come."
+  @spec started?(t()) :: boolean()
+  def started?(%__MODULE__{started?: started?}), do: started?
 
   @doc """
   The bytes held back as the possible start of the value, let go: the
@@ -89,10 +123,13 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
 
   @doc """
   Upstream closed. What was held back goes (it wasn't the value); a head
-  cut short is unreadable.
+  cut short is unreadable. Its connection carries nothing more.
   """
-  @spec finish(t()) :: {:done, iodata()} | {:cut, :unreadable, iodata()} | {:refuse, String.t()}
-  def finish(%__MODULE__{phase: :head, buffer: "", sent?: false}), do: {:done, []}
+  @spec finish(t()) ::
+          {:done, iodata(), binary(), false}
+          | {:cut, :unreadable, iodata()}
+          | {:refuse, String.t()}
+  def finish(%__MODULE__{phase: :head, buffer: "", sent?: false}), do: {:done, [], "", false}
 
   def finish(%__MODULE__{phase: :head, buffer: "", sent?: true}),
     do: {:cut, :unreadable, []}
@@ -102,7 +139,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
 
   def finish(%__MODULE__{} = response) do
     {held, _response} = release(response)
-    {:done, held}
+    {:done, held, "", false}
   end
 
   ## Steps
@@ -135,8 +172,8 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
       out = [out, bytes]
 
       if take == left do
-        {held, _response} = release(response)
-        {:done, [out, held]}
+        {held, response} = release(response)
+        {:done, [out, held], binary_part(data, take, byte_size(data) - take), response.keep?}
       else
         {:more, out, %{response | phase: {:length, left - take}}}
       end
@@ -160,18 +197,22 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
 
   # A head, read: written out with the value replaced, then whatever
   # follows it. A final head whose body MWT couldn't read is refused before
-  # it goes.
+  # it goes, and so is one holding another value than those put in.
   defp headed(response, head, status, headers, rest, out) do
-    written = [scrub(response, head), "\r\n\r\n"]
+    scrubbed = scrub(response, head)
+    written = [scrubbed, "\r\n\r\n"]
 
     cond do
+      label = Secrets.find(response.look, scrubbed) ->
+        {:cut, {:found, label}, out}
+
       status == 101 ->
         response = %{
           response
           | buffer: "",
             sent?: true,
             phase: :raw,
-            body: AnswerBody.new(response.echo, nil)
+            body: AnswerBody.new(response.look, nil)
         }
 
         step(response, rest, [out, written])
@@ -180,17 +221,21 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
         step(%{response | buffer: "", sent?: true, phase: :head}, rest, [out, written])
 
       true ->
-        case framing(response, status, headers) do
+        framed = framing(response, status, headers)
+        keep? = keeps?(head, phase_of(framed), headers)
+
+        case framed do
           {:ok, :none, _encoding} ->
-            {:done, [out, written]}
+            {:done, [out, written], rest, keep?}
 
           {:ok, phase, encoding} ->
             response = %{
               response
               | buffer: "",
                 sent?: true,
+                keep?: keep?,
                 phase: phase,
-                body: AnswerBody.new(response.echo, encoding)
+                body: AnswerBody.new(response.look, encoding)
             }
 
             if rest == "",
@@ -233,6 +278,17 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
       true ->
         {:error, "Its length isn't one number."}
     end
+  end
+
+  defp phase_of({:ok, phase, _encoding}), do: phase
+  defp phase_of({:error, _message}), do: :close
+
+  # Whether the connection may carry the next request once this answer
+  # ends: an HTTP/1.1 head, a body framed to end before the close, and no
+  # `Connection: close`.
+  defp keeps?(head, phase, headers) do
+    String.starts_with?(head, "HTTP/1.1 ") and phase != :close and
+      not Enum.any?(tokens(headers, "connection"), &(&1 == "close"))
   end
 
   @doc "Why MWT refuses an answer whose body is encoded in a way it doesn't decode, in words."
@@ -287,24 +343,21 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1.Response do
 
   defp chunked(_response, :crlf, _buffer, out), do: {:cut, :unreadable, out}
 
-  defp chunked(response, :trailers, "\r\n" <> _rest, out) do
-    {held, _response} = release(response)
-    {:done, [out, held, "0\r\n\r\n"]}
+  defp chunked(response, :trailers, "\r\n" <> rest, out) do
+    {held, response} = release(response)
+    {:done, [out, held, "0\r\n\r\n"], rest, response.keep?}
   end
 
   defp chunked(response, :trailers, buffer, out) do
     case :binary.split(buffer, "\r\n\r\n") do
-      [trailers, _rest] when byte_size(trailers) <= @head_limit ->
-        {held, _response} = release(response)
+      [trailers, rest] when byte_size(trailers) <= @head_limit ->
+        {held, response} = release(response)
+        scrubbed = scrub(response, trailers)
 
-        {:done,
-         [
-           out,
-           held,
-           "0\r\n",
-           scrub(response, trailers),
-           "\r\n\r\n"
-         ]}
+        case Secrets.find(response.look, scrubbed) do
+          nil -> {:done, [out, held, "0\r\n", scrubbed, "\r\n\r\n"], rest, response.keep?}
+          label -> {:cut, {:found, label}, [out, held]}
+        end
 
       [_partial] when byte_size(buffer) <= @head_limit ->
         waiting(response, :trailers, buffer, out)

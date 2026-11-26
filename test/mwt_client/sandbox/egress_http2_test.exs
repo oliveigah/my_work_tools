@@ -263,6 +263,37 @@ defmodule MWTClient.Sandbox.EgressHttp2Test do
     refute answer.body =~ "real_value_0123456789"
   end
 
+  @tag :capture_log
+  test "an answer holding a value MWT holds that the stream didn't carry is cut, and isolates", %{
+    username: username,
+    ca: ca,
+    proxy: proxy
+  } do
+    {:ok, _stripe} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "Stripe",
+        "purpose" => "Refunds",
+        "hosts" => "api.stripe.com",
+        "env" => "STRIPE_KEY",
+        "value" => SandboxH2Host.secret()
+      })
+
+    for path <- ["/config", "/config-header"] do
+      conn = client(proxy, ca)
+      {conn, ref} = request(conn, "GET", "/hello")
+      {conn, answer} = response(conn, ref)
+      assert answer.body == "hello"
+
+      {_conn, ref} = request(conn, "GET", path)
+      {_conn, answer} = response(conn, ref)
+      refute inspect(answer) =~ "H2_STAND_IN", path
+      assert event(username, &(&1.summary =~ "Stripe's real value came back"))
+      assert Sandbox.firewall(username).firewall.isolated != nil
+      Sandbox.firewall_release(username, false)
+    end
+  end
+
   test "a host the Internet blocks refuses a gRPC call in gRPC's words", %{
     username: username,
     ca: ca,

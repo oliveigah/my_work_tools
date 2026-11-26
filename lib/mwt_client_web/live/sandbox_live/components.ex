@@ -840,11 +840,10 @@ defmodule MWTClientWeb.SandboxLive.Components do
   @doc "What a kind of grant is, in a line."
   def kind_words(:open),
     do:
-      "The agent builds what it sends: its own tools' requests, or a command it writes. MWT checks each use against the grants over everything it uses, asking you or letting it through."
+      "The agent builds it with its own tools; MWT checks each request or command against the grants."
 
   def kind_words(:fixed),
-    do:
-      "MWT builds it, from your template and the values agents give, which keep to the schema you set. It covers the credentials it names, in what it builds and nothing else, and what it builds goes out through its channel as the agents' own would."
+    do: "MWT builds it from your template and the agent's values, which must fit its parameters."
 
   @doc """
   What a form holds beyond the common case, folded: its summary says what

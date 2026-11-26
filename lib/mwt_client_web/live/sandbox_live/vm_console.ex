@@ -376,7 +376,7 @@ defmodule MWTClientWeb.SandboxLive.VmConsole do
                 id={"console-output-text-#{run.id}"}
                 phx-no-curly-interpolation
                 class="max-h-96 overflow-auto whitespace-pre-wrap break-words bg-deep/30 px-3 py-2 font-mono text-[11px] leading-4 text-ink"
-              ><%= if run.output == "", do: "(no output)", else: run.output %></pre>
+              ><%= if run.output == "" do %>(no output)<% else %><MWTClientWeb.Ansi.text text={run.output} /><% end %></pre>
               <div
                 :if={@decisions != []}
                 id={"console-decisions-#{run.id}"}

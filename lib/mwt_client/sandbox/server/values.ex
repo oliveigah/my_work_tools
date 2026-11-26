@@ -788,7 +788,7 @@ defmodule MWTClient.Sandbox.Server.Values do
 
   def refusal(:multiple_grants, _request) do
     {nil, nil,
-     deny(403, "mwt_multiple_grants", "One request may carry one grant's placeholder.", nil)}
+     deny(403, "mwt_multiple_grants", "One request may carry one credential's placeholder.", nil)}
   end
 
   def refusal({:wrong_host, grant}, request) do
@@ -898,6 +898,27 @@ defmodule MWTClient.Sandbox.Server.Values do
        "This request is plain HTTP, and carries #{grant.name}'s placeholder. Over plain HTTP " <>
          "nothing proves which host gets the request, so MWT puts no real value in one. " <>
          "Use https://#{request.host}.",
+       grant
+     )}
+  end
+
+  # A path its host may read as another than MWT did (`Policy`'s
+  # `{:ambiguous_path, _}`): a request as MWT passes none on, as its other
+  # `mwt_bad_request`s, with what to send instead. No leak: nothing went.
+  def refusal({:ambiguous_path, grant}, request) do
+    {request_event(
+       request,
+       grant,
+       :refused,
+       "#{grant.name} placeholder in a path with . or .. segments to #{request.host} · refused"
+     ), nil,
+     deny(
+       400,
+       "mwt_bad_request",
+       "This request carries #{grant.name}'s placeholder, and its path has a . or .. segment " <>
+         "or a backslash, as sent or percent-encoded, which #{request.host} may read as " <>
+         "another path than the one MWT checked. MWT puts no real value in it. Send the path " <>
+         "with those resolved (curl does, unless --path-as-is).",
        grant
      )}
   end

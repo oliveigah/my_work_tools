@@ -211,6 +211,35 @@ defmodule MWTClient.Sandbox.EgressWebSocketTest do
     assert %{rule: :credential_leak} = Sandbox.firewall(username).firewall.isolated
   end
 
+  @tag :capture_log
+  test "a host's message holding a value MWT holds is cut before any of it goes, and isolates", %{
+    username: username,
+    ca: ca,
+    proxy: proxy
+  } do
+    # The host's answer to the VM's text is "echo: " and the text: a value
+    # MWT holds that the VM never sent whole.
+    held = "echo: stand-in-secret-0123"
+
+    {:ok, _grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "Stripe",
+        "purpose" => "Refunds",
+        "hosts" => "api.stripe.com",
+        "env" => "STRIPE_KEY",
+        "value" => held
+      })
+
+    tls = upgraded(proxy, ca)
+    :ok = :ssl.send(tls, frame(1, 1, "hello"))
+    assert {:ok, <<0x81, 11, "echo: hello">>} = :ssl.recv(tls, 0, 5_000)
+
+    :ok = :ssl.send(tls, frame(1, 1, "stand-in-secret-0123"))
+    assert {:error, :closed} = :ssl.recv(tls, 0, 5_000)
+    assert %{rule: :real_value} = Sandbox.firewall(username).firewall.isolated
+  end
+
   describe "the reader" do
     test "unmasks the VM's frames whatever the offset a piece starts at, and writes zeros" do
       payload = String.duplicate("abcdefghij", 30)

@@ -1111,8 +1111,9 @@ defmodule MWTClient.Sandbox.Channel do
     end
   end
 
-  # An action, called by its id with a value for each parameter: MWT runs
-  # the user's own script, and the agent sends no text.
+  # A fixed call, called by its id with a value for each parameter: MWT
+  # builds its request or runs the user's own script, and the agent sends
+  # no text.
   defp reply("call", ask, username) do
     request = %{
       grant: ask["grant"],
@@ -1133,24 +1134,25 @@ defmodule MWTClient.Sandbox.Channel do
 
       {:error, :no_script} ->
         {@run_wrong,
-         ~s[#{ask["grant"]} is no action: it takes the command you write. ] <>
-           ~s[Run one with: mwt run #{ask["grant"]} --reason "..." -- COMMAND]}
+         ~s[#{ask["grant"]} is no fixed call: it takes the command you write. ] <>
+           ~s[Run one with: mwt run --reason "..." -- COMMAND]}
 
       {:error, {:no_such_grant, _ids}} ->
         {@run_wrong,
-         "No action has the id #{ask["grant"]}. mwt grants lists them under their grant, " <>
+         "No fixed call has the id #{ask["grant"]}. mwt grants lists them under their resource, " <>
            "with how to call each; the id is exact."}
 
       {:error, :no_command_grant} ->
         {@run_wrong,
-         "No action has the id #{ask["grant"]}. mwt grants lists them under their grant."}
+         "No fixed call has the id #{ask["grant"]}. mwt grants lists them under their resource."}
 
       {:error, reason} ->
         {@run_wrong, run_refusal(reason)}
     end
   end
 
-  # A grant an agent proposes: a token or network grant, or an action.
+  # A grant an agent proposes: a credential or a network, a grant over
+  # one, or a fixed call.
   # MWT saves it at once, off, for the user to review on its page; the
   # agent waits as for an ask for a grant, which accepting it answers.
   defp reply("propose", ask, username) do
@@ -1482,7 +1484,7 @@ defmodule MWTClient.Sandbox.Channel do
   # command now.
   defp ran(%Approval{saved_as: id} = approval) when is_binary(id) do
     saved =
-      "It is the user's action #{id} now: next time, call it by id with " <>
+      "It is the user's saved command #{id} now: next time, call it by id with " <>
         ~s[mwt call #{id} --reason "..." and send no command (mwt grants shows its parameters).]
 
     case ran_once(approval) do
@@ -1494,7 +1496,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp ran(approval), do: ran_once(approval)
 
-  # A request action's answer: its body back, its status on stderr.
+  # A fixed request's answer: its body back, its status on stderr.
   defp ran_once(%Approval{
          status: :allowed,
          call: %{host: host},
@@ -1591,7 +1593,7 @@ defmodule MWTClient.Sandbox.Channel do
   defp ran_once(%Approval{status: :denied, decision: :locked}),
     do:
       {@run_not_done,
-       "It didn't run: the user locked what it reaches (their machine, or a credential it runs " <>
+       "It didn't run: the user locked what it reaches (host commands, or a credential it runs " <>
          "with) while it waited. Asking won't change that: tell the user what you were doing."}
 
   defp ran_once(%Approval{status: :denied, decision: :simpler}),
@@ -1699,7 +1701,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp settled(%Approval{}, nil), do: {3, "The grant no longer exists."}
 
-  defp until(%Grant{expires_at: nil}), do: "until the user turns it off"
+  defp until(%Grant{expires_at: nil}), do: "until turned off"
 
   defp until(%Grant{expires_at: at}),
     do: "until #{Calendar.strftime(at, "%H:%M")} UTC"
@@ -1786,14 +1788,14 @@ defmodule MWTClient.Sandbox.Channel do
   defp pairs(_other, option),
     do: {:error, {:proposal, "#{option} takes NAME=VALUE pairs of text."}}
 
-  @propose_what "A new resource is mwt propose credential ... or mwt propose network ...; a grant over one, mwt propose grant --over RESOURCE ...; a request action over a credential, mwt propose CREDENTIAL ...; a command to run on the user's machine, a saved command: mwt propose machine ..."
+  @propose_what "A new resource is mwt propose credential ... or mwt propose network ...; a grant over one, mwt propose grant --over RESOURCE ...; a fixed request over a credential, mwt propose CREDENTIAL ...; a saved command, run on the user's machine: mwt propose commands ..."
 
   defp proposal_refusal(:unknown_grant, ask),
     do: ~s[Nothing is called "#{ask["grant"]}". #{@propose_what} See mwt help propose.]
 
   defp proposal_refusal({:no_actions, name}, _ask),
     do:
-      "#{name} takes no actions: only a credential (request actions) and the user's machine (saved commands) do. #{@propose_what}"
+      "#{name} takes no fixed calls: only a credential (fixed requests) and host commands (saved commands) do. #{@propose_what}"
 
   defp proposal_refusal(:token_split, _ask),
     do:
@@ -1812,7 +1814,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp proposal_refusal({:no_grants, name}, _ask),
     do:
-      "#{name}, the user's machine, takes saved commands, not grants: mwt propose machine --name ... --for ... -- 'SCRIPT'."
+      "#{name} take no grant of this kind: propose a saved command instead, mwt propose commands --name ... --for ... -- 'SCRIPT'."
 
   defp proposal_refusal(:no_name, _ask),
     do: ~s[Name it: --name NAME, a few words that say what it does, like "gh repo view".]
@@ -1850,7 +1852,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp run_refusal({:takes_no_values, _id}),
     do:
-      ~s[A command you write takes no values: mwt run --reason "..." -- COMMAND. Values go to an action: mwt call ID NAME=value.]
+      ~s[A command you write takes no values: mwt run --reason "..." -- COMMAND. Values go to a fixed call: mwt call ID NAME=value.]
 
   defp run_refusal(:no_reason),
     do:
@@ -1870,7 +1872,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp run_refusal(:no_save_for),
     do:
-      ~s[--suggest-save needs --save-for "what it does", in words for any time it runs, not this one: they become the action's description. --reason stays why you need it now.]
+      ~s[--suggest-save needs --save-for "what it does", in words for any time it runs, not this one: they become the saved command's description. --reason stays why you need it now.]
 
   defp run_refusal(:bad_timeout),
     do: "--timeout is from 1 to #{elem(HostCommand.timeouts(), 1)} seconds."
@@ -1882,7 +1884,7 @@ defmodule MWTClient.Sandbox.Channel do
   defp run_refusal({:no_such_grant, ids}),
     do:
       "No saved command by that id. The saved commands: #{Enum.join(ids, ", ")}. " <>
-        ~s[A command you write needs none: mwt run --reason "..." -- COMMAND. See: mwt grants]
+        ~s[A command you write takes no id: mwt run --reason "..." -- COMMAND, while Commands agents write is on. See: mwt grants]
 
   defp run_refusal({:grant_off, id}),
     do: ~s[#{id} is off. Ask for it with: mwt request #{id} --reason "..."]

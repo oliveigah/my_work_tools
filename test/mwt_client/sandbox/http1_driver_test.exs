@@ -11,6 +11,8 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
   alias MWTClient.Sandbox.Egress.Driver.Http1
   alias MWTClient.Sandbox.Egress.Request
 
+  doctest Http1, only: [readable: 1]
+
   @ctx %{
     transport: :tcp,
     name: "api.example.com",

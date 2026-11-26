@@ -1,4 +1,4 @@
-# Proposing a resource, a grant or an action
+# Proposing a resource, a grant or a fixed call
 
 Read this before you run `mwt propose`: when nothing fits and you know
 exactly what the work needs, or when you will need the same job on the
@@ -9,10 +9,10 @@ as proposed by you and to review, the way they add things: a resource
 (a credential, a network) first, then grants over it. Nothing is usable
 until the user reads it on its page and accepts it; meanwhile `mwt
 propose` waits as `mwt request` does (exit 2 and an ask id for `mwt
-wait` while it waits, 0 once accepted, a grant once on, 3 if they
-decline it, which removes it). Proposing again under the same `--name`,
-before they review it, changes it. It never carries a value, an
-approval mode or a start setting: those are the user's.
+wait` while it waits; 0 once accepted, or for a grant once it is on; 3
+if they decline it, which removes it). Proposing again under the same
+`--name`, before they review it, changes it. It never carries a value,
+an approval mode or a start setting: those are the user's.
 
 A credential and a grant over it, sent together: the user accepts the
 credential first, then the grant.
@@ -69,9 +69,9 @@ through on the user's machine (`--via`); a grant over it opens all of
 it, or the destinations it lists. Propose the narrowest access that
 does the job.
 
-When you expect to need the same job again, propose a saved command, an
-action on the user's machine, instead of asking to run it ad hoc each
-time:
+When you expect to need the same job again, propose a saved command, a
+fixed call over host commands, instead of asking to run a command you
+write each time:
 
     mwt propose commands --name "gh repo view" \
         --for "Shows a GitHub repository: description, default branch, visibility" \
@@ -103,15 +103,15 @@ everything it could ever do:
   in single quotes so your shell leaves `$NAME` alone. Every parameter has
   to appear in the script.
 - **Reading and changing apart.** One that only reads is easy to trust for
-  good; don't add a flag that makes the same action write, delete or
+  good; don't add a flag that makes the same call write, delete or
   deploy. Propose that as another one.
 
-A request action goes under its credential (`mwt propose CREDENTIAL`),
+A fixed request goes under its credential (`mwt propose CREDENTIAL`),
 with the request instead of a script. The host is fixed, written out, and
 reaching it needs a grant over its network; a parameter goes in the path
 or the query, or as a whole JSON value in `--data`, never inside a longer
 text. Headers are fixed: leave them out and MWT uses the ones the
-service expects, with the token in its place.
+service expects, with the credential's value in its place.
 
     mwt propose github --name "pr view" \
         --for "Shows a pull request of a GitHub repository, as JSON" \

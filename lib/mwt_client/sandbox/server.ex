@@ -80,6 +80,7 @@ defmodule MWTClient.Sandbox.Server do
     Event,
     EventDetails,
     Exchange,
+    Explain,
     Gate,
     Grant,
     Handoff,
@@ -433,7 +434,11 @@ defmodule MWTClient.Sandbox.Server do
   defp screened(_state, message), do: {:ok, message}
 
   defp texts(text) when is_binary(text), do: [text]
-  defp texts(%{} = map), do: map |> Map.values() |> Enum.flat_map(&texts/1)
+  # Keys too: a parameter's or a field's name is text the VM chose, and a
+  # value hidden there would otherwise reach the log and the refusal.
+  defp texts(%{} = map),
+    do: Enum.flat_map(map, fn {key, value} -> texts(key) ++ texts(value) end)
+
   defp texts(list) when is_list(list), do: Enum.flat_map(list, &texts/1)
   defp texts(_other), do: []
 
@@ -1264,7 +1269,10 @@ defmodule MWTClient.Sandbox.Server do
             {:reply, {:error, :no_value}, state}
 
           true ->
-            state = Grants.review(state, grant)
+            # Accepting is approving it: a saved command's files are pinned
+            # as they are now, as saving one on its page does (Q10), so a
+            # file changed after you accepted makes its next run ask.
+            state = Grants.review(state, pinned(state, grant))
             reviewed = Enum.find(state.grants, &(&1.id == id))
 
             state =
@@ -2436,11 +2444,69 @@ defmodule MWTClient.Sandbox.Server do
       outcome: :refused,
       summary: "Call of #{grant.name} · refused before anything ran: #{why}",
       grant_id: grant.id,
-      agent: Map.get(ask, :agent)
+      agent: ask_agent(ask)
     })
   end
 
-  defp refused_values(state, _reason, _ask), do: state
+  # Already logged where it was found (a real value, the firewall), or not
+  # an ask MWT decided (too many waiting): nothing more to say here.
+  defp refused_values(state, reason, _ask) when reason in [:firewall, :too_many], do: state
+
+  # Any other refusal of a call or a command before anything ran: a line
+  # in the activity log, decided by MWT, so the audit holds every action
+  # the agent asked for, refused ones included.
+  defp refused_values(state, reason, ask) do
+    grant = Enum.find(state.grants, &(&1.id == ask_grant_id(ask)))
+
+    what =
+      case grant do
+        %Grant{} -> "Call of #{grant.name}"
+        nil -> "A command the agent wrote"
+      end
+
+    why = refused_ask_words(state, reason)
+
+    State.log(state, %{
+      outcome: :refused,
+      summary: "#{what} · refused before anything ran: #{why}",
+      grant_id: grant && grant.id,
+      agent: ask_agent(ask),
+      decision: Decision.refused(why)
+    })
+  end
+
+  # What the VM sent is any shape it chose: only text counts.
+  defp ask_grant_id(ask), do: ask |> Map.get(:grant) |> State.to_text() |> String.trim()
+
+  defp ask_agent(ask) do
+    case Map.get(ask, :agent) do
+      agent when is_binary(agent) -> agent
+      _other -> nil
+    end
+  end
+
+  # The refusals of `HostRuns.command_grant/2` and `call_request/2`, in
+  # words: the policy's own (`Explain.refusal_words/1`), a grant named by
+  # its id found again first.
+  defp refused_ask_words(state, {:grant_off, id}) when is_binary(id) do
+    case Enum.find(state.grants, &(&1.id == id)) do
+      %Grant{} = grant -> Explain.refusal_words({:grant_off, grant})
+      nil -> "#{id} is off"
+    end
+  end
+
+  defp refused_ask_words(_state, {:no_such_grant, _ids}), do: "no fixed call has that id"
+  defp refused_ask_words(_state, {:name_a_grant, _ids}), do: "it names no fixed call"
+
+  defp refused_ask_words(_state, {:fixed_script, _id}),
+    do: "a saved command takes no command text"
+
+  defp refused_ask_words(_state, {:takes_no_values, _what}), do: "it takes no values"
+
+  defp refused_ask_words(_state, {:credential_endpoint, host, _entry}),
+    do: "#{host} would make another credential from its value"
+
+  defp refused_ask_words(_state, reason), do: Explain.refusal_words(reason)
 
   defp deliberate?(:normal), do: true
 

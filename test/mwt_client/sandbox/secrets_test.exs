@@ -74,6 +74,24 @@ defmodule MWTClient.Sandbox.SecretsTest do
     end
   end
 
+  test "a form split across three chunks, at any two points, is found, holding or not" do
+    data = "a " <> @value <> " b"
+
+    for a <- 1..(byte_size(data) - 2),
+        b <- (a + 1)..(byte_size(data) - 1),
+        hold <- [true, false] do
+      chunks = [
+        binary_part(data, 0, a),
+        binary_part(data, a, b - a),
+        binary_part(data, b, byte_size(data) - b)
+      ]
+
+      assert {_out, {:found, {:value, "GitHub"}}} =
+               stream(Scanner.new(secrets(), hold: hold), chunks),
+             inspect({a, b, hold})
+    end
+  end
+
   test "holding, no byte of the value goes before it is found" do
     data = ~s({"echo":") <> @value <> ~s("})
 

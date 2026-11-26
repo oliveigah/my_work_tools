@@ -122,7 +122,13 @@ defmodule MWTClient.Sandbox.Egress.Driver do
       (its placeholder), along with any form the driver itself wrote the
       value in (Basic's base64). Where it can't replace (inside a body
       whose length is said), the driver cuts the answer before the value
-      goes, and says so (`{:found, label, :echo}`).
+      goes, and says so (`{:found, label, :echo}`);
+    * `values` - every value MWT holds (`MWTClient.Sandbox.Secrets`, nil
+      for none), whatever the request carried: none may reach the VM in
+      the answer. The driver looks through every answer it reads for them,
+      holding back what could start one, and cuts the answer before one
+      goes, the same way (`{:found, label, :echo}`). Absent, nothing more
+      is looked for.
 
   ## Picking a driver
 
@@ -237,7 +243,12 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   itself (a credential endpoint), the same way.
   """
   @type verdict ::
-          {:allow, %{request: [replacement()], answer: [back()]}}
+          {:allow,
+           %{
+             required(:request) => [replacement()],
+             required(:answer) => [back()],
+             optional(:values) => MWTClient.Sandbox.Secrets.t() | nil
+           }}
           | {:deny, 100..599, binary()}
           | {:reply, 100..599, binary()}
 

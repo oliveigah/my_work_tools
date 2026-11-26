@@ -391,6 +391,68 @@ defmodule MWTClient.Sandbox.Describe do
   end
 
   @doc """
+  `text` with each `%XX` as the byte it stands for, again until none is
+  left (`%252e` is `%2e` once, `.` twice), as a host decoding it however
+  many times would read it. A `%` that starts no such pair stays as it is:
+  what the VM sent needn't be well formed.
+
+      iex> MWTClient.Sandbox.Describe.percent_decoded("a%2F%252e%zz")
+      "a/.%zz"
+  """
+  @spec percent_decoded(binary()) :: binary()
+  def percent_decoded(text) do
+    if String.contains?(text, "%") do
+      decoded =
+        Regex.replace(~r/%([0-9A-Fa-f]{2})/, text, fn _, hex -> <<String.to_integer(hex, 16)>> end)
+
+      if decoded == text, do: text, else: percent_decoded(decoded)
+    else
+      text
+    end
+  end
+
+  @doc """
+  Whether a path's segment names one thing, read as a host that decodes
+  and normalises paths would read it: not `.` (this level), `..` (the one
+  above), nor empty, nor any of these percent-encoded, and holding no
+  slash or backslash once decoded (some hosts split on either). The
+  patterns MWT matches (`MWTClient.Sandbox.Allowance`) and the attributes
+  it reads (`MWTClient.Sandbox.Attributes`) take a path as sent; a segment
+  that isn't plain is where the host's reading and MWT's part.
+
+      iex> MWTClient.Sandbox.Describe.plain_segment?("123")
+      true
+      iex> Enum.map(["..", "%2e%2E", "", "a%5Cb", ".%2e"], &MWTClient.Sandbox.Describe.plain_segment?/1)
+      [false, false, false, false, false]
+  """
+  @spec plain_segment?(binary()) :: boolean()
+  def plain_segment?(segment) do
+    decoded = percent_decoded(segment)
+    decoded not in ["", ".", ".."] and not String.contains?(decoded, ["/", "\\"])
+  end
+
+  @doc """
+  Whether a request's path (its query aside) may be read by its host as
+  another path than the one MWT reads: one with a `.` or `..` segment, as
+  sent or percent-encoded, or a backslash, as sent or encoded. Empty
+  segments (`//`) aren't: hosts don't climb on them.
+
+      iex> MWTClient.Sandbox.Describe.ambiguous_path?("/repos/o/r/../../x/y?a=..")
+      true
+      iex> MWTClient.Sandbox.Describe.ambiguous_path?("/repos/o/r%2F%2E%2E/pulls")
+      true
+      iex> MWTClient.Sandbox.Describe.ambiguous_path?("/repos/o/r/pulls/1?path=../x")
+      false
+  """
+  @spec ambiguous_path?(binary()) :: boolean()
+  def ambiguous_path?(path) do
+    route = path |> String.split("?", parts: 2) |> hd() |> percent_decoded()
+
+    String.contains?(route, "\\") or
+      route |> String.split("/") |> Enum.any?(&(&1 in [".", ".."]))
+  end
+
+  @doc """
   The host a request went to, with its port when it isn't 443:
   `api.example.com`, `api.example.com:8443`.
   """

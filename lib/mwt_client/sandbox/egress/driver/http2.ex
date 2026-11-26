@@ -39,11 +39,12 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
        put in goes as `{:write, :host, _}`.
     5. **Its answer** goes to the VM decoded and written again, trailers
        (gRPC's `grpc-status`) too. For a stream with a value in it, each form
-       of the value becomes its placeholder in the answer's headers, and its
-       body is looked through for them (`MWTClient.Sandbox.Egress.AnswerBody`,
-       gzip and deflate decoded for the look, any other encoding refused):
-       one found cuts the connection before it goes. Bytes that could start
-       one wait 50 ms at most for what follows.
+       of the value becomes its placeholder in the answer's headers. Its
+       headers and its body are looked through for that value and every
+       other MWT holds (`MWTClient.Sandbox.Egress.AnswerBody`, gzip and
+       deflate decoded for the look, any other encoding refused): one found
+       cuts the connection before it goes. Bytes that could start one wait
+       50 ms at most for what follows.
 
   What MWT answers itself (a refusal) is an answer on the stream: MWT's
   JSON, or for gRPC an answer of trailers only, `grpc-status` 7
@@ -663,17 +664,38 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     {link, h2} = link(h2)
     %{method: method, path: path, headers: headers} = stream.head
     headers = Http1.replace(headers, replace.request)
-    echo = echo(Http1.echo(replace, headers))
+    put_in = Http1.echo(replace, headers)
+    # Every value MWT holds, which the answer mustn't carry to the VM
+    # whatever this stream carried (`Driver`'s `values`).
+    values = Map.get(replace, :values)
+    echo = echo(put_in, values)
 
     # With a value in it, its answer is asked for unencoded, so a value it
-    # quotes can be read; gRPC's own compression of each message too.
+    # quotes can be read; with values to look for, in an encoding MWT
+    # decodes (`Http1.readable/1`). gRPC's own compression of each
+    # message, which MWT can't look through, isn't offered either way.
     headers =
-      if echo,
-        do:
+      cond do
+        put_in != nil ->
           headers
           |> Enum.reject(fn {name, _} -> name == "grpc-accept-encoding" end)
-          |> List.keystore("accept-encoding", 0, {"accept-encoding", "identity"}),
-        else: headers
+          |> List.keystore("accept-encoding", 0, {"accept-encoding", "identity"})
+
+        echo != nil ->
+          accepted = for {"accept-encoding", value} <- headers, do: value
+
+          headers
+          |> Enum.reject(fn {name, _} -> name in ["grpc-accept-encoding", "accept-encoding"] end)
+          |> then(
+            &if(accepted == [],
+              do: &1,
+              else: &1 ++ [{"accept-encoding", Http1.readable(accepted)}]
+            )
+          )
+
+        true ->
+          headers
+      end
 
     pseudo = [
       {":method", method},
@@ -1019,7 +1041,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
       true ->
         case AnswerBody.encoding(headers) do
           {:ok, encoding} ->
-            {:ok, %{stream | echo: %{echo | body: AnswerBody.new(echo.secrets, encoding)}}}
+            {:ok, %{stream | echo: %{echo | body: AnswerBody.new(echo.look, encoding)}}}
 
           :error ->
             {:error, Response.unreadable_encoding()}
@@ -1027,12 +1049,27 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
     end
   end
 
+  # A head holding another value than those put in is cut before it goes:
+  # MWT gave the VM no placeholder for it.
   defp answer_head_read(h2, stream, headers, ended?) do
+    headers = Enum.map(headers, fn {name, value} -> {name, back(stream.echo, value)} end)
+
+    case Enum.find_value(headers, &other_value(stream.echo, &1)) do
+      nil -> answer_head_written(h2, stream, headers, ended?)
+      label -> value_came_back(h2, stream, label)
+    end
+  end
+
+  defp other_value(nil, _header), do: nil
+
+  defp other_value(%{look: look}, {name, value}),
+    do: Secrets.find(look, name) || Secrets.find(look, value)
+
+  defp answer_head_written(h2, stream, headers, ended?) do
     # Bytes held back as the possible start of a value go before a head
     # that follows them (gRPC's trailers): nothing more of the body comes.
     {held, stream} = release_held(stream)
     stream = queue_data(stream, held, h2.ctx.limit)
-    headers = Enum.map(headers, fn {name, value} -> {name, back(stream.echo, value)} end)
     {block, table} = HPAX.encode(:no_store, headers, h2.to_vm_hpack)
     h2 = %{h2 | to_vm_hpack: table}
     frames = Frame.header_frames(stream.id, IO.iodata_to_binary(block), ended?, h2.vm_frame)
@@ -1076,20 +1113,24 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
         unreadable_answer(h2, stream, "Its body didn't decode.", byte_size(payload))
 
       {:found, label} ->
-        # What came before it goes; then the connection ends, as an HTTP/1.1
-        # answer that quoted the value does.
-        {flushed, h2} = flush_vm(h2, stream)
-        stream = Map.get(h2.streams, stream.id, stream)
-
-        {done, h2} =
-          finish(h2, stream, "Cut by MWT: the answer quoted the real credential.")
-
-        away = Frame.encode(:goaway, 0, 0, <<0::1, h2.last_vm::31, @cancel::32>>)
-
-        {flushed ++
-           [{:send, :vm, rst(stream.id, @cancel)}, {:found, label, :echo}] ++
-           done ++ [{:send, :vm, away}, :close], h2}
+        value_came_back(h2, stream, label)
     end
+  end
+
+  # What came before it goes; then the connection ends, as an HTTP/1.1
+  # answer that held a value does.
+  defp value_came_back(h2, stream, label) do
+    {flushed, h2} = flush_vm(h2, stream)
+    stream = Map.get(h2.streams, stream.id, stream)
+
+    {done, h2} =
+      finish(h2, stream, "Cut by MWT: the answer quoted the real credential.")
+
+    away = Frame.encode(:goaway, 0, 0, <<0::1, h2.last_vm::31, @cancel::32>>)
+
+    {flushed ++
+       [{:send, :vm, rst(stream.id, @cancel)}, {:found, label, :echo}] ++
+       done ++ [{:send, :vm, away}, :close], h2}
   end
 
   # A stream with a value in it has its answer's body looked through for
@@ -1097,7 +1138,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   defp looked(%{echo: nil} = stream, payload, _ended?), do: {:ok, payload, stream}
 
   defp looked(%{echo: echo} = stream, payload, ended?) do
-    body = echo.body || AnswerBody.new(echo.secrets, nil)
+    body = echo.body || AnswerBody.new(echo.look, nil)
 
     case AnswerBody.feed(body, payload) do
       {:ok, out, body} ->
@@ -1513,14 +1554,23 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
 
   ## Values, back as their placeholders
 
-  # The forms a value that went in goes by, each to come back as its
-  # placeholder (`Http1.echo/2`).
-  defp echo(nil), do: nil
+  # What a stream's answer is looked through for: the forms a value that
+  # went in goes by (`Http1.echo/2`), each to come back as its placeholder
+  # (`secrets`), and those and every value MWT holds, none of which may
+  # reach the VM (`look`). Nil with nothing to look for. Its body is looked
+  # through once its final head says how it comes (`readable/2`).
+  defp echo(nil, nil), do: nil
 
-  # Its body is looked through once its final head says how it comes
-  # (`readable/2`).
-  defp echo({secrets, placeholders}),
-    do: %{body: nil, secrets: secrets, placeholders: placeholders}
+  defp echo(put_in, values) do
+    {secrets, placeholders} = put_in || {nil, %{}}
+
+    %{
+      body: nil,
+      secrets: secrets,
+      placeholders: placeholders,
+      look: Secrets.union(secrets, values)
+    }
+  end
 
   defp back(nil, value), do: value
 

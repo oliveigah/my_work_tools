@@ -14,6 +14,8 @@ defmodule MWTClient.Sandbox.EgressReadTest do
   alias MWTClient.Sandbox.Gate
 
   @mib 1024 * 1024
+  # A value long enough to be looked for (`Secrets.shortest/0`).
+  @long "ghp_LONG_REAL_VALUE_0123456789"
 
   setup do
     %{username: username} = MWTClient.VaultHelpers.unlocked_identity("egress-read")
@@ -506,6 +508,26 @@ defmodule MWTClient.Sandbox.EgressReadTest do
         path == "/drop" and nth > 1 ->
           :ssl.close(socket)
 
+        # A value MWT holds, which no request carried: a service handing
+        # back a secret it keeps.
+        path == "/leak" ->
+          body = ~s({"token":"#{@long}"})
+
+          :ssl.send(
+            socket,
+            "HTTP/1.1 200 OK\r\ncontent-length: #{byte_size(body)}\r\n\r\n#{body}"
+          )
+
+          answer_each(socket, test, connection, nth + 1, rest)
+
+        path == "/chunked" ->
+          :ssl.send(
+            socket,
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"
+          )
+
+          answer_each(socket, test, connection, nth + 1, rest)
+
         path == "/close" or head =~ ~r/\r\nconnection: close/i ->
           :ssl.send(socket, "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
           :ssl.close(socket)
@@ -670,6 +692,73 @@ defmodule MWTClient.Sandbox.EgressReadTest do
       :ok = :ssl.send(tls, post <> body)
       _ = read_all(tls)
       assert %{rule: :large_upload} = Sandbox.firewall(username).firewall.isolated
+    end
+  end
+
+  describe "answers on a kept connection, looked through for every value MWT holds" do
+    setup %{username: username, ca: ca} do
+      {:ok, grant} =
+        Sandbox.create_grant(username, %{
+          "kind" => "token",
+          "preset" => "github",
+          "name" => "GitHub",
+          "purpose" => "The GitHub API",
+          "hosts" => "api.github.com",
+          "env" => "GH_TOKEN",
+          "value" => @long
+        })
+
+      {:ok, _} = Sandbox.turn_on(username, grant.id, 60, :all)
+      proxy = proxy(username, keeping_upstream())
+      {:ok, tls} = tls(proxy, "140.82.112.3:443", "api.github.com", [ca])
+      %{tls: tls}
+    end
+
+    test "still share one connection, a chunked answer written out again whole", %{tls: tls} do
+      :ok = :ssl.send(tls, get("/a", "Accept-Encoding: br, gzip\r\n"))
+      assert read_all(tls) =~ "\r\n\r\n/a"
+      :ok = :ssl.send(tls, get("/chunked"))
+      chunked = read_all(tls)
+      assert chunked =~ "transfer-encoding: chunked"
+      assert chunked =~ "3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"
+      :ok = :ssl.send(tls, get("/b"))
+      assert read_all(tls) =~ "\r\n\r\n/b"
+
+      assert_receive {:kept_upstream, connection, a, ""}
+      assert_receive {:kept_upstream, ^connection, _chunked, ""}
+      assert_receive {:kept_upstream, ^connection, _b, ""}
+
+      # Only an encoding MWT can look through is asked for.
+      assert a =~ ~r/accept-encoding: gzip\z/
+      refute a =~ "br"
+    end
+
+    test "a kept connection the host closed as a request went: sent again, once", %{tls: tls} do
+      :ok = :ssl.send(tls, get("/a"))
+      assert read_all(tls) =~ "/a"
+      :ok = :ssl.send(tls, get("/drop"))
+      assert read_all(tls) =~ "\r\n\r\n/drop"
+      assert_receive {:kept_upstream, first, _a, ""}
+      assert_receive {:kept_upstream, ^first, _dropped, ""}
+      assert_receive {:kept_upstream, retried, _drop, ""}
+      assert retried != first
+    end
+
+    @tag :capture_log
+    test "one handing back a value the request didn't carry is cut before it, and isolates", %{
+      username: username,
+      tls: tls
+    } do
+      :ok = :ssl.send(tls, get("/a"))
+      assert read_all(tls) =~ "/a"
+
+      :ok = :ssl.send(tls, get("/leak"))
+      answer = read_all(tls)
+      refute answer =~ "LONG_REAL"
+      assert closed?(tls)
+
+      assert event(username, &(&1.summary =~ "GitHub's real value came back"))
+      assert Sandbox.firewall(username).firewall.isolated != nil
     end
   end
 

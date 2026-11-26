@@ -454,7 +454,9 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
             <h1 id="resource-name" class="text-xl font-semibold tracking-tight text-ink">
               {@name}
             </h1>
-            <.badge>{Resource.kind_words(@resource)}</.badge>
+            <.badge :if={Resource.kind_words(@resource) != @name}>
+              {Resource.kind_words(@resource)}
+            </.badge>
             <.badge :if={match?(%Credential{}, @found)}>{adapter_name(@found)}</.badge>
             <.badge :if={@built_in?}>Built in</.badge>
           </div>
@@ -544,7 +546,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
                 <h2 class="flex items-center gap-1.5 text-[14px] font-semibold text-ink">
                   Grants over it
                   <.help id="resource-grants-help" label="About the grants over it">
-                    Each grant gives a use of this resource while it is on. Open use: the agent builds what it sends, its own requests or a command it writes. Fixed call: MWT builds it, from your template and the agent's values; it covers the credentials it names, and goes out through its channel as the agent's own would. Of those that cover a use, the most permissive counts.
+                    Each gives uses of this resource while it is on. Open use: the agent builds the request or command. Fixed call: MWT builds it from your template and the agent's values. Of those that cover a use, the most permissive counts.
                   </.help>
                 </h2>
                 <p class="mt-0.5 text-[12px] text-muted">{grants_subtitle(@resource)}</p>
@@ -812,7 +814,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp what_it_is(%{found: %Network{internet: true}} = assigns) do
     ~H"""
     <p class="text-xs leading-5 text-muted">
-      Every public address. MWT builds it in, with a grant over all of it that is on and auto-approving when MWT starts, unless you choose otherwise. Private and reserved addresses are never its: they are networks of their own.
+      Every public address. Private and reserved addresses are networks of their own.
     </p>
     """
   end
@@ -835,7 +837,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp what_it_is(%{found: :machine} = assigns) do
     ~H"""
     <p class="text-xs leading-5 text-muted">
-      Code run on this machine for agents: your saved commands, which run only your own script, and the commands agents write, which you approve one by one (Commands agents write). Locked, nothing an agent asks runs here; the VM, the projects' git, the shared folders and the workspace go on, since they are MWT's own.
+      Code run on this machine for agents: your saved commands, and the commands agents write, which you approve one by one. Locked, nothing an agent asks runs here; the VM, git, the shared folders and the workspace go on: they are MWT's tools.
     </p>
     """
   end
@@ -843,7 +845,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   defp what_it_is(%{found: :mwt} = assigns) do
     ~H"""
     <p class="text-xs leading-5 text-muted">
-      What MWT does for agents with its own code: your notes, diagrams and flash cards, which agents read and write through mwt mcp; and the projects' git, syncing the shared folders and copying the workspace. Each as its grants allow.
+      What MWT does for agents with its own code: your notes, diagrams and flash cards through mwt mcp; the projects' git, the shared folders' sync and the workspace.
     </p>
     """
   end
@@ -1184,7 +1186,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
       <.field_error errors={@errors} field={:value} />
     </div>
     <p :if={not @minted? and @editing} class="text-[11px] text-muted">
-      Replace its value on its page.
+      Replace the value under Its value.
     </p>
     <div :if={@minted?}>
       <.text_field

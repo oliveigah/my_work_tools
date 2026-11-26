@@ -495,17 +495,19 @@ defmodule MWTClient.Sandbox do
   Runs `command` in the running VM as an agent there would, under
   `credential` (`mwt exec`) when one is named, and gives back what it
   printed and its exit status (`MWTClient.Sandbox.Console`), as the
-  console's history keeps it (`console_runs/1`). Runs in the caller: it
-  takes as long as the command, up to `seconds`.
+  console's history keeps it (`console_runs/1`). It starts in `dir` (an
+  absolute folder in the VM, `/work` when nil), and says the folder its
+  shell ended in (`cwd`), for a terminal's next command. Runs in the
+  caller: it takes as long as the command, up to `seconds`.
   """
-  @spec console(username(), String.t(), String.t() | nil, pos_integer()) ::
+  @spec console(username(), String.t(), String.t() | nil, pos_integer(), String.t() | nil) ::
           {:ok, MWTClient.Sandbox.ConsoleHistory.run()} | {:error, :vm_not_running | String.t()}
-  def console(username, command, credential, seconds \\ 60) do
+  def console(username, command, credential, seconds \\ 60, dir \\ nil) do
     alias MWTClient.Sandbox.Console
 
     with :ok <- Server.call(username, {:console_check, command}),
          {:ok, guest} <- Projects.guest(username, snapshot(username).vm),
-         {:ok, result} <- Console.run(guest, command, credential, seconds) do
+         {:ok, result} <- Console.run(guest, command, credential, seconds, dir) do
       Server.call(username, {:console_ran, result})
     else
       {:error, {:carries_value, name}} ->
@@ -522,15 +524,16 @@ defmodule MWTClient.Sandbox do
   (`console/4`): its command, who it spoke as and when it started, with
   no output, as the history and the activity log keep it.
   """
-  @spec console_stopped(username(), String.t(), String.t() | nil, DateTime.t()) ::
+  @spec console_stopped(username(), String.t(), String.t() | nil, DateTime.t(), String.t() | nil) ::
           {:ok, MWTClient.Sandbox.ConsoleHistory.run()}
-  def console_stopped(username, command, credential, started_at) do
+  def console_stopped(username, command, credential, started_at, dir \\ nil) do
     Server.call(
       username,
       {:console_ran,
        %{
          command: command,
          credential: credential,
+         dir: dir,
          status: nil,
          output: "",
          cut: false,

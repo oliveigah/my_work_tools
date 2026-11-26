@@ -1014,8 +1014,12 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       </:tile>
       <:meta>
         <.command_kind id={"approval-kind-#{@approval.id}"} saved={@saved?} />
-        <.help :if={not @saved?} id={"command-help-#{@approval.id}"} label="About ad-hoc commands">
-          A command an agent writes needs no grant, and never auto-approves: every one asks, and only this full card runs it. Save one you trust as a saved command, to be called by id.
+        <.help
+          :if={not @saved?}
+          id={"command-help-#{@approval.id}"}
+          label="About commands agents write"
+        >
+          A command an agent wrote, under Commands agents write: every one asks, and only this card runs it. Save one you trust as a saved command, to be called by id.
         </.help>
         <.asked_by approval={@approval} />
         <span
@@ -1120,7 +1124,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
           <.icon name="hero-bookmark-square" class="size-4 shrink-0 text-accent" />
           <div class="min-w-0 flex-1 text-xs leading-5 text-ink">
             <p>
-              The agent expects to run this again, and suggests saving it as <span class="font-mono font-semibold">{@approval.suggest_save}</span>. Saved, it runs by name, without the escape hatch.
+              The agent expects to run this again, and suggests saving it as <span class="font-mono font-semibold">{@approval.suggest_save}</span>. Saved, agents call it by id.
             </p>
             <p
               :if={@approval.save_for}
@@ -1214,7 +1218,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         name={if(@saved, do: "hero-bookmark-square-micro", else: "hero-exclamation-triangle-micro")}
         class="size-3"
       />
-      {if(@saved, do: "Fixed call", else: "Ad-hoc command")}
+      {if(@saved, do: "Saved command", else: "Written by the agent")}
     </span>
     """
   end
@@ -1788,7 +1792,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       id={"save-command-#{@approval.id}#{if @primary, do: "-suggested"}"}
       phx-click="save_command"
       phx-value-id={@approval.id}
-      title="Save it as a fixed call: agents then call it by id, without the escape hatch. Turn what varies into parameters. This card still waits."
+      title="Save it as a saved command, which agents call by id. Turn what varies into parameters. This card still waits."
       class={[
         "inline-flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
         if(@primary,

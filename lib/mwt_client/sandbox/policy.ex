@@ -58,8 +58,11 @@ defmodule MWTClient.Sandbox.Policy do
       the credential and the network. The credential by the grants over it
       that list the host and match its attributes, where its value can go
       in this request: only in a grant's carriers, never over plain HTTP,
-      never to a host no grant over it lists, never two credentials at
-      once. A value made from a grant's (`snapshot.made`,
+      never to a host no grant over it lists (a credential only fixed calls
+      are over has none: its placeholder goes nowhere), never in a request
+      whose path its host may read as another (`{:ambiguous_path, _}`),
+      never two credentials at once. A placeholder is looked for as sent
+      and percent-decoded. A value made from a grant's (`snapshot.made`,
       `MWTClient.Sandbox.Made`) is that grant's use, with hosts and
       carriers of its own; one MWT no longer holds is refused,
       `{:made_stale, made}`.
@@ -143,6 +146,7 @@ defmodule MWTClient.Sandbox.Policy do
           | {:outside, Grant.t() | String.t()}
           | {:excepted, Grant.t(), String.t()}
           | {:plain_http, Grant.t()}
+          | {:ambiguous_path, Grant.t()}
           | {:name_a_grant, [String.t()]}
           | {:no_such_grant, [String.t()]}
           | {:fixed_script, Grant.t()}
@@ -256,6 +260,18 @@ defmodule MWTClient.Sandbox.Policy do
     tokens = for %Grant{kind: :token, placeholder: p} = grant <- grants, is_binary(p), do: grant
     made = Map.get(snapshot, :made, [])
 
+    # Every grant that knows a credential's placeholder: open use of it
+    # and the fixed calls over it (`Credential.attach/2`). Only open use
+    # lists hosts its value goes to in the agent's own requests: a fixed
+    # call covers its credential in the request MWT builds, never in one
+    # the agent sends (docs/grant_mental_model.md, Q5). So the placeholder
+    # of a credential only fixed calls are over goes nowhere: carried
+    # anywhere, it is moved where its credential doesn't go, refused and
+    # the firewall told, as any other.
+    known =
+      tokens ++
+        for %Grant{kind: :request, placeholder: p} = grant <- grants, is_binary(p), do: grant
+
     # A placeholder is its credential's, shared by every grant over it
     # (`MWTClient.Sandbox.Credential`): carried, it makes the request a use
     # of each of them, and it goes where any of them lists.
@@ -267,21 +283,30 @@ defmodule MWTClient.Sandbox.Policy do
     made_carried = Enum.filter(made, &Placeholder.in?(request.headers, &1.placeholder))
     hosts_of = credential_hosts(tokens)
 
+    # The path and the body as sent, and as the host may read them once it
+    # decodes them: percent-encoded (`mwt%5Fghp…`), or a form's `+`. A
+    # placeholder is looked for in each.
+    body = request.body || ""
+
+    texts =
+      Enum.uniq([request.path, Describe.percent_decoded(request.path), body, form_decoded(body)])
+
+    anywhere? = fn placeholder -> Enum.any?(texts, &String.contains?(&1, placeholder)) end
+
     # Only a header gets a value, but a placeholder anywhere in what MWT
     # read is a string moved where its grant doesn't go (QA L9).
-    moved? = fn placeholder, hosts, in_headers? ->
+    moved? = fn placeholder, hosts ->
       not host_listed?(request.host, hosts) and
-        (in_headers? or String.contains?(request.path, placeholder) or
-           String.contains?(request.body || "", placeholder))
+        (Placeholder.in?(request.headers, placeholder) or anywhere?.(placeholder))
     end
 
     elsewhere =
-      Enum.find(tokens, fn grant ->
-        hosts = Map.fetch!(hosts_of, Grant.credential_id(grant))
-        Enum.any?(Grant.placeholders(grant), &moved?.(&1, hosts, grant in carried))
+      Enum.find(known, fn grant ->
+        hosts = Map.get(hosts_of, Grant.credential_id(grant), [])
+        Enum.any?(Grant.placeholders(grant), &moved?.(&1, hosts))
       end)
 
-    made_elsewhere = Enum.find(made, &moved?.(&1.placeholder, &1.hosts, &1 in made_carried))
+    made_elsewhere = Enum.find(made, &moved?.(&1.placeholder, &1.hosts))
 
     # A login's placeholder belongs only in the body of a refresh at
     # Google's token endpoint, which MWT answers
@@ -289,8 +314,8 @@ defmodule MWTClient.Sandbox.Policy do
     # its grant's; anywhere else it is moved where it doesn't go.
     refresh? = CredentialEndpoint.token_request?(request)
     # A form body carries it percent-encoded (`1%2F%2F…`).
-    body = request.body || ""
-    bodies = [body, form_decoded(body)]
+    bodies = Enum.uniq([body, form_decoded(body)])
+    paths = Enum.uniq([request.path, Describe.percent_decoded(request.path)])
 
     logins =
       for %Grant{} = grant <- tokens,
@@ -303,7 +328,8 @@ defmodule MWTClient.Sandbox.Policy do
 
     login_moved =
       Enum.find_value(logins, fn {grant, login} ->
-        if Placeholder.in?(request.headers, login) or String.contains?(request.path, login) or
+        if Placeholder.in?(request.headers, login) or
+             Enum.any?(paths, &String.contains?(&1, login)) or
              (not refresh? and in_body?.(login)),
            do: grant
       end)
@@ -333,10 +359,7 @@ defmodule MWTClient.Sandbox.Policy do
     plain =
       Map.get(request, :plain?, false) &&
         (Enum.find(owners, & &1) ||
-           Enum.find(tokens, fn grant ->
-             String.contains?(request.path, grant.placeholder) or
-               String.contains?(body, grant.placeholder)
-           end))
+           Enum.find(known, &Enum.any?(Grant.placeholders(&1), anywhere?)))
 
     cond do
       plain ->
@@ -357,6 +380,17 @@ defmodule MWTClient.Sandbox.Policy do
       owners == [] ->
         # No credential: its network alone.
         network_say(snapshot, request, now)
+
+      # A value goes in only where MWT reads the path as the host will.
+      # MWT matches a grant's attributes (`github.repository` is the two
+      # segments after `/repos/`) and its allowances on the path as sent;
+      # a host normalising `/repos/o/r/../../x/y` acts on `/repos/x/y`.
+      # So a path with a `.` or `..` segment, or a backslash, as sent or
+      # percent-encoded (`Describe.ambiguous_path?/1`), carries no value:
+      # refused before it goes in. Tools send paths normalised (curl does
+      # unless `--path-as-is`); one that doesn't is told to.
+      Describe.ambiguous_path?(request.path) ->
+        {:refuse, {:ambiguous_path, hd(owners)}}
 
       match?([_, _ | _], over) ->
         {:refuse, :multiple_grants}
@@ -895,13 +929,10 @@ defmodule MWTClient.Sandbox.Policy do
     end)
   end
 
-  # A form body decoded, or as it is when it isn't one: what the VM sent
-  # needn't be well formed.
-  defp form_decoded(body) do
-    URI.decode_www_form(body)
-  rescue
-    ArgumentError -> body
-  end
+  # A body as a form decodes it (`+` a space, then each `%XX`), however
+  # well formed: what the VM sent needn't be, and a host may decode the
+  # pairs it can and keep the rest.
+  defp form_decoded(body), do: body |> String.replace("+", " ") |> Describe.percent_decoded()
 
   # Whether a header carries a JWT placeholder MWT wrote that isn't among
   # the made values it holds.

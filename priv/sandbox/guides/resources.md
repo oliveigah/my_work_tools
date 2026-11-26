@@ -14,7 +14,8 @@ the job, in words the person approving it reads at a glance.
 - A **grant** gives a use of one resource while it is on; off, nothing.
   Grants only give: of those that are on and cover a use, the most
   permissive counts. A use through two resources (a request carrying a
-  token, over the Internet) needs a grant over each; a fixed call is the
+  credential, over the Internet) needs a grant over each; across them, a
+  refusal beats an ask and an ask beats a yes. A fixed request is the
   credential's grant for its own call, and its request goes out as the
   agent's would, under a network grant.
 - Each grant says what it is for (`purpose`, `--for`): the service, the
@@ -38,7 +39,9 @@ swaps for the value on the way out, where a grant lets it.
 
 ## Grants over a credential: two kinds
 
-Only a credential takes both, and the kind decides where it runs.
+The kind says who builds what goes out: the agent (open use) or MWT,
+from a template (fixed call). Host commands take both too: Commands
+agents write is open use, a saved command a fixed call.
 
 **Open use** (the agent builds it): agents run their own tools with the
 placeholder (`mwt exec CREDENTIAL -- gh pr create …`), and MWT checks
@@ -51,15 +54,16 @@ each request as it leaves. For open-ended work. Write:
   `git.direction = fetch`, `graphql.operation = query`;
 - Ask, until the user trusts it; Auto once its limits are tight.
 
-**Fixed call** (MWT builds it): one request MWT builds and sends through
-its proxy, the agent giving only values (`mwt call ID NAME=value`). It
-covers its credential for its own call, nothing else (open use of the
-credential is a grant of its own), and its request goes out as the
-agent's would: a grant over the host's network has to let it out. What can happen is exactly
-the call, as far as its template is narrow (below). Write the method and URL, `$NAME` where a value
-goes (the path, the query, or a whole JSON value in the body, never
-inside a longer text), and the headers with `{token}` where the value
-goes, or none for the service's own.
+**Fixed request** (MWT builds it): one request MWT builds and sends
+through its proxy, the agent giving only values (`mwt call ID
+NAME=value`). It covers its credential for its own call, nothing else
+(open use of the credential is a grant of its own), and its request
+goes out as the agent's would: a grant over the host's network has to
+let it out. What can happen is exactly the call, as far as its template
+is narrow (below). Write the method and URL, `$NAME` where a value goes
+(the path, the query, or a whole JSON value in the body, never inside a
+longer text), and the headers with `{token}` where the value goes, or
+none for the service's own.
 
 Pick open use when the calls can't be known beforehand, a fixed call for
 one narrow job done again and again.

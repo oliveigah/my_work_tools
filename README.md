@@ -71,11 +71,12 @@ makes it easy to work with.
   stays in the VM. Folders I share are copied into it, read-only; my
   repositories are cloned into it as projects. Nothing it writes comes back
   to my machine unless I choose it.
-- **No credentials in the VM.** Access is a _grant_: a token, a private
-  network, a command on my machine, each described in my own words and
-  turned on only for as long as a task needs it. The VM only ever sees a
-  placeholder, which MWT swaps for the real value on the way out, and only
-  towards the hosts that grant is for.
+- **No credentials in the VM.** Access is a _grant_ over one of my
+  _resources_ (a credential, a network, commands on my machine, MWT's own
+  tools), described in my own words and on only for as long as a task
+  needs it. The VM only ever sees a placeholder, which MWT swaps for the
+  real value on the way out, and only towards the hosts a grant lists.
+  How grants work is in [docs/grants.md](docs/grants.md).
 - **I approve what matters.** Requests that use a credential, and commands
   an agent wants to run on my machine, wait for my yes on a card that shows
   exactly what will happen.
@@ -90,7 +91,7 @@ makes it easy to work with.
 ### The control panel: easy
 
 - **The VM is a clone of my machine,** as my machine is a clone of GitHub:
-  my repositories are cloned in with my machine as `origin`, `git fetch`
+  my repositories are cloned in with my machine as `host-origin`, `git fetch`
   brings my branches, and a push is refused. Agents work on their own
   branch in a _worktree slot_, where builds start warm, and leave their
   changes uncommitted. I review them in Zed and ask for more; when it's
@@ -107,7 +108,7 @@ makes it easy to work with.
   the same paths, read-only, and sync at each start, when I ask, or when an
   agent asks. Agents read a description of my machine instead of probing
   it, reach my notes, diagrams and flash cards, and can ask to run a
-  command on host, which waits for me.
+  command on my machine, which waits for me.
 - **Asking is cheap.** An agent asks for access from the VM, with its
   reason; I get a notification and a card, and one click lets it carry on.
   What I trust I allow for a while, or let run without asking.
@@ -117,10 +118,11 @@ makes it easy to work with.
   output before the agent does, and keep it from it. Repeated jobs become
   saved commands, typed and confined, read once and then trusted.
 - **Agents set up their own access, for me to check.** When no grant fits,
-  an agent proposes one: a token and its hosts, a network and its
-  destinations, or a fixed script or HTTP request with typed parameters. It
-  lands in my grants, off, for me to read, adjust, and accept or decline;
-  the values, approval modes and start settings stay mine. Proposals are
+  an agent proposes one: a credential and the hosts it may go to, a network
+  and its destinations, or a _fixed call_ (a script or an HTTP request MWT
+  builds from the agent's typed values). It lands in my grants, off, for me
+  to read, adjust, and accept or decline; values, whether each use asks and
+  how a grant starts stay mine. Proposals are
   narrow, one job each, so they're quick to judge, and my grants grow from
   the tasks that needed them.
 - **Agents know their way around.** Every agent is told how the VM works:
@@ -131,12 +133,12 @@ One place for all of it:
 
 | Page               | What it is for                                                                                                                             |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Overview**       | The VM at a glance: start, stop or recreate it, what it uses, approvals waiting, servers running, grants that are on, the latest activity. |
+| **Overview**       | The VM at a glance: start, stop or recreate it, what it uses, approvals waiting, a terminal into it, servers running, grants that are on, the latest activity. |
 | **Approvals**      | The cards waiting for a decision, the commands running on my machine, and what was decided.                                                |
 | **Projects**       | The repositories open in the VM, their branches and their worktree slots.                                                                  |
 | **Handoffs**       | Where a task I reviewed in Zed becomes official: landed on my branch, sent back with a note, or closed.                                    |
-| **Grants**         | Every grant, on or off, with what the VM gets, how long it stays on, what is allowed for now and its recent use.                           |
-| **Proxy activity** | Every connection and lookup the VM made, filterable, down to the request as the VM sent it.                                                |
+| **Grants**         | My resources, every grant over them, on or off, how long it stays on, whether each use asks, and a console to try one as the VM.          |
+| **Activity log**   | Every connection, lookup and action the VM made, filterable, down to the request as the VM sent it and how it was decided.                 |
 | **Firewall**       | The _VM isolated_ switch, the rules and what they found.                                                                                   |
 | **Settings**       | Shared folders, CPUs, memory and disks, and the image the VM runs.                                                                         |
 | **Setup**          | What this machine still needs, and the steps to get the VM and Zed ready.                                                                  |

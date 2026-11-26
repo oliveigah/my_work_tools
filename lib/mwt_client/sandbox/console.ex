@@ -19,13 +19,17 @@ defmodule MWTClient.Sandbox.Console do
   @max_command 16 * 1024
 
   @typedoc """
-  What a run gave: its exit status (nil when it didn't end by itself), its
+  What a run gave: the folder it started in (nil for `/work`) and the one
+  its shell ended in (nil when unknown), its exit status (nil when it
+  didn't end by itself), its
   output with its errors, whether that was cut at `max_output/0`, whether
   its time ran out, and when it started and ended.
   """
   @type result :: %{
           command: String.t(),
           credential: String.t() | nil,
+          dir: String.t() | nil,
+          cwd: String.t() | nil,
           status: non_neg_integer() | nil,
           output: String.t(),
           cut: boolean(),
@@ -44,17 +48,20 @@ defmodule MWTClient.Sandbox.Console do
   Runs `command` in `guest`, under `credential` when one is named, for at
   most `seconds`: `{:ok, result}`, or why it didn't run.
   """
-  @spec run(map(), String.t(), String.t() | nil, pos_integer()) ::
+  @spec run(map(), String.t(), String.t() | nil, pos_integer(), String.t() | nil) ::
           {:ok, result()} | {:error, String.t()}
-  def run(guest, command, credential, seconds \\ 60) do
+  def run(guest, command, credential, seconds \\ 60, dir \\ nil) do
     with {:ok, command} <- command(command),
-         {:ok, credential} <- credential(credential) do
+         {:ok, credential} <- credential(credential),
+         {:ok, dir} <- dir(dir) do
       seconds = seconds |> max(1) |> min(@max_seconds)
       started_at = DateTime.utc_now()
 
       base = %{
         command: command,
         credential: credential,
+        dir: dir,
+        cwd: nil,
         status: nil,
         output: "",
         cut: false,
@@ -63,12 +70,22 @@ defmodule MWTClient.Sandbox.Console do
       }
 
       result =
-        case guest.run.(["bash", "-lc", script(command, credential)], seconds, @max_output) do
-          {:ok, output, status} -> %{base | status: status, output: shown(output)}
-          {:error, {:too_long, head}} -> %{base | output: shown(head), cut: true}
-          {:error, :timeout} -> %{base | timed_out: true}
-          {:error, message} when is_binary(message) -> {:error, message}
-          {:error, other} -> {:error, inspect(other)}
+        case guest.run.(["bash", "-lc", script(command, credential, dir)], seconds, @max_output) do
+          {:ok, output, status} ->
+            {output, cwd} = ended_in(output)
+            %{base | status: status, output: shown(output), cwd: cwd}
+
+          {:error, {:too_long, head}} ->
+            %{base | output: shown(head), cut: true}
+
+          {:error, :timeout} ->
+            %{base | timed_out: true}
+
+          {:error, message} when is_binary(message) ->
+            {:error, message}
+
+          {:error, other} ->
+            {:error, inspect(other)}
         end
 
       case result do
@@ -78,13 +95,42 @@ defmodule MWTClient.Sandbox.Console do
     end
   end
 
-  # What the VM printed, as text a person reads: a terminal's colours and
-  # cursor moves dropped, anything else that doesn't show written out
-  # (`MWTClient.Sandbox.Shown`).
-  defp shown(output) do
+  # The folder the shell ended in, which the script prints last after a
+  # mark of its own (`script/3`), taken off what the command printed. Nil
+  # when it isn't there: the command replaced the shell, or was cut.
+  defp ended_in(output) do
+    case Regex.run(~r/\x1e([^\x1e\n]*)\z/, output, return: :index) do
+      [{at, _length}, {path_at, path_length}] ->
+        {binary_part(output, 0, at), binary_part(output, path_at, path_length)}
+
+      nil ->
+        {output, nil}
+    end
+  end
+
+  @doc """
+  What the VM printed, as a terminal shows it: a line a carriage return
+  went back over keeps what was written last (a progress bar shows where
+  it ended), colours stay (`ESC[…m`, which `MWTClientWeb.Ansi` draws),
+  other escapes go, and anything else that doesn't show is written out
+  (`MWTClient.Sandbox.Shown`).
+
+      iex> MWTClient.Sandbox.Console.shown("10%\\r50%\\r100%\\n\\e[32mok\\e[0m \\e[2Kdone\\e]0;title\\a")
+      "100%\\n\\e[32mok\\e[0m done"
+  """
+  @spec shown(String.t()) :: String.t()
+  def shown(output) do
     output
-    |> String.replace(~r/\e\[[0-9;?]*[ -\/]*[@-~]/, "")
-    |> MWTClient.Sandbox.Shown.text()
+    |> String.replace("\r\n", "\n")
+    |> String.split("\n")
+    |> Enum.map_join("\n", fn line -> line |> String.split("\r") |> List.last() end)
+    # Window titles and the like (OSC), then every escape but colours.
+    |> String.replace(~r/\e\][^\a\e]*(\a|\e\\\\)/, "")
+    |> String.replace(~r/\e\[[0-9;?]*[ -\/]*[@-ln-~]/, "")
+    |> String.split(~r/(\e\[[0-9;]*m)/, include_captures: true)
+    |> Enum.map_join(fn piece ->
+      if piece =~ ~r/\A\e\[[0-9;]*m\z/, do: piece, else: MWTClient.Sandbox.Shown.text(piece)
+    end)
   end
 
   @doc """
@@ -187,21 +233,35 @@ defmodule MWTClient.Sandbox.Console do
     do: if(word =~ ~r/\A[A-Z]+\z/, do: word, else: shell_quote(word))
 
   @doc """
-  The script that runs `command` in the VM: in `/work` (home when there is
-  none), its errors with its output, under `mwt exec CREDENTIAL` when one
-  is named.
+  The script that runs `command` in the VM: in `dir`, or `/work` (home
+  when there is neither), its errors with its output, under `mwt exec
+  CREDENTIAL` when one is named. As the shell ends it prints the folder
+  it is in after a mark (`\\x1e`), for a terminal to start the next
+  command there (`run/5`).
 
-      iex> MWTClient.Sandbox.Console.script("gh repo view o/r", "github")
-      "cd /work 2>/dev/null || cd\\nexec 2>&1\\nmwt exec 'github' -- bash -c 'gh repo view o/r'\\n"
-      iex> MWTClient.Sandbox.Console.script("echo 'hi'", nil)
-      "cd /work 2>/dev/null || cd\\nexec 2>&1\\necho 'hi'\\n"
+      iex> alias MWTClient.Sandbox.Console
+      iex> Console.script("gh repo view o/r", "github") |> String.split("\\n", trim: true)
+      ["cd /work 2>/dev/null || cd", "exec 2>&1", ~S(trap 'printf "\\036%s" "$PWD"' EXIT),
+       "mwt exec 'github' -- bash -c 'gh repo view o/r'"]
+      iex> Console.script("ls", nil, "/work/klife") |> String.split("\\n", trim: true) |> hd()
+      "cd -- '/work/klife' 2>/dev/null || cd /work 2>/dev/null || cd"
   """
-  @spec script(String.t(), String.t() | nil) :: String.t()
-  def script(command, nil), do: "cd /work 2>/dev/null || cd\nexec 2>&1\n#{command}\n"
+  @spec script(String.t(), String.t() | nil, String.t() | nil) :: String.t()
+  def script(command, credential, dir \\ nil) do
+    start =
+      case dir do
+        nil -> "cd /work 2>/dev/null || cd"
+        dir -> "cd -- #{shell_quote(dir)} 2>/dev/null || cd /work 2>/dev/null || cd"
+      end
 
-  def script(command, credential),
-    do:
-      "cd /work 2>/dev/null || cd\nexec 2>&1\nmwt exec #{shell_quote(credential)} -- bash -c #{shell_quote(command)}\n"
+    run =
+      case credential do
+        nil -> command
+        credential -> "mwt exec #{shell_quote(credential)} -- bash -c #{shell_quote(command)}"
+      end
+
+    "#{start}\nexec 2>&1\ntrap 'printf \"\\036%s\" \"$PWD\"' EXIT\n#{run}\n"
+  end
 
   defp shell_quote(text), do: "'" <> String.replace(text, "'", ~S('\'')) <> "'"
 
@@ -213,6 +273,17 @@ defmodule MWTClient.Sandbox.Console do
       byte_size(command) > @max_command -> {:error, "That command is over 16 KiB."}
       true -> {:ok, command}
     end
+  end
+
+  # A folder to start in: none, or an absolute path of one line.
+  defp dir(nil), do: {:ok, nil}
+  defp dir(""), do: {:ok, nil}
+
+  defp dir(dir) when is_binary(dir) do
+    if String.starts_with?(dir, "/") and not String.contains?(dir, ["\n", "\r", <<0>>]) and
+         byte_size(dir) <= 4096,
+       do: {:ok, dir},
+       else: {:error, "That folder can't be started in."}
   end
 
   # A credential's id, as `mwt exec` takes it: none, or one made as ids are.

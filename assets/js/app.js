@@ -51,6 +51,16 @@ const liveSocket = new LiveSocket("/live", Socket, {
       repeat: e.repeat,
     }),
   },
+  dom: {
+    // A <details> you opened stays open when the page updates: its open
+    // state lives only in the browser, so a re-render (a clock ticking, a
+    // grant changing) would otherwise put back the server's and close it.
+    // The server may still open one (a field inside it with an error); it
+    // never closes one you opened.
+    onBeforeElUpdated(from, to) {
+      if (from.tagName === "DETAILS" && from.open) to.setAttribute("open", "")
+    },
+  },
 })
 
 // Show progress bar on live navigation and form submits

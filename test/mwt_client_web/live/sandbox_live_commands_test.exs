@@ -44,7 +44,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
 
     # Text the agent wrote: an ad-hoc command, with the caution it deserves.
     assert has_element?(view, "#approval-#{approval.id}[data-command=ad-hoc]")
-    assert has_element?(view, "#approval-kind-#{approval.id}", "Ad-hoc command")
+    assert has_element?(view, "#approval-kind-#{approval.id}", "Written by the agent")
     assert has_element?(view, "#approval-caution-#{approval.id}", "Written by the agent, not you")
     refute has_element?(view, "#approval-trust-#{approval.id}")
     assert has_element?(view, "#command-script-text-#{approval.id}", "sudo kubectl get pods")
@@ -195,7 +195,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     |> form("#add-grant-form", grant: %{name: "Web pods", purpose: "Lists the web pods"})
     |> render_submit()
 
-    assert has_element?(view, "#notices", "Saved as Web pods, enabled for 1 h")
+    assert has_element?(view, "#notices", "Saved as Web pods, on for 1 h")
     assert has_element?(view, "#approval-saved-#{approval.id}", "Saved as web-pods")
     refute has_element?(view, "#save-command-#{approval.id}")
 
@@ -299,7 +299,7 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
 
     # Your own script: named, with what it's for, and calmer.
     assert has_element?(view, "#approval-#{approval.id}[data-command=saved]")
-    assert has_element?(view, "#approval-kind-#{approval.id}", "Fixed call")
+    assert has_element?(view, "#approval-kind-#{approval.id}", "Saved command")
     assert has_element?(view, "#approval-#{approval.id} h3", "Pods")
     assert has_element?(view, "#approval-purpose-#{approval.id}", "List pods")
     assert has_element?(view, "#approval-trust-#{approval.id}", "The agent sent no text")

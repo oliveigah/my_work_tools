@@ -13,33 +13,44 @@ defmodule MWTClient.Sandbox.Pins do
       command runs, MWT hashes the file again, and one changed or gone
       runs nothing (`changed/1`);
     * a saved command keeps them as it is saved; a run whose files changed
-      since asks, whatever its setting, its card showing the difference
-      (`diff/2`), and running it pins what is there now.
+      since asks, whatever its setting (`moved/2`), its card showing the
+      difference (`diff/2`), and running it pins what is there now.
 
-  Which files are the ones the text names (`MWTClient.Sandbox.HostCommand.files_run/1`),
-  each resolved in the folder it runs in, with the workspace and your home
-  put in for `$MWT_WORKSPACE` and `~`. Not pinned, and said so on the card:
-  what a file runs in turn, a file it only reads, a path holding any other
-  variable, and a change in the instant between the check and the shell
-  opening the file. It catches what happens between your look and the
-  run, minutes or weeks apart; not a race designed against it.
+  Which files: those `MWTClient.Sandbox.ScriptRuns` reads the text runs,
+  each resolved in the folder the command is in at that point (after its
+  `cd`s), with the workspace and the home the command runs with put in
+  for `$MWT_WORKSPACE`, `$HOME` and `~`.
+
+  A file it can't tell (a path holding any other variable, a `cd` it
+  can't follow, shell code built from a variable, code piped in) is a
+  pin of its own, with no path and why (`why`): the card says MWT can't
+  show it or pin it, and a saved command's run with one asks each time
+  (`moved/2`), since nothing says it is what you saw. A card of a command
+  the agent wrote asks anyway, and runs it once you let it, said so.
+
+  Not pinned, and said so on the card: what a file runs in turn, a file
+  it only reads, and a change in the instant between the check and the
+  shell opening the file. It catches what happens between your look and
+  the run, minutes or weeks apart; not a race designed against it.
   """
 
-  alias MWTClient.Sandbox.HostCommand
+  alias MWTClient.Sandbox.ScriptRuns
 
   # What a card shows of each file; its hash is of all of it.
   @shown 16 * 1024
 
   @typedoc """
-  One file: as the command names it (`file`), where that is (`path`, nil
-  when a variable keeps it from being known), whether the VM wrote it
-  (`vm?`, in the workspace's `from-vm/`), and what it holds: its `hash`
-  and `size`, and the start of its `content`; `hash` nil when it isn't
-  there or can't be read.
+  One file: as the command names it, from the folder it starts in
+  (`file`), where that is (`path`, nil when MWT can't tell, and `why`,
+  said to complete "Runs FILE, …"), whether the VM wrote it (`vm?`, in
+  the workspace's `from-vm/`), and what it holds: its `hash` and `size`,
+  and the start of its `content`; `hash` nil when it isn't there or
+  can't be read. Pins saved before `why` have none.
   """
   @type pin :: %{
           file: String.t(),
           path: String.t() | nil,
+          why: String.t() | nil,
           vm?: boolean(),
           hash: String.t() | nil,
           size: non_neg_integer(),
@@ -52,22 +63,88 @@ defmodule MWTClient.Sandbox.Pins do
   """
   @spec of(String.t(), String.t(), String.t() | nil) :: [pin()]
   def of(script, dir, workspace) do
-    for file <- HostCommand.files_run(script) do
-      path = resolve(file, dir, workspace)
+    vars =
+      if is_binary(workspace),
+        do: %{"HOME" => home(), "MWT_WORKSPACE" => workspace},
+        else: %{"HOME" => home()}
 
-      vm? =
-        is_binary(path) and is_binary(workspace) and
-          inside?(path, Path.join(workspace, "from-vm"))
+    script
+    |> ScriptRuns.files()
+    |> Enum.map(&pin(&1, dir, workspace, vars))
+    |> Enum.uniq_by(&(&1.path || {&1.file, &1.why}))
+  end
 
-      Map.merge(%{file: file, path: path, vm?: vm?}, read(path))
+  defp pin({:unread, shown, why}, _dir, _workspace, _vars), do: unknown(shown, why)
+
+  defp pin({:file, shown, word, folder}, dir, workspace, vars) do
+    case path(word, folder, dir, vars) do
+      {:ok, path} ->
+        vm? = is_binary(workspace) and inside?(path, Path.join(workspace, "from-vm"))
+        Map.merge(%{file: shown, path: path, why: nil, vm?: vm?}, read(path))
+
+      {:error, why} ->
+        unknown(shown, why)
+    end
+  end
+
+  defp unknown(shown, why),
+    do: %{file: shown, path: nil, why: why, vm?: false, hash: nil, size: 0, content: ""}
+
+  # Where a file is: from `/`, `~` or the workspace as it says, or from
+  # the folder its command is in after the `cd`s before it.
+  defp path(word, folder, dir, vars) do
+    case ScriptRuns.value(word, vars) do
+      :error ->
+        {:error, "whose path holds a variable MWT can't tell"}
+
+      {:ok, text} ->
+        if Path.type(text) == :absolute do
+          {:ok, Path.expand(text)}
+        else
+          with {:ok, folder} <- folder(folder, dir, vars), do: {:ok, Path.expand(text, folder)}
+        end
+    end
+  end
+
+  defp folder(:unknown, _dir, _vars), do: {:error, "after a cd MWT can't follow"}
+
+  defp folder(steps, dir, vars) do
+    Enum.reduce_while(steps, {:ok, dir}, fn
+      :home, _at ->
+        {:cont, {:ok, vars["HOME"]}}
+
+      {:cd, word, sure?}, {:ok, at} ->
+        case ScriptRuns.value(word, vars) do
+          :error ->
+            {:halt, {:error, "after cd #{word.text}, a folder MWT can't tell"}}
+
+          {:ok, text} ->
+            next = Path.expand(text, at)
+
+            # A cd whose failure doesn't stop the command: should the
+            # folder not be there, what follows runs where it was.
+            if sure? or dir?(next),
+              do: {:cont, {:ok, next}},
+              else:
+                {:halt,
+                 {:error, "after cd #{word.text}, which isn't there now: it would run elsewhere"}}
+        end
+    end)
+  end
+
+  # The home the command runs with (`MWTClient.Sandbox.HostRun`).
+  defp home do
+    case MWTClient.Sandbox.HostRun.home_env() do
+      [{"HOME", home}] -> home
+      [] -> System.user_home!()
     end
   end
 
   @doc """
   The pins whose file is no longer as it was, each with what it is now:
   `{pinned, now}`. A file that was missing counts as changed once it is
-  there, and the other way round; one whose path wasn't known is never
-  looked at.
+  there, and the other way round. One MWT can't tell the path of is
+  never looked at: the card said so, and you let it run as it is then.
   """
   @spec changed([pin()]) :: [{pin(), pin()}]
   def changed(pins) do
@@ -76,6 +153,31 @@ defmodule MWTClient.Sandbox.Pins do
         now = Map.merge(pin, read(path)),
         now.hash != pin.hash,
         do: {pin, now}
+  end
+
+  @doc """
+  The files a saved command's run found (`now`) that aren't as the
+  command keeps them (`pinned`): each `{was, now}`, `was` with no hash
+  when it wasn't pinned. A file not pinned yet counts as changed, but
+  one missing then and now; a file MWT can't tell the path of always
+  does, since nothing says it is what you saw: each run with one asks.
+
+      iex> alias MWTClient.Sandbox.Pins
+      iex> a = %{file: "a", path: "/a", why: nil, vm?: false, hash: "1", size: 1, content: "x"}
+      iex> unknown = %{a | file: "$X", path: nil, why: "whose path holds a variable MWT can't tell", hash: nil}
+      iex> Pins.moved([a, unknown], [a, unknown]) |> Enum.map(fn {_was, now} -> now.file end)
+      ["$X"]
+      iex> Pins.moved([a], [%{a | hash: "2"}]) |> Enum.map(fn {was, now} -> {was.hash, now.hash} end)
+      [{"1", "2"}]
+  """
+  @spec moved([pin()], [pin()]) :: [{pin(), pin()}]
+  def moved(pinned, now) do
+    by_path = for %{path: path} = pin <- pinned, is_binary(path), into: %{}, do: {path, pin}
+
+    for pin <- now,
+        was = Map.get(by_path, pin.path, %{pin | hash: nil, size: 0, content: ""}),
+        is_nil(pin.path) or was.hash != pin.hash,
+        do: {was, pin}
   end
 
   @doc """
@@ -97,23 +199,11 @@ defmodule MWTClient.Sandbox.Pins do
     |> Enum.take(most)
   end
 
-  defp resolve(file, dir, workspace) do
-    expanded =
-      file
-      |> then(
-        &if(workspace, do: String.replace(&1, ~r/\$\{?MWT_WORKSPACE\}?/, workspace), else: &1)
-      )
-      |> then(
-        &if(String.starts_with?(&1, "~/"),
-          do: Path.join(System.user_home!(), String.slice(&1, 2..-1//1)),
-          else: &1
-        )
-      )
-
-    if String.contains?(expanded, "$"), do: nil, else: Path.expand(expanded, dir)
-  end
-
   defp inside?(path, folder), do: path == folder or String.starts_with?(path, folder <> "/")
+
+  defp dir?(path) do
+    match?({:ok, info} when elem(info, 2) == :directory, :file.read_file_info(path, [:raw]))
+  end
 
   defp read(nil), do: %{hash: nil, size: 0, content: ""}
 

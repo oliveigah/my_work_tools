@@ -120,6 +120,68 @@ defmodule MWTClient.Sandbox.AuditTest do
            )
   end
 
+  test "an ask refused before anything ran leaves a line, decided by MWT", %{
+    username: username
+  } do
+    {:ok, grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "command",
+        "name" => "hello",
+        "purpose" => "Says hello",
+        "script" => "echo hello",
+        "dir" => System.tmp_dir!()
+      })
+
+    call = %{grant: grant.id, script: nil, values: %{}, dir: nil, reason: "r", agent: "claude"}
+    written = %{call | grant: nil, script: "ls"}
+
+    # Off: the call is refused, and the log says so.
+    assert {:error, {:grant_off, _}} = Server.call(username, {:request_command, call})
+    off = line(username, &(&1.summary =~ "Call of hello · refused before anything ran"))
+    assert %{by: :refused, why: why} = off.decision
+    assert why =~ "is off"
+    assert off.grant_id == grant.id
+
+    # Host commands locked: a command the agent wrote is refused, logged too.
+    :ok = Sandbox.lock(username, :machine)
+    assert {:error, {:locked, :machine, _}} = Server.call(username, {:request_command, written})
+
+    assert %{decision: %{by: :refused}} =
+             line(username, &(&1.summary =~ "A command the agent wrote · refused"))
+  end
+
+  test "a real value in a name the VM chose is refused like one in a value", %{
+    username: username
+  } do
+    github(username)
+
+    {:ok, grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "command",
+        "name" => "say",
+        "purpose" => "Says a word",
+        "script" => ~s(echo "$WORD"),
+        "params" => "WORD: word: what to say",
+        "dir" => System.tmp_dir!()
+      })
+
+    ask = %{
+      grant: grant.id,
+      script: nil,
+      values: %{"WORD" => "hi", "ghp_real_value_0123456789" => "x"},
+      dir: nil,
+      reason: "r",
+      agent: "claude"
+    }
+
+    assert {:error, :firewall} = Server.call(username, {:call, ask})
+
+    refute Enum.any?(
+             Sandbox.events(username, %{limit: 100}),
+             &(&1.summary =~ "ghp_real_value_0123456789")
+           )
+  end
+
   test "a saved command run unasked names the allowance; one you ran, you", %{
     username: username
   } do

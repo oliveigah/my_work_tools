@@ -3,6 +3,8 @@ defmodule MWTClient.Sandbox.DescribeTest do
 
   alias MWTClient.Sandbox.Describe
 
+  doctest Describe, only: [percent_decoded: 1, plain_segment?: 1, ambiguous_path?: 1]
+
   defp pkt(line),
     do: ((byte_size(line) + 4) |> Integer.to_string(16) |> String.pad_leading(4, "0")) <> line
 

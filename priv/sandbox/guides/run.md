@@ -2,7 +2,7 @@
 
 Read this before you ask to run one.
 
-The last resort, for what no action and no grant can do: a job that
+The last resort, for what no fixed call or other grant can do: a job that
 needs the user's SSH keys, a kubeconfig, a signing key, their VPN, or tools
 only their machine has. Use a grant whenever one fits: through it the
 user sees what each request does, while a command shows only its text.
@@ -46,10 +46,10 @@ So keep the command the smallest that gets what you need:
 4. Prefer text the user can read to a script file. `mwt run -- ./x.sh`
    puts the file on the card, as a warning, and pins it: changed before
    it runs, nothing runs. One you wrote in `from-vm` is flagged loudest.
-5. When you expect to run the same again, don't run it ad hoc: propose it
+5. When you expect to run the same again, don't ask each time: propose it
    as a saved command (`mwt help propose`), then call it. The user can also
-   save a run as an action from its card; `mwt run` then says its id:
-   call that one next time.
+   save a run as a saved command from its card; `mwt run` then says its
+   id: call that one next time.
 6. `--timeout` is the time limit in seconds (120 by default, 3600 at most).
    `mwt` waits up to `--wait` seconds (60) for it to be approved and run;
    if it says it is still waiting, keep working on what doesn't need it and

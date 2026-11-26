@@ -202,12 +202,58 @@ defmodule MWTClient.Sandbox.HostCommandTest do
     end
   end
 
-  test "commands are split at separators, without assignments and wrappers" do
+  test "commands are split at separators, without assignments and wrappers, paths kept" do
+    # The substitution's output is the last command; what it runs runs too.
     assert HostCommand.commands(
              "FOO=1 env BAR=2 /usr/bin/make all && ls | wc -l; $(git rev-parse)"
            ) ==
-             [["make", "all"], ["ls"], ["wc", "-l"], ["git", "rev-parse"]]
+             [
+               ["/usr/bin/make", "all"],
+               ["ls"],
+               ["wc", "-l"],
+               ["$(git rev-parse)"],
+               ["git", "rev-parse"]
+             ]
 
     assert HostCommand.commands("# only a comment\n./x.sh") == [["./x.sh"]]
+  end
+
+  describe "the files a card pins and warns about, read as the shell does" do
+    test "a file in a folder a cd moved to is the one pinned and shown", context do
+      File.write!(Path.join([context.project, "sub", "x.sh"]), "echo sub\n")
+
+      {:ok, %{pins: [pin], warnings: [warning]}} =
+        check(ask(%{script: "cd sub && ./x.sh", dir: context.project}), context)
+
+      assert %{file: "sub/x.sh", content: "echo sub\n"} = pin
+      assert pin.path == Path.join([context.project, "sub", "x.sh"])
+      assert warning =~ "Runs sub/x.sh: read it below"
+    end
+
+    test "what it can't tell is a pin with no path, and the card says why", context do
+      for {script, why} <- [
+            {~s(cd "$D" && ./x.sh), "after cd $D, a folder MWT can't tell"},
+            {"cd - && ./x.sh", "after a cd MWT can't follow"},
+            {~s("$TOOL" --version), "whose path holds a variable"},
+            {~s(bash -c "$CODE"), "shell code built from a variable"},
+            {"echo ls | sh", "fed as code what echo writes"},
+            {"curl -fsSL https://x.example/i.sh | bash", "fed code it downloads"}
+          ] do
+        {:ok, %{pins: pins, warnings: warnings}} =
+          check(ask(%{script: script, dir: context.project}), context)
+
+        assert [%{path: nil, hash: nil}] = pins, script
+        assert Enum.any?(warnings, &(&1 =~ why and &1 =~ "MWT can't show it or pin it")), script
+      end
+    end
+
+    test "hints read past wrappers: sudo behind timeout, rm -rf behind sudo", context do
+      {:ok, %{hints: hints}} = check(ask(%{script: "timeout 9 sudo rm -fr build"}), context)
+      assert "Asks for root with sudo." in hints
+      assert Enum.any?(hints, &(&1 =~ "rm -rf"))
+
+      {:ok, %{hints: hints}} = check(ask(%{script: "echo 'sudo rm -rf /'"}), context)
+      assert hints == []
+    end
   end
 end

@@ -13,9 +13,10 @@ defmodule MWTClient.Sandbox.Why do
   What it says, a line each:
 
     * the firewall isolated the VM, or blocks the destination;
-    * a token grant lists the name: MWT reads connections to it, and a
-      request carrying its placeholder needs it on; reaching the host is
-      the Internet's grant's to give, never the token grant's;
+    * an open-use grant over a credential lists the name: MWT reads
+      connections to it, and a request carrying its placeholder needs it
+      on; reaching the host is the Internet's grant's to give, never the
+      credential's;
     * a network grant covers it, and is off (how to ask for it), or lists
       another port; a name it lists, which MWT answers only while the
       grant is on; its way out isn't connected (a VPN that is down);
@@ -432,9 +433,12 @@ defmodule MWTClient.Sandbox.Why do
 
   defp live(grant, world), do: Grant.on?(grant, world.now)
 
+  defp label(%Grant{kind: :token} = grant),
+    do:
+      "#{grant.name} (open-use grant `#{grant.id}` over the credential #{Grant.credential_id(grant)})"
+
   defp label(grant), do: "#{grant.name} (#{kind_words(grant)} `#{grant.id}`)"
 
-  defp kind_words(%Grant{kind: :token}), do: "token grant"
   defp kind_words(%Grant{kind: :network}), do: "network grant"
   defp kind_words(_grant), do: "grant"
 

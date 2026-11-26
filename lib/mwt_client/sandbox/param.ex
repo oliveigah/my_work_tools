@@ -12,7 +12,8 @@ defmodule MWTClient.Sandbox.Param do
   Before its schema, every value meets MWT's own floor, whatever the
   schema says (`check/2`): given and not blank, nothing in it that doesn't
   show, at most 4 KiB, never an option (no leading `-`, but for a number)
-  and never up a folder (no part between `/` that is `.` or `..`). Then
+  and never up a folder (no part between `/` or `\\` that is `.` or `..`,
+  percent-encoded or not). Then
   it is typed by its schema's `type` and checked against the schema.
 
   `NAME: shape: what it is`, a line each, is a shorthand for a schema,
@@ -22,8 +23,9 @@ defmodule MWTClient.Sandbox.Param do
 
   A command reads its parameters as environment variables: the script
   runs exactly as saved, and a value never becomes part of its text. So a
-  name can't be one the environment already gives a meaning to
-  (`reserved?/1`), and every parameter has to appear in the script
+  name can't be one programs read from the environment (`env_reader/1`)
+  or this machine's environment has (`reserved?/1`), and every parameter
+  has to appear in the script
   (`unused/2`): a value reaches a tool only where the script shows it go.
 
   Pure, apart from `reserved?/1` reading MWT's own environment and
@@ -60,11 +62,44 @@ defmodule MWTClient.Sandbox.Param do
     "text" => %{"type" => "string"}
   }
 
-  # Names the shell, the loader and git give a meaning to. Others are the
-  # machine's to say: a name its environment has is refused too.
-  @reserved ~w(IFS PATH HOME ENV PS4 SHELLOPTS BASHOPTS CDPATH GLOBIGNORE PROMPT_COMMAND
-    EDITOR VISUAL PAGER TERM TMPDIR TZ LANG USER SHELL PWD OLDPWD)
-  @reserved_prefixes ~w(BASH_ LD_ DYLD_ GIT_ SSH_ LC_ MWT_)
+  # Names programs read from the environment, by who reads them. A
+  # command's values reach it as environment variables, so a value under
+  # one of these reaches every program the script starts, not only where
+  # the script shows `$NAME` go: `PYTHONPATH` makes python load code from
+  # where the agent says, `HTTPS_PROXY` sends curl's traffic through it.
+  # No list is whole: a name this machine's environment has is refused
+  # too (`reserved?/1`), and the rest is the name's own risk.
+  @read_from_env [
+    {"the shell", ~w(IFS PATH HOME ENV CDPATH PS1 PS2 PS3 PS4 SHELL SHELLOPTS BASHOPTS GLOBIGNORE
+        PROMPT_COMMAND HISTFILE INPUTRC MAIL MAILPATH PWD OLDPWD ZDOTDIR FPATH TMOUT),
+     ~w(BASH_ ZSH_)},
+    {"the loader", [], ~w(LD_ DYLD_)},
+    {"the C library",
+     ~w(LANG LANGUAGE TZ TMPDIR GCONV_PATH LOCPATH NLSPATH HOSTALIASES RES_OPTIONS LOCALDOMAIN USER LOGNAME),
+     ~w(LC_ MALLOC_ GLIBC_)},
+    {"git", [], ~w(GIT_)},
+    {"ssh", [], ~w(SSH_)},
+    {"python", [], ~w(PYTHON PIP_ VIRTUAL_ENV)},
+    {"node", ~w(NODE_OPTIONS NODE_PATH NODE_EXTRA_CA_CERTS), ~w(NODE_ NPM_CONFIG_ YARN_)},
+    {"perl", ~w(PERLLIB PERL5LIB PERL5OPT PERL5DB), ~w(PERL_)},
+    {"ruby", ~w(RUBYOPT RUBYLIB GEM_HOME GEM_PATH BUNDLE_GEMFILE), ~w(RUBY_ BUNDLE_)},
+    {"java", ~w(JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS JAVA_HOME CLASSPATH MAVEN_OPTS GRADLE_OPTS),
+     []},
+    {"build tools",
+     ~w(MAKEFLAGS CC CXX CFLAGS CXXFLAGS CPPFLAGS LDFLAGS RUSTFLAGS RUSTC_WRAPPER GOFLAGS GOPATH
+        GOPROXY GOROOT GOBIN GOOS GOARCH GOTOOLCHAIN GOPRIVATE GONOSUMDB), ~w(CARGO_ RUSTUP_)},
+    {"kubectl", ~w(KUBECONFIG), ~w(KUBECTL_)},
+    {"docker", [], ~w(DOCKER_ BUILDKIT_ COMPOSE_)},
+    {"cloud tools", ~w(GITHUB_TOKEN GITHUB_ENTERPRISE_TOKEN), ~w(GH_ AWS_ CLOUDSDK_ AZURE_ TF_)},
+    {"HTTP and TLS clients",
+     ~w(SSL_CERT_FILE SSL_CERT_DIR CURL_CA_BUNDLE CURL_HOME REQUESTS_CA_BUNDLE OPENSSL_CONF WGETRC),
+     []},
+    {"programs that find their files by it", [], ~w(XDG_)},
+    {"terminal programs",
+     ~w(TERM TERMINFO EDITOR VISUAL PAGER MANPAGER BROWSER LESS LESSOPEN LESSCLOSE DISPLAY),
+     ~w(SUDO_)},
+    {"MWT", [], ~w(MWT_)}
+  ]
 
   @doc "The most parameters a call takes."
   @spec max() :: pos_integer()
@@ -175,6 +210,9 @@ defmodule MWTClient.Sandbox.Param do
   @doc """
   Why `name` can't be a parameter's, or `:ok`: capitals, digits and
   underscores, and nothing the environment already gives a meaning to.
+
+      iex> MWTClient.Sandbox.Param.name_error("PYTHONPATH")
+      {:error, "PYTHONPATH already means something to python, which reads it from the environment: every program the script starts would see the value. Pick another name."}
   """
   @spec name_error(String.t()) :: :ok | {:error, String.t()}
   def name_error(name) do
@@ -183,9 +221,14 @@ defmodule MWTClient.Sandbox.Param do
         {:error,
          "#{Shown.text(to_string(name))}: a name is in capitals, like REPO_NAME: letters, digits and underscores."}
 
-      reserved?(name) ->
+      (who = env_reader(name)) != nil ->
         {:error,
-         "#{name} already means something on this machine or to the shell. Pick another name."}
+         "#{name} already means something to #{who}, which reads it from the environment: " <>
+           "every program the script starts would see the value. Pick another name."}
+
+      System.get_env(name) != nil ->
+        {:error,
+         "#{name} already means something on this machine, whose environment has it. Pick another name."}
 
       true ->
         :ok
@@ -193,13 +236,32 @@ defmodule MWTClient.Sandbox.Param do
   end
 
   @doc """
-  Whether `name` already means something: to the shell, the loader or git,
-  or to this machine, whose environment has it.
+  Whether `name` already means something: to a program that reads it from
+  the environment (`env_reader/1`), or to this machine, whose environment
+  has it.
   """
   @spec reserved?(String.t()) :: boolean()
-  def reserved?(name) do
-    name in @reserved or Enum.any?(@reserved_prefixes, &String.starts_with?(name, &1)) or
-      System.get_env(name) != nil
+  def reserved?(name), do: env_reader(name) != nil or System.get_env(name) != nil
+
+  @doc """
+  Who reads `name` from the environment, in a few words, or nil: the
+  shell, the loader, git, python… and any `…_PROXY`, which HTTP clients
+  take as where to send their traffic.
+
+      iex> MWTClient.Sandbox.Param.env_reader("HTTPS_PROXY")
+      "HTTP clients"
+      iex> MWTClient.Sandbox.Param.env_reader("REPO")
+      nil
+  """
+  @spec env_reader(String.t()) :: String.t() | nil
+  def env_reader(name) when is_binary(name) do
+    if String.ends_with?(name, "_PROXY") do
+      "HTTP clients"
+    else
+      Enum.find_value(@read_from_env, fn {who, names, prefixes} ->
+        (name in names or String.starts_with?(name, prefixes)) && who
+      end)
+    end
   end
 
   @doc """
@@ -242,15 +304,27 @@ defmodule MWTClient.Sandbox.Param do
     end)
   end
 
-  # Whether a value of its schema may hold a space: text that is neither a
-  # word, nor a pattern's, nor one of a list without spaces.
-  defp may_space?(%{"enum" => values}) when is_list(values),
-    do: Enum.any?(values, &(is_binary(&1) and &1 =~ ~r/[\s*?\[]/))
+  @splits MapSet.new(~c" \t\n\v\f\r*?[")
 
+  # Whether a value of its schema, read bare, may be split or globbed:
+  # whether it may hold a space or `*`, `?`, `[`. A word can't; nor can a
+  # number, nor a pattern's whose text proves it
+  # (`MWTClient.Sandbox.ParamSchema.pattern_reach/1`); anything else may.
+  defp may_space?(%{"enum" => values}) when is_list(values), do: Enum.any?(values, &splits?/1)
+  defp may_space?(%{"const" => value}), do: splits?(value)
   defp may_space?(%{"format" => "word"}), do: false
   defp may_space?(%{"type" => type}) when type in ["integer", "number", "boolean"], do: false
-  defp may_space?(%{"pattern" => _pattern}), do: false
+
+  defp may_space?(%{"pattern" => pattern}) when is_binary(pattern) do
+    case ParamSchema.pattern_reach(pattern) do
+      {:ok, reach} -> not MapSet.disjoint?(reach.chars, @splits)
+      :unknown -> true
+    end
+  end
+
   defp may_space?(_schema), do: true
+
+  defp splits?(value), do: is_binary(value) and value =~ ~r/[\s*?\[]/
 
   @doc """
   Where `script` reads the parameter `name` (`$NAME` or `${NAME}`): each
@@ -264,8 +338,10 @@ defmodule MWTClient.Sandbox.Param do
   def places(script, name), do: scan(script, name, :bare, [])
 
   @doc """
-  Whether a value of `schema` may hold a space: text that is neither a
-  word, nor a pattern's, nor one of a list without spaces.
+  Whether a value of `schema`, read bare, may be split or globbed by the
+  shell: whether it may hold a space or `*`, `?`, `[`. Text may; a word,
+  a number, one of a list without them, or a pattern's whose text proves
+  it can't (`MWTClient.Sandbox.ParamSchema.pattern_reach/1`) may not.
   """
   @spec spaces?(map()) :: boolean()
   def spaces?(schema), do: may_space?(schema)
@@ -395,12 +471,34 @@ defmodule MWTClient.Sandbox.Param do
       String.starts_with?(String.trim_leading(value), "-") and not number?(typed) ->
         "it starts with -, as an option does"
 
-      value |> String.split("/") |> Enum.any?(&(String.trim(&1) in [".", ".."])) ->
+      up_a_folder?(value) ->
         "it goes up a folder (. or ..)"
 
       true ->
         nil
     end
+  end
+
+  # A part of a path that is `.` or `..`, between `/` or `\`, which some
+  # servers and Windows read as `/`; percent-encoded too (`%2e%2e`, `%5c`,
+  # `%252e`), since a value can go into a URL that a server decodes once
+  # or twice more.
+  defp up_a_folder?(value) do
+    value
+    |> percent_decoded(3)
+    |> :binary.split(["/", "\\"], [:global])
+    |> Enum.any?(&(String.trim(&1) in [".", ".."]))
+  end
+
+  defp percent_decoded(value, 0), do: value
+
+  defp percent_decoded(value, times) do
+    decoded =
+      Regex.replace(~r/%([0-9A-Fa-f]{2})/, value, fn _all, hex ->
+        <<String.to_integer(hex, 16)>>
+      end)
+
+    if decoded == value, do: value, else: percent_decoded(decoded, times - 1)
   end
 
   defp number?({:ok, number}) when is_number(number), do: true

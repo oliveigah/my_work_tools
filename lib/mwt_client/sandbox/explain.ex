@@ -390,7 +390,7 @@ defmodule MWTClient.Sandbox.Explain do
 
   defp resource_words({:credential, id}), do: "The credential #{id}"
   defp resource_words({:network, id}), do: "The network #{id}"
-  defp resource_words(:machine), do: "The user's machine"
+  defp resource_words(:machine), do: "Host commands"
   defp resource_words(:mwt), do: "MWT's tools"
 
   defp decision_words(:pass, _world), do: "goes through."
@@ -405,43 +405,54 @@ defmodule MWTClient.Sandbox.Explain do
 
   defp decision_words({:refuse, reason}, _world), do: "refused: #{refusal_words(reason)}."
 
-  defp refusal_words({:grant_off, grant}),
+  @doc """
+  A refusal of `MWTClient.Sandbox.Policy.decide/3`, in a few words: what
+  the agent is told by `mwt why`, and what the activity log says of a use
+  refused before anything ran.
+  """
+  @spec refusal_words(Policy.refusal() | term()) :: String.t()
+  def refusal_words({:grant_off, grant}),
     do: "#{grant.name} (#{grant.id}) would give it, and is off"
 
-  defp refusal_words({:locked, resource, _grant}),
+  def refusal_words({:locked, resource, _grant}),
     do: MWTClient.Sandbox.Resource.locked_words(resource)
 
-  defp refusal_words({:uncovered, grant}),
+  def refusal_words({:uncovered, grant}),
     do:
       "no grant over its credential covers it: #{grant.name} covers only #{MWTClient.Sandbox.Attributes.words(grant.attributes || %{})}"
 
-  defp refusal_words({:wrong_host, grant}), do: "#{grant.name}'s value doesn't go to that host"
+  def refusal_words({:wrong_host, grant}), do: "#{grant.name}'s value doesn't go to that host"
 
-  defp refusal_words({:not_a_carrier, grant, _, _}),
+  def refusal_words({:not_a_carrier, grant, _, _}),
     do: "not in a header #{grant.name}'s value travels in"
 
-  defp refusal_words({:plain_http, _grant}), do: "plain HTTP carries no value: use https://"
+  def refusal_words({:plain_http, _grant}), do: "plain HTTP carries no value: use https://"
 
-  defp refusal_words({:host_blocked, network, :default}),
+  def refusal_words({:ambiguous_path, grant}),
+    do:
+      "its path has a . or .. segment or a backslash, which the host may read as another " <>
+        "path: no value of #{grant.name}'s goes in it"
+
+  def refusal_words({:host_blocked, network, :default}),
     do: "the network #{network} reaches only the hosts the user listed, and not this one"
 
-  defp refusal_words({:host_blocked, network, entry}),
+  def refusal_words({:host_blocked, network, entry}),
     do: "the user blocked #{entry} on the network #{network}"
 
-  defp refusal_words(:internet_off),
+  def refusal_words(:internet_off),
     do: "no grant that is on covers this public host: the Internet's grant is off"
 
-  defp refusal_words({:excepted, %Grant{} = grant, entry}),
+  def refusal_words({:excepted, %Grant{} = grant, entry}),
     do: "#{grant.name} leaves out #{entry}, and no other grant that is on covers that host"
 
-  defp refusal_words({:outside, %Grant{} = grant}),
+  def refusal_words({:outside, %Grant{} = grant}),
     do: "no grant over #{grant.name}'s network covers that host"
 
-  defp refusal_words({:outside, network}),
+  def refusal_words({:outside, network}),
     do: "no grant over the network #{network} covers that host"
 
-  defp refusal_words(:multiple_grants), do: "it carries two credentials' placeholders"
-  defp refusal_words(other), do: other |> inspect() |> Shown.text()
+  def refusal_words(:multiple_grants), do: "it carries two credentials' placeholders"
+  def refusal_words(other), do: other |> inspect() |> Shown.text()
 
   # What would change the result, as things the agent can do or ask for.
   defp changes({:refuse, {:locked, _resource, _grant}}, _says, _over, _world),

@@ -14,7 +14,10 @@ defmodule MWTClient.ProxyReadingBenchTest do
       mix test test/bench/proxy_reading_bench_test.exs --only bench
 
   and size it with `BENCH_REQUESTS` (kept-connection requests, 2000) and
-  `BENCH_CLIENTS` (concurrent clients, 32). The client and the server run
+  `BENCH_CLIENTS` (concurrent clients, 32). `BENCH_VALUES` (3) is how many
+  real values MWT holds, for hosts the requests don't go to: every answer
+  it reads is looked through for them all, so `0` times reading with
+  nothing to look for. The client and the server run
   in the same BEAM as MWT, so the CPU figures are the whole machine's; the
   difference between the two columns is what reading adds. Not counted:
   microsandbox and the relay between the VM and MWT, the same both ways,
@@ -36,6 +39,7 @@ defmodule MWTClient.ProxyReadingBenchTest do
 
   @requests String.to_integer(System.get_env("BENCH_REQUESTS", "2000"))
   @clients String.to_integer(System.get_env("BENCH_CLIENTS", "32"))
+  @values String.to_integer(System.get_env("BENCH_VALUES", "3"))
   @new_connections 200
   @per_client 200
   @mib 1024 * 1024
@@ -52,6 +56,18 @@ defmodule MWTClient.ProxyReadingBenchTest do
     # what MWT costs that is timed here, not what the firewall does.
     :ok = Sandbox.firewall_set(username, {:enabled, false})
     :ok = Sandbox.reading_set(username, {:put, @passed, false})
+
+    for n <- 1..@values//1 do
+      {:ok, _} =
+        Sandbox.create_grant(username, %{
+          "kind" => "token",
+          "name" => "Bench #{n}",
+          "purpose" => "A value to look for",
+          "hosts" => "api#{n}.elsewhere.example",
+          "env" => "BENCH_#{n}",
+          "value" => "bench_real_value_#{n}_" <> Base.encode16(:crypto.strong_rand_bytes(16))
+        })
+    end
 
     server_ca = CA.new("Bench server CA")
     server = start_server(CA.leaf(server_ca, "*.bench.example"))
@@ -84,7 +100,8 @@ defmodule MWTClient.ProxyReadingBenchTest do
     spawn(fn -> accept(listen, username, options) end)
 
     IO.puts("\n=== Reading a connection, against passing it through ===")
-    IO.puts("#{System.schedulers_online()} schedulers; client, server and MWT in one BEAM\n")
+    IO.puts("#{System.schedulers_online()} schedulers; client, server and MWT in one BEAM")
+    IO.puts("#{@values} real values held, looked for in every answer read\n")
 
     %{username: username, proxy: proxy, cacerts: [mwt_ca, server_ca.cert]}
   end

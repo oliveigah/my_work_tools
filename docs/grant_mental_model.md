@@ -2,7 +2,8 @@
 
 A discussion doc, being sharpened (started 2026-11-25). Where MWT works
 otherwise today, it says so. Questions keep their numbers (Q1…) once
-asked; answered ones move to "Decided".
+asked; answered ones move to "Decided". How grants work today, for
+setting them up, is in [grants.md](grants.md).
 
 ## The main operation
 
@@ -462,10 +463,12 @@ Every action that crosses MWT is scanned, whatever its channel or kind.
 
 A fixed call is scanned at the ask (its values), and then as what it
 builds: its request on the way out and its answer on the way in, through
-the same checks as the agent's own. One rule differs today: a fixed
-request's answer that holds one of your values is written out as
-`[GitHub's token]`, while the agent's request has its connection cut.
-Sharing the pipeline makes it one rule: the connection is cut.
+the same checks as the agent's own. Every answer MWT reads is looked
+through for all of your values, not only those put into its request; one
+that holds any is cut, and the firewall told (QA of 2026-11-25). What MWT
+doesn't read (a host set to "Don't read", a protocol other than HTTP
+inside TLS it ended) passes unscanned, and a value split across
+WebSocket frames isn't seen.
 
 ## Which grants an action needs (as decided)
 
@@ -631,6 +634,12 @@ and your use will show which one matters.
   host commands an open grant that only says whether the channel is open
   (the way the Internet's grant does for a network), apart from asking.
 
+- A fixed request's network is asked about the call (`call pr-view`),
+  not about the request MWT builds from it. An allowance you add on the
+  call's card goes on the network grant that asked too, and lets the next
+  call out; one made for the agent's own request to the same endpoint
+  doesn't cover the call, which asks there. Stricter than the agent's,
+  never looser (QA of 2026-11-25).
 - A request action is still listed on its credential's page, where you
   made it: it covers its network too, but its home didn't move.
 - MWT's own calls for a credential (Google's `signJwt` when the VM asks

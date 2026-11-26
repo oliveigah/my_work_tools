@@ -97,9 +97,33 @@ defmodule MWTClient.Sandbox.ParamTest do
           " --force",
           "../etc/passwd",
           "a/../b",
+          "..\\..\\admin",
+          "x\\..\\y",
+          "%2e%2e/admin",
+          "a/%2E%2E%5Cb",
+          "%252e%252e",
           String.duplicate("a", 4097)
         ],
         do: refute(fits?("text", value), inspect(value))
+
+    # A backslash or a percent sign elsewhere is text.
+    assert fits?("text", "C:\\Users\\me and 50% off")
+  end
+
+  test "a value read bare splits or globs, unless its schema proves it can't" do
+    for {schema, splits?} <- [
+          {%{"type" => "string"}, true},
+          {%{"type" => "string", "format" => "word"}, false},
+          {%{"type" => "integer"}, false},
+          {%{"enum" => ["a b", "c"]}, true},
+          {%{"enum" => ["a", "c"]}, false},
+          {%{"pattern" => "^[a-z0-9-]+$"}, false},
+          {%{"pattern" => "^[a-z ]+$"}, true},
+          {%{"pattern" => "^[a-z*]+$"}, true},
+          {%{"pattern" => "^[a-z]"}, true}
+        ] do
+      assert Param.spaces?(schema) == splits?, inspect(schema)
+    end
   end
 
   test "a negative number is no option" do
@@ -161,9 +185,19 @@ defmodule MWTClient.Sandbox.ParamTest do
     end
 
     test "a name is in capitals and means nothing else already" do
-      for name <- ~w(PATH HOME IFS LD_PRELOAD GIT_DIR BASH_ENV SSH_AUTH_SOCK MWT_X LC_ALL) do
+      for name <-
+            ~w(PATH HOME IFS LD_PRELOAD GIT_DIR BASH_ENV SSH_AUTH_SOCK MWT_X LC_ALL
+                     PYTHONPATH PYTHONSTARTUP NODE_OPTIONS PERL5OPT RUBYOPT KUBECONFIG DOCKER_HOST
+                     HTTPS_PROXY NO_PROXY XDG_CONFIG_HOME SSL_CERT_FILE TMPDIR GCONV_PATH AWS_PROFILE) do
         assert {:error, message} = Param.parse("#{name}: word: x")
         assert message =~ "already means something", name
+      end
+
+      assert {:error, message} = Param.parse("KUBECONFIG: word: x")
+      assert message =~ "to kubectl, which reads it from the environment"
+
+      for name <- ~w(REPO PR NAMESPACE TARGET POD TITLE BRANCH TAG IMAGE HOST NOTE) do
+        assert {:ok, _} = Param.parse("#{name}: word: x"), name
       end
 
       for name <- ["repo", "Repo", "1A", "A-B", "A B", ""] do

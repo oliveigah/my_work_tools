@@ -8,6 +8,8 @@ defmodule MWTClient.SandboxH2Host do
     * `GET /echo-auth` - what came as `authorization`, as the body;
     * `POST /size` - how many bytes the body had;
     * `GET /big` - 2 MiB of `a`;
+    * `GET /config` - a secret it keeps (`secret/0`) in its body; `GET
+      /config-header`, in a header;
     * anything else - its path.
   """
   @behaviour Plug
@@ -63,7 +65,16 @@ defmodule MWTClient.SandboxH2Host do
   def call(%{method: "GET", request_path: "/big"} = conn, _options),
     do: send_resp(conn, 200, String.duplicate("a", 2 * 1024 * 1024))
 
+  def call(%{method: "GET", request_path: "/config"} = conn, _options),
+    do: send_resp(conn, 200, ~s({"STRIPE_SECRET_KEY":"#{secret()}"}))
+
+  def call(%{method: "GET", request_path: "/config-header"} = conn, _options),
+    do: conn |> put_resp_header("x-key", secret()) |> send_resp(200, "ok")
+
   def call(conn, _options), do: send_resp(conn, 200, conn.request_path)
+
+  @doc "The secret `/config` hands back: a value a test has MWT hold."
+  def secret, do: "sk_live_H2_STAND_IN_0123456789"
 
   defp read_all(conn, size) do
     case read_body(conn, length: 64 * 1024) do

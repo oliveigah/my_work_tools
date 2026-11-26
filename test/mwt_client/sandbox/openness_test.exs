@@ -102,6 +102,78 @@ defmodule MWTClient.Sandbox.OpennessTest do
              request("https://api.example.com/pulls/$PR", nil, "PR: number: the pull request")
   end
 
+  defp patterned(script, pattern) do
+    {:ok, params} =
+      MWTClient.Sandbox.ParamSchema.parse(
+        Jason.encode!(%{"properties" => %{"P" => %{"description" => "p", "pattern" => pattern}}})
+      )
+
+    Openness.grade(%Grant{id: "c", name: "C", kind: :command, script: script, params: params})
+  end
+
+  test "a pattern is narrow only when its text proves the value keeps to names" do
+    for pattern <- [
+          "^[a-z0-9]+$",
+          "^v[0-9]+(\\.[0-9]+)*$",
+          "^(staging|prod)$",
+          "^[A-Z]+_[0-9]{1,4}$"
+        ] do
+      assert %{grade: :narrow} = patterned("deploy $P", pattern), pattern
+    end
+
+    # Space, a wildcard, a slash, two dots, a leading dash, or a pattern
+    # anchored at one end, or one it can't read: no proof.
+    for pattern <- [
+          "^[a-z ]+$",
+          "^[a-z*]+$",
+          "^[a-z/]+$",
+          "^[a-z.]+$",
+          "^[a-z-]+$",
+          "^v1",
+          "^(?i)[a-z]+$",
+          "^.+$"
+        ] do
+      assert %{grade: grade} = patterned(~s(deploy "$P"), pattern)
+      assert grade == :wide, pattern
+    end
+
+    # Read bare, one that may hold a space or a wildcard is open.
+    assert %{grade: :open} = patterned("deploy $P", "^[a-z ]+$")
+    assert %{grade: :open} = patterned("rm $P", "^[a-z*?]+$")
+  end
+
+  test "code reached past wrappers, bundles, pipes and tools is open, and says where" do
+    for {script, words} <- [
+          {~s(timeout 60 sudo -u ci bash -lc "$CMD"), "(bash -c) (behind timeout, sudo)"},
+          {~s(echo "$CMD" | sh), "is fed to sh as code"},
+          {~s(sh <<EOF\n$CMD\nEOF), "is fed to sh as code"},
+          {~s(echo "$CMD" | xargs rm), "becomes arguments xargs splits"},
+          {~s("$CMD/deploy.sh"), "is the command that runs, or its folder"},
+          {~s(python3 "$CMD"), "picks the file that runs"},
+          {~s(LD_PRELOAD="$CMD" ls), "sets LD_PRELOAD, which the loader reads"},
+          {~s(awk -F, "$CMD" data.csv), "awk program text"},
+          {~s(sed "$CMD" f), "sed script"},
+          {~s(printf '%s' "$CMD" | sed 's/.*/&/e'), "sed script or what it runs"},
+          {~s(kubectl run x --image="$CMD"), "in a container (kubectl run)"},
+          {~s(bash -c 'eval "$CMD"'), "(eval) (behind bash -c)"},
+          {~s(trap "$CMD" EXIT), "(trap)"}
+        ] do
+      assert %{grade: :open, why: [why]} = command(script, "CMD: text: what"), script
+      assert why =~ words, "#{script}: #{why}"
+    end
+
+    # Where it is only an argument, it stays wide.
+    for script <- [
+          ~s(kubectl exec -n "$CMD" web -- ls),
+          ~s(awk '{print $1}' "$CMD"),
+          ~s(sed 's/a/b/' "$CMD"),
+          ~s(bash -c 'echo "$CMD"'),
+          ~s(X="$CMD" ./run.sh)
+        ] do
+      assert %{grade: :wide} = command(script, "CMD: text: what"), script
+    end
+  end
+
   test "any other grant has no grade" do
     assert Openness.grade(%Grant{id: "t", name: "T", kind: :token}) == nil
   end

@@ -217,11 +217,11 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
     end
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
-    assert has_element?(view, "#grant-resource-credential-github", "GitHub")
-    assert has_element?(view, "#grant-resource-machine", "Host commands")
+    assert has_element?(view, "#grant-labels-resource-credential-github", "GitHub")
+    assert has_element?(view, "#grant-labels-resource-machine", "Host commands")
 
     view
-    |> form("#grant-filters", %{resource: "credential:hex"})
+    |> form("#grant-filters", %{labels: ["resource:credential:hex"]})
     |> render_change()
 
     assert has_element?(view, "#grant-row-hex")

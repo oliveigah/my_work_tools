@@ -142,14 +142,14 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
 
       assert output =~ "a call sends no command"
 
-      # The id commands of the agent's own went under is no action: a
+      # The id commands of the agent's own went under is no fixed call: a
       # command the agent writes is run, not called.
       assert {output, 122} = mwt(context, ["call", "commands", "--reason", "r"])
       assert output =~ ~s[mwt run --reason "..." -- COMMAND]
 
       # Its name, in another case, names nothing.
       assert {output, 122} = mwt(context, ["call", "Say", "WORD=a", "TIMES=1", "--reason", "r"])
-      assert output =~ "No action has the id Say"
+      assert output =~ "No fixed call has the id Say"
     end
 
     test "an ad-hoc command with an action's exact text still waits, like any other", context do
@@ -320,6 +320,40 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
              )
     end
 
+    test "keeps no record of its host's address that a connection of the VM's could use",
+         context do
+      github(context)
+      sub = pr_view(context)
+      {:ok, _} = Sandbox.set_start(context.username, sub.id, :auto)
+      service(context)
+
+      assert {_output, 0} =
+               mwt(context, ["call", "pr-view", "REPO=o/r", "PR=7", "--reason", "r"],
+                 stderr: false
+               )
+
+      assert_received {:sent, "GET", "/repos/o/r/pulls/7", _, _, _}
+
+      # Resolved by this machine for the call's own connection only: what
+      # MWT's DNS answered the VM is all a network grant naming the host
+      # opens (`Gate.answered/5`).
+      refute Enum.any?(
+               MWTClient.Sandbox.Gate.answered_map(context.username),
+               fn {_ip, names} -> "api.github.com" in names end
+             )
+
+      # A host the firewall trusts still goes: its address is MWT's own
+      # answer, not a name the VM claims.
+      :ok = Sandbox.firewall_set(context.username, {:list, :trusted, "api.github.com"})
+
+      assert {_output, 0} =
+               mwt(context, ["call", "pr-view", "REPO=o/r", "PR=8", "--reason", "r"],
+                 stderr: false
+               )
+
+      assert_received {:sent, "GET", "/repos/o/r/pulls/8", _, _, _}
+    end
+
     test "an answer that echoes the token is cut, as the VM's own requests' are", context do
       github(context)
       sub = pr_view(context)
@@ -384,7 +418,7 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       refute output =~ "idtok-real"
     end
 
-    test "another grant's value is written out of an answer in every form; a key in it waits",
+    test "another grant's value in an answer is cut, in every form, as the agent's own are; a key in it waits",
          context do
       github(context)
       other = "other/real+value0123456"
@@ -408,13 +442,18 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
 
       :ok = Req.Test.allow(SavedRequest, self(), Store.whereis(Server, context.username))
 
-      assert {output, 0} =
-               mwt(context, ["call", "pr-view", "REPO=o/r", "PR=1", "--reason", "r"],
-                 stderr: false
-               )
+      # The call carried GitHub's value, not Hex's: every answer is looked
+      # through for every value MWT holds (docs/grant_mental_model.md,
+      # "Scanning"), and one coming back cuts it and isolates the VM.
+      assert {output, code} =
+               mwt(context, ["call", "pr-view", "REPO=o/r", "PR=1", "--reason", "r"])
 
-      assert output =~ ~s({"a": "[Hex's token]", "b": "[Hex's token]"})
+      assert code != 0
+      assert output =~ "MWT cut the answer: it held Hex's real value"
       refute output =~ encoded
+      refute output =~ other
+      assert Sandbox.firewall(context.username).firewall.isolated != nil
+      Sandbox.firewall_release(context.username, false)
 
       # Something shaped like a key holds the answer for you.
       Req.Test.stub(SavedRequest, fn conn ->
@@ -697,6 +736,43 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
                ])
 
       assert output =~ "HTTPS only"
+    end
+
+    test "a call whose host's network grant asks waits on one card naming that grant", context do
+      github(context)
+      call = pr_view(context)
+      {:ok, _} = Sandbox.set_start(context.username, call.id, :auto)
+      {:ok, _} = Sandbox.set_except(context.username, "internet", "api.github.com")
+
+      {:ok, api} =
+        Sandbox.create_grant(context.username, %{
+          "kind" => "network",
+          "network" => "internet",
+          "name" => "GitHub's API host",
+          "purpose" => "The API host",
+          "destinations" => "api.github.com"
+        })
+
+      {:ok, _} = Sandbox.turn_on(context.username, api.id, 60, :ask)
+
+      ask = %{
+        grant: call.id,
+        script: nil,
+        values: %{"REPO" => "o/r", "PR" => "3"},
+        dir: nil,
+        reason: "r",
+        agent: "claude"
+      }
+
+      {:ok, card} = Server.call(context.username, {:call, ask})
+
+      # The call goes without asking; the host's grant asks: one card, for
+      # both, and *Allow for a while* can go on each.
+      assert [%{id: id}] = Sandbox.snapshot(context.username).waiting
+      assert id == card.id
+      assert card.also == [api.id]
+      assert {"Also asking", "GitHub's API host"} in card.facts
+      :ok = Sandbox.decide(context.username, card.id, :decline)
     end
   end
 

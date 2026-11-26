@@ -29,13 +29,13 @@ defmodule MWTClient.Sandbox.Egress.FixedCall do
   22 for any other, 124 at the time limit; the body's first 256 KiB.
 
   It resolves the host with this machine's resolver, as the proxy does
-  for a CONNECT by name, and keeps the answer as MWT's own
-  (`Gate.answered/5`), so the route's check of names MWT answered holds.
-  A network with a way out of its own (an anchor) isn't followed: the
-  connection goes wherever this machine routes it.
+  for a CONNECT by name, for its own connection only: the answer isn't
+  kept as one MWT's DNS gave the VM (`resolve/2` says why). A network
+  with a way out of its own (an anchor) isn't followed: the connection
+  goes wherever this machine routes it.
   """
 
-  alias MWTClient.Sandbox.{Destinations, Gate}
+  alias MWTClient.Sandbox.Destinations
   alias MWTClient.Sandbox.Egress.Tcp
 
   @keep 256 * 1024
@@ -79,7 +79,7 @@ defmodule MWTClient.Sandbox.Egress.FixedCall do
     fixed = Map.merge(mark, %{host: uri.host, notify: self(), ref: ref})
 
     result =
-      with {:ok, ip} <- resolve(username, uri.host),
+      with {:ok, ip} <- resolve(uri.host),
            {:ok, client} <- pair(username, fixed),
            :ok <- connect(client, ip, port, deadline),
            {:ok, tls} <- handshake(client, uri.host, deadline) do
@@ -94,20 +94,26 @@ defmodule MWTClient.Sandbox.Egress.FixedCall do
     report(result, ref)
   end
 
-  # The host's address, by this machine's resolver, kept as MWT's answer.
-  defp resolve(username, host) do
+  # The host's address, by this machine's resolver, for this call's own
+  # connection only. Nothing is recorded as MWT's DNS answer
+  # (`Gate.answered/5`): that record is what the VM's own lookups leave
+  # (`MWTClient.Sandbox.Dns`, through a network grant's resolver where it
+  # has one), and a connection of the VM's to an address it holds goes
+  # under a network grant naming the host. This machine's resolver may
+  # answer otherwise than the grant's (split DNS, a VPN's own), so a
+  # record from here would open to the VM, for a minute, an address its
+  # own lookup never gave. The call needs none: its connection is
+  # checked by `Gate.fixed_destination/4`, and `Gate.route/6` takes the
+  # name of a fixed call's connection as MWT's own.
+  defp resolve(host) do
     case Destinations.parse_ip(host) do
       {:ok, ip} ->
         {:ok, ip}
 
       :error ->
         case Destinations.resolve(host) do
-          [ip | _] = ips ->
-            Gate.answered(username, String.downcase(host), ips, 60)
-            {:ok, ip}
-
-          [] ->
-            {:error, "#{host} doesn't resolve"}
+          [ip | _] -> {:ok, ip}
+          [] -> {:error, "#{host} doesn't resolve"}
         end
     end
   end

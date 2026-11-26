@@ -8,9 +8,10 @@ defmodule MWTClient.Sandbox.Allowance do
     * `:all` - every use of the grant;
     * a string - uses like one you approved: the same method and endpoint
       (`MWTClient.Sandbox.Describe`), or the same address and port for a
-      connection. A `*` in its path stands for any one segment: *Allow
-      similar, any id* widens the endpoint's ids (`widen/1`), so one
-      allowance covers a REST resource whatever its ids.
+      connection. A `*` in its path stands for any one segment that names
+      one thing, never `.`, `..` or an empty one: *Allow similar, any id*
+      widens the endpoint's ids (`widen/1`), so one allowance covers a
+      REST resource whatever its ids.
 
   `origin` is where it came from, for the activity log's audit
   (`MWTClient.Sandbox.Decision`): `%{kind: :auto}`, you turned the grant on
@@ -19,6 +20,8 @@ defmodule MWTClient.Sandbox.Allowance do
   allowed from the grant's page; `:mwt`, a rule of MWT's own. `at` is
   when. Nil for one from before origins were kept.
   """
+
+  alias MWTClient.Sandbox.Describe
 
   @enforce_keys [:id, :pattern]
   defstruct [:id, :pattern, :until, :origin]
@@ -80,7 +83,16 @@ defmodule MWTClient.Sandbox.Allowance do
   end
 
   # A pattern with `*` segments covers one whose every other part is the
-  # same, and whose path has a segment where each `*` is.
+  # same, and whose path has a segment naming one thing where each `*` is.
+  #
+  # The path is as the VM sent it (`Describe`), and a host that normalises
+  # it (RFC 3986 5.2.4, as most do) reads `.` as this level and `..` as
+  # the one above: `DELETE …/hooks/*` standing for `..` would let
+  # `DELETE …/hooks/..` go, the repository itself. So a `*` never stands
+  # for a segment that names a level rather than a thing
+  # (`Describe.plain_segment?/1`): `.`, `..`, an empty one (`…/hooks/`,
+  # the list), their percent-encoded forms, one holding a slash or a
+  # backslash once decoded. The cost: an id that is one of these asks.
   defp wild_covers?(wild, pattern) when is_binary(wild) and is_binary(pattern) do
     String.contains?(wild, "*") and
       case {String.split(wild, " · "), String.split(pattern, " · ")} do
@@ -89,7 +101,9 @@ defmodule MWTClient.Sandbox.Allowance do
           p_parts = String.split(p, "/")
 
           length(w_parts) == length(p_parts) and
-            Enum.all?(Enum.zip(w_parts, p_parts), fn {a, b} -> a == "*" or a == b end)
+            Enum.all?(Enum.zip(w_parts, p_parts), fn {a, b} ->
+              (a == "*" and Describe.plain_segment?(b)) or a == b
+            end)
 
         _ ->
           false

@@ -21,7 +21,7 @@ defmodule MWTClient.Sandbox.Instructions do
   (`priv/sandbox/handoff-command.md`) in each agent's own commands folder.
   """
 
-  alias MWTClient.Sandbox.{Destinations, Grant, Param, Presets}
+  alias MWTClient.Sandbox.{Destinations, Grant, Param}
 
   @begin "<!-- mwt:begin · MWT rewrites this block before every start; write below it -->"
   @finish "<!-- mwt:end -->"
@@ -129,7 +129,7 @@ defmodule MWTClient.Sandbox.Instructions do
   @spec grants([Grant.t()], DateTime.t()) :: String.t()
   def grants(grants, now) do
     # By the resource each mediates, in the order they come: its grants,
-    # then its actions.
+    # then its fixed calls.
     resources = grants |> Enum.map(&Grant.resource/1) |> Enum.uniq()
 
     body =
@@ -161,7 +161,8 @@ defmodule MWTClient.Sandbox.Instructions do
     One proposed and not yet reviewed stays off until the user accepts it on its page.
 
     Each grant gives uses of one resource (a credential, a network, host
-    commands, MWT's tools); an off grant gives nothing. A use of yours
+    commands, MWT's tools); an off grant gives nothing. Of the grants over
+    one resource that are on, the most permissive counts. A use of yours
     needs a grant that is on over every resource it goes through: your
     request with a credential needs a grant over the credential listing its
     host and one over the network the host is on. It runs unasked only if
@@ -170,23 +171,26 @@ defmodule MWTClient.Sandbox.Instructions do
     CREDENTIAL. When a use fails (a bare 403, permission denied), run mwt
     why --recent.
 
-    An action is one fixed use, which MWT builds and carries out for you
-    when you call it by its id, with a value for each parameter:
+    A fixed call is a grant holding a template: you call it by its id, with
+    a value for each parameter, and MWT builds and carries out the rest:
     mwt call ID NAME=value --reason "why now"
-    Its request goes out as yours would. Look for one before anything else:
-    it may run without asking. To run something on the user's machine that
-    no action does, propose one when you will need it again (mwt help
-    propose). Otherwise, while Commands agents write is on, you may ask to
-    run a command you write, and the user approves every run: read
-    mwt help run first, send the smallest command that gets what you need,
-    and work on its output here in the VM.
+    A fixed request goes out as yours would, so its host needs a network
+    grant too; a saved command needs only itself. Look for one before
+    anything else: it may run without asking. To run something on the
+    user's machine that no fixed call does, propose a saved command when
+    you will need it again (mwt help propose).
+    Otherwise, while Commands agents write is on, you may ask to run a
+    command you write, and the user approves every run: read mwt help run
+    first, send the smallest command that gets what you need, and work on
+    its output here in the VM.
 
     #{body}
     """
   end
 
   # The grants a grant may cover the same uses as, the Internet's left out:
-  # it overlaps every token grant, and says so in the rule above.
+  # it overlaps every open-use grant over a credential, and says so in the
+  # rule above.
   defp overlap_line(grant, grants) do
     others =
       grant
@@ -205,8 +209,8 @@ defmodule MWTClient.Sandbox.Instructions do
     end
   end
 
-  # A resource's actions: how to call each, its state, what it is for, and
-  # each parameter in a line.
+  # A resource's fixed calls: how to call each, its state, what it is for,
+  # and each parameter in a line.
   defp action_block(_resource, [], _now), do: ""
 
   defp action_block(resource, actions, now) do
@@ -219,25 +223,41 @@ defmodule MWTClient.Sandbox.Instructions do
 
         "  - `#{Grant.signature(grant)}` · #{state(grant, now)}" <>
           if(Grant.auto_approved?(grant, now), do: ", runs without asking", else: "") <>
-          " · #{one_line(grant.purpose)}" <> params
+          " · #{one_line(grant.purpose)}" <>
+          String.replace_prefix(openness_words(grant), " How open:", " · How open:") <> params
       end)
 
     """
-    Actions over #{resource_words(resource)}, #{actions_words(resource)} (add --reason "why now"; the user approves every call, unless the line says it runs without asking):
+    #{actions_words(resource)} (add --reason "why now"; the user approves every call, unless the line says it runs without asking):
     #{lines}\
     """
   end
 
-  defp actions_words({:credential, _id}),
+  defp actions_words({:credential, id}),
     do:
-      "requests MWT builds and sends for you through its proxy with its real value, each also needing a grant over the network of its host, as yours would; the answer's body comes back, its HTTP status on stderr, exit 0 for 2xx and 22 otherwise"
+      "Fixed requests over the credential `#{id}`: requests MWT builds and sends for you through its proxy with its real value, each also needing a grant over the network of its host, as yours would; the answer's body comes back, its HTTP status on stderr, exit 0 for 2xx and 22 otherwise"
 
-  defp actions_words(_resource), do: "the user's own scripts, each in a folder they chose"
+  defp actions_words(_resource),
+    do:
+      "Saved commands, fixed calls over host commands: the user's own scripts, each run on their machine in a folder they chose"
 
-  defp resource_words({:credential, id}), do: "the credential `#{id}`"
-  defp resource_words({:network, id}), do: "the network `#{id}`"
-  defp resource_words(:machine), do: "host commands, on the user's machine"
-  defp resource_words(:mwt), do: "MWT's tools"
+  # What a grant is, in a few words: its kind (open use, or a fixed call)
+  # and the resource it is over, said once.
+  defp kind_words(%Grant{kind: :token} = grant),
+    do: "open use of the credential `#{Grant.credential_id(grant)}`"
+
+  defp kind_words(%Grant{kind: :network} = grant),
+    do: "open use of the network `#{MWTClient.Sandbox.Network.id_of(grant)}`"
+
+  defp kind_words(%Grant{kind: :agent_commands}),
+    do: "open use of host commands (every run asks)"
+
+  defp kind_words(%Grant{kind: :mwt}), do: "MWT's tools"
+
+  defp kind_words(%Grant{kind: :request} = grant),
+    do: "fixed request over the credential `#{Grant.credential_id(grant)}`"
+
+  defp kind_words(%Grant{}), do: "saved command, a fixed call over host commands"
 
   defp grant_block(grant, now) do
     only =
@@ -258,7 +278,7 @@ defmodule MWTClient.Sandbox.Instructions do
     Enum.join(
       [
         "## #{grant.name}",
-        "- id: `#{grant.id}` · #{Presets.type_name(grant)} over #{resource_words(Grant.resource(grant))} · #{state(grant, now)}",
+        "- id: `#{grant.id}` · #{kind_words(grant)} · #{state(grant, now)}",
         "- for: #{one_line(grant.purpose)}",
         "- " <> usage(grant)
       ] ++ only ++ ["- " <> approval(grant)],
@@ -317,7 +337,7 @@ defmodule MWTClient.Sandbox.Instructions do
       "requests to its hosts, which also need a grant over their network. " <>
       "Only that command and its children get #{Enum.join(holders, ", ")}. " <>
       "These hold placeholders, worthless outside MWT. Send it as the tool normally sends " <>
-      "this token, only to #{Enum.join(grant.hosts, ", ")}, in the " <>
+      "this credential, only to #{Enum.join(grant.hosts, ", ")}, in the " <>
       "#{Enum.join(Grant.carriers(grant), " or ")} header; MWT swaps in the real value there " <>
       "and refuses it in any other header." <>
       git <> presents <> login <> signs
@@ -397,7 +417,7 @@ defmodule MWTClient.Sandbox.Instructions do
   def usage(%Grant{kind: :request} = grant) do
     params = Enum.map_join(grant.params, &(" " <> Param.describe(&1) <> "."))
 
-    ~s[use: #{Grant.signature(grant)} --reason "why now". MWT builds #{grant.method} #{grant.url} and sends it through its proxy, putting the token in on the way out, and gives you the answer: its body on stdout, its HTTP status on stderr; exit 0 for 2xx, 22 otherwise. An answer that echoes the token is cut.] <>
+    ~s[use: #{Grant.signature(grant)} --reason "why now". MWT builds #{grant.method} #{grant.url} and sends it through its proxy, putting the credential's value in on the way out, and gives you the answer: its body on stdout, its HTTP status on stderr; exit 0 for 2xx, 22 otherwise. An answer that echoes the value is cut.] <>
       params <> openness_words(grant)
   end
 
@@ -423,12 +443,13 @@ defmodule MWTClient.Sandbox.Instructions do
   end
 
   defp approval(%Grant{kind: :agent_commands}),
-    do: "uses: the user approves every run, always; none is handed a credential's value"
+    do:
+      "uses: each run waits for the user's approval, always; none is handed a credential's value"
 
   defp approval(%Grant{kind: :command} = grant) do
     if Grant.auto_approved?(grant),
-      do: "uses: every run goes through without asking for now",
-      else: "uses: the user approves every run"
+      do: "uses: each run goes through without asking",
+      else: "uses: each run waits for the user's approval"
   end
 
   defp approval(%Grant{} = grant) do
@@ -451,10 +472,10 @@ defmodule MWTClient.Sandbox.Instructions do
         "uses: each #{what} waits for the user's approval once on"
 
       Enum.any?(grant.allowances, &(&1.pattern == :all)) and grant.kind == :network ->
-        "uses: everything through it goes without asking for now; one with a credential also needs that credential's grant"
+        "uses: each use goes through without asking; one carrying a credential also needs a grant over that credential"
 
       Enum.any?(grant.allowances, &(&1.pattern == :all)) ->
-        "uses: every #{what} goes through for now"
+        "uses: each #{what} goes through without asking"
 
       true ->
         "uses: each #{what} waits for the user's approval (it can hang for minutes)"
@@ -472,7 +493,7 @@ defmodule MWTClient.Sandbox.Instructions do
 
   defp state(%Grant{state: :on} = grant, now) do
     if Grant.on?(grant, now),
-      do: "on until the user turns it off",
+      do: "on until turned off",
       else: state(Grant.put_down(grant), now)
   end
 

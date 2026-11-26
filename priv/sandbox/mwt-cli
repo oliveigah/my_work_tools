@@ -40,8 +40,8 @@ mwt - ask MWT, the user's control panel, for access
       the use is wrong) it exits 125, as env and timeout do, with a line on
       stderr; any other status is the command's own. Nested, as in
       mwt exec github -- mwt exec hex -- COMMAND, the command gets both.
-      For an API call, look for an action first (mwt call): MWT sends it
-      for you, and nothing in the VM needs the token.
+      For an API call, look for a fixed request first (mwt call): MWT
+      sends it for you, and nothing in the VM needs the credential.
 
   mwt request GRANT_ID --reason "what you are about to do" [--minutes 60] [--wait 60]
       Ask the user to turn a grant on (by id or name). Waits up to --wait
@@ -62,8 +62,9 @@ mwt - ask MWT, the user's control panel, for access
 
   mwt why URL [--method GET] [--with CREDENTIAL]
       How a request would be decided now, sending nothing: every grant
-      with a say about it and what each says (the strictest wins), the
-      locks, the result, and what would change it.
+      with a say about it and what each says (over one resource the most
+      permissive counts; a refusal beats an ask), the locks, the result,
+      and what would change it.
 
   mwt why --recent
   mwt why ID
@@ -92,23 +93,26 @@ mwt - ask MWT, the user's control panel, for access
       the same port. Other ports stay in the VM. Give the user the URL.
 
   mwt call ID [NAME=value ...] --reason "why now" [--timeout 120] [--wait 60]
-      Call an action: one fixed use of a grant, which MWT carries out for
-      you. mwt grants lists them under their grant, with their parameters.
-      You send its id and a value for each parameter, never a command or a
-      request. A command action runs the user's own script on their
-      machine with your values as variables, and its output comes back. A
-      request action is a request MWT sends with a token grant's real
-      value: the answer's body comes back on stdout, its HTTP status on
-      stderr, and mwt exits 0 for a 2xx answer, 22 for any other. Look for
-      one first. The user approves every call, unless its line says it runs
-      without asking; ask for one that is off with mwt request ID.
+      Use a fixed call: a grant holding a template, which MWT builds and
+      carries out from your values. mwt grants lists them under their
+      resource, with their parameters. You send its id and a value for
+      each parameter, never a command or a request. A saved command runs
+      the user's own script on their machine with your values as
+      variables, and its output comes back. A fixed request is a request
+      MWT sends with its credential's real value, through its proxy as
+      yours go, so its host needs a network grant: the answer's body comes
+      back on stdout, its HTTP status on stderr, and mwt exits 0 for a 2xx
+      answer, 22 for any other. Look for one first. The user approves
+      every call, unless its line says it runs without asking; ask for one
+      that is off with mwt request ID.
 
   Proposing: mwt propose saves what you propose at once in the user's
   MWT, tagged as proposed by you and to review, as they add things: a
   resource (a credential, a network) first, then grants over it. Nothing
   is usable until they read it on its page and accept it, which answers
-  you as mwt request does (exit 0 once accepted, a grant once on; 2 while
-  it waits, then mwt wait ID; 3 if they decline it, which removes it).
+  you as mwt request does (exit 0 once accepted, or for a grant once it
+  is on; 2 while it waits, then mwt wait ID; 3 if they decline it, which
+  removes it).
   Proposing again under the same --name, before they review it, changes
   it. Each kind starts from a preset of what it makes (--preset ID, its
   blanks filled with --fill NAME=VALUE), its options set their fields,
@@ -172,30 +176,30 @@ mwt - ask MWT, the user's control panel, for access
   mwt propose commands --name NAME --for "what it does, any time it runs" [--param 'NAME:shape:what it is' ...] [--dir DIR] --reason "why you need it" [--minutes 60] [--wait 60] -- 'SCRIPT'
       Example: mwt propose commands --name "gh repo view" --for "Shows a GitHub repository: description, default branch, visibility" --param 'REPO_NAME:word:the repository, as owner/name' --reason "..." -- 'gh repo view "$REPO_NAME"'
       Propose a saved command, when you expect to need the same job again:
-      a script of the user's machine (mwt propose machine is the same),
-      which you then call by id. The script reads each parameter as a variable, "$NAME", and is
-      otherwise fixed. A shape is word (letters, digits and _ . - @ : +, in
+      a script run on the user's machine, a fixed call over host commands,
+      which you then call by id. The script reads each parameter as a
+      variable, "$NAME", and is otherwise fixed. A shape is word (letters, digits and _ . - @ : +, in
       parts joined by /), number, date, time, decimal, text, or the values
       it may take as a|b|c. The user reads it once and may let it run
       without asking from then on, so design it for them: one job, a name
       that says what it does, the fewest parameters, each of the narrowest
       shape that works, a script they read at a glance, raw output. --for
-      describes it for any call; --reason is why you need it. It needs
-      nothing to be on. They may change it before accepting it: the answer
+      describes it for any call; --reason is why you need it. It needs no
+      other grant on. They may change it before accepting it: the answer
       says its id and how to call it.
 
   mwt propose CREDENTIAL --name NAME --for "what it does, any time it runs" --method GET --url 'https://HOST/path/$NAME' [--param 'NAME:shape:what it is' ...] [--header 'Name: value' ...] [--data 'JSON'] --reason "why you need it"
       Example: mwt propose github --name "pr view" --for "Shows a pull request of a GitHub repository, as JSON" --param 'REPO:word:the repository, as owner/name' --param 'PR:number:the pull request' --method GET --url 'https://api.github.com/repos/$REPO/pulls/$PR' --reason "..."
-      Propose a request action over a credential (by its id, the one mwt
-      exec takes, or a token grant's over it): one HTTP request MWT sends
-      itself with its real value, so it needs no tool or placeholder in
-      the VM. The host is fixed, and reaching it takes a network grant;
+      Propose a fixed request over a credential (by its id, the one mwt
+      exec takes, or that of an open-use grant over it): one HTTP request
+      MWT sends itself with its real value, so it needs no tool or
+      placeholder in the VM. The host is fixed, and reaching it takes a network grant;
       parameters go in the path or the query, or as a whole JSON value in
       --data ("$TITLE"), never inside a longer text. Headers are fixed;
       without --header, MWT uses the ones that service expects, with the
-      token in place. Called, its answer's body comes back on stdout, its
+      value in place. Called, its answer's body comes back on stdout, its
       HTTP status on stderr, and mwt exits 0 for a 2xx answer, 22 for any
-      other. Design it as a command action: one job, read-only unless
+      other. Design it as a saved command: one job, read-only unless
       changing something is its job.
 
   mwt run --reason "why it must run on the user's machine" [--dir DIR] [--timeout 120] [--wait 60] -- COMMAND [ARG...]
@@ -203,17 +207,19 @@ mwt - ask MWT, the user's control panel, for access
   script
   EOF
       Ask the user to run a command you write on their machine, as them,
-      outside this VM. Last resort: call an action, or use another grant,
-      when one can do it. It needs no grant: you may always ask, and the
-      user reads and approves every run; none runs unattended. Send the
-      smallest command that gets what you need, one the user can read at a
-      glance: bring the raw output back and filter, parse or transform it
-      here in the VM. --dir defaults to the current directory; outside a
-      shared folder it runs in the user's home folder. --timeout is in
-      seconds (1 to 3600). After --, one argument is a shell line as it is
-      and several are quoted and joined, so ~, $VAR and globs expand here,
-      never there (a word in this VM's home is refused); with none the
-      script is read from stdin (16 KiB max).
+      outside this VM. Last resort: use a fixed call, or another grant,
+      when one can do it. It goes under Commands agents write
+      (agent-commands): while it is on you may ask (off, mwt request
+      agent-commands), and the user reads and approves every run; none
+      runs unattended. Send the smallest command that gets what you need,
+      one the user can read at a glance: bring the raw output back and
+      filter, parse or transform it here in the VM. --dir defaults to the
+      current directory; outside a shared folder it runs in the user's
+      home folder. --timeout is in seconds (1 to 3600). After --, one
+      argument is a shell line as it is and several are quoted and joined,
+      so ~, $VAR and globs expand here, never there (a word in this VM's
+      home is refused); with none the script is read from stdin (16 KiB
+      max).
 
   mwt wait ID [--wait 60]
       Keep waiting for the answer to an earlier ask or run, or a change to
@@ -1098,7 +1104,7 @@ while [ $# -gt 0 ]; do
         fi
         grant=$1
       elif [ "$command" = call ]; then
-        # The first word is the action's id; the rest are its values.
+        # The first word is the fixed call's id; the rest are its values.
         if [ -z "$grant" ]; then
           grant=$1
         else
@@ -1202,7 +1208,7 @@ case $command in
     ;;
   call)
     if [ -z "$grant" ]; then
-      echo "mwt: name the action: mwt call ID NAME=value --reason \"...\". See: mwt grants" >&2
+      echo "mwt: name the fixed call: mwt call ID NAME=value --reason \"...\". See: mwt grants" >&2
       exit 122
     fi
     if [ ${#words[@]} -gt 0 ]; then
@@ -1234,14 +1240,14 @@ case $command in
       echo "mwt: give the script as one argument in single quotes, so its \$NAME stay as they are: -- 'gh repo view \"\$REPO_NAME\"'. Or send it on stdin." >&2
       exit 1
     elif [ -n "$url" ] || [ -t 0 ] || ! read -r -t 0; then
-      # A request action has a URL and no script.
+      # A fixed request has a URL and no script.
       script=""
     else
       script=$(cat)
     fi
     bytes=$(printf '%s' "$script" | LC_ALL=C wc -c)
     if [ "$bytes" -gt "$max_script" ]; then
-      echo "mwt: the script is over 16 KiB, far more than the user can review. An action is a script they read at a glance." >&2
+      echo "mwt: the script is over 16 KiB, far more than the user can review. A saved command is a script they read at a glance." >&2
       exit 1
     fi
     sent=""

@@ -96,13 +96,21 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
       {:refuse, reason} ->
         {:error, reason}
 
-      _goes_or_asks ->
+      goes_or_asks ->
         grant = Enum.find(state.grants, &(&1.kind == :request and &1.id == id_of(ask)))
+
+        # Every grant that asks, as for a request (`Policy.all_of/1`): the
+        # card names them, and *Allow for a while* can go on each.
+        asking =
+          case goes_or_asks do
+            {:ask, _grant, about} -> Map.get(about, :asking, [])
+            _goes -> []
+          end
 
         with {:ok, values} <- values(grant, ask),
              {:ok, checked} <-
                SavedRequest.check(ask, grant, credential_name(state, grant), values) do
-          {:ok, grant, checked}
+          {:ok, grant, Map.put(checked, :asking, asking)}
         end
     end
   end
@@ -449,6 +457,7 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
          id: "run-" <> State.unique(),
          kind: :command,
          grant_id: grant && grant.id,
+         also: if(grant, do: Map.get(checked, :asking, []) -- [grant.id], else: []),
          title: checked.title,
          agent: checked.agent,
          thread: checked.thread,
@@ -471,7 +480,8 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
                [{"Script", "The agent's, exactly as shown"}]
 
              grant.kind == :request ->
-               [{"Grant", grant.name}, {"Request", "Yours, saved as #{grant.name}"}]
+               [{"Grant", grant.name}, {"Request", "Yours, saved as #{grant.name}"}] ++
+                 asking_fact(state, Map.get(checked, :asking, []) -- [grant.id])
 
              true ->
                [{"Grant", grant.name}, {"Script", "Yours, saved as #{grant.name}"}]
@@ -674,17 +684,27 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
 
   defp runs_fact(_state, _grant), do: []
 
-  # The files a saved command runs that changed since it was pinned: as
-  # it was saved, or as its last run you allowed found them. Nothing to
-  # compare for a command the agent wrote, or one pinned before pins.
-  defp moved(%Grant{kind: :command, pins: [_ | _] = pinned}, pins) do
-    by_path = Map.new(pinned, &{&1.path, &1})
+  # The other grants a call's card answers for: the network grant over its
+  # host that asks, say, while the call itself would go without asking.
+  defp asking_fact(_state, []), do: []
 
-    for pin <- pins,
-        was = Map.get(by_path, pin.path, %{pin | hash: nil, content: ""}),
-        was.hash != pin.hash,
-        do: {was, pin}
+  defp asking_fact(state, ids) do
+    names =
+      for id <- ids, %Grant{} = grant <- [Enum.find(state.grants, &(&1.id == id))], do: grant.name
+
+    if names == [], do: [], else: [{"Also asking", Enum.join(names, ", ")}]
   end
+
+  # The files a saved command runs that changed since it was pinned: as
+  # it was saved, accepted, or as its last run you allowed found them.
+  # Nothing to compare for a command the agent wrote. A saved command
+  # never pinned (saved before pins) has each file it runs count as
+  # changed: its next run asks once, showing the file, rather than run a
+  # file nobody looked at (Q10).
+  # A file MWT can't tell (`path: nil`, `MWTClient.Sandbox.ScriptRuns`)
+  # counts as changed every time (`Pins.moved/2`): each run asks.
+  defp moved(%Grant{kind: :command, pins: pinned}, pins) when is_list(pinned),
+    do: Pins.moved(pinned, pins)
 
   defp moved(_grant, _pins), do: []
 
@@ -699,8 +719,18 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
           if(kind == :ins, do: "+ ", else: "- ") <> line
         end)
 
-      "#{now.file} changed since #{grant.name} was pinned: this run asks, whatever its setting, and running it pins what is there now." <>
-        if(lines == "", do: "", else: "\n" <> lines)
+      cond do
+        is_nil(now.path) ->
+          "#{now.file} can't be pinned#{if now[:why], do: " (#{now.why})", else: ""}: each run of #{grant.name} asks, whatever its setting."
+
+        is_nil(was.hash) ->
+          "#{now.file} isn't pinned for #{grant.name} yet: this run asks, whatever its setting, and running it pins what is there now." <>
+            if(lines == "", do: "", else: "\n" <> lines)
+
+        true ->
+          "#{now.file} changed since #{grant.name} was pinned: this run asks, whatever its setting, and running it pins what is there now." <>
+            if(lines == "", do: "", else: "\n" <> lines)
+      end
     end
   end
 

@@ -528,7 +528,7 @@ defmodule MWTClient.Sandbox.HostCommandChannelTest do
       :ok = Sandbox.decide(context.username, approval.id, {:run, :send})
       assert {output, 0} = Task.await(asking)
       assert output =~ "pod-a"
-      assert output =~ "the user's action pods now"
+      assert output =~ "the user's saved command pods now"
       assert output =~ ~s(mwt call pods --reason "...")
 
       # Next time it runs by name.

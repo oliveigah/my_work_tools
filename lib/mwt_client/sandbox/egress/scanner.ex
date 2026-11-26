@@ -38,9 +38,17 @@ defmodule MWTClient.Sandbox.Egress.Scanner do
   def feed(%__MODULE__{secrets: nil} = scanner, data), do: {:ok, data, scanner}
 
   def feed(%__MODULE__{secrets: secrets} = scanner, data) do
-    pending = scanner.held <> data
+    pending = if scanner.held == "", do: data, else: scanner.held <> data
 
-    case Secrets.find(secrets, scanner.seen <> pending) do
+    # A form found across the seam starts in `seen` (shorter than the
+    # longest form) and goes on into `pending` by less than the longest:
+    # looked for in that seam alone, then in `pending` as it is, so a
+    # chunk is never copied whole to be looked at.
+    seam =
+      scanner.seen <>
+        binary_part(pending, 0, min(byte_size(pending), Secrets.longest(secrets) - 1))
+
+    case Secrets.find(secrets, seam) || Secrets.find(secrets, pending) do
       nil ->
         held = if scanner.hold, do: Secrets.partial(secrets, pending), else: 0
         out = binary_part(pending, 0, byte_size(pending) - held)

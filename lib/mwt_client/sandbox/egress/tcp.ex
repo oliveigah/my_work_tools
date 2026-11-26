@@ -1069,7 +1069,12 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
                 scanners: Map.put(core.scanners, request.id, scanner)
             }
 
-            told(core, request, {:allow, replace})
+            # Every value MWT holds as the request goes, which its answer
+            # mustn't bring into the VM, whatever the request carried
+            # (docs/grant_mental_model.md, point 13): the firewall on or
+            # off, read when the verdict comes, so a value added since the
+            # connection opened is looked for too.
+            told(core, request, {:allow, Map.put(replace, :values, Gate.secrets(core.username))})
 
           {:error, :grant_off} ->
             json =

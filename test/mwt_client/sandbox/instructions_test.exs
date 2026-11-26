@@ -414,16 +414,16 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     assert text =~ "## GitHub"
 
     assert text =~
-             "id: `github` · Token or API key over the credential `github` · on until 13:00 UTC (60 min left)"
+             "id: `github` · open use of the credential `github` · on until 13:00 UTC (60 min left)"
 
     assert text =~ "for: Push to my repos"
     assert text =~ "$GH_TOKEN, /mnt/mwt/tokens/github"
     assert text =~ "only to api.github.com, github.com"
     assert text =~ "git over HTTPS to api.github.com, github.com"
     assert text =~ "each request waits for the user's approval"
-    assert text =~ "id: `vpn` · Network access over the network `vpn`"
+    assert text =~ "id: `vpn` · open use of the network `vpn`"
     assert text =~ "connect directly to 10.0.0.0/8:443"
-    assert text =~ "everything through it goes without asking for now"
+    assert text =~ "each use goes through without asking"
     refute text =~ "ghp_placeholder"
     assert Instructions.grants([], ~U[2026-11-12 12:00:00Z]) =~ "No grants yet."
   end
@@ -484,22 +484,50 @@ defmodule MWTClient.Sandbox.InstructionsTest do
 
     # Under their resource: how to call each, its state, what it is for,
     # and each parameter with its shape.
-    assert text =~ "Actions over host commands, on the user's machine"
+    assert text =~ "Saved commands, fixed calls over host commands"
 
     assert text =~ """
-             - `mwt call pods NAMESPACE=…` · on until the user turns it off · Show pods
+             - `mwt call pods NAMESPACE=…` · on until turned off · Show pods
                - NAMESPACE is one of: web, jobs. It is: the namespace
-             - `mwt call logs NAMESPACE=…` · on until the user turns it off · Show logs
+             - `mwt call logs NAMESPACE=…` · on until turned off · Show logs
            """
 
-    # A request action sits under its credential, after the grants over it.
+    # A fixed request sits under its credential, after the grants over it.
     [_before, credential] = String.split(text, "## GitHub", parts: 2)
-    assert credential =~ "Actions over the credential `github`"
+    assert credential =~ "Fixed requests over the credential `github`"
     assert credential =~ "`mwt call gh-repo REPO=…` · off"
 
     # What it is for, not its script.
     refute text =~ "## pods"
     refute text =~ "kubectl get pods"
+  end
+
+  test "a fixed call's line says how open it is, unless it is narrow" do
+    open = %Grant{
+      id: "kubectl-any",
+      name: "kubectl any",
+      kind: :command,
+      purpose: "Runs kubectl",
+      script: "kubectl $ARGS",
+      dir: "/home/me",
+      params: [%Param{name: "ARGS", about: "the arguments", schema: %{"type" => "string"}}],
+      state: :on
+    }
+
+    narrow = %Grant{
+      open
+      | id: "pods",
+        name: "pods",
+        purpose: "Show pods",
+        script: ~s(kubectl get pods -n "$NS"),
+        params: [
+          %Param{name: "NS", about: "the namespace", schema: %{"enum" => ["web", "jobs"]}}
+        ]
+    }
+
+    text = Instructions.grants([open, narrow], ~U[2026-11-12 12:00:00Z])
+    assert text =~ "· Runs kubectl · How open: Open."
+    assert text =~ "· Show pods\n"
   end
 
   test "the guides say to keep commands small and to transform in the VM" do

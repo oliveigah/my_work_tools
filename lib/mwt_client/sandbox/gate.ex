@@ -145,6 +145,9 @@ defmodule MWTClient.Sandbox.Gate do
       }
 
       :ets.insert(@table, {{state.username, :view}, view})
+      # Apart too: read for every request MWT reads (`secrets/1`), and the
+      # view is many times its size to copy out.
+      :ets.insert(@table, {{state.username, :secrets}, view.secrets})
       state |> Map.put(:gate, inputs) |> Map.put(:gate_version, version)
     end
   end
@@ -193,10 +196,12 @@ defmodule MWTClient.Sandbox.Gate do
   them (`MWTClient.Sandbox.Secrets`), or nil: what must not enter the VM.
   """
   def secrets(username) do
-    case view(username) do
-      %{secrets: secrets} -> secrets
-      _none -> nil
+    case :ets.lookup(@table, {username, :secrets}) do
+      [{_key, secrets}] -> secrets
+      [] -> nil
     end
+  rescue
+    ArgumentError -> nil
   end
 
   ## Names a network grant covers, and the addresses MWT answered
@@ -820,7 +825,12 @@ defmodule MWTClient.Sandbox.Gate do
         refused(username)
         :refuse
 
-      sni && Firewall.trusted?(view.firewall, sni) && not answered_name?(username, ip, sni) ->
+      # A trusted name claimed for an address MWT didn't answer for it is
+      # the VM's word only. A fixed call's address is MWT's own: it
+      # resolved the call's host itself (`Egress.FixedCall`), and keeps no
+      # record of it that a connection of the VM's could use.
+      fixed == nil && sni && Firewall.trusted?(view.firewall, sni) &&
+          not answered_name?(username, ip, sni) ->
         log(username, %{
           outcome: :blocked,
           summary: "#{sni} to #{:inet.ntoa(ip)}, an address MWT didn't resolve for it · refused",

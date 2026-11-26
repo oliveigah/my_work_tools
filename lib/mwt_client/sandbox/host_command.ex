@@ -27,7 +27,7 @@ defmodule MWTClient.Sandbox.HostCommand do
   Pure apart from reading the filesystem to resolve the directory.
   """
 
-  alias MWTClient.Sandbox.{Approval, Grant, Share, Shares, Shown, Workspace}
+  alias MWTClient.Sandbox.{Approval, Grant, ScriptRuns, Share, Shares, Shown, Workspace}
 
   @max_script 16 * 1024
   @default_timeout 120
@@ -301,9 +301,10 @@ defmodule MWTClient.Sandbox.HostCommand do
       )
   end
 
-  defp pin_warning(%{path: nil, file: file}),
+  defp pin_warning(%{path: nil, file: file} = pin),
     do:
-      "Runs #{file}, whose path holds a variable: MWT can't show it or pin it, and what runs is whatever it holds then."
+      "Runs #{file}, #{Map.get(pin, :why) || "whose path holds a variable MWT can't tell"}: " <>
+        "MWT can't show it or pin it, and what runs is whatever it is then."
 
   defp pin_warning(%{hash: nil, file: file}),
     do: "Runs #{file}, which isn't there now: should it be there when this starts, nothing runs."
@@ -323,20 +324,20 @@ defmodule MWTClient.Sandbox.HostCommand do
   """
   @spec hints(String.t(), [Grant.t()], Path.t() | nil, DateTime.t() | nil) :: [String.t()]
   def hints(script, grants, workspace \\ nil, copied_at \\ nil) do
-    commands = commands(script)
+    runs = ScriptRuns.commands(script)
 
     [
-      Enum.any?(commands, &(hd(&1) == "sudo")) && "Asks for root with sudo.",
+      Enum.any?(runs, &("sudo" in &1.through or tool(&1) == "sudo")) && "Asks for root with sudo.",
       Shown.mixed(script) != [] &&
         "Mixes alphabets in #{Enum.join(Shown.mixed(script), ", ")}: " <>
           "a letter there may not be the one it looks like.",
-      Enum.any?(commands, &rm_rf?/1) && "Deletes files recursively without asking (rm -rf).",
+      Enum.any?(runs, &rm_rf?/1) && "Deletes files recursively without asking (rm -rf).",
       long?(script) &&
         "Long for a command you check by eye. You can ask for a simpler one: " <>
           "the agent can bring the raw output back and work on it in the VM.",
       workspace_hint(script, workspace, copied_at)
     ]
-    |> Enum.concat(covered(commands, script, grants))
+    |> Enum.concat(covered(runs, script, grants))
     |> Enum.filter(&is_binary/1)
   end
 
@@ -353,80 +354,48 @@ defmodule MWTClient.Sandbox.HostCommand do
   end
 
   @doc """
-  The commands a script runs, roughly: each one's words, split at newlines,
-  `;`, `&&`, `||`, pipes and subshells, without leading variable assignments
-  or wrappers such as `env`, `exec` or `time`. The first word is the
-  command's name without its directory, unless it is a path to a script
-  (`./x.sh`). Quotes are not parsed: this is for hints, not for deciding.
+  The commands a script runs, each as its words: what runs first, as the
+  script names it, then its arguments; past assignments and wrappers such
+  as `env`, `sudo` or `timeout`, inside substitutions and literal shell
+  code too (`MWTClient.Sandbox.ScriptRuns.commands/1`, which reads it).
+
+      iex> MWTClient.Sandbox.HostCommand.commands("FOO=1 timeout 9 ./x.sh a | wc -l")
+      [["./x.sh", "a"], ["wc", "-l"]]
   """
   @spec commands(String.t()) :: [[String.t(), ...]]
   def commands(script) do
-    script
-    |> String.split(~r/\n|;|&&|\|\||\||\$\(|`|\(|\)/)
-    |> Enum.map(&String.split/1)
-    |> Enum.map(&drop_prefixes/1)
-    |> Enum.reject(&(&1 == []))
-    |> Enum.map(fn [name | args] -> [command_name(name) | args] end)
+    for %{words: [_ | _] = words} <- ScriptRuns.commands(script),
+        do: Enum.map(words, & &1.text)
   end
-
-  @wrappers ~w(env exec time nohup nice xargs command builtin then do else elif if while until !)
-
-  defp drop_prefixes([word | rest] = words) do
-    cond do
-      word in @wrappers -> drop_prefixes(rest)
-      Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*=/, word) -> drop_prefixes(rest)
-      String.starts_with?(word, "#") -> []
-      true -> words
-    end
-  end
-
-  defp drop_prefixes([]), do: []
-
-  defp command_name("./" <> _ = path), do: path
-  defp command_name("../" <> _ = path), do: path
-  defp command_name(name), do: Path.basename(name)
 
   @doc """
-  The files `script` runs, as its text names them: a path run as a
-  command (`./deploy.sh`), one `source`d, or one a shell or an
-  interpreter is given (`bash x.sh`, `python3 tool.py`). What runs is the
-  file as it is then, which no card shows; the file it runs in turn, or
-  one it only reads, isn't among them. Quotes are not parsed.
+  The files `script` runs, as its text names them, from the folder it
+  starts in: a path run as a command (`./deploy.sh`), one `source`d, or
+  one a shell or an interpreter is given (`bash x.sh`, `python3 tool.py`),
+  after the `cd`s before it (`MWTClient.Sandbox.ScriptRuns.files/1`). What
+  runs is the file as it is then, which no card shows; the file it runs
+  in turn, or one it only reads, isn't among them.
 
       iex> MWTClient.Sandbox.HostCommand.files_run("cd app && ./deploy.sh staging; bash -e ci/check.sh")
-      ["./deploy.sh", "ci/check.sh"]
+      ["app/deploy.sh", "app/ci/check.sh"]
   """
   @spec files_run(String.t()) :: [String.t()]
   def files_run(script) do
-    script
-    |> commands()
-    |> Enum.map(&file_run/1)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&String.trim(&1, ~s("')))
-    |> Enum.uniq()
+    for({:file, shown, _word, _folder} <- ScriptRuns.files(script), do: shown) |> Enum.uniq()
   end
 
-  defp file_run(["sudo" | rest]) when rest != [], do: file_run(drop_prefixes(rest))
-  defp file_run(["." <> _ = name | _]) when name not in [".", ".."], do: name
-  defp file_run([name, file | _]) when name in ["source", "."] and file != "", do: file
+  # The tool a command runs, by its name: what the hints know it as.
+  defp tool(%{words: [%{literal?: true, text: text} | _]}), do: Path.basename(text)
+  defp tool(_command), do: nil
 
-  defp file_run([runner | args])
-       when runner in ~w(sh bash zsh dash python python3 node perl ruby) do
-    case Enum.drop_while(args, &(String.starts_with?(&1, "-") and not String.contains?(&1, "c"))) do
-      [] -> nil
-      ["-" <> _ | _] -> nil
-      [file | _] -> file
-    end
+  defp rm_rf?(%{words: [_ | args]} = command) do
+    flags = args |> Enum.map(& &1.text) |> Enum.filter(&String.starts_with?(&1, "-"))
+
+    tool(command) == "rm" and
+      ("--recursive" in flags or
+         flags |> Enum.reject(&String.starts_with?(&1, "--")) |> Enum.join() =~ ~r/[rR]/)
   end
 
-  defp file_run(_command), do: nil
-
-  defp rm_rf?(["rm" | args]) do
-    flags = args |> Enum.filter(&String.starts_with?(&1, "-")) |> Enum.join()
-    String.contains?(flags, "r") or String.contains?(flags, "R")
-  end
-
-  defp rm_rf?(["sudo" | rest]), do: rm_rf?(drop_prefixes(rest))
   defp rm_rf?(_command), do: false
 
   @doc "A command's title: its first line, shortened."
@@ -489,15 +458,15 @@ defmodule MWTClient.Sandbox.HostCommand do
     end
   end
 
-  defp covered(commands, script, grants) do
+  defp covered(runs, script, grants) do
     for %Grant{kind: :token} = grant <- grants,
-        what = covered_by(commands, script, grant),
+        what = covered_by(runs, script, grant),
         what != [] do
       "#{grant.name} already covers this (#{Enum.join(what, ", ")}): the agent can run it in the VM with mwt exec #{grant.id} -- …, where you'd see each request it makes, or call an action of it."
     end
   end
 
-  defp covered_by(commands, script, grant) do
+  defp covered_by(runs, script, grant) do
     hosts =
       for host <- grant.hosts,
           bare = String.replace_prefix(host, "*.", ""),
@@ -506,8 +475,11 @@ defmodule MWTClient.Sandbox.HostCommand do
 
     tools =
       for tool <- grant.cli_tools,
-          words = String.split(tool),
-          Enum.any?(commands, &(Enum.take(&1, length(words)) == words)),
+          [name | args] = String.split(tool),
+          Enum.any?(runs, fn %{words: words} = run ->
+            tool(run) == name and
+              Enum.map(Enum.slice(words, 1, length(args)), & &1.text) == args
+          end),
           do: tool
 
     Enum.uniq(tools ++ hosts)

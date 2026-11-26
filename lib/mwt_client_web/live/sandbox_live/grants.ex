@@ -5,7 +5,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   **Grants**: every grant in one list, what ends soonest first, each with
   its time left, duration, approval mode and switch, changeable there, and
   the resource it gives a use of; found by status, resource, how it starts
-  and a search, a page at a time. **Console**: a command run in the VM as
+  and a search, a page at a time. **Live Test**: a command run in the VM as
   an agent's would be (`MWTClientWeb.SandboxLive.VmConsole`).
   One grant's page has what it does now and its settings, edited in place;
   and the dialog that adds a grant over a resource, or an action.
@@ -26,9 +26,37 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     {"all", "All"}
   ]
 
+  # The labels a grant's row shows, which the list filters by: its kind,
+  # how it starts, where it runs, who proposed it, the resource it is over.
+  # Within a group a grant needs one of those picked; across groups, each.
+  @label_groups [
+    {"kind", "Kind"},
+    {"start", "Starts"},
+    {"runs", "Runs"},
+    {"origin", "Origin"},
+    {"resource", "Resource"}
+  ]
+
+  @label_values %{
+    "kind" => ["kind:open", "kind:fixed"],
+    "start" => ["start:on"],
+    "runs" => ["runs:host"],
+    "origin" => ["origin:proposed"]
+  }
+
+  @label_words %{
+    "kind:open" => "Open use",
+    "kind:fixed" => "Fixed call",
+    "start:on" => "Starts on",
+    "runs:host" => "Runs on host",
+    "origin:proposed" => "Proposed"
+  }
+
+  @label_shape ~r/\A(kind:(open|fixed)|start:on|runs:host|origin:proposed|resource:((credential|network):[a-z0-9][a-z0-9-]*|machine|mwt))\z/
+
   # Resources first, as what grants are over; Grants is the one shown
   # first (`tab/1`).
-  @tabs [{"resources", "Resources"}, {"grants", "Grants"}, {"console", "Console"}]
+  @tabs [{"resources", "Resources"}, {"grants", "Grants"}, {"console", "Live Test"}]
 
   @doc """
   The tab a `tab` parameter names, Grants when it names none. `on` and
@@ -37,41 +65,39 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   def tab(value) when value in ["resources", "console"], do: value
   def tab(_value), do: "grants"
 
-  @starts [{"all", "Starts on or off"}, {"on", "Starts on"}, {"off", "Starts off"}]
-
   @per_page 20
 
   @doc "The durations a grant can be turned on for."
   def durations, do: @durations
 
   @doc """
-  The filters the list starts with: what is on. Whatever they are, the
-  list is in one order: what ends soonest first, then what is on until
-  off, then the rest by last use (`catalog/3`).
+  The filters the list starts with: what is on, whatever its labels.
+  Whatever they are, the list is in one order: what ends soonest first,
+  then what is on until off, then the rest by last use (`catalog/3`).
   """
-  def filters, do: %{status: "on", starts: "all", resource: "all"}
+  def filters, do: %{status: "on", labels: []}
 
-  @doc "Filters from the form's params, anything unknown left at its default."
+  @doc """
+  Filters from the form's params, anything unknown left out: a status, and
+  the labels picked (`labels_of/1`), each as `group:value`.
+  """
   def filters(params) do
-    pick = fn key, options ->
-      value = params[Atom.to_string(key)]
-      if Enum.any?(options, &(elem(&1, 0) == value)), do: value, else: filters()[key]
-    end
+    status = params["status"]
 
-    resource = params["resource"]
+    labels =
+      case params["labels"] do
+        labels when is_list(labels) -> labels
+        _none -> []
+      end
 
     %{
-      status: pick.(:status, @statuses),
-      starts: pick.(:starts, @starts),
-      # A resource as `ResourcePages.over_value/1` names it; one no grant
-      # is over shows nothing, as any filter that matches nothing does.
-      resource:
-        if(
-          is_binary(resource) and
-            resource =~ ~r/\A((credential|network):[a-z0-9][a-z0-9-]*|machine|mwt)\z/,
-          do: resource,
-          else: "all"
-        )
+      status: if(Enum.any?(@statuses, &(elem(&1, 0) == status)), do: status, else: "on"),
+      # A label no grant has shows nothing, as any filter matching nothing.
+      labels:
+        labels
+        |> Enum.filter(&(is_binary(&1) and &1 =~ @label_shape))
+        |> Enum.uniq()
+        |> Enum.take(40)
     }
   end
 
@@ -121,17 +147,15 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             do: resource
           ),
         locked: Map.keys(assigns.locks),
-        statuses: facet(@statuses, except(found, filters, :status, now), &status_of(&1, now)),
-        starts: facet(@starts, except(found, filters, :starts, now), &starts_id/1),
-        resources:
-          resource_facet(
-            except(found, filters, :resource, now),
+        statuses: facet(@statuses, by_labels(found, filters.labels), &status_of(&1, now)),
+        label_groups:
+          label_facet(
+            by_status(found, filters.status, now),
+            filters.labels,
             assigns.credentials,
             assigns.networks
           ),
-        filtered?:
-          term != "" or filters.status != "on" or filters.starts != "all" or
-            filters.resource != "all",
+        filtered?: term != "" or filters.status != "on" or filters.labels != [],
         tabs: @tabs,
         on_count: Enum.count(grants, &Grant.on?(&1, now)),
         counts: %{
@@ -147,7 +171,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
       subtitle="What agents in the VM may use: your resources, and the grants that give their use."
     >
       <:help>
-        A resource is something of yours an agent could use: a credential, a network, your machine. A grant gives a use of one resource while it is on; off, it gives nothing. Two kinds. Open use: agents run their own tools in the VM, and MWT inspects each request as it leaves, holding it to the grant's limits (where it may go, and what it may do there). Fixed call: MWT itself sends one fixed request, or runs your script, on your machine, agents giving only values. A use that goes through two resources (a request with your token, over the Internet) needs a grant over each. Tokens never enter the VM: it gets a placeholder, and MWT swaps the real value in on the way out.
+        A resource is what an action goes through: a credential, a network, host commands, MWT's tools. A grant gives uses of one resource while it is on. Open use: the agent builds the request or command; fixed call: MWT builds it from your template and the agent's values. A use needs an on grant over each resource it goes through; a lock refuses whatever the grants say.
       </:help>
     </.page_header>
 
@@ -246,20 +270,24 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             class="w-full rounded-lg border border-line bg-panel py-1.5 pl-8 pr-2 text-[12px] text-ink outline-none transition-colors placeholder:text-faint focus:border-accent/60"
           />
         </div>
-        <.filter_select
-          id="grant-resource"
-          name="resource"
-          options={@resources}
-          value={@filters.resource}
-          all="Every resource"
-        />
-        <.filter_select
-          id="grant-starts"
-          name="starts"
-          options={@starts}
-          value={@filters.starts}
-          all="Starts on or off"
-        />
+        <.label_filter id="grant-labels" groups={@label_groups} />
+        <span
+          :for={{_group, _title, options} <- @label_groups}
+          :if={Enum.any?(options, &elem(&1, 3))}
+          class="contents"
+        >
+          <button
+            :for={{value, words, _count, true} <- options}
+            type="button"
+            id={"grant-label-picked-#{label_id(value)}"}
+            phx-click="unpick_grant_label"
+            phx-value-label={value}
+            title={"Stop filtering by #{words}"}
+            class="inline-flex cursor-pointer items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/30 px-2 py-1 text-[11px] font-medium text-ink transition-colors hover:border-accent hover:bg-accent-soft/50"
+          >
+            {words} <.icon name="hero-x-mark-micro" class="size-3 text-muted" />
+          </button>
+        </span>
         <button
           :if={@filtered?}
           type="button"
@@ -439,35 +467,71 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   end
 
   attr :id, :string, required: true
-  attr :name, :string, required: true
-  attr :options, :list, required: true, doc: "`{value, label, count}`, All first"
-  attr :value, :string, required: true
-  attr :all, :string, required: true, doc: "what All reads as"
 
-  # A filter of the list as a select: each option with how many rows it
-  # would show with the other filters as they are.
-  defp filter_select(assigns) do
+  attr :groups, :list,
+    required: true,
+    doc: "`{group, title, options}`, each option `{value, words, count, picked?}`"
+
+  # The labels to filter by, picked in a dropdown of checkboxes, by group,
+  # each with how many rows picking it would show. It stays open while
+  # you pick: the server doesn't hold whether it is open.
+  defp label_filter(assigns) do
+    assigns =
+      assign(assigns,
+        picked: for({_g, _t, options} <- assigns.groups, {_v, _w, _c, true} <- options, do: 1)
+      )
+
     ~H"""
-    <select
-      name={@name}
+    <details
       id={@id}
-      aria-label={@all}
-      class={[
-        "max-w-48 rounded-lg border bg-panel px-2 py-1.5 text-[12px] focus:border-accent focus:outline-none",
-        if(@value == "all", do: "border-line text-muted", else: "border-accent/50 text-ink")
-      ]}
+      phx-mounted={JS.ignore_attributes(["open"])}
+      phx-click-away={JS.remove_attribute("open")}
+      class="group relative"
     >
-      <option
-        :for={{value, label, count} <- @options}
-        id={"#{@id}-#{String.replace(value, ":", "-")}"}
-        value={value}
-        selected={@value == value}
-      >
-        {if(value == "all", do: @all, else: label)} ({count})
-      </option>
-    </select>
+      <summary class={[
+        "inline-flex cursor-pointer list-none items-center gap-1.5 rounded-lg border bg-panel px-2.5 py-1.5 text-[12px] transition-colors hover:bg-hover [&::-webkit-details-marker]:hidden",
+        if(@picked == [], do: "border-line text-muted", else: "border-accent/50 text-ink")
+      ]}>
+        <.icon name="hero-tag-micro" class="size-3.5" /> Labels
+        <span
+          :if={@picked != []}
+          id={"#{@id}-count"}
+          class="rounded-full bg-accent-soft/60 px-1.5 text-[10px] tabular-nums text-accent"
+        >
+          {length(@picked)}
+        </span>
+        <.icon
+          name="hero-chevron-down-micro"
+          class="size-3.5 transition-transform group-open:rotate-180"
+        />
+      </summary>
+      <div class="absolute left-0 top-full z-30 mt-1.5 max-h-96 w-64 space-y-2.5 overflow-y-auto rounded-lg border border-line bg-panel p-2.5 shadow-xl shadow-black/20">
+        <p :if={@groups == []} class="text-[11px] text-faint">No labels on these grants.</p>
+        <div :for={{group, title, options} <- @groups} id={"#{@id}-#{group}"}>
+          <p class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-faint">{title}</p>
+          <label
+            :for={{value, words, count, picked?} <- options}
+            id={"#{@id}-#{label_id(value)}"}
+            class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[12px] text-ink transition-colors hover:bg-hover"
+          >
+            <input
+              type="checkbox"
+              name="labels[]"
+              value={value}
+              checked={picked?}
+              class="size-3.5 cursor-pointer accent-accent"
+            />
+            <span class="min-w-0 flex-1 truncate">{words}</span>
+            <span class="text-[10px] tabular-nums text-faint">{count}</span>
+          </label>
+        </div>
+      </div>
+    </details>
     """
   end
+
+  # A label as an id: `kind:open` is `kind-open`.
+  defp label_id(value), do: String.replace(value, ":", "-")
 
   @doc """
   Whether a grant is one of those on from startup and until off, as MWT
@@ -497,48 +561,98 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   defp filtered(grants, filters, now) do
     grants
     |> by_status(filters.status, now)
-    |> by(Map.get(filters, :starts, "all"), &starts_id/1)
-    |> by_resource(Map.get(filters, :resource, "all"))
+    |> by_labels(filters.labels)
   end
 
-  # The grants that pass every filter but `key`'s: what that filter's
-  # counts are counted over.
-  defp except(grants, filters, key, now),
-    do: filtered(grants, Map.put(filters, key, "all"), now)
+  @doc """
+  The labels a grant's row shows, as the filter names them (`group:value`):
+  its kind, `start:on` when it turns on at each start, `runs:host` when a
+  command runs on your machine, `origin:proposed` when an agent proposed
+  it, and the resource it is over.
 
-  defp by(grants, "all", _value_of), do: grants
-  defp by(grants, value, value_of), do: Enum.filter(grants, &(value_of.(&1) == value))
+      iex> grant = %MWTClient.Sandbox.Grant{id: "internet", name: "Internet", kind: :network, internet: true, start: :on}
+      iex> MWTClientWeb.SandboxLive.Grants.labels_of(grant)
+      ["kind:open", "start:on", "resource:network:internet"]
+  """
+  def labels_of(%Grant{} = grant) do
+    ["kind:#{Grant.kind_of(grant)}"] ++
+      if(grant.start in [:on, :auto], do: ["start:on"], else: []) ++
+      if(Grant.host_command?(grant), do: ["runs:host"], else: []) ++
+      if(Grant.proposed?(grant), do: ["origin:proposed"], else: []) ++
+      ["resource:" <> MWTClientWeb.SandboxLive.ResourcePages.over_value(Grant.resource(grant))]
+  end
 
-  defp starts_id(%Grant{start: start}), do: if(start in [:on, :auto], do: "on", else: "off")
+  # The grants carrying the labels picked: one of those picked in each
+  # group, a group with none picked passing every grant.
+  defp by_labels(grants, []), do: grants
 
-  defp by_resource(grants, "all"), do: grants
+  defp by_labels(grants, labels) do
+    picked = Enum.group_by(labels, &label_group/1)
 
-  defp by_resource(grants, resource),
-    do:
-      Enum.filter(
-        grants,
-        &(MWTClientWeb.SandboxLive.ResourcePages.over_value(Grant.resource(&1)) == resource)
-      )
+    Enum.filter(grants, fn grant ->
+      has = labels_of(grant)
+      Enum.all?(picked, fn {_group, wanted} -> Enum.any?(wanted, &(&1 in has)) end)
+    end)
+  end
 
-  # The resources the grants are over, by name, each with how many: All,
-  # then each resource, the built-in ones last.
-  defp resource_facet(grants, credentials, networks) do
+  defp label_group(label), do: label |> String.split(":", parts: 2) |> hd()
+
+  # The labels to pick, by group, each `{value, words, count, picked?}`:
+  # every label a grant of `grants` carries, and those picked. A label's
+  # count is how many rows picking it would show, the other groups' picks
+  # as they are: a group's own picks widen it, so they don't count against
+  # its labels.
+  defp label_facet(grants, labels, credentials, networks) do
+    for {group, title} <- @label_groups,
+        others = Enum.reject(labels, &(label_group(&1) == group)),
+        within = by_labels(grants, others),
+        counts = within |> Enum.flat_map(&labels_of/1) |> Enum.frequencies(),
+        options =
+          for(
+            value <- group_values(group, counts, labels, credentials, networks),
+            do:
+              {value, label_words(value, credentials, networks), Map.get(counts, value, 0),
+               value in labels}
+          ),
+        options != [],
+        do: {group, title, options}
+  end
+
+  # A group's labels in the order the rows show them; resources as the
+  # Resources tab lists them, the built-in ones last.
+  defp group_values("resource", counts, labels, credentials, networks) do
     alias MWTClientWeb.SandboxLive.ResourcePages
-
-    counts = Enum.frequencies_by(grants, &ResourcePages.over_value(Grant.resource(&1)))
 
     resources =
       Enum.map(credentials, &{:credential, &1.id}) ++
         Enum.map(networks, &{:network, &1.id}) ++ [:machine, :mwt]
 
-    [{"all", "All", length(grants)}] ++
-      for resource <- resources,
-          value = ResourcePages.over_value(resource),
-          Map.has_key?(counts, value),
-          do:
-            {value, MWTClient.Sandbox.Resource.name(resource, credentials, networks),
-             Map.fetch!(counts, value)}
+    for resource <- resources,
+        value = "resource:" <> ResourcePages.over_value(resource),
+        Map.has_key?(counts, value) or value in labels,
+        do: value
   end
+
+  defp group_values(group, counts, labels, _credentials, _networks) do
+    for value <- Map.fetch!(@label_values, group),
+        Map.has_key?(counts, value) or value in labels,
+        do: value
+  end
+
+  # A label as its chip on a row says it.
+  defp label_words("resource:" <> over, credentials, networks) do
+    resource =
+      case String.split(over, ":", parts: 2) do
+        ["credential", id] -> {:credential, id}
+        ["network", id] -> {:network, id}
+        ["machine"] -> :machine
+        ["mwt"] -> :mwt
+      end
+
+    MWTClient.Sandbox.Resource.name(resource, credentials, networks)
+  end
+
+  defp label_words(value, _credentials, _networks), do: Map.fetch!(@label_words, value)
 
   defp by_status(grants, "all", _now), do: grants
   defp by_status(grants, status, now), do: Enum.filter(grants, &(status_of(&1, now) == status))
@@ -911,7 +1025,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     <span
       :if={@grant.start in [:on, :auto]}
       id={@id}
-      title={"Enabled each time MWT starts, until turned off, #{start_approval(@grant)}. Change it on its page."}
+      title={"On at each start, until turned off, #{start_approval(@grant)}."}
       class="inline-flex items-center gap-1 rounded border border-ok/40 bg-ok-soft/40 px-1.5 py-0.5 text-[10px] font-semibold text-ok-strong"
     >
       <.icon name="hero-power-micro" class="size-3" /> Starts on
@@ -929,8 +1043,14 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   attr :has_value, :boolean, required: true
   attr :value_form, :any, required: true
   attr :events, :list, required: true
-  attr :duration, :any, required: true, doc: "the duration picked while it is off"
-  attr :mode, :string, default: "ask", doc: "the approval mode picked while it is off"
+  # What its switches show, as its row's do (`row_duration/3`, `row_mode/3`):
+  # on, what it is on for and how; off, what you picked for turning it on.
+  # Worked out by the caller, never over an attr here: LiveView sends a
+  # change only where an assign's value changed, and one overwritten with
+  # the value passed in last time isn't sent, so the switch kept showing
+  # the old duration.
+  attr :duration, :any, required: true, doc: "the duration shown: `row_duration/3`"
+  attr :mode, :string, default: "ask", doc: "the approval mode shown: `row_mode/3`"
   attr :now, DateTime, required: true
   attr :grants, :list, default: [], doc: "every grant, for the ones it overlaps"
   attr :credentials, :list, default: []
@@ -951,7 +1071,6 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   detail, is folded below.
   """
   def detail(assigns) do
-    on? = Grant.on?(assigns.grant, assigns.now)
     resource = Grant.resource(assigns.grant)
     alias MWTClient.Sandbox.Resource
 
@@ -979,14 +1098,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         resource_to_review: Resource.to_review?(resource, assigns.credentials, assigns.networks),
         no_value:
           match?(%MWTClient.Sandbox.Credential{source: :stored}, credential) and
-            not Map.get(assigns.credential_values, credential.id, false),
-        duration: if(on?, do: on_duration(assigns.grant), else: assigns.duration),
-        mode:
-          cond do
-            not on? -> assigns.mode
-            Grant.auto_approved?(assigns.grant, assigns.now) -> "all"
-            true -> "ask"
-          end
+            not Map.get(assigns.credential_values, credential.id, false)
       )
 
     ~H"""
@@ -1068,7 +1180,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                     do: {start, start_label(start, Grant.starts(@grant))}
               }
               value={@settings.form[:start].value}
-              hint="Saved, it applies now too, and at each start."
+              hint="Saved, it applies now and at each start."
             />
           </div>
           <footer
@@ -1116,11 +1228,16 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           class="flex items-center gap-2 px-1 text-[11px] leading-4 text-faint"
         >
           <.icon name="hero-shield-check-micro" class="size-3.5 shrink-0" />
-          MWT's own grant: it can't be removed, and only {cond do
-            Grant.internet?(@grant) -> "the hosts it leaves out, how it starts and how it asks"
-            Grant.always_asks?(@grant) -> "whether it starts on: it always asks"
-            true -> "how it starts and how it asks"
-          end} change. Turn it off to stop it.
+          Built in: it can't be removed{cond do
+            Grant.internet?(@grant) ->
+              ", and only the hosts it leaves out, how it starts and how it asks change"
+
+            Grant.always_asks?(@grant) ->
+              ", and it always asks"
+
+            true ->
+              ", and only how it starts and how it asks change"
+          end}.
         </p>
       </div>
 
@@ -1255,14 +1372,14 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             </li>
           </ul>
           <div
-            :if={@grant.allowances != []}
+            :if={temporary_allowances(@grant) != []}
             id="grant-allowances"
             class="mt-3 border-t border-line-soft pt-3"
           >
-            <p class="mb-1.5 text-[11px] text-muted">Allowed without asking, for now</p>
+            <p class="mb-1.5 text-[11px] text-muted">Allowed for a while</p>
             <ul class="space-y-1">
               <li
-                :for={allowance <- @grant.allowances}
+                :for={allowance <- temporary_allowances(@grant)}
                 id={"allowance-#{allowance.id}"}
                 class="flex items-center gap-2 text-[11px]"
               >
@@ -1304,14 +1421,8 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         </section>
 
         <section id="grant-kind" class="rounded-xl border border-line bg-panel p-4 shadow-sm">
-          <div class="flex items-center gap-2">
-            <p class="text-[12px] font-semibold text-ink">{kind_name(Grant.kind_of(@grant))}</p>
-            <.where :if={Grant.host_command?(@grant)} place={:machine} />
-          </div>
-          <p class="mt-1.5 text-[12px] leading-5 text-muted">
-            {kind_words(Grant.kind_of(@grant))}
-          </p>
-          <p id="grant-kind-use" class="mt-1.5 text-[12px] leading-5 text-ink">
+          <p class="text-[12px] font-semibold text-ink">{kind_name(Grant.kind_of(@grant))}</p>
+          <p id="grant-kind-use" class="mt-1.5 text-[12px] leading-5 text-muted">
             {use_words(@grant)}
           </p>
           <p
@@ -1327,10 +1438,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             id="grant-network-part"
             class="mt-1.5 text-[11px] leading-4 text-faint"
           >
-            Some hosts on other terms (one that always asks, say): list them under
-            <span class="font-medium text-muted">Except these hosts</span>
-            in Settings, then
-            <button
+            One host on other terms (always asking, say): list it under <span class="font-medium text-muted">Except these hosts</span>, then <button
               type="button"
               id="grant-network-add-part"
               phx-click="open_add_grant"
@@ -1338,9 +1446,8 @@ defmodule MWTClientWeb.SandboxLive.Grants do
               phx-value-over={"network:#{MWTClient.Sandbox.Network.id_of(@grant)}"}
               class="cursor-pointer font-medium text-accent hover:underline"
             >
-              add a grant over them
-            </button>
-            with those hosts as its request targets. Only some hosts: turn this one off and add that grant.
+              add a grant over it
+            </button>.
           </p>
           <p :if={@grant.kind == :token} class="mt-2 select-all font-mono text-[11px] text-ink">
             mwt exec {Grant.credential_id(@grant)} -- COMMAND
@@ -1405,6 +1512,12 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     """
   end
 
+  # The allowances to list beside *Each use*: those a card added, for uses
+  # like one or for a time. Every use while on is what *Auto* is, which
+  # the switch above already shows.
+  defp temporary_allowances(%Grant{allowances: allowances}),
+    do: Enum.reject(allowances, &(&1.pattern == :all and is_nil(&1.until)))
+
   # The hosts a grant's requests go to that no network grant lets out now,
   # as it would the agent's own (`MWTClient.Sandbox.Policy.reach/3`), each
   # with why in a few words: a request action's host, a token grant's.
@@ -1443,29 +1556,26 @@ defmodule MWTClientWeb.SandboxLive.Grants do
 
   defp unreached_words(host, _other), do: "#{host}"
 
-  # How agents use a grant, and where what it lets through goes.
+  # How agents use a grant, in a line.
   defp use_words(%Grant{kind: :token} = grant),
     do:
-      "Agents run their own tools in the VM with mwt exec #{Grant.credential_id(grant)}, which gives them placeholders; MWT swaps in the real value on the way out, only toward the hosts this grant lists. Each request also needs a grant over its network."
+      "Agents run their own tools with placeholders (mwt exec #{Grant.credential_id(grant)}); MWT puts the real value in only toward the hosts listed here. Each request also needs a network grant."
 
   defp use_words(%Grant{kind: :request} = grant),
     do:
-      "Agents call it by id with values; MWT builds the request, #{grant.method} to #{SavedRequest.host(grant)}, and sends it through the same checks as the agents' own."
+      "Agents call it by id with values; MWT sends #{grant.method} to #{SavedRequest.host(grant)} through its proxy, checked as the agents' own requests are."
 
   defp use_words(%Grant{kind: :network}),
-    do:
-      "Agents' own tools reach it from the VM; MWT checks each connection and request as it leaves."
+    do: "Agents' own tools reach it from the VM; MWT checks each connection and request."
 
   defp use_words(%Grant{kind: :agent_commands}),
-    do:
-      "Agents write a command and send it with mwt run; you read and approve every run, on the host."
+    do: "Agents send a command they wrote with mwt run; you read and approve every run."
 
   defp use_words(%Grant{kind: :mwt}),
-    do: "Agents call MWT's tools by name; MWT carries each call out itself, on the host."
+    do: "Agents call MWT's tools; MWT carries each call out itself."
 
   defp use_words(%Grant{}),
-    do:
-      "Agents call it by id with values; MWT runs your script as you saved it, on the host, one call at a time."
+    do: "Agents call it by id with values; MWT runs your script as saved, one call at a time."
 
   attr :grant, Grant, required: true
 
@@ -1517,28 +1627,28 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         id="grant-openness-files"
         class="mt-1 text-[11px] leading-4 text-warn-strong"
       >
-        It runs {Enum.join(@openness.files, ", ")}: it is only as narrow as that file, which can change after you saved it.
+        It runs {Enum.join(@openness.files, ", ")}: only as narrow as that file.
       </p>
       <p class="mt-1 text-[10px] leading-4 text-faint">
-        Read from the template and its parameters' schemas: a warning, which can miss things, never a decision.
+        A warning read from the template: it can miss things, and decides nothing.
       </p>
     </div>
     """
   end
 
   # What a fixed call covers (docs/grant_mental_model.md, Q5): its
-  # credential, or your machine and the credentials a saved command runs
+  # credential, or host commands and the credentials a saved command runs
   # with; a request's network is the network grants', as for the agent's.
   defp covers_words(%Grant{kind: :request} = grant),
     do:
-      "It covers #{Grant.credential_id(grant)}'s value in its own request, and nothing else: no grant over the credential has a say, and the agents' own requests never carry it on its account. Its request goes out to #{SavedRequest.host(grant)} as the agents' own would: a grant over that network has to let it out (the Internet's, usually), and a lock or a blocked host refuses it."
+      "It covers #{Grant.credential_id(grant)}'s value in this request only. Its request still needs a grant over its network to leave, as the agents' own would."
 
   defp covers_words(%Grant{kind: :command, with: [_ | _] = with}),
     do:
-      "It covers what it runs with, and nothing else: your machine, and the values of #{Enum.join(with, ", ")}, whatever their other grants say. A lock on any of them still refuses it."
+      "It covers host commands for this script, and the values of #{Enum.join(with, ", ")}, whatever their other grants say. A lock on any of them refuses it."
 
   defp covers_words(%Grant{}),
-    do: "It covers your machine for this script alone. Locking host commands still refuses it."
+    do: "It covers host commands for this script alone. A lock on host commands refuses it."
 
   defp try_path(%Grant{kind: :token} = grant),
     do: "/tools/sandbox/grants?tab=console&with=#{Grant.credential_id(grant)}"
@@ -1662,7 +1772,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           disabled={@resource_to_review != nil}
           class="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-line bg-panel px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-accent/50 hover:bg-accent-soft/30 hover:text-accent disabled:cursor-default disabled:opacity-40"
         >
-          Accept, keep disabled
+          Accept, keep off
         </button>
         <span
           :if={@resource_to_review}
@@ -1708,40 +1818,34 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   defp start_label(:off, _starts), do: "Off"
 
   defp start_label(:on, starts),
-    do: if(:auto in starts, do: "Enabled, ask", else: "Enabled")
+    do: if(:auto in starts, do: "On, ask", else: "On")
 
   defp start_label(:auto, starts),
-    do: if(:on in starts, do: "Enabled, auto", else: "Enabled")
+    do: if(:on in starts, do: "On, auto", else: "On")
 
   defp delivery_help(%Grant{internet: true}),
     do:
-      "Nothing to hold. While this is on, the VM reaches any public address, through MWT and its firewall. Off, it reaches only what other grants list, DNS answers only their names, and turning it off closes every connection it let through."
+      "Nothing to hold. Off, the VM reaches only what other grants list, DNS answers only their names, and the connections it let through close."
 
   defp delivery_help(%Grant{kind: kind}), do: delivery_help(kind)
 
   defp delivery_help(:token),
     do:
-      "The VM sees a placeholder. When a request carrying it in one of its headers goes to one of these hosts, MWT asks you, swaps in the real value and sends it on. Sent anywhere else, it is blocked and logged."
+      "A placeholder. MWT puts the real value in only in requests to these hosts, in these headers; sent anywhere else, it is refused and logged."
 
   defp delivery_help(:network),
     do:
-      "Nothing to hold. While this is on, MWT lets the VM's connections to these destinations through, from this machine, so they reach whatever your network or VPN reaches. Services behind a VPN often trust where a connection comes from, so the VM acts as you there: list destinations, not whole networks, where you can."
+      "Nothing to hold. Its connections leave from this machine, so a service behind your VPN sees them as yours: list destinations, not whole networks, where you can."
 
-  defp delivery_help(:request),
-    do:
-      "Nothing. MWT sends this request itself when an agent calls it, with the grant's real value."
+  defp delivery_help(:request), do: "Nothing. MWT builds and sends the request itself."
 
   defp delivery_help(:command),
-    do:
-      "Nothing to hold. While this is on, agents may call this script by id, with a value for each parameter; MWT runs it on this machine, as you or confined, outside the VM. It is for jobs that need what only this machine has, so the work goes to the value instead of the value to the VM."
+    do: "Nothing. MWT runs the script on this machine and sends back its output."
 
   defp delivery_help(:agent_commands),
-    do:
-      "Nothing to hold. While this is on, agents may ask MWT to run a command they write on this machine, as you, outside the VM. Each run shows on a card with its exact text and waits for you; nothing lets one through unasked, and none is handed a credential's value."
+    do: "Nothing. Each run waits for you on a card, and none is handed a credential's value."
 
-  defp delivery_help(:mwt),
-    do:
-      "Nothing to hold. MWT's own tools, notes, diagrams, flash cards and HTTP samples, through the MCP server mwt mcp in the VM: MWT carries each call out itself, on this machine, so no token is in the VM."
+  defp delivery_help(:mwt), do: "Nothing. MWT carries each call out itself."
 
   attr :grant, Grant, required: true
   attr :parent_name, :string, default: nil, doc: "an action's grant, by name"
@@ -1976,14 +2080,10 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           phx-no-format
         >{pretty(@grant.body)}</pre>
         <p class="mt-1 text-[10px] text-faint">
-          MWT sends it itself, with {@parent_name}'s real value where {SavedRequest.token_mark()} is: the VM never holds it. Each value is encoded where it goes; the host and headers never change.
+          {@parent_name}'s real value goes where {SavedRequest.token_mark()} is. Each value is encoded where it goes: the host and headers never change.
         </p>
       </dd>
       <.params_list grant={@grant} />
-      <dt class="text-muted">Approval</dt>
-      <dd class="text-[11px] text-ink">
-        Every call waits for you, with the exact request on its card, unless you turned it on with Auto-approve.
-      </dd>
       <dt class="text-muted">In the VM</dt>
       <dd class="font-mono text-[11px] text-ink">{Grant.signature(@grant)} --reason "…"</dd>
     </dl>
@@ -1999,7 +2099,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
       >
         <.icon name="hero-exclamation-triangle" class="mt-px size-4 shrink-0 text-warn" />
         <p class="text-xs leading-5 text-ink">
-          The escape hatch, built in by MWT: agents write the command, and you read and approve every run. A command can do anything you can, and MWT sees nothing of it once it runs, so no setting lets one through unasked. Save the ones worth keeping as saved commands, which run only your own script. Off, agents can't ask; locking host commands stops every run.
+          A command can do anything you can, and MWT sees nothing of it once it runs, so every run waits for you and no setting changes that. Off, agents can't ask; save the ones worth keeping as saved commands.
         </p>
       </div>
       <dl class="grid grid-cols-[8rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">
@@ -2074,10 +2174,6 @@ defmodule MWTClientWeb.SandboxLive.Grants do
               You: your home, your keys and your logins are in its reach. Edit it to run it confined.
             </span>
           <% end %>
-        </dd>
-        <dt class="text-muted">Approval</dt>
-        <dd class="text-[11px] text-ink">
-          Every run waits for you, unless you turned it on with Auto-approve.
         </dd>
         <dt class="text-muted">In the VM</dt>
         <dd class="font-mono text-[11px] text-ink">{Grant.signature(@grant)} --reason "…"</dd>
@@ -2240,7 +2336,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                 <% @adding.step == :pick -> %>
                   Pick the resource it gives a use of.
                 <% @adding.step == :kind -> %>
-                  What kind of grant: agents' own tools, or one call MWT makes for them? The kind decides where it runs.
+                  Agents' own tools, or one request MWT builds for them?
                 <% @adding.step == :preset -> %>
                   Start from a preset for its service, or by hand.
                 <% @adding.preset.kind == :network and match?({:network, _}, @adding[:over]) -> %>
@@ -2271,15 +2367,12 @@ defmodule MWTClientWeb.SandboxLive.Grants do
               phx-value-kind={kind}
               class="group flex cursor-pointer flex-col items-start gap-2 rounded-xl border border-line p-4 text-left transition-all hover:-translate-y-px hover:border-accent/50 hover:bg-accent-soft/15"
             >
-              <span class="flex items-center gap-2">
-                <span class="text-[13px] font-semibold text-ink">{kind_name(kind)}</span>
-                <.where place={if(kind == :open, do: :vm, else: :machine)} />
-              </span>
+              <span class="text-[13px] font-semibold text-ink">{kind_name(kind)}</span>
               <span class="text-[12px] leading-5 text-muted">{kind_words(kind)}</span>
               <span class="text-[11px] leading-4 text-faint">
                 {if(kind == :open,
                   do: "For open-ended work: gh, git, any API call within its limits.",
-                  else: "For one narrow, repeatable call: safe to let through without asking."
+                  else: "For one request done again and again: as safe as its template is narrow."
                 )}
               </span>
             </button>
@@ -2292,9 +2385,6 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             by_hand="The hosts its value may go to, and anything it narrows by: you fill them in."
           />
           <div :if={@adding.step == :pick} id="pick-resource" class="space-y-5">
-            <p class="text-[11px] leading-4 text-muted">
-              A grant gives a use of one resource. Pick the one it is over; a new one is added first, on its own.
-            </p>
             <div>
               <p class="mb-2 flex items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-wide text-muted">
                 Credentials
@@ -2404,9 +2494,6 @@ defmodule MWTClientWeb.SandboxLive.Grants do
                     "It starts off. Turn it on for a time, asking each time or auto-approved."
                 end}
               </span>
-              <.help id="grant-command-help" label="How a command runs">
-                Once on, agents can ask. Each run shows its exact text on a card and waits for you, unless you auto-approve it; it runs on this machine, outside the VM, confined or as you as set above. Its output goes back to the agent once you release it.
-              </.help>
             </p>
 
             <p
@@ -2417,9 +2504,6 @@ defmodule MWTClientWeb.SandboxLive.Grants do
               <span class="flex-1">
                 Every {if @adding.preset.kind == :network, do: "connection", else: "request"} using it waits for your approval.
               </span>
-              <.help id="grant-uses-help" label="About approving uses">
-                Each use waits on a card in Approvals for you to allow it once, allow similar ones for a while, or deny it. From a card, or the grant's page, you can let them through for a while, or auto-approve every use while it is on; Always ask me on its page rules both out.
-              </.help>
             </p>
 
             <footer class="flex items-center justify-end gap-2 pt-1">
@@ -2546,15 +2630,14 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           )
         }
       />
-      <p id="purpose-hint" class="mt-1 text-[10px] text-faint">
-        <%= cond do %>
-          <% @adding.preset.kind != :command -> %>
-            Agents in the VM read this to find the grant they need. Say what it opens, and for what.
-          <% @adding[:approval_id] && @adding.form[:purpose].value not in [nil, ""] -> %>
-            The agent's suggestion: words for any time it runs, not its reason for this run. Check it says what the script does.
-          <% true -> %>
-            Say what it does, for any time it runs: agents read this to pick it, and the search finds it by these words.
-        <% end %>
+      <p
+        :if={@adding.preset.kind == :command and @adding[:approval_id]}
+        id="purpose-hint"
+        class="mt-1 text-[10px] text-faint"
+      >
+        {if @adding.form[:purpose].value in [nil, ""],
+          do: "Say what it does, for any time it runs: not this run's reason.",
+          else: "The agent's suggestion: check it says what the script does, for any time it runs."}
       </p>
       <.field_error errors={@adding.errors} field={:purpose} />
     </div>
@@ -2608,7 +2691,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             class="w-full rounded-md border border-line bg-deep px-2.5 py-1.5 font-mono text-xs text-ink focus:border-accent focus:outline-none"
           >{@adding.form[:attributes].value}</textarea>
           <p class="mt-1 text-[10px] leading-4 text-faint">
-            A line each: http.method, http.path, graphql.operation, git.direction, github.repository. Empty, every use of its hosts.
+            A line each: http.method, http.path, graphql.operation, git.direction, github.repository. Empty: every use.
           </p>
           <.field_error errors={@adding.errors} field={:attributes} />
           <label class="mt-2 flex cursor-pointer items-start gap-2">
@@ -2664,7 +2747,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         }
       />
       <p class="mt-1 text-[10px] leading-4 text-faint">
-        Where agents' requests and connections may go with this grant. Empty, anywhere on {@over_name}. Or one a line: a host (myhost.example.com), every host under one (*.corp.example), an address or a range, then optionally :ports.
+        Empty: all of {@over_name}. Or one a line: a host, every host under one (*.corp.example), an address or a range, then optionally :ports.
       </p>
       <.field_error errors={@adding.errors} field={:destinations} />
       <.except_field form={@adding.form} errors={@adding.errors} class="mt-4" />
@@ -2682,7 +2765,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         }
       />
       <p class="mt-1 text-[10px] text-faint">
-        One per line: an address, a range, a host name, or every name under one (*.corp.example), then optionally :ports. Anything after # is a note.
+        One a line: an address, a range, a host, or every host under one (*.corp.example), then optionally :ports. After # is a note.
       </p>
       <.field_error errors={@adding.errors} field={:destinations} />
       <.except_field form={@adding.form} errors={@adding.errors} class="mt-3" />
@@ -2695,7 +2778,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           help={field_help(:anchor)}
         />
         <p class="mt-1 text-[10px] text-faint">
-          Optional, and best for a VPN: its interface's name, as ip link shows it. While the VPN is down, this grant opens nothing, so its addresses never reach whatever network you are on instead.
+          Optional: the VPN's interface, as ip link shows it. While it is down, nothing goes, rather than out through another network.
         </p>
         <.field_error errors={@adding.errors} field={:anchor} />
       </div>
@@ -2893,7 +2976,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
       <p class="mb-1 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-muted">
         When MWT starts
         <.help id="grant-start-help" label="About the state it starts in">
-          The state it is put in each time MWT starts. Off: it gives nothing until you, or an agent's ask you approve, turn it on for a time. Enabled, ask: on from now and at every start, until you turn it off, and every call still waits for you. Enabled, auto: the same, and every call goes through without asking, logged in Activity. Only for what you fully trust.
+          Off: off until you, or an ask you approve, turn it on for a while. On: on from now and at every start, until you turn it off; ask or auto says whether each call waits for you.
         </.help>
       </p>
       <.pills
@@ -2901,8 +2984,8 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         name="grant[start]"
         options={[
           {"off", "Off"},
-          {"on", "Enabled, ask"},
-          {"auto", "Enabled, auto"}
+          {"on", "On, ask"},
+          {"auto", "On, auto"}
         ]}
         checked={@form[:start].value || "off"}
         tone="ok"
@@ -2915,7 +2998,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
       >
         <.icon name="hero-exclamation-triangle-micro" class="mt-px size-3.5 shrink-0" />
         <span>
-          Every call will go through without asking, with whatever values the agent gives within the shapes of the parameters.
+          Every call will go through without asking, with any values its parameters allow.
         </span>
       </p>
     </div>
@@ -3053,7 +3136,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
             label="With the real values of"
             placeholder="github, stripe"
             help={field_help(:with)}
-            hint="Credentials, by id, comma separated. Each needs an open-use grant over it that allows your machine, on when the script runs."
+            hint="Credentials, by id, comma separated: the script gets their real values. It covers them, whatever their other grants say."
           />
           <.field_error errors={@errors} field={:with} />
         </div>
@@ -3327,7 +3410,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     writes_dir:
       "Lets the confined script change files in its folder; otherwise it can only read them. Nothing else on this machine is writable from the bubble but a scratch folder of its own.",
     with:
-      "Credentials, by id, comma separated, whose real values the confined script gets: in the same variables the VM sees their placeholders in, and in their token files. For a script that calls an API itself. Each run needs, for each, a token grant over it that is on and allows your machine, and asks if any of those asks. Only a confined command takes them, and never a credential minted per host."
+      "Credentials, by id, comma separated, whose real values the confined script gets, in the same variables and files the VM gets their placeholders in. For a script that calls an API itself. The saved command covers them; a lock on one refuses it. Only a confined command takes them, and never a credential minted per host."
   }
 
   # What a field's value means and what it is used for, behind its ?.

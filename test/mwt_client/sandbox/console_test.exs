@@ -17,6 +17,34 @@ defmodule MWTClient.Sandbox.ConsoleTest do
     assert DateTime.compare(result.finished_at, result.started_at) != :lt
   end
 
+  test "starts in the folder given, and says the one its shell ended in", %{tmp_dir: dir} do
+    sub = Path.join(dir, "sub")
+    File.mkdir_p!(sub)
+
+    assert {:ok, %{output: output, dir: ^dir, cwd: ^sub, status: 0}} =
+             Console.run(Guest.local(dir), "pwd; cd sub", nil, 60, dir)
+
+    assert output == dir <> "\n"
+
+    # A folder gone since: it starts in /work, or home, and says where it is.
+    assert {:ok, %{cwd: cwd}} = Console.run(Guest.local(dir), "true", nil, 60, "/no/such/dir")
+    assert is_binary(cwd) and cwd != "/no/such/dir"
+
+    assert {:error, "That folder can't be started in."} =
+             Console.run(Guest.local(dir), "ls", nil, 60, "relative/path")
+  end
+
+  test "colours stay and other escapes go; a line written over keeps its last", %{tmp_dir: dir} do
+    assert {:ok, %{output: output}} =
+             Console.run(
+               Guest.local(dir),
+               ~S{printf '\033[31mred\033[0m \033[2Kx\n1%%\r100%%\n'},
+               nil
+             )
+
+    assert output == "\e[31mred\e[0m x\n100%\n"
+  end
+
   test "a command past its time is stopped, and says so", %{tmp_dir: dir} do
     assert {:ok, %{timed_out: true, status: nil}} =
              Console.run(Guest.local(dir), "sleep 30", nil, 1)

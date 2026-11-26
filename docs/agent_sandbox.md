@@ -2057,10 +2057,7 @@ value, and names:
   read*;
 - the **service accounts** MWT signs JWTs as for it, answering Google's
   `signJwt` itself ([Credential endpoints MWT
-  answers](#credential-endpoints-answered));
-- whether its value may also be used **on your machine**, by the saved
-  commands that run with its credential (*Allow your machine*,
-  `Grant.machine`; [Who uses its value](#who-uses-its-value)).
+  answers](#credential-endpoints-answered)).
 
 Reaching its hosts is not its to give: the agent's request carrying its
 placeholder also needs a grant over the network the host is on, usually
@@ -3121,20 +3118,20 @@ starts or unlocks (`Grant.start`):
 
 | Setting                       | At each start                                                                                         |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------- |
-| **Off** (`:off`)              | Off: it gives nothing. The default. You, or an agent's ask, enable it for a time.                    |
-| **Enabled, ask** (`:on`)      | Enabled until turned off. Every use still waits for you.                                              |
-| **Enabled, auto** (`:auto`)   | Enabled until turned off, every use through without asking, still logged. For what you fully trust. |
+| **Off** (`:off`)              | Off: it gives nothing. The default. You, or an agent's ask, turn it on for a time.                   |
+| **On, ask** (`:on`)           | On until turned off. Every use still waits for you.                                                   |
+| **On, auto** (`:auto`)        | On until turned off, every use through without asking, still logged. For what you fully trust.      |
 
 - Not every grant takes all three (`Grant.starts/1`): a grant to review
-  takes Off only; one that always asks, no *Enabled, auto*. *Enabled,
-  auto* asks you to confirm.
+  takes Off only; one that always asks, no *On, auto*. *On, auto* asks you
+  to confirm.
 - Choosing a setting puts the grant in that state at once and at every
   start; in between its switch, duration and approval mode change it.
   Every start begins from the settings: a grant left on goes back to its
   setting, and every allowance ends with the session. A setting saved as
   Disabled or *Off, refusing* is Off.
-- A row or card whose setting enables it says *Enabled on startup*; its
-  Ask/Auto switch shows how uses are approved.
+- A row or card whose setting turns it on says *Starts on*; its Ask/Auto
+  switch shows how uses are approved.
 
 <a id="approvals"></a>
 
@@ -3375,7 +3372,7 @@ library turns a refusal's JSON into "403 Forbidden". So the agent asks
 
 ### The console
 
-The Grants page's *Console* runs what you type in the VM as an agent's
+The Grants page's *Live Test* runs what you type in the VM as an agent's
 command would run (`MWTClient.Sandbox.Console`, through `msb exec`): as
 the user agents run as, in `/work`, in a login shell, its errors with its
 output. *With credential* wraps it in `mwt exec ID`, as an agent runs a
@@ -3386,6 +3383,18 @@ method, URL, headers and body, the credential's `Authorization` (or the
 headers its service expects) taken from its token file, and shows it
 before it runs. *Try it as the VM*, on a grant's or a credential's page,
 opens it with that credential.
+
+The Overview's *Terminal* is the same console as a terminal shows it
+(`MWTClientWeb.SandboxLive.Terminal`): a prompt with the folder, Enter
+runs the line, ↑ and ↓ bring back what ran, Ctrl+C stops a run (or drops
+the line; with text selected it copies), Ctrl+L or `clear` empties the
+screen. Each command starts in the folder the last one ended in, which
+the script prints as its shell exits, and which the page keeps as you
+leave. Its screen and the Live Test's history are the same runs. What
+ran keeps its colours (`MWTClientWeb.Ansi`, drawn in the app's palette)
+and a line a carriage return went back over shows as it ended. It is a
+line at a time: the output shows once the command ends, and nothing reads
+what you type while it runs, so no editor or prompt; Zed is for those.
 
 - **What you see**: what it printed (escaped, a terminal's colours
   dropped, anything else that doesn't show written out; at most 256 KiB),
@@ -3439,21 +3448,26 @@ rest under *Advanced*, whose summary says what of it is set; a tag is one
 of a few (`badge`); a preset is chosen from a list that says what each
 one sets (`preset_picker`).
 
-The tabs are *Resources*, *Grants* and *Console*, in that order, what
+The tabs are *Resources*, *Grants* and *Live Test*, in that order, what
 grants are over first; *Grants* is the one shown when the page opens.
 
 1. **Grants**: every grant in one list, 20 rows a page, each with its
    time left or last use, duration, Ask or Auto, and switch, all
-   changeable there, its resource as a link, over a credential its kind
-   and where it runs (*Open use* and *Runs on VM*, or *Fixed call* and
-   *Runs on host*), and at most one tag of its own (*Proposed* or
+   changeable there, its resource as a link, its kind (*Open use* or
+   *Fixed call*), *Runs on host* where a command runs there, and at most
+   one tag of its own (*Proposed* or
    *Starts on*); one to review has *Review* in place of its controls.
    MWT's own grants (the Internet's, MWT's tools) carry no tag for it:
    their page says they can't be removed. A bar over it narrows it: a
    status (*On*, the default, *Off*, *To review*, *All*, each with how
    many), a search over each one's name, purpose, type, hosts,
    variables, destinations, script, folder and parameters (every word,
-   any case), a resource and whether it starts on; *Clear* puts it back.
+   any case), and *Labels*, the tags the rows show, picked in a
+   dropdown, each with how many rows picking it shows: its kind (*Open
+   use*, *Fixed call*), *Starts on*, *Runs on host*, *Proposed* and the
+   resource it is over. A grant needs one label picked from each group
+   that has any (two resources: a grant over either); each picked label
+   shows as a chip that drops it. *Clear* puts it all back.
    The list has one order whatever the bar says: what ends soonest
    first, then what is on until off, then the rest by last use. The search and filters are kept as you leave.
    Nothing on, it says so and offers every grant. *Add grant*, on the
@@ -3473,7 +3487,7 @@ grants are over first; *Grants* is the one shown when the page opens.
    *Locked*, *To review*, *No grant*) and words; *Add credential* (a
    preset, or *By hand*, first) and *Add network* are on it. One an
    agent proposed shows *Proposed · to review*.
-3. **Console**: a command run in the VM as an agent's would be, and
+3. **Live Test**: a command run in the VM as an agent's would be, and
    the history of those runs, with what each printed
    ([The console](#console)); and, folded, a request decided without
    being sent ([Finding out why](#finding-out-why)).
@@ -4230,9 +4244,9 @@ no value, no Edit, no Remove, and MWT's words. Each tool belongs to one.
 
 | Grant        | Tools                                  | Starts, by default   |
 | ------------ | -------------------------------------- | -------------------- |
-| `mwt-read`   | `list_*` and `get_*`                   | Enabled, auto        |
-| `mwt-create` | `create_*` and `import_http_request`   | Enabled, auto        |
-| `mwt-change` | `update_*`                             | Enabled, ask         |
+| `mwt-read`   | `list_*` and `get_*`                   | On, auto             |
+| `mwt-create` | `create_*` and `import_http_request`   | On, auto             |
+| `mwt-change` | `update_*`                             | On, ask              |
 
 - They are plain grants (`kind: :mwt`, `tools` saying which): a switch, a
   duration, Ask each time or Auto-approve, and a start setting, changed as
@@ -4477,9 +4491,9 @@ machine, built in, like the Internet's ([Grant kinds](#grant-kinds)):
 
 | Grant | What it allows | When MWT starts |
 | --- | --- | --- |
-| **Fetch from your repositories** | `git fetch`, `git ls-remote` and clones of `host-origin` and `remote-origin`: your committed branches and tags, and your remote branches as your machine last fetched them. Reads only. | Enabled, auto |
-| **Fetch from your remotes** | Before `remote-origin` answers, your machine fetches your repository's own remote into MWT's store (never into your repository), with your credentials, non-interactively, at most once a minute. The VM never sees a credential or chooses a URL. | Enabled, auto |
-| **Hand off** | `mwt handoff`: commits into MWT's review store, never into your repository. Your review is the gate. | Enabled, auto |
+| **Fetch from your repositories** | `git fetch`, `git ls-remote` and clones of `host-origin` and `remote-origin`: your committed branches and tags, and your remote branches as your machine last fetched them. Reads only. | On, auto |
+| **Fetch from your remotes** | Before `remote-origin` answers, your machine fetches your repository's own remote into MWT's store (never into your repository), with your credentials, non-interactively, at most once a minute. The VM never sees a credential or chooses a URL. | On, auto |
+| **Hand off** | `mwt handoff`: commits into MWT's review store, never into your repository. Your review is the gate. | On, auto |
 
 Landing, on your machine or later on a remote, is yours, on the Handoffs
 page: never a grant the VM asks for.
@@ -4960,7 +4974,7 @@ notification ([Desktop notifications](#desktop-notifications)).
   its grants, *Add credential* and *Add network*, from a preset or by
   hand: [Locks](#locks), [Presets](#presets)), *Grants*, shown first
   (one list, what ends soonest first, with *Add grant*, which starts
-  from the resource) and *Console* ([The console](#console))
+  from the resource) and *Live Test* ([The console](#console))
   ([The Grants page](#the-grants-page)). A resource's page: what it is,
   *Lock*, Now, its grants and actions, a network's host limits
   ([Host limits](#host-lists)), its settings in place, and the review of
@@ -5373,6 +5387,8 @@ history is in git.
 | 2026-11-25 | Each fixed call is graded *Narrow*, *Wide* or *Open*, on its page, its cards and in `mwt grants`, a warning only; a command's card says what it can't show louder than a hint, and the files a command runs are pinned: one changed after you approved it runs nothing, one changed since a saved command was saved makes that run ask ([Pinned files](#pinned-files)). A parameter's schema check is bounded by its work, not by time. |
 | 2026-11-25 | An opened action's line has an audit card, the same rows for every action: outcome, who or what decided it (you on a card, Auto-approve, a grant that is on, MWT, a timeout), why in one line, a link to the grant (marked when it changed since) and to the card as it was decided, read-only, on the Approvals page. The log filters by *Decided by*; a line no longer carries a copy of its grant ([Pages](#pages)). |
 | 2026-11-25 | An opened line of the activity log says less, the same way for every event: when, where, traffic, who asked, an action's audit card (with links to the grant and the card), a link to the event's page; what MWT knew of it is folded under *More about it*. What a request carried, request beside response, is as it was ([Pages](#pages)). |
+| 2026-11-25 | From the grants QA (`docs/dated/20261125-grants_qa.md`): one reader of what a script runs (`ScriptRuns`) behind pins, hints and the grade, a file it can't tell making each run of a saved command ask; a saved command pinned as you accept it, one never pinned asking once; `*` in an allowance never a dot segment, and a request carrying a credential refused when its path has one; every answer MWT reads looked through for all your values, cut and the firewall told, at about a third of a large download's throughput, and an answer it can't read refused while it holds values; the grade still only warns (Q8), *Narrow* only for what a value provably can't break out of; names the VM chooses scanned like values; every refused call or command logged; a call's card names every grant that asked. Agents read *fixed call* (a *fixed request* or a *saved command*) where they read *action*, and *Host commands* where they read *your machine*; the start setting reads *On, ask* and *On, auto* ([grants.md](grants.md)). |
+| 2026-11-26 | The Overview has a *Terminal*: the console, a line at a time, with a prompt, history on ↑ and ↓, Ctrl+C and Ctrl+L, each command starting where the last ended; one history with the Live Test, as the Grants page's *Console* is now called. A run keeps its colours and shows a line written over as it ended. A terminal over a PTY was set aside: a long-lived session streamed both ways, and a second way into the VM beside Zed ([The console](#console)). A `<details>` you opened stays open as the page updates, every one of them, by one rule in `app.js`. |
 
 <a id="later"></a>
 

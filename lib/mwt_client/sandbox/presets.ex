@@ -2,8 +2,8 @@ defmodule MWTClient.Sandbox.Presets do
   @moduledoc """
   What the add dialogs offer: the types, and presets that fill a form for
   services whose details are known. A command grant is a saved command,
-  your own script (`:saved_command`): a command an agent writes needs no
-  grant.
+  your own script (`:saved_command`); a command an agent writes goes under
+  Commands agents write (`:agent_commands`), built in.
 
   A preset is a JSON file (since 2026-11-17): MWT's own under
   `priv/sandbox/presets/`, yours in the identity's folder (`dir/1`). Each
@@ -128,11 +128,11 @@ defmodule MWTClient.Sandbox.Presets do
       name: "Fixed request",
       icon: "hero-paper-airplane",
       blurb:
-        "One request MWT sends itself with this grant's real value. Agents call it by id, and send only values.",
+        "One request MWT sends itself with its credential's real value. Agents call it by id, and send only values.",
       guide: [
         "Write the request: the method, and the URL to a host the grant lists. What varies between calls is a parameter, $NAME, in the path or the query, or as a whole value in the JSON body.",
         "Headers are fixed. {token} stands for the real value, where the service takes it. MWT sends it itself, so the VM needs no tool and no placeholder.",
-        "It has a switch of its own: enabled for a time or on startup, asking each time or auto-approved, while the grant itself stays disabled. Every call shows the exact request on its card, unless you let it through."
+        "It has a switch of its own: on for a time or on startup, asking each time or auto-approved, while open use of the credential stays off. Every call shows the exact request on its card, unless you let it through."
       ],
       fields: %{}
     }

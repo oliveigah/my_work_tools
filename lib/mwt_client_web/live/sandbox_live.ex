@@ -114,6 +114,10 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(:console_error, nil)
      |> assign(:console_running, nil)
      |> assign(:console_with, %{})
+     # The Overview's terminal: the folder its next command starts in, and
+     # the last run its screen was cleared after.
+     |> assign(:terminal_cwd, "/work")
+     |> assign(:terminal_since, 0)
      |> assign(:credentials, [])
      |> assign(:networks, [])
      |> assign(:locks, %{})
@@ -183,7 +187,9 @@ defmodule MWTClientWeb.SandboxLive do
         :grant_term,
         :grant_filters,
         :resource_filters,
-        :monitor_by
+        :monitor_by,
+        :terminal_cwd,
+        :terminal_since
       ])
 
   # Back where it was left (`MWTClientWeb.Hooks.Places`). The page comes
@@ -205,7 +211,17 @@ defmodule MWTClientWeb.SandboxLive do
       &Map.merge(&1, Map.take(place[:resource_filters] || %{}, Map.keys(&1)))
     )
     |> assign(:monitor_by, Map.get(place, :monitor_by, :cpu))
+    |> assign(:terminal_cwd, kept_cwd(place[:terminal_cwd]))
+    |> assign(:terminal_since, kept_since(place[:terminal_since]))
   end
+
+  # The terminal's folder and what its screen was cleared after, as you
+  # left them; anything else, where it starts.
+  defp kept_cwd("/" <> _ = cwd), do: cwd
+  defp kept_cwd(_other), do: "/work"
+
+  defp kept_since(since) when is_integer(since) and since >= 0, do: since
+  defp kept_since(_other), do: 0
 
   @impl true
   def handle_params(params, _uri, socket) do
@@ -361,6 +377,16 @@ defmodule MWTClientWeb.SandboxLive do
                   sync={@sync}
                   workspace={@workspace}
                   now={@now}
+                  terminal={
+                    %{
+                      history: @console_history,
+                      since: @terminal_since,
+                      running: @console_running,
+                      cwd: @terminal_cwd,
+                      error: @console_error,
+                      vm_running: match?({:ok, _}, MWTClient.Sandbox.Projects.guest(@username, @vm))
+                    }
+                  }
                 />
               <% :approvals -> %>
                 <Approvals.page
@@ -413,8 +439,8 @@ defmodule MWTClientWeb.SandboxLive do
                     has_value={@values[@grant.id]}
                     value_form={@value_form}
                     events={@grant_events}
-                    duration={duration(@durations, @grant.id)}
-                    mode={Map.get(@modes, @grant.id, Grants.default_mode(@grant))}
+                    duration={Grants.row_duration(@grant, @durations, @now)}
+                    mode={Grants.row_mode(@grant, @modes, @now)}
                     now={@now}
                     grants={@grants}
                     credentials={@credentials}
@@ -1041,7 +1067,7 @@ defmodule MWTClientWeb.SandboxLive do
             :success,
             if(enable == :keep_off,
               do: "#{grant.name} accepted",
-              else: "#{grant.name} accepted and enabled"
+              else: "#{grant.name} accepted and on"
             ),
             body:
               if(enable == :keep_off,
@@ -1084,9 +1110,15 @@ defmodule MWTClientWeb.SandboxLive do
 
     socket =
       case socket.assigns.console_running do
-        %{command: command, credential: credential, started_at: started_at} ->
+        %{command: command, credential: credential, started_at: started_at} = running ->
           {:ok, run} =
-            Sandbox.console_stopped(socket.assigns.username, command, credential, started_at)
+            Sandbox.console_stopped(
+              socket.assigns.username,
+              command,
+              credential,
+              started_at,
+              Map.get(running, :dir)
+            )
 
           socket |> assign(console_term: "", console_page: 1) |> open_console_run(run.id)
 
@@ -1099,6 +1131,24 @@ defmodule MWTClientWeb.SandboxLive do
 
   def handle_event("console_run", %{"console" => params}, socket),
     do: {:noreply, run_console(socket, params)}
+
+  # The Overview's terminal: a line typed, run where the last one ended;
+  # `clear` clears its screen, as Ctrl+L does, and runs nothing.
+  def handle_event("terminal_run", %{"command" => command}, socket) when is_binary(command) do
+    case String.trim(command) do
+      "clear" ->
+        handle_event("terminal_clear", %{}, socket)
+
+      _other ->
+        {:noreply, start_console(socket, command, nil, socket.assigns.terminal_cwd, :terminal)}
+    end
+  end
+
+  def handle_event("terminal_clear", _params, socket) do
+    socket = load_console_runs(socket)
+    last = Enum.reduce(socket.assigns.console_history, 0, &max(&1.id, &2))
+    {:noreply, assign(socket, terminal_since: last, console_error: nil)}
+  end
 
   # Run again: as it ran, the form showing it.
   def handle_event("console_again", %{"id" => id}, socket) do
@@ -1765,6 +1815,14 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
+  # A label picked, dropped from its chip; the other filters stay.
+  def handle_event("unpick_grant_label", %{"label" => label}, socket) do
+    {:noreply,
+     socket
+     |> update(:grant_filters, fn filters -> %{filters | labels: filters.labels -- [label]} end)
+     |> assign(:grant_page, 1)}
+  end
+
   def handle_event("clear_grant_search", _params, socket),
     do: {:noreply, assign(socket, grant_term: "", grant_page: 1)}
 
@@ -1948,7 +2006,7 @@ defmodule MWTClientWeb.SandboxLive do
                 :success,
                 "Saved as #{grant.name}, " <>
                   if(grant.start == :off,
-                    do: "enabled for 1 h",
+                    do: "on for 1 h",
                     else: start_words(grant.start)
                   ),
                 body:
@@ -3007,6 +3065,13 @@ defmodule MWTClientWeb.SandboxLive do
   def handle_async(:console, {:ok, {:ok, run}}, socket) do
     Process.send_after(self(), {:console_decisions, run.id}, 1_500)
 
+    # A run from the terminal: its next command starts where this ended.
+    socket =
+      case socket.assigns.console_running do
+        %{from: :terminal} when is_binary(run.cwd) -> assign(socket, :terminal_cwd, run.cwd)
+        _other -> socket
+      end
+
     {:noreply,
      socket
      |> assign(console_running: nil, console_term: "", console_page: 1)
@@ -3407,6 +3472,7 @@ defmodule MWTClientWeb.SandboxLive do
         assign(socket, :reading, Sandbox.reading(username))
 
       :overview ->
+        socket = load_console_runs(socket)
         hour = Sandbox.events(username, %{limit: 500})
         since = DateTime.add(socket.assigns.now, -3600, :second)
         last_hour = Enum.filter(hour, &(DateTime.compare(&1.at, since) == :gt))
@@ -3768,9 +3834,19 @@ defmodule MWTClientWeb.SandboxLive do
   # A run, unless one is going on: the form as it ran, the run kept by
   # the server when it ends (`handle_async/3`).
   defp run_console(socket, params) do
-    username = socket.assigns.username
     command = MWTClientWeb.SandboxLive.VmConsole.command(params, socket.assigns.credentials)
     credential = if params["with"] in [nil, ""], do: nil, else: params["with"]
+
+    socket
+    |> start_console(command, credential, nil, :live_test)
+    |> assign(:console_with, params)
+  end
+
+  # One run at a time, from the Live Test or the terminal, as the server
+  # keeps them (`handle_async/3`): `dir` is where it starts, `from` who
+  # hears how it ended.
+  defp start_console(socket, command, credential, dir, from) do
+    username = socket.assigns.username
 
     if socket.assigns.console_running do
       socket
@@ -3780,12 +3856,15 @@ defmodule MWTClientWeb.SandboxLive do
         console_running: %{
           command: command,
           credential: credential,
+          dir: dir,
+          from: from,
           started_at: DateTime.utc_now()
         },
-        console_with: params,
         console_error: nil
       )
-      |> start_async(:console, fn -> Sandbox.console(username, command, credential) end)
+      |> start_async(:console, fn ->
+        Sandbox.console(username, command, credential, 60, dir)
+      end)
     end
   end
 
@@ -3911,8 +3990,8 @@ defmodule MWTClientWeb.SandboxLive do
   defp stop_words(:out_of_range), do: "Only the servers listed here can be killed."
   defp stop_words(message) when is_binary(message), do: message
 
-  defp start_words(:on), do: "enabled from now and at every start"
-  defp start_words(:auto), do: "enabled from now and at every start, auto-approved"
+  defp start_words(:on), do: "on from now and at every start"
+  defp start_words(:auto), do: "on from now and at every start, each use going through"
 
   defp saving_from_card?(_socket, nil), do: false
 

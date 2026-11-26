@@ -456,6 +456,340 @@ defmodule MWTClient.Sandbox.ParamSchema do
       if(map_size(rest) == 0, do: "", else: ", and " <> Jason.encode!(rest))
   end
 
+  @typedoc """
+  What a pattern lets a value hold, as far as its text proves: the ASCII
+  characters anywhere (`chars`) and first (`first`), and whether two dots
+  may follow each other (`dot_dot?`).
+  """
+  @type reach :: %{chars: MapSet.t(char()), first: MapSet.t(char()), dot_dot?: boolean()}
+
+  @ascii MapSet.new(0..127)
+  @digits MapSet.new(?0..?9)
+  @word_chars MapSet.new(Enum.concat([?a..?z, ?A..?Z, ?0..?9, [?_]]))
+  @spaces MapSet.new([?\s, ?\t, ?\n, ?\v, ?\f, ?\r])
+
+  @doc """
+  What a value matching `pattern` can hold, read from the pattern's text
+  (`t:reach/0`), or `:unknown` where the text proves nothing that way.
+  For a warning (`MWTClient.Sandbox.Openness`), never for deciding.
+
+  It reads a pattern anchored at both ends (`^…$`) made of characters,
+  classes (`[a-z]`, `\\d`, `\\w`, `.`), groups, alternatives inside
+  groups, lookarounds and quantifiers. Anything else is `:unknown`: a
+  pattern anchored at one end matches inside any text, and back-references,
+  `\\p{…}` or inline flags (`(?i)`) change what it lets through in ways
+  this doesn't follow.
+
+  It may say a pattern lets through more than it does, never less: a
+  lookaround only narrows, so it is left out; a group counts all it holds
+  wherever it is. Characters outside ASCII aren't counted: none is one the
+  shell or a path acts on. Nor is the new line `$` lets through at the
+  very end: read bare, the shell drops it; quoted, it stays inside the one
+  argument.
+
+      iex> alias MWTClient.Sandbox.ParamSchema
+      iex> {:ok, reach} = ParamSchema.pattern_reach("^v[0-9]+(\\\\.[0-9]+)*$")
+      iex> {Enum.sort(reach.chars) |> List.to_string(), reach.dot_dot?}
+      {".0123456789v", false}
+      iex> ParamSchema.pattern_reach("^oliveigah/")
+      :unknown
+  """
+  @spec pattern_reach(String.t()) :: {:ok, reach()} | :unknown
+  def pattern_reach("^" <> rest) when byte_size(rest) > 0 do
+    inner = binary_part(rest, 0, byte_size(rest) - 1)
+
+    # `\$` at the end is a dollar, not the end; `|` at the top is one end
+    # or the other.
+    with "$" <- binary_part(rest, byte_size(rest) - 1, 1),
+         false <- escaped?(inner),
+         {[found], ""} <- alternatives(inner, []) do
+      {:ok, %{chars: found.chars, first: found.first, dot_dot?: found.dd?}}
+    else
+      _other -> :unknown
+    end
+  catch
+    :unknown -> :unknown
+  end
+
+  def pattern_reach(_pattern), do: :unknown
+
+  # Whether text ends in an odd run of backslashes: what follows it is
+  # escaped.
+  defp escaped?(text) do
+    [slashes] = Regex.run(~r/\\*\z/, text)
+    rem(byte_size(slashes), 2) == 1
+  end
+
+  # Alternatives up to a `)` or the end: each one's reach.
+  defp alternatives(text, done) do
+    {found, rest} = sequence(text, empty())
+
+    case rest do
+      "|" <> rest -> alternatives(rest, [found | done])
+      rest -> {Enum.reverse([found | done]), rest}
+    end
+  end
+
+  defp sequence("", found), do: {found, ""}
+  defp sequence("|" <> _ = rest, found), do: {found, rest}
+  defp sequence(")" <> _ = rest, found), do: {found, rest}
+
+  defp sequence(text, found) do
+    {atom, rest} = atom(text)
+    {atom, rest} = quantified(atom, rest)
+    sequence(rest, follow(found, atom))
+  end
+
+  defp atom("(" <> rest) do
+    {kind, rest} =
+      cond do
+        String.starts_with?(rest, "?:") ->
+          {:group, drop(rest, 2)}
+
+        String.starts_with?(rest, ["?=", "?!"]) ->
+          {:look, drop(rest, 2)}
+
+        String.starts_with?(rest, ["?<=", "?<!"]) ->
+          {:look, drop(rest, 3)}
+
+        Regex.match?(~r/\A\?P?<[A-Za-z_][A-Za-z0-9_]*>/, rest) ->
+          {:group, Regex.replace(~r/\A\?P?<[A-Za-z_][A-Za-z0-9_]*>/, rest, "")}
+
+        String.starts_with?(rest, "?") ->
+          throw(:unknown)
+
+        true ->
+          {:group, rest}
+      end
+
+    case alternatives(rest, []) do
+      {found, ")" <> rest} ->
+        if kind == :look, do: {empty(), rest}, else: {Enum.reduce(found, &either/2), rest}
+
+      _unclosed ->
+        throw(:unknown)
+    end
+  end
+
+  defp atom("[" <> rest), do: class(rest)
+  defp atom("." <> rest), do: {one(MapSet.delete(@ascii, ?\n)), rest}
+  defp atom("\\" <> rest), do: escape(rest, :outside)
+
+  defp atom(<<char::utf8, _rest::binary>>) when char in [?^, ?$, ?*, ?+, ??],
+    do: throw(:unknown)
+
+  defp atom(<<char::utf8, rest::binary>>), do: {one(ascii([char])), rest}
+  defp atom(_bytes), do: throw(:unknown)
+
+  defp quantified(atom, rest) do
+    {range, rest} =
+      case rest do
+        "*" <> rest -> {{0, :many}, rest}
+        "+" <> rest -> {{1, :many}, rest}
+        "?" <> rest -> {{0, 1}, rest}
+        "{" <> _ -> braces(rest)
+        rest -> {nil, rest}
+      end
+
+    case range do
+      nil ->
+        {atom, rest}
+
+      {min, max} ->
+        # Lazy or possessive: the same values.
+        rest = String.replace_prefix(rest, "?", "") |> then(&String.replace_prefix(&1, "+", ""))
+        {repeat(atom, min, max), rest}
+    end
+  end
+
+  # `{n}`, `{n,}`, `{n,m}`; any other `{` is the character itself.
+  defp braces(text) do
+    case Regex.run(~r/\A\{(\d+)(,(\d*))?\}/, text) do
+      [all, n] -> {{String.to_integer(n), String.to_integer(n)}, drop(text, byte_size(all))}
+      [all, n, _, ""] -> {{String.to_integer(n), :many}, drop(text, byte_size(all))}
+      [all, n, _, m] -> {{String.to_integer(n), String.to_integer(m)}, drop(text, byte_size(all))}
+      nil -> {nil, text}
+    end
+  end
+
+  # A class: what it names, or all it doesn't (`[^…]`).
+  defp class("^" <> rest) do
+    {chars, rest} = members(rest, MapSet.new(), true)
+    {one(MapSet.difference(@ascii, chars)), rest}
+  end
+
+  defp class(rest) do
+    {chars, rest} = members(rest, MapSet.new(), true)
+    {one(chars), rest}
+  end
+
+  # `[]…]` and `[^]…]` read differently across regex dialects.
+  defp members("]" <> _rest, _chars, true), do: throw(:unknown)
+  defp members("]" <> rest, chars, false), do: {chars, rest}
+  defp members("[:" <> _rest, _chars, _first?), do: throw(:unknown)
+  defp members("", _chars, _first?), do: throw(:unknown)
+
+  defp members(text, chars, _first?) do
+    {low, rest} = member(text)
+
+    case {low, rest} do
+      {{:char, low}, "-" <> rest} when binary_part(rest, 0, 1) != "]" ->
+        case member(rest) do
+          {{:char, high}, rest} when high >= low ->
+            members(rest, MapSet.union(chars, ascii(low..high//1)), false)
+
+          _other ->
+            throw(:unknown)
+        end
+
+      {{:char, char}, rest} ->
+        members(rest, MapSet.union(chars, ascii([char])), false)
+
+      {{:set, set}, rest} ->
+        members(rest, MapSet.union(chars, set), false)
+    end
+  end
+
+  defp member("\\" <> rest) do
+    case escape(rest, :inside) do
+      {%{chars: set, first: set}, rest} -> {{:set, set}, rest}
+      {:char, char, rest} -> {{:char, char}, rest}
+    end
+  end
+
+  defp member(<<char::utf8, rest::binary>>), do: {{:char, char}, rest}
+  defp member(_bytes), do: throw(:unknown)
+
+  # After a backslash, outside a class or inside one (where `\\b` is a
+  # backspace and a single character can start a range).
+  defp escape(text, where) do
+    {kind, rest} =
+      case text do
+        "d" <> rest ->
+          {{:set, @digits}, rest}
+
+        "D" <> rest ->
+          {{:set, MapSet.difference(@ascii, @digits)}, rest}
+
+        "w" <> rest ->
+          {{:set, @word_chars}, rest}
+
+        "W" <> rest ->
+          {{:set, MapSet.difference(@ascii, @word_chars)}, rest}
+
+        "s" <> rest ->
+          {{:set, @spaces}, rest}
+
+        "S" <> rest ->
+          {{:set, MapSet.difference(@ascii, @spaces)}, rest}
+
+        "b" <> rest when where == :inside ->
+          {{:char, 8}, rest}
+
+        <<letter, rest::binary>> when letter in [?b, ?B] ->
+          {:zero, rest}
+
+        "n" <> rest ->
+          {{:char, ?\n}, rest}
+
+        "t" <> rest ->
+          {{:char, ?\t}, rest}
+
+        "r" <> rest ->
+          {{:char, ?\r}, rest}
+
+        "f" <> rest ->
+          {{:char, ?\f}, rest}
+
+        "v" <> rest ->
+          {{:char, ?\v}, rest}
+
+        "0" <> rest ->
+          {{:char, 0}, rest}
+
+        "x" <> rest ->
+          hex(rest, ~r/\A[0-9A-Fa-f]{2}/)
+
+        "u{" <> rest ->
+          hex(rest, ~r/\A[0-9A-Fa-f]{1,6}\}/)
+
+        "u" <> rest ->
+          hex(rest, ~r/\A[0-9A-Fa-f]{4}/)
+
+        <<char::utf8, _rest::binary>> when char in ?a..?z or char in ?A..?Z or char in ?0..?9 ->
+          throw(:unknown)
+
+        <<char::utf8, rest::binary>> ->
+          {{:char, char}, rest}
+
+        _end ->
+          throw(:unknown)
+      end
+
+    case {kind, where} do
+      {{:char, char}, :inside} -> {:char, char, rest}
+      {{:char, char}, :outside} -> {one(ascii([char])), rest}
+      {{:set, set}, _where} -> {one(set), rest}
+      {:zero, _where} -> {empty(), rest}
+    end
+  end
+
+  defp hex(text, regex) do
+    case Regex.run(regex, text) do
+      [digits] ->
+        {{:char, digits |> String.trim_trailing("}") |> String.to_integer(16)},
+         drop(text, byte_size(digits))}
+
+      nil ->
+        throw(:unknown)
+    end
+  end
+
+  defp drop(text, n), do: binary_part(text, n, byte_size(text) - n)
+
+  defp ascii(chars), do: chars |> Enum.filter(&(&1 < 128)) |> MapSet.new()
+
+  # Reaches: of nothing (`empty/0`), of one character of a set (`one/1`),
+  # of one after another (`follow/2`), of either (`either/2`), repeated.
+  defp empty,
+    do: %{chars: MapSet.new(), first: MapSet.new(), last: MapSet.new(), empty?: true, dd?: false}
+
+  defp one(set), do: %{chars: set, first: set, last: set, empty?: false, dd?: false}
+
+  defp follow(a, b) do
+    %{
+      chars: MapSet.union(a.chars, b.chars),
+      first: if(a.empty?, do: MapSet.union(a.first, b.first), else: a.first),
+      last: if(b.empty?, do: MapSet.union(a.last, b.last), else: b.last),
+      empty?: a.empty? and b.empty?,
+      dd?: a.dd? or b.dd? or (MapSet.member?(a.last, ?.) and MapSet.member?(b.first, ?.))
+    }
+  end
+
+  defp either(a, b) do
+    %{
+      chars: MapSet.union(a.chars, b.chars),
+      first: MapSet.union(a.first, b.first),
+      last: MapSet.union(a.last, b.last),
+      empty?: a.empty? or b.empty?,
+      dd?: a.dd? or b.dd?
+    }
+  end
+
+  defp repeat(_atom, _min, 0), do: empty()
+
+  defp repeat(atom, min, max) do
+    again? = max == :many or max > 1
+
+    %{
+      atom
+      | empty?: atom.empty? or min == 0,
+        dd?:
+          atom.dd? or
+            (again? and MapSet.member?(atom.last, ?.) and MapSet.member?(atom.first, ?.))
+    }
+  end
+
   defp range(nil, nil), do: nil
   defp range(min, nil), do: "at least #{min}"
   defp range(nil, max), do: "at most #{max}"

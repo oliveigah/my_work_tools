@@ -20,7 +20,9 @@ defmodule MWTClient.Sandbox.ConsoleHistory do
   @most_bytes 8 * 1024 * 1024
 
   @typedoc """
-  A run as kept: `Console.result/0`, with its `id` in this history and
+  A run as kept: `Console.result/0` (the folder it started in, `dir`,
+  and the one it ended in, `cwd`, nil when unknown), with its `id` in
+  this history and
   whether you stopped it from the page (`stopped`), which leaves it
   no output and no status.
   """
@@ -28,6 +30,8 @@ defmodule MWTClient.Sandbox.ConsoleHistory do
           required(:id) => pos_integer(),
           required(:command) => String.t(),
           required(:credential) => String.t() | nil,
+          required(:dir) => String.t() | nil,
+          required(:cwd) => String.t() | nil,
           required(:status) => non_neg_integer() | nil,
           required(:output) => String.t(),
           required(:cut) => boolean(),
@@ -65,7 +69,12 @@ defmodule MWTClient.Sandbox.ConsoleHistory do
         :started_at,
         :finished_at
       ])
-      |> Map.merge(%{id: id, stopped: Map.get(run, :stopped, false)})
+      |> Map.merge(%{
+        id: id,
+        stopped: Map.get(run, :stopped, false),
+        dir: Map.get(run, :dir),
+        cwd: Map.get(run, :cwd)
+      })
 
     [run | runs]
     |> Enum.take(@most)

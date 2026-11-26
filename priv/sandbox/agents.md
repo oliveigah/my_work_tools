@@ -115,9 +115,9 @@ logged in:
     - never ask the user to paste a token, password or key into the VM, and
       never write one into a file or a variable yourself.
 
-Look first for an **action**: one fixed use of a credential or of the
-user's machine, which MWT carries out for you when you call it by id, with
-a value for each parameter
+Look first for a **fixed call**: a grant holding a template (a request
+with a credential, a command of the user's), which MWT builds and carries
+out for you when you call it by id, with a value for each parameter
 (`mwt call gh-repo-view REPO_NAME=oliveigah/klife --reason "why now"`).
 `mwt grants` lists them under their resource. You send an id and values,
 never a command or a request.
@@ -134,7 +134,7 @@ Even with a grant on, each use may wait for the user's approval, for
 minutes: wait, and never retry in a loop.
 
 **Running a command you write on the user's machine** is the last resort,
-for what no action and no grant can do (their SSH keys, a kubeconfig,
+for what no fixed call or other grant can do (their SSH keys, a kubeconfig,
 their VPN, tools only they have). Commands agents write (`agent-commands`)
 lets you ask while it is on; the user approves every run, and none gets a
 credential's value. Read `mwt help run` before you ask for one.

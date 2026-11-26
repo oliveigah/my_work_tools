@@ -33,6 +33,10 @@ defmodule MWTClientWeb.SandboxLive.Overview do
   attr :workspace, :map, default: %{root: nil, error: nil, on?: false}
   attr :now, DateTime, required: true
 
+  attr :terminal, :map,
+    default: nil,
+    doc: "what the terminal shows (`MWTClientWeb.SandboxLive.Terminal.panel/1`'s attrs)"
+
   def page(assigns) do
     on = Enum.filter(assigns.grants, &Grant.on?(&1, assigns.now))
 
@@ -249,6 +253,16 @@ defmodule MWTClientWeb.SandboxLive.Overview do
         </p>
       </.link>
     </div>
+
+    <MWTClientWeb.SandboxLive.Terminal.panel
+      :if={@terminal}
+      history={@terminal.history}
+      since={@terminal.since}
+      running={@terminal.running}
+      cwd={@terminal.cwd}
+      error={@terminal.error}
+      vm_running={@terminal.vm_running}
+    />
 
     <div class="grid items-start gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
       <div class="space-y-5">

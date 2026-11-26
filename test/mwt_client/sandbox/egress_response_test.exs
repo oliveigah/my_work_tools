@@ -1,9 +1,10 @@
 defmodule MWTClient.Sandbox.EgressResponseTest do
   @moduledoc """
-  The answer to a request MWT put a real value in, read as HTTP on its way
-  back (`Egress.Response`), without sockets: every head scrubbed, a body
-  quoting the value cut before any byte of it goes, however it is framed or
-  encoded, and what can't be read refused.
+  An answer MWT looks through, read as HTTP on its way back
+  (`Egress.Response`), without sockets: every head scrubbed of the value
+  put in, a body quoting it, or holding any other value MWT holds, cut
+  before any byte of it goes, however it is framed or encoded, and what
+  can't be read refused. Where it ends, for a kept link.
   """
   use ExUnit.Case, async: true
 
@@ -25,7 +26,7 @@ defmodule MWTClient.Sandbox.EgressResponseTest do
     Enum.reduce_while(chunks, {[], response}, fn chunk, {out, response} ->
       case Response.feed(response, chunk) do
         {:more, bytes, response} -> {:cont, {[out, bytes], response}}
-        {:done, bytes} -> {:halt, {[out, bytes], :done}}
+        {:done, bytes, _beyond, _keep?} -> {:halt, {[out, bytes], :done}}
         {:cut, reason, bytes} -> {:halt, {[out, bytes], {:cut, reason}}}
         {:refuse, message} -> {:halt, {out, {:refuse, message}}}
       end
@@ -212,7 +213,7 @@ defmodule MWTClient.Sandbox.EgressResponseTest do
       refute out =~ "ghp_RE"
 
       {:more, _, response} = Response.feed(response(), answer)
-      assert {:done, held} = Response.finish(response)
+      assert {:done, held, "", false} = Response.finish(response)
       assert IO.iodata_to_binary(held) == "ghp_RE"
     end
 
@@ -252,7 +253,72 @@ defmodule MWTClient.Sandbox.EgressResponseTest do
     test "an answer that ends inside its head is refused; one that never began, closed" do
       {:more, [], cut_short} = Response.feed(response(), "HTTP/1.1 200 OK\r\nx-a")
       assert {:refuse, _} = Response.finish(cut_short)
-      assert {:done, []} = Response.finish(response())
+      assert {:done, [], "", false} = Response.finish(response())
+    end
+  end
+
+  describe "every value MWT holds" do
+    @stripe "sk_live_STRIPE_REAL_0123456789"
+
+    defp values, do: Secrets.new([{{:value, "Stripe"}, Secrets.forms(@stripe)}])
+
+    # With the value put in, and Stripe's, which the request didn't carry.
+    defp both, do: Response.new("GET", response().echo, response().placeholders, values())
+    defp only_values, do: Response.new("GET", nil, %{}, values())
+
+    test "another value in the body is cut, however it comes, with or without one put in" do
+      body = ~s({"STRIPE_SECRET_KEY":"#{@stripe}"})
+      answer = head(["content-length: #{byte_size(body)}"]) <> body
+
+      for reader <- [both(), only_values()], chunks <- [[answer] | splits(answer)] do
+        {out, {:cut, {:found, {:value, "Stripe"}}}} = run(reader, chunks)
+        refute out =~ "sk_live_STRIPE"
+      end
+
+      gzipped = :zlib.gzip(body)
+
+      answer =
+        head(["content-encoding: gzip", "content-length: #{byte_size(gzipped)}"]) <> gzipped
+
+      assert {_, {:cut, {:found, {:value, "Stripe"}}}} = run(only_values(), [answer])
+    end
+
+    test "another value in a head is cut before the head goes; the one put in is replaced" do
+      answer = head(["x-a: #{@value}", "x-b: #{@stripe}", "content-length: 0"])
+      assert {"", {:cut, {:found, {:value, "Stripe"}}}} = run(both(), [answer])
+
+      answer = head(["x-a: #{@value}", "content-length: 0"])
+      assert {out, :done} = run(both(), [answer])
+      assert out =~ "x-a: #{@placeholder}"
+    end
+
+    test "says where the answer ended and whether its link may carry the next request" do
+      body = "hello"
+      answer = head(["content-length: 5"]) <> body
+
+      assert {:done, out, "HTTP/1.1 200", true} =
+               Response.feed(only_values(), answer <> "HTTP/1.1 200")
+
+      assert IO.iodata_to_binary(out) == answer
+
+      chunked = head(["transfer-encoding: chunked"]) <> "5\r\nhello\r\n0\r\n\r\nnext"
+      assert {:done, _out, "next", true} = Response.feed(only_values(), chunked)
+
+      closing = head(["content-length: 5", "connection: close"]) <> body
+      assert {:done, _out, "", false} = Response.feed(only_values(), closing)
+
+      old = "HTTP/1.0 200 OK\r\ncontent-length: 5\r\n\r\nhello"
+      assert {:done, _out, "", false} = Response.feed(only_values(), old)
+
+      assert {:done, _out, "", true} =
+               Response.feed(only_values(), "HTTP/1.1 204 No Content\r\n\r\n")
+    end
+
+    test "started once a byte came; restarted, none of it read" do
+      refute Response.started?(only_values())
+      {:more, _, response} = Response.feed(only_values(), "HTTP/1.1 2")
+      assert Response.started?(response)
+      refute Response.started?(Response.restart(response))
     end
   end
 end

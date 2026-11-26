@@ -19,10 +19,14 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
        (HTTP/1.1's keep-alive), and the VM's connection waits for its next
        request; one with a value goes alone, on a new link, with
        `Connection: close`, and the VM's connection ends with it.
-    5. **The answer**, read back: for a request with a value in it,
-       `Response` puts the placeholder back in every head and cuts the
-       answer before a value in its body goes; for a kept one, `Answer`
-       reads only where it ends.
+    5. **The answer**, read back: `Response` looks through every answer
+       for every value MWT holds, whatever the request carried, and cuts
+       it before one goes (asking the host only for encodings MWT
+       decodes); for a request with a value in it, it also puts the
+       placeholder back in every head. A kept request's answer is read to
+       where it ends, so its link carries the next. With no value to look
+       for, `Answer` reads only where it ends; a WebSocket's bytes are
+       looked through as they stream.
 
   A kept link the host closed just as a request went on it took none of
   it, or did nothing it can't do twice: the request goes again on a new
@@ -35,7 +39,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   @behaviour MWTClient.Sandbox.Egress.Driver
 
   alias MWTClient.Sandbox.{Describe, Exchange, Placeholder, Secrets}
-  alias MWTClient.Sandbox.Egress.{Driver, Request, RequestHead}
+  alias MWTClient.Sandbox.Egress.{Driver, Request, RequestHead, Scanner}
   alias MWTClient.Sandbox.Egress.Driver.Http1.{Answer, Framing, Response, WebSocket}
 
   @head_limit 64 * 1024
@@ -57,7 +61,11 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # how its `answer` is read, whether its link is kept (`keep?`), went on
   # the kept one (`reused?`), and its bytes, to send again (`resend`) when
   # the host turns out to have closed that one (`retry?` when that's safe
-  # after it took them); `fresh?` until anything moved since it went; `ws`,
+  # after it took them); `reusable?`, with nothing put in it, its link may
+  # carry the next request once its answer is read to its end (a switch
+  # the host declines included); `look`, what of an answer no `Response`
+  # reads is looked through with (`down/2`); `fresh?` until anything moved
+  # since it went; `ws`,
   # a WebSocket whose messages MWT reads: its answer's head until it
   # switched, then each side's frames (`WebSocket`); `read`, the request's
   # bytes until it is judged, looked through should MWT refuse it; `later`,
@@ -76,6 +84,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     :answer,
     :resend,
     :ws,
+    :look,
     phase: :head,
     buffer: "",
     read: "",
@@ -87,6 +96,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     reused?: false,
     retry?: false,
     retrying?: false,
+    reusable?: false,
     fresh?: false
   ]
 
@@ -282,6 +292,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   defp switched(http, data) do
     held = http.pending
     # An answer read only for its end has none now: it is another protocol.
+    # One looked through goes on being, as bytes (`Response`'s `:raw`).
     answer = if match?(%Answer{}, http.answer), do: nil, else: http.answer
     {down, http} = host_data(data, %{http | answer: answer, framing: :open, pending: ""})
 
@@ -294,31 +305,39 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   end
 
   defp declined(http, data),
-    do: host_data(data, %{http | keep?: match?(%Answer{}, http.answer)})
+    do: host_data(data, %{http | keep?: http.reusable? and http.answer != nil})
 
-  # A WebSocket's answer: its head, to the VM as it is; switched (`101`),
-  # its frames are read from then on; any other answer goes on as one MWT
-  # doesn't read the end of.
+  # A WebSocket's answer: its head, to the VM as it is once looked through
+  # whole (`look`); switched (`101`), its frames are read from then on;
+  # any other answer goes on as one MWT doesn't read the end of. What
+  # follows the head is looked through as it streams (`down/2`).
   defp host_data(data, %{phase: :answer, ws: %{switched?: false} = ws} = http) do
     buffer = ws.head <> data
 
     case :binary.split(buffer, "\r\n\r\n") do
       [head, rest] ->
-        {vm, http} = to_vm(%{http | fresh?: false}, [head, "\r\n\r\n"])
+        case Secrets.find(http.look && http.look.secrets, head) do
+          nil ->
+            {vm, http} = to_vm(%{http | fresh?: false}, [head, "\r\n\r\n"])
 
-        case Response.read_head(head) do
-          {:ok, 101, _headers} ->
-            {more, http} = websocket_down(%{http | ws: %{ws | switched?: true, head: ""}}, rest)
-            {vm ++ more, http}
+            case Response.read_head(head) do
+              {:ok, 101, _headers} ->
+                {more, http} =
+                  websocket_down(%{http | ws: %{ws | switched?: true, head: ""}}, rest)
 
-          _other ->
-            {more, http} = to_vm(%{http | ws: nil}, rest)
-            {vm ++ more ++ [{:read, :host, @idle}], http}
+                {vm ++ more, http}
+
+              _other ->
+                {more, http} = down(%{http | ws: nil}, rest)
+                {vm ++ more, http}
+            end
+
+          label ->
+            answered({:cut, {:found, label}, []}, %{http | fresh?: false})
         end
 
       [_partial] when byte_size(buffer) > @head_limit ->
-        {vm, http} = to_vm(%{http | ws: nil, fresh?: false}, buffer)
-        {vm ++ [{:read, :host, @idle}], http}
+        down(%{http | ws: nil, fresh?: false}, buffer)
 
       [_partial] ->
         {[{:read, :host, @idle}], %{http | ws: %{ws | head: buffer}}}
@@ -328,10 +347,8 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   defp host_data(data, %{phase: :answer, ws: %{switched?: true}} = http),
     do: websocket_down(%{http | fresh?: false}, data)
 
-  defp host_data(data, %{phase: :answer, answer: nil} = http) do
-    {vm, http} = to_vm(%{http | fresh?: false}, data)
-    {vm ++ [{:read, :host, @idle}], http}
-  end
+  defp host_data(data, %{phase: :answer, answer: nil} = http),
+    do: down(%{http | fresh?: false}, data)
 
   defp host_data(data, %{phase: :answer, answer: %Answer{} = answer} = http) do
     case Answer.feed(answer, data) do
@@ -389,6 +406,10 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   def handle_closed(:host, _ended, %{phase: :answer, answer: %Answer{}} = http),
     do: ended_early(http)
 
+  # A kept request's answer, looked through: as one read for its end.
+  def handle_closed(:host, _ended, %{phase: :answer, answer: %Response{}, keep?: true} = http),
+    do: ended_early(http)
+
   def handle_closed(:host, :closed, %{phase: :answer, answer: %Response{} = response} = http),
     do: response |> Response.finish() |> answered(http)
 
@@ -424,6 +445,15 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     else
       idle(http)
     end
+  end
+
+  # Bytes `down/2` held back go: the stream paused, so they weren't a
+  # value's start, or what follows will be looked through with them.
+  def handle_timeout(:host, %{phase: :answer, look: %Scanner{held: held} = look} = http)
+      when held != "" do
+    {held, look} = Scanner.release(look)
+    {vm, http} = to_vm(%{http | look: look}, held)
+    {vm ++ [{:read, :host, @idle}], http}
   end
 
   def handle_timeout(:host, %{phase: :answer} = http), do: idle(http)
@@ -658,6 +688,9 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
 
     headers = replace(data.headers, replace.request)
     echo = echo(replace, headers)
+    # Every value MWT holds, which the answer mustn't carry to the VM
+    # whatever this request carried (`Driver`'s `values`).
+    values = Map.get(replace, :values)
     # A WebSocket MWT reads the messages of, one with no value in it: its
     # extensions offer goes, so no message comes compressed.
     websocket? = echo == nil and websocket?(headers)
@@ -668,17 +701,25 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
         else: headers
 
     keep? = replace.request == [] and keeps?(data.version, headers)
-    head = head(method, path, data.version, headers, echo != nil, keep?)
-    reuse? = keep? and http.linked?
-
     upgrade? = List.keymember?(headers, "upgrade", 0)
+    encodings = if(echo, do: :identity, else: if(values, do: :readable, else: :as_sent))
+    head = head(method, path, data.version, headers, encodings, keep?)
+    reuse? = keep? and http.linked?
 
     # A switch the host may decline: its answer is read to where it ends,
     # so a declined one's connection carries the next request.
+    reusable? = replace.request == [] and (keep? or (upgrade? and not websocket?))
+
+    # Looked through (`Response`) when there is anything to look for: the
+    # values put in, and every value MWT holds. With nothing to look for,
+    # read only for where it ends (`Answer`), or not at all.
     answer =
-      case echo do
-        {secrets, placeholders} -> Response.new(method, secrets, placeholders)
-        nil -> if keep? or (upgrade? and not websocket?), do: Answer.new(method)
+      cond do
+        websocket? -> nil
+        echo != nil -> Response.new(method, elem(echo, 0), elem(echo, 1), values)
+        values != nil -> Response.new(method, nil, %{}, values)
+        reusable? -> Answer.new(method)
+        true -> nil
       end
 
     connect = if reuse?, do: [], else: [{:connect, %{alpn: alpn()}}]
@@ -694,6 +735,12 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
         resend: if(keep?, do: [head, data.body]),
         retry?: keep? and retryable?(method, http.framing),
         retrying?: false,
+        reusable?: reusable?,
+        # An answer no `Response` reads (a WebSocket's) is looked through
+        # as bytes: a server's frames aren't masked, so a value in one
+        # message is in them as it is. One split across frames (a message
+        # in fragments) isn't seen.
+        look: if(answer == nil and values != nil, do: Scanner.new(values, hold: true)),
         fresh?: true,
         upgrade: if(upgrade?, do: %{head: ""}),
         ws:
@@ -778,8 +825,8 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     end)
   end
 
-  # A WebSocket's bytes from the host: to the VM as they came, their
-  # messages read for the log until they stop being frames.
+  # A WebSocket's bytes from the host: to the VM as `down/2` lets them,
+  # their messages read for the log until they stop being frames.
   defp websocket_down(%{ws: ws} = http, data) do
     ws =
       if ws.host_raw?,
@@ -790,8 +837,23 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
              {:broken, _parts, _rest, reader} -> %{ws | host: reader, host_raw?: true}
            end)
 
-    vm = if data != "", do: [{:send, :vm, data}], else: []
-    {vm ++ [{:read, :host, @idle}], %{http | ws: ws}}
+    down(%{http | ws: ws}, data)
+  end
+
+  # An answer's bytes no `Response` reads, to the VM as they came but for
+  # those that could start a value (`look`), held until what follows
+  # comes or the stream pauses (`handle_timeout/2`). A value cuts it
+  # there, as `Response` does.
+  defp down(http, data) do
+    case Scanner.feed(http.look || Scanner.new(nil), data) do
+      {:ok, out, look} ->
+        {vm, http} = to_vm(%{http | look: http.look && look}, out)
+        wait = if http.look && Scanner.held?(look), do: @hold, else: @idle
+        {vm ++ [{:read, :host, wait}], http}
+
+      {:found, label} ->
+        answered({:cut, {:found, label}, []}, http)
+    end
   end
 
   # A request that may share a link with the next: from a client that
@@ -817,17 +879,19 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # The head MWT writes itself: with a value in it, alone on its link
   # (`Connection: close`) and asking for an answer without content
   # encoding, so a value it quotes can be read; kept (`keep?`), with no
-  # `Connection` header, HTTP/1.1's own keep-alive.
-  defp head(method, path, version, headers, echo?, keep?) do
+  # `Connection` header, HTTP/1.1's own keep-alive. `encodings`: what
+  # the answer may come encoded in, `:identity` for a value put in,
+  # `:readable` while there are values to look for (`readable/1`), else
+  # `:as_sent`.
+  defp head(method, path, version, headers, encodings, keep?) do
     upgrade? = Enum.any?(headers, fn {name, _} -> name == "upgrade" end)
 
     headers =
       headers
       |> Enum.reject(fn {name, _} ->
-        name in ["proxy-connection", "keep-alive"] or (name == "connection" and not upgrade?) or
-          (name == "accept-encoding" and echo?)
+        name in ["proxy-connection", "keep-alive"] or (name == "connection" and not upgrade?)
       end)
-      |> then(&if(echo?, do: &1 ++ [{"accept-encoding", "identity"}], else: &1))
+      |> accept_encoding(encodings)
       |> then(&if(upgrade? or keep?, do: &1, else: &1 ++ [{"connection", "close"}]))
 
     [
@@ -842,9 +906,56 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     ]
   end
 
+  # The answer's encodings MWT asks for (`head/6`).
+  defp accept_encoding(headers, :as_sent), do: headers
+
+  defp accept_encoding(headers, :identity),
+    do: List.keydelete(headers, "accept-encoding", 0) ++ [{"accept-encoding", "identity"}]
+
+  defp accept_encoding(headers, :readable) do
+    case for({"accept-encoding", value} <- headers, do: value) do
+      [] ->
+        headers
+
+      values ->
+        List.keydelete(headers, "accept-encoding", 0) ++ [{"accept-encoding", readable(values)}]
+    end
+  end
+
+  @doc """
+  What the client accepts of the encodings MWT decodes to look through an
+  answer (`AnswerBody`): gzip and deflate, in the client's own order and
+  weights; `identity` when it accepts neither. A host sending another
+  anyway is refused (`Response`): MWT can't look through it, and a
+  client that offered `br` or `zstd` takes gzip as well.
+
+      iex> MWTClient.Sandbox.Egress.Driver.Http1.readable(["br, gzip;q=0.9", "zstd, deflate, *"])
+      "gzip;q=0.9, deflate"
+      iex> MWTClient.Sandbox.Egress.Driver.Http1.readable(["br"])
+      "identity"
+  """
+  @spec readable([String.t()]) :: String.t()
+  def readable(values) do
+    kept =
+      for value <- values,
+          token <- String.split(value, ","),
+          token = String.trim(token),
+          coding =
+            token |> String.split(";", parts: 2) |> hd() |> String.trim() |> String.downcase(),
+          coding in ["gzip", "x-gzip", "deflate", "identity"],
+          do: token
+
+    if kept == [], do: "identity", else: Enum.join(kept, ", ")
+  end
+
   # The same bytes on a new link, the kept one having closed under them.
   defp again(http) do
-    answer = if http.answer, do: Answer.new(http.request.operation)
+    answer =
+      case http.answer do
+        %Response{} = response -> Response.restart(response)
+        %Answer{} -> Answer.new(http.request.operation)
+        nil -> nil
+      end
 
     {[{:connect, %{alpn: alpn()}}, {:write, :host, http.resend}, {:read, :host, @idle}],
      %{http | reused?: false, retrying?: true, answer: answer}}
@@ -855,6 +966,21 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   # likely closed it as the request went: sent again on a new one when
   # that can't do it twice. Otherwise the VM gets MWT's 502 when nothing of
   # the answer reached it, or the answer as far as it came.
+  defp ended_early(%{answer: %Response{} = response} = http) do
+    cond do
+      not Response.started?(response) and http.reused? and http.retry? ->
+        again(%{http | retry?: false})
+
+      not Response.started?(response) ->
+        unreachable_now(http, :closed)
+
+      # Its link is gone: the answer ends here, and so does the VM's
+      # connection, as for one read only for its end.
+      true ->
+        response |> Response.finish() |> answered(%{http | keep?: false})
+    end
+  end
+
   defp ended_early(%{answer: answer} = http) do
     cond do
       not Answer.started?(answer) and http.reused? and http.retry? ->
@@ -915,7 +1041,15 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
     {vm ++ [{:read, :host, waiting(response)}], http}
   end
 
-  defp answered({:done, bytes}, http) do
+  # Whole: a kept request's connection waits for the next, on the same
+  # link when the host keeps it; any other ends.
+  defp answered({:done, bytes, beyond, keep?}, %{keep?: true} = http) do
+    {vm, http} = to_vm(http, bytes)
+    {next, http} = next_request(http, keep? and beyond == "")
+    {vm ++ next, http}
+  end
+
+  defp answered({:done, bytes, _beyond, _keep?}, http) do
     {vm, http} = to_vm(http, bytes)
     {closing, http} = close(http, nil)
     {vm ++ closing, http}

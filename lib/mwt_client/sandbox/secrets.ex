@@ -75,6 +75,29 @@ defmodule MWTClient.Sandbox.Secrets do
   end
 
   @doc """
+  The forms of both, as one pattern; either may be nil. Each keeps the
+  forms it was made with, however short (`new/2`'s `shortest` was applied
+  then); where both hold a form, `first`'s label is kept.
+
+      iex> alias MWTClient.Sandbox.Secrets
+      iex> echo = Secrets.new([{{:value, "GitHub"}, ["ghp_01234567"]}], 8)
+      iex> all = Secrets.new([{{:value, "Stripe"}, ["sk_live_0123456789"]}])
+      iex> both = Secrets.union(echo, all)
+      iex> {Secrets.find(both, "x ghp_01234567"), Secrets.find(both, "sk_live_0123456789")}
+      {{:value, "GitHub"}, {:value, "Stripe"}}
+      iex> Secrets.union(nil, nil)
+      nil
+  """
+  @spec union(t() | nil, t() | nil) :: t() | nil
+  def union(nil, second), do: second
+  def union(first, nil), do: first
+
+  def union(%__MODULE__{} = first, %__MODULE__{} = second) do
+    labels = Map.merge(second.labels, first.labels)
+    new(Enum.map(labels, fn {form, label} -> {label, [form]} end), 1)
+  end
+
+  @doc """
   A value as it is, and as a service quoting it would write it: JSON-escaped
   (with and without `\\/`) and percent-encoded, where those differ.
 

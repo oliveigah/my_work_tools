@@ -1,6 +1,8 @@
 defmodule MWTClientWeb.SandboxLiveTest do
   use MWTClientWeb.ConnCase, async: true
 
+  doctest MWTClientWeb.SandboxLive.Grants, only: [labels_of: 1]
+
   import Phoenix.LiveViewTest
 
   alias MWTClient.Sandbox
@@ -633,31 +635,64 @@ defmodule MWTClientWeb.SandboxLiveTest do
     view |> form("#grant-filters", %{term: "CHECKS number 12"}) |> render_change()
     assert rows(view) == ["grant-row-check-12"]
 
-    # By resource: the filters count what they'd show.
+    # By its labels: the resource it is over, each label counting what
+    # picking it would show.
     view |> form("#grant-filters", %{term: ""}) |> render_change()
 
     view
-    |> form("#grant-filters", %{resource: "credential:#{grant.credential}"})
+    |> form("#grant-filters", %{labels: ["resource:credential:#{grant.credential}"]})
     |> render_change()
 
     assert rows(view) == ["grant-row-#{grant.id}"]
-    assert has_element?(view, "#grant-starts-off", "(1)")
+    assert has_element?(view, "#grant-labels-count", "1")
+    assert has_element?(view, "#grant-label-picked-resource-credential-#{grant.credential}")
+    # Among GitHub's grants: one is open use, none a fixed call.
+    assert has_element?(view, "#grant-labels-kind-open", "1")
+    refute has_element?(view, "#grant-labels-kind-fixed")
+
+    # Two resources: a grant over either.
+    view
+    |> form("#grant-filters", %{
+      status: "all",
+      labels: ["resource:credential:#{grant.credential}", "resource:machine"]
+    })
+    |> render_change()
+
+    assert "grant-row-#{grant.id}" in rows(view)
+    assert has_element?(view, "#grant-row-check-1")
+
+    # Across groups, each: fixed calls that start on are none of these.
+    view
+    |> form("#grant-filters", %{status: "all", labels: ["resource:machine", "start:on"]})
+    |> render_change()
+
+    assert rows(view) == ["grant-row-agent-commands"]
 
     # One order whatever the filters: with nothing on, by last use, then
     # by name.
     view
-    |> form("#grant-filters", %{resource: "machine", status: "off"})
+    |> form("#grant-filters", %{labels: ["resource:machine"], status: "off"})
+    |> render_change()
+
+    view
+    |> form("#grant-filters", %{labels: ["resource:machine", "kind:fixed"], status: "off"})
     |> render_change()
 
     assert length(rows(view)) == 20
     assert hd(rows(view)) == "grant-row-check-1"
 
+    # A picked label goes from its chip; Clear drops them all.
+    view |> element("#grant-label-picked-kind-fixed") |> render_click()
+    refute has_element?(view, "#grant-label-picked-kind-fixed")
+    assert has_element?(view, "#grant-label-picked-resource-machine")
+
     view |> element("#grant-filters-clear") |> render_click()
     assert has_element?(view, "#grant-status-on input[checked]")
+    refute has_element?(view, "#grant-labels-count")
     assert length(rows(view)) == 11
 
     # What starts on: the built-in grants, not GitHub, on for an hour.
-    view |> form("#grant-filters", %{starts: "on"}) |> render_change()
+    view |> form("#grant-filters", %{labels: ["start:on"]}) |> render_change()
     assert length(rows(view)) == 10
     refute has_element?(view, "#grant-row-#{grant.id}")
   end
@@ -770,10 +805,20 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert [%{state: :on, expires_at: nil, allowances: []}] = added(username)
     assert has_element?(view, "#grant-mode-#{grant.id}--ask[aria-checked=true]")
 
-    # The same on its page, where auto-approve shows as allowed for now.
+    # The same on its page, where Auto shows on the switch alone: no list
+    # repeating it as an allowance.
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
     view |> element("#detail-mode-#{grant.id}--all") |> render_click()
+    assert has_element?(view, "#detail-mode-#{grant.id}--all[aria-checked=true]")
+    refute has_element?(view, "#grant-allowances")
+
+    # One a card added for a time still shows, with what is left of it.
+    {:ok, _} = Sandbox.set_mode(username, grant.id, :ask)
+    {:ok, _} = Sandbox.allow_all(username, grant.id, 10)
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
+    assert has_element?(view, "#grant-allowances", "Allowed for a while")
     assert has_element?(view, "#grant-allowances", "Every use")
+    assert has_element?(view, "#grant-allowances", "left")
     view |> element("#detail-duration-#{grant.id}--15") |> render_click()
     assert [%{state: :on, minutes: 15, allowances: [%{pattern: :all}]}] = added(username)
 
@@ -781,6 +826,24 @@ defmodule MWTClientWeb.SandboxLiveTest do
     {:ok, _} = Sandbox.turn_off(username, grant.id)
     assert {:error, :off} = Sandbox.set_duration(username, grant.id, 60)
     assert {:error, :off} = Sandbox.set_mode(username, grant.id, :all)
+  end
+
+  test "a grant on until off, set to 1 h on its page, shows 1 h picked", %{
+    conn: conn,
+    username: username
+  } do
+    grant = github(username, false)
+    {:ok, _} = Sandbox.turn_on(username, grant.id, :until_off, :all)
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
+    assert has_element?(view, "#detail-duration-#{grant.id}--until_off[aria-checked=true]")
+
+    # The duration it is on for changes to what the page passed in while it
+    # was off (1 h): the switch still has to show it.
+    view |> element("#detail-duration-#{grant.id}--60") |> render_click()
+    assert has_element?(view, "#detail-duration-#{grant.id}--60[aria-checked=true]")
+    refute has_element?(view, "#detail-duration-#{grant.id}--until_off[aria-checked=true]")
+    assert has_element?(view, "#detail-mode-#{grant.id}--all[aria-checked=true]")
   end
 
   test "an agent's ask shows its reason, and is answered from its card", %{
@@ -977,10 +1040,9 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     assert_patch(view, ~p"/tools/sandbox/grants/deploy-docs")
     assert has_element?(view, "#grant-detail-deploy-docs", "Deploy the docs site")
-    # An action over your machine, which its page leads to.
+    # A saved command over host commands, which its page leads to.
     assert has_element?(view, "#grant-resource", "Host commands")
     assert has_element?(view, "#grant-delivery-script", "./deploy.sh staging")
-    assert has_element?(view, "#grant-details", "Every run waits for you")
     assert has_element?(view, "#grant-details", "mwt call deploy-docs")
     assert has_element?(view, "#grant-details", "None: an agent chooses only when it runs")
     refute has_element?(view, "#grant-ask-to-run")
@@ -1345,7 +1407,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
       )
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
-    assert has_element?(view, "#approval-kind-#{approval.id}", "Fixed call")
+    assert has_element?(view, "#approval-kind-#{approval.id}", "Saved command")
     assert has_element?(view, "#approval-values-#{approval.id}", "$WORD")
     assert has_element?(view, "#approval-value-#{approval.id}-WORD", "hello")
     assert has_element?(view, "#approval-script-#{approval.id}[open]", ~s(echo "$WORD"))
@@ -1357,7 +1419,9 @@ defmodule MWTClientWeb.SandboxLiveTest do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/resources/credential/github")
     # Add grant asks which kind: a fixed call, a request MWT sends.
     view |> element("#add-grant-over") |> render_click()
-    assert has_element?(view, "#pick-kind-fixed", "Runs on host")
+    # The kind says who builds it, not where it runs (Q6): a request MWT
+    # sends goes through its proxy, not your machine.
+    refute has_element?(view, "#pick-kind-fixed", "Runs on host")
     view |> element("#pick-kind-fixed") |> render_click()
 
     assert has_element?(view, "#add-grant-title", "Add a fixed call over GitHub")

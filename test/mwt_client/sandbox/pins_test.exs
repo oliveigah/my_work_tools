@@ -53,6 +53,50 @@ defmodule MWTClient.Sandbox.PinsTest do
              Pins.changed([mine, vm, unknown, gone])
   end
 
+  test "each file is found in the folder its command runs in, after the cds before it",
+       %{dir: dir} do
+    File.mkdir_p!(Path.join(dir, "sub"))
+    File.write!(Path.join(dir, "sub/x.sh"), "echo sub\n")
+
+    assert [%{file: "sub/x.sh", content: "echo sub\n"} = pin] =
+             Pins.of("cd sub && ./x.sh", dir, nil)
+
+    assert pin.path == Path.join(dir, "sub/x.sh")
+
+    # A cd whose failure doesn't stop it: found, while the folder is there.
+    assert [%{path: path}] = Pins.of("cd sub; ./x.sh", dir, nil)
+    assert path == Path.join(dir, "sub/x.sh")
+
+    assert [%{path: nil, why: why}] = Pins.of("cd gone; ./x.sh", dir, nil)
+    assert why =~ "isn't there now"
+
+    # One that stops it when it fails: the file it would run is pinned, gone.
+    assert [%{path: path, hash: nil}] = Pins.of("cd gone && ./x.sh", dir, nil)
+    assert path == Path.join(dir, "gone/x.sh")
+
+    assert [%{path: nil, why: "after a cd MWT can't follow"}] =
+             Pins.of("cd - && ./x.sh", dir, nil)
+  end
+
+  test "a file it can't tell is a pin of its own: never looked at on a card, always moved for a saved command",
+       %{dir: dir} do
+    pins = Pins.of(~s(./x.sh; bash -c "$CODE"), dir, nil)
+
+    assert [
+             %{file: "./x.sh"} = mine,
+             %{path: nil, hash: nil, why: "shell code built from a variable"}
+           ] =
+             pins
+
+    assert Pins.changed(pins) == []
+    assert [{_was, %{why: "shell code built from a variable"}}] = Pins.moved(pins, pins)
+
+    # A file not pinned yet counts as changed; one missing then and now doesn't.
+    assert [{%{hash: nil}, ^mine}] = Pins.moved([], [mine])
+    gone = hd(Pins.of("./none.sh", dir, nil))
+    assert Pins.moved([gone], [gone]) == []
+  end
+
   defp saved(context, start) do
     {:ok, grant} =
       Sandbox.create_grant(context.username, %{

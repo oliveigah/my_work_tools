@@ -174,7 +174,7 @@ defmodule MWTClient.Sandbox.WhyTest do
   test "a token grant's host is read by MWT; a request with its placeholder needs the grant on" do
     text = why("https://api.github.com/user", world([internet(), github(:off)]))
     assert text =~ "api.github.com:443: reached now"
-    assert text =~ "GitHub (token grant `github`) lists it"
+    assert text =~ "GitHub (open-use grant `github` over the credential github) lists it"
 
     assert text =~
              "a request carrying its placeholder needs it on: ask for it with mwt request github"

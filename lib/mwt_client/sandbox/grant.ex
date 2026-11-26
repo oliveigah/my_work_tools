@@ -608,8 +608,8 @@ defmodule MWTClient.Sandbox.Grant do
       name: "Git: fetch from your repositories",
       start: :auto,
       purpose:
-        "Lets the VM's project clones fetch from origin, your repository on this machine: its committed branches and tags; " <>
-          "and from upstream, your repository's own remote branches, as this machine has them. It only reads."
+        "Lets the VM's project clones fetch from host-origin, your repository on this machine: its committed branches and tags; " <>
+          "and from remote-origin, your repository's own remote branches, as this machine has them. It only reads."
     },
     %{
       tools: :git_fetch_remote,
@@ -617,7 +617,7 @@ defmodule MWTClient.Sandbox.Grant do
       name: "Git: fetch from your remotes",
       start: :auto,
       purpose:
-        "Before the VM reads upstream, this machine fetches your repository's own remote into MWT's store, never into your repository, " <>
+        "Before the VM reads remote-origin, this machine fetches your repository's own remote into MWT's store, never into your repository, " <>
           "with your credentials, without prompting, at most once a minute. The VM never sees a credential or chooses the remote."
     },
     %{
