@@ -213,46 +213,23 @@ defmodule MWTClient.Sandbox.MwtToolsTest do
     said = error!(call(vm(username), "list_notes", %{}))
     assert said =~ "MWT: read is off"
     assert said =~ ~s(mwt request mwt-read --reason)
-
-    # Agents on this machine, with the token, aren't the VM's grants' to decide.
-    assert Tools.call("list_notes", %{}, username, "http://127.0.0.1:12995")
-           |> elem(1)
-           |> Map.get("isError") == false
   end
 
   test "no HTTP request can be read from the VM, not even its own sample; it only adds them",
        %{username: username} do
-    {:ok, saved} =
-      Tools.call(
-        "create_http_request",
-        %{
-          "url" => "https://api.example.test/orders",
-          "headers" => [%{"name" => "Authorization", "value" => "Bearer ghp_real_value"}]
-        },
-        username,
-        "http://127.0.0.1:12995"
-      )
-
-    mine = %{"id" => saved["structuredContent"].id}
-
-    for {tool, args} <- [{"get_http_request", mine}, {"list_http_requests", %{}}] do
-      said = error!(call(vm(username), tool, args))
-      assert said =~ "#{tool} isn't open to agents in the VM"
-      refute said =~ "ghp_real_value"
-    end
-
     added =
       ok!(call(vm(username), "create_http_request", %{"url" => "https://api.example.test/ping"}))
 
-    assert error!(call(vm(username), "get_http_request", %{"id" => added["id"]})) =~
-             "isn't open to agents in the VM"
+    for {tool, args} <- [
+          {"get_http_request", %{"id" => added["id"]}},
+          {"list_http_requests", %{}}
+        ] do
+      assert Tools.call(tool, args, vm(username)) == {:error, :unknown_tool}
+    end
 
-    names = Enum.map(Tools.list(vm(username)), & &1["name"])
+    names = Enum.map(Tools.list(), & &1["name"])
     assert "create_http_request" in names and "import_http_request" in names
     refute "get_http_request" in names or "list_http_requests" in names
-
-    # Agents on this machine, with the token, still read them.
-    assert length(Tools.list()) == length(names) + 2
   end
 
   test "past the hour's limit, adding asks, and says why", %{username: username} do
@@ -335,7 +312,7 @@ defmodule MWTClient.Sandbox.MwtToolsTest do
 
     assert init["id"] == 1
     assert init["result"]["instructions"] =~ "`mwt mcp`, with no token"
-    assert init["result"]["instructions"] =~ "HTTP requests are closed to reading from here"
+    assert init["result"]["instructions"] =~ "HTTP requests can't be read through these tools"
     names = Enum.map(list["result"]["tools"], & &1["name"])
     assert "update_note" in names
     refute "get_http_request" in names

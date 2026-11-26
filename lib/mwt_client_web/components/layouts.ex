@@ -362,15 +362,6 @@ defmodule MWTClientWeb.Layouts do
 
         <.settings_link
           :if={@current_scope}
-          id="agent-access-link"
-          navigate={~p"/agents"}
-          icon="hero-command-line"
-          hint="Let an agent use MWT from your machine"
-        >
-          Connect an agent
-        </.settings_link>
-        <.settings_link
-          :if={@current_scope}
           id="storage-link"
           navigate={~p"/storage"}
           icon="hero-circle-stack"

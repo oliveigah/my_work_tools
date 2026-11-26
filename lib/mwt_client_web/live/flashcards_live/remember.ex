@@ -214,7 +214,7 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
       </div>
       <h1 class="text-base font-semibold text-ink">Nothing to remember yet</h1>
       <p class="mt-1.5 max-w-md text-[13px] leading-relaxed text-muted">
-        Write a card about something you want to keep, or ask an agent connected to MWT to turn a thread into cards:
+        Write a card about something you want to keep, or ask an agent in the Agent Sandbox to turn a thread into cards:
       </p>
       <p class="mt-3 max-w-md rounded-lg border border-line-soft bg-deep px-3.5 py-2 text-[13px] italic text-ink">
         “Add flash cards to MWT with the key decisions of this thread.”
@@ -222,9 +222,6 @@ defmodule MWTClientWeb.FlashcardsLive.Remember do
       <div class="mt-6 flex items-center gap-2">
         <.button id="empty-write" variant="primary" patch={~p"/tools/flashcards/cards"}>
           <.icon name="hero-plus-micro" class="size-4" /> Write a card
-        </.button>
-        <.button id="empty-agents" navigate={~p"/agents"}>
-          <.icon name="hero-command-line-micro" class="size-4" /> Connect an agent
         </.button>
       </div>
     </div>

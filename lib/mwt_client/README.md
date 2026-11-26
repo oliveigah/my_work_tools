@@ -20,7 +20,6 @@ LiveView (`live/*_live.ex` and its folder) and the shared components
 | `notes/`        | Notes                | `/tools/notes`        |
 | `flashcards/`   | Flashcards           | `/tools/flashcards/*` |
 | `sandbox/`      | Agent Sandbox        | `/tools/sandbox/*`    |
-| `mcp/`          | Agent access (MCP)   | `/agents`             |
 
 The Git GUI (`/tools/git`) has no folder here: all it does is git, which is
 the platform's `git/`.
@@ -38,6 +37,7 @@ the platform's `git/`.
 | `preferences.ex`                  | app-wide settings readable before sign-in (theme, last username)                     |
 | `transfer.ex`, `transfer/`        | export and import of everything an identity keeps; apps take part as participants    |
 | `search.ex`                       | the word search of the apps that keep text, in memory and as SQL over their indexes  |
+| `mcp/`                            | the tools agents in the VM save notes, diagrams, flash cards and HTTP samples with, over MCP (`mwt mcp`, `MWTClient.Sandbox.MwtTools`) |
 | `save_timer.ex`                   | the save-after-a-pause timer the stores share                                        |
 | `tools.ex`                        | the catalogue of apps the tool picker shows                                          |
 | `updates.ex`, `log_file.ex`       | MWT's own updates and log                                                            |

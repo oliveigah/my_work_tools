@@ -63,7 +63,6 @@ defmodule MWTClientWeb.Router do
       live "/notifications", NotificationsLive
       live "/transfer", TransferLive
       live "/storage", StorageLive
-      live "/agents", AgentAccessLive
     end
   end
 

@@ -8,8 +8,7 @@ defmodule MWTClient.MCP.Guides do
      "Markdown creation and updates, finding existing notes and following paginated results."},
     {"diagrams", "Native diagram layout",
      "Creating and updating diagrams, shape sizing, table geometry, row attachments and native examples."},
-    {"http", "HTTP request samples",
-     "Literal JSON/form bodies, headers, curl imports and the distinction between samples and sent history."},
+    {"http", "HTTP request samples", "Literal JSON/form bodies, headers and curl imports."},
     {"flashcards", "Flash cards from a thread",
      "Choosing what is worth remembering from a thread, writing questions that make the user recall it, tags and duplicates."}
   ]
@@ -39,8 +38,8 @@ defmodule MWTClient.MCP.Guides do
     # Notes, search and pagination
 
     MWT is a local encrypted toolbox. All tools operate only on the identity
-    associated with the Bearer token, while that identity is unlocked. You do
-    not need repository access. Tools create, update, list and read notes and
+    whose VM you are in, while that identity is unlocked. You do not need
+    repository access. Tools create, update, list and read notes and
     diagrams; they do not delete or mark notes complete. HTTP requests are
     append-only through MCP. Every create call generates a new ID, so blindly
     repeating a successful call creates a duplicate.
@@ -64,10 +63,8 @@ defmodule MWTClient.MCP.Guides do
     titles and all canvas text, including table cells and arrow labels. These
     searches are case-insensitive, normalize whitespace and require every
     query word to match somewhere in the item. Accents are not stripped.
-
-    list_http_requests instead matches one normalized substring across the
-    description, URL, tags, headers and body. Omit query or pass an empty
-    string to list all items. List results are summaries, not complete bodies.
+    Omit query or pass an empty string to list all items. List results are
+    summaries, not complete bodies.
 
     ## Pagination
 
@@ -211,7 +208,7 @@ defmodule MWTClient.MCP.Guides do
     create_http_request saves a sample without sending any network request.
     import_http_request parses a curl command without executing curl or a
     shell. HTTP requests are append-only through MCP: each call creates a
-    new item. Existing samples and sent history cannot be updated or deleted.
+    new item. Existing samples cannot be read, updated or deleted.
     To revise a request, save a new sample with the desired fields. Repeating
     a successful create/import call creates another sample. The user can open
     the returned MWT url and manually send it in HTTP Client.
@@ -235,16 +232,7 @@ defmodule MWTClient.MCP.Guides do
 
     Input headers are name/value objects. Repeat a name for multiple values.
     Result headers are lowercase names mapped to arrays of values. Optional
-    description and tags make a sample easier to find.
-
-    ## Finding and inspecting
-
-    list_http_requests includes unsent samples and existing request history.
-    sent=false means an unsent sample; sent=true means a recorded send attempt,
-    including one that failed. get_http_request returns the stored request,
-    never response payloads, and never sends it. Search is a case-insensitive
-    normalized substring across description, URL, tags, headers and body.
-    Follow next_offset until null, keeping query and limit fixed.
+    description and tags make a sample easier for the user to find.
 
     ## Example arguments
     """ <> examples("create_http_request") <> examples("import_http_request")

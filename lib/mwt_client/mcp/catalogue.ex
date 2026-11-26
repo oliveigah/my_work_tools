@@ -154,38 +154,6 @@ defmodule MWTClient.MCP.Catalogue do
         ]),
         request_result(),
         false
-      ),
-      tool(
-        "list_http_requests",
-        "Find HTTP requests",
-        "List saved HTTP samples and sent request history, newest saved first. Search matches a case-insensitive " <>
-          "normalized substring across description, URL, tags, headers and body. This differs from note/diagram word matching. " <>
-          "sent=false identifies samples; sent=true identifies attempted requests, including failed sends. " <>
-          paging(),
-        listing(
-          "Case-insensitive substring to find in description, URL, tags, headers or body; whitespace is normalized."
-        ),
-        page_result(request_summary()),
-        true
-      ),
-      tool(
-        "get_http_request",
-        "Read HTTP request",
-        "Read a stored request's method, URL, headers and body. Does not send it or return response payloads. " <>
-          "request_url is the API destination; url opens the saved item in MWT. Headers are returned as lowercase names mapped to arrays of values.",
-        object(
-          %{
-            "id" =>
-              describe(
-                %{"type" => "integer", "minimum" => 1},
-                "Numeric request ID returned by a create/import/list tool; do not convert it to a string."
-              )
-          },
-          ["id"]
-        )
-        |> examples([%{"id" => 1}]),
-        request_result(),
-        true
       )
     ] ++ flashcard_tools()
   end

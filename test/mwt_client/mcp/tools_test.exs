@@ -2,6 +2,7 @@ defmodule MWTClient.MCP.ToolsTest do
   use ExUnit.Case, async: true
 
   import MWTClient.VaultHelpers
+  import MWTClient.ToolCallers, only: [allowed: 1]
   alias MWTClient.MCP.Tools
   alias MWTClient.HttpClient.{Resources, Transfer, Translation}
   alias MWTClient.Notes.Library, as: Notes
@@ -209,8 +210,7 @@ defmodule MWTClient.MCP.ToolsTest do
         Tools.call(
           "create_diagram",
           %{"title" => "Broken", "elements" => broken},
-          username,
-          "http://127.0.0.1:12995"
+          allowed(username)
         )
 
       assert result["isError"]
@@ -242,10 +242,12 @@ defmodule MWTClient.MCP.ToolsTest do
     assert Translation.request_from_history(entry).response == nil
     {:ok, outline} = Resources.outline(username, sample["id"])
     assert Translation.request_outline_from_history(outline).response == nil
-    assert call("get_http_request", %{"id" => sample["id"]}, username) == sample
 
-    assert [%{"sent" => false}] =
-             call("list_http_requests", %{"query" => "Order sample"}, username)["items"]
+    # A sample, never sent.
+    id = sample["id"]
+
+    assert [{^id, "Order sample", ["orders"], _at, _took, _method, _url, 0}] =
+             Resources.summaries(username, "Order sample")
 
     {:ok, section} = Transfer.export(username)
     assert {:ok, [_entry]} = Transfer.prepare(1, section)
@@ -255,7 +257,8 @@ defmodule MWTClient.MCP.ToolsTest do
     refute on_disk(username, :journal) =~ "Order sample"
 
     :ok = Store.open(username, key)
-    assert call("get_http_request", %{"id" => sample["id"]}, username) == sample
+    assert {:ok, {^id, _metadata, reopened, nil}} = Resources.get(username, id)
+    assert reopened.body == args["body"]
   end
 
   test "imports curl by parsing it, preserving method, headers and body", %{username: username} do
@@ -514,8 +517,7 @@ defmodule MWTClient.MCP.ToolsTest do
             %{"front" => "   ", "back" => "Blank question."}
           ]
         },
-        username,
-        "http://127.0.0.1:12995"
+        allowed(username)
       )
 
     assert result["isError"]
@@ -529,8 +531,7 @@ defmodule MWTClient.MCP.ToolsTest do
       Tools.call(
         "create_flashcards",
         %{"tags" => shared, "cards" => [%{"front" => "Q", "back" => "A", "tags" => own}]},
-        username,
-        "http://127.0.0.1:12995"
+        allowed(username)
       )
 
     assert hd(result["content"])["text"] =~ "arguments.cards[0].tags use at most 10"
@@ -541,13 +542,13 @@ defmodule MWTClient.MCP.ToolsTest do
   end
 
   defp call(name, args, username) do
-    {:ok, result} = Tools.call(name, args, username, "http://127.0.0.1:12995")
+    {:ok, result} = Tools.call(name, args, allowed(username))
     refute result["isError"], inspect(result)
     Jason.decode!(Jason.encode!(result["structuredContent"]))
   end
 
   defp tool_error?(name, args, username) do
-    {:ok, result} = Tools.call(name, args, username, "http://127.0.0.1:12995")
+    {:ok, result} = Tools.call(name, args, allowed(username))
     result["isError"]
   end
 end

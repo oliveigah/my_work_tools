@@ -47,10 +47,11 @@ defmodule MWTClient.Versions do
   defstruct [:username, :kind, recent: %{}]
 
   @typedoc """
-  Who made a change: you, in MWT; an agent on this machine, through
-  `/mcp`; an agent in the VM, with what it claimed about itself
-  (`agent`, `thread`), as claims label a version and prove nothing; or MWT
-  itself, when an update moved what you had (`:mwt`).
+  Who made a change: you, in MWT; an agent in the VM, with what it
+  claimed about itself (`agent`, `thread`), as claims label a version and
+  prove nothing; or MWT itself, when an update moved what you had
+  (`:mwt`). `{:agent, :local}`, an agent on this machine, is only in
+  versions kept from when MWT's tools were open to them.
   """
   @type by ::
           :you

@@ -34,7 +34,6 @@ defmodule MWTClient.Vault.Store do
     # Started before the server and stopped after it: what it holds
     # outlives the server's restarts, not a lock.
     MWTClient.Sandbox.UnlockState,
-    MWTClient.MCP.Access,
     MWTClient.Flashcards.Library,
     MWTClient.Notes.Library,
     MWTClient.Diagrams.Library,

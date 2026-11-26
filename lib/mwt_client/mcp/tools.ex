@@ -2,14 +2,12 @@ defmodule MWTClient.MCP.Tools do
   @moduledoc """
   Agent tools backed by MWT's existing encrypted libraries.
 
-  An agent on this machine calls them through `/mcp` with the identity's
-  token; an agent in the VM through `mwt mcp`, where each call first goes
+  Agents in the VM call them through `mwt mcp`, where each call first goes
   through its caller's `gate`, the grant for what it does
   (`access/1`, `MWTClient.Sandbox.MwtTools`). For a change, the gate is
-  shown what would change before anything does. HTTP requests are closed
-  to reading from the VM (`open_to_vm?/1`): the user's history holds the
-  credentials they sent, so agents there only add samples, and don't even
-  see the tools that read them.
+  shown what would change before anything does. No tool reads HTTP
+  requests: the user's history holds the credentials they sent, so agents
+  only add samples.
   """
 
   alias MWTClient.Diagrams.Diagram
@@ -21,27 +19,16 @@ defmodule MWTClient.MCP.Tools do
   alias MWTClient.HttpClient.{Curl, HistoryMetadata, Resources, Translation, Utils}
   alias MWTClient.MCP.{Caller, Catalogue, Schema}
 
-  @reads ~w(list_notes get_note list_diagrams get_diagram list_http_requests get_http_request
-            list_flashcards get_flashcard list_flashcard_tags)
+  @reads ~w(list_notes get_note list_diagrams get_diagram list_flashcards get_flashcard
+            list_flashcard_tags)
   @creates ~w(create_note create_diagram create_http_request import_http_request create_flashcards)
   @changes ~w(update_note update_diagram update_flashcard)
 
   # What an agent writes a card with, by argument.
   @card_fields [{"front", :front}, {"back", :back}, {"tags", :tags}, {"source", :source}]
 
-  # Closed to agents in the VM: they add HTTP samples, never read any.
-  @closed_to_vm ~w(list_http_requests get_http_request)
-
   @doc "The fixed tool catalogue, including the schemas agents use to construct calls."
   def list, do: Catalogue.list()
-
-  @doc "The tools `caller` may use: for an agent in the VM, those open to it."
-  def list(%Caller{from: :vm}), do: Enum.filter(list(), &open_to_vm?(&1["name"]))
-  def list(%Caller{}), do: list()
-
-  @doc "Whether agents in the VM may use a tool: every one but those reading HTTP requests."
-  @spec open_to_vm?(String.t()) :: boolean()
-  def open_to_vm?(name), do: name not in @closed_to_vm
 
   @doc "What a tool does: `:read`, `:create` (adds, changes nothing) or `:change`."
   @spec access(String.t()) :: :read | :create | :change | nil
@@ -50,14 +37,9 @@ defmodule MWTClient.MCP.Tools do
   def access(name) when name in @changes, do: :change
   def access(_name), do: nil
 
-  @doc "Calls a tool as an agent on this machine would, through `/mcp`."
-  def call(name, arguments, username, base_url) when is_binary(username),
-    do: call(name, arguments, Caller.local(username, base_url))
-
   @doc """
   Validates arguments before calling a library, as `caller`
-  (`MWTClient.MCP.Caller`): who a change is by, and for an agent in the
-  VM, what its grants allow.
+  (`MWTClient.MCP.Caller`): who a change is by, and what its grants allow.
   """
   def call(name, arguments, %Caller{} = caller) do
     with tool when not is_nil(tool) <- Enum.find(list(), &(&1["name"] == name)),
@@ -67,16 +49,6 @@ defmodule MWTClient.MCP.Tools do
       nil -> {:error, :unknown_tool}
       {:error, message} -> {:ok, failure(message)}
     end
-  end
-
-  defp gated(name, args, %Caller{gate: nil} = caller), do: run(name, args, caller)
-
-  defp gated(name, _args, %Caller{from: :vm}) when name in @closed_to_vm do
-    {:ok,
-     failure(
-       "#{name} isn't open to agents in the VM: from here, HTTP requests are only added " <>
-         "(create_http_request, import_http_request, when the user asks for a sample), never read."
-     )}
   end
 
   defp gated(name, args, %Caller{gate: gate} = caller) do
@@ -315,26 +287,6 @@ defmodule MWTClient.MCP.Tools do
       {:ok, attrs} -> save_request(username, Utils.new_request(attrs), args)
       {:error, reason} -> {:error, "Could not parse curl: #{reason}"}
     end
-  end
-
-  defp execute("list_http_requests", args, %Caller{username: username}) do
-    {:ok,
-     page(Resources.summaries(username, Map.get(args, "query", "")), args, fn
-       {id, description, tags, at, _duration, method, url, status} ->
-         %{
-           id: id,
-           description: description,
-           tags: tags,
-           saved_at: at,
-           method: method |> to_string() |> String.upcase(),
-           request_url: URI.to_string(url),
-           sent: status != 0
-         }
-     end)}
-  end
-
-  defp execute("get_http_request", args, %Caller{username: username}) do
-    with {:ok, entry} <- Resources.get(username, args["id"]), do: {:ok, request_data(entry)}
   end
 
   defp execute("create_flashcards", args, %Caller{username: username}) do

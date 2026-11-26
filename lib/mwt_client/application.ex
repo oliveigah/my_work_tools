@@ -23,7 +23,6 @@ defmodule MWTClient.Application do
       {Task.Supervisor, name: MWTClient.Sandbox.TaskSupervisor},
       MWTClient.Updates,
       MWTClient.Preferences,
-      {Registry, keys: :unique, name: MWTClient.MCP.Registry},
       # The agent sandbox's open proxy connections, by identity: isolating
       # the VM closes them (`MWTClient.Sandbox.Server.Firewall`).
       {Registry, keys: :duplicate, name: MWTClient.Sandbox.Connections},

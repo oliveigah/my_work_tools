@@ -14,7 +14,6 @@ defmodule MWTClient.Storage.ImportCheck do
   alias MWTClient.Diagrams.Library, as: Diagrams
   alias MWTClient.Flashcards.Library, as: Flashcards
   alias MWTClient.HttpClient.Resources
-  alias MWTClient.MCP.Access
   alias MWTClient.Notes.Library, as: Notes
   alias MWTClient.Storage.Documents
   alias MWTClient.Storage.Legacy
@@ -25,7 +24,6 @@ defmodule MWTClient.Storage.ImportCheck do
     diagrams: "diagrams.bin",
     flashcards: "flashcards.bin",
     http_history: "http_history.bin",
-    mcp_access: "mcp_access.bin",
     sandbox: "sandbox.bin"
   }
 
@@ -100,7 +98,6 @@ defmodule MWTClient.Storage.ImportCheck do
       ),
       settings(before.flashcards, Flashcards.settings(username)),
       history(list(before.http_history), Resources.all(username)),
-      mcp(before.mcp_access, username),
       sandbox(before.sandbox, username)
     ]
   end
@@ -274,19 +271,6 @@ defmodule MWTClient.Storage.ImportCheck do
           do: {id, fields}
 
     result("HTTP history", old, new, differing)
-  end
-
-  defp mcp(nil, username),
-    do: result("MCP access", 0, if(Access.enabled?(username), do: 1, else: 0), %{}, %{}, [])
-
-  defp mcp(%{hash: hash}, username) do
-    differing =
-      case Documents.get(username, "mcp.access") do
-        {:ok, %{hash: ^hash}} -> []
-        _other -> [{:token, [:hash]}]
-      end
-
-    result("MCP access", 1, if(Access.enabled?(username), do: 1, else: 0), %{}, %{}, differing)
   end
 
   defp sandbox(nil, _username), do: result("sandbox", 0, 0, %{}, %{}, [])

@@ -14,11 +14,11 @@ What MWT is and how to use it is in the [README](../README.md).
   that a Tauri window opens. Nothing of it runs anywhere but your
   machine: no account, no cloud.
 - **Apps on a platform.** Each tool (HTTP client, diagrams, notes, flash
-  cards, the Agent Sandbox, agent access over MCP) keeps its data and
-  logic in a folder of its own under `lib/mwt_client`. What more than one
-  app needs lives at the top, as the platform. An app uses the platform
-  and never another app's folder: a piece a second app needs moves into
-  the platform first. `lib/mwt_client/README.md` maps the folders.
+  cards, the Agent Sandbox) keeps its data and logic in a folder of its
+  own under `lib/mwt_client`. What more than one app needs lives at the
+  top, as the platform. An app uses the platform and never another app's
+  folder: a piece a second app needs moves into the platform first.
+  `lib/mwt_client/README.md` maps the folders.
 - **Everything belongs to an identity:** a username and a password.
   Unlocking derives its key and starts its processes (its databases, its
   stores, the sandbox's server). Locking stops them, drops the key and
@@ -421,13 +421,9 @@ the VM                           your machine                  a Git server
   (`mwt mcp`) under three built-in grants: read, create, change. HTTP
   samples are added, never read, since your history holds the
   credentials you sent.
-
-## Agent access on this machine
-
-Agents on this machine reach the same tools at `/mcp` on MWT's server
-(Streamable HTTP), with a bearer token. Only its hash is kept, encrypted
-in the identity. Locking pauses access; rotating or disabling revokes
-it. The tools describe themselves to the agent.
+- **MWT's tools are open to agents in the VM only.** Agents work there,
+  so an endpoint on this machine would be a second way in, with a token
+  of its own, for agents that no longer run here.
 
 ## Updates
 

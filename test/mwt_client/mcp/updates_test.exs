@@ -2,6 +2,7 @@ defmodule MWTClient.MCP.UpdatesTest do
   use ExUnit.Case, async: true
 
   import MWTClient.VaultHelpers
+  import MWTClient.ToolCallers, only: [allowed: 1]
 
   alias MWTClient.Diagrams.Library, as: Diagrams
   alias MWTClient.HttpClient.Resources
@@ -286,7 +287,9 @@ defmodule MWTClient.MCP.UpdatesTest do
     assert changed["version"] == 3
     assert call("update_note", args, username) == changed
 
-    assert [%{replaced_by: {:agent, :local}, content: %{body: "Edited by the user"}} | _] =
+    agent = {:agent, :vm, %{agent: nil, thread: nil}}
+
+    assert [%{replaced_by: ^agent, content: %{body: "Edited by the user"}} | _] =
              Notes.versions(username, note["id"])
   end
 
@@ -313,18 +316,17 @@ defmodule MWTClient.MCP.UpdatesTest do
              "id is not supported"
 
     assert {:error, :unknown_tool} =
-             Tools.call(
-               "update_http_request",
-               %{"id" => original["id"]},
-               username,
-               "http://localhost"
-             )
+             Tools.call("update_http_request", %{"id" => original["id"]}, allowed(username))
+
+    for name <- ~w(get_http_request list_http_requests) do
+      assert {:error, :unknown_tool} = Tools.call(name, %{}, allowed(username))
+    end
 
     assert length(Resources.summaries(username)) == 4
 
     for sample <- [original, repeated, imported, imported_again] do
       refute sample["sent"]
-      assert call("get_http_request", %{"id" => sample["id"]}, username) == sample
+      assert {:ok, {_id, _metadata, _request, nil}} = Resources.get(username, sample["id"])
     end
   end
 
@@ -341,13 +343,13 @@ defmodule MWTClient.MCP.UpdatesTest do
   end
 
   defp call(name, args, username) do
-    {:ok, result} = Tools.call(name, args, username, "http://127.0.0.1:12995")
+    {:ok, result} = Tools.call(name, args, allowed(username))
     refute result["isError"], inspect(result)
     Jason.decode!(Jason.encode!(result["structuredContent"]))
   end
 
   defp error(name, args, username) do
-    {:ok, result} = Tools.call(name, args, username, "http://127.0.0.1:12995")
+    {:ok, result} = Tools.call(name, args, allowed(username))
     assert result["isError"], inspect(result)
     hd(result["content"])["text"]
   end

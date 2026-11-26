@@ -1,64 +1,13 @@
-defmodule MWTClientWeb.AgentAccessLiveTest do
+defmodule MWTClientWeb.AgentSavesLiveTest do
+  # What agents in the VM save through MWT's tools, as the open pages show it.
   use MWTClientWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
-  alias MWTClient.MCP.{Access, Tools}
-  alias MWTClient.Vault.Store
+  import MWTClient.ToolCallers, only: [allowed: 1]
+  alias MWTClient.MCP.Tools
 
   setup %{conn: conn} do
     sign_in(conn)
-  end
-
-  test "enables, rotates and revokes agent access from the connection screen", %{
-    conn: conn,
-    username: username
-  } do
-    {:ok, view, _html} = live(conn, ~p"/agents")
-    assert has_element?(view, "#mcp-url")
-    assert has_element?(view, "#issue-mcp-token")
-    refute has_element?(view, "#mcp-credentials")
-    refute Access.enabled?(username)
-
-    view |> element("#issue-mcp-token") |> render_click()
-    token = token(view)
-    assert {:ok, ^username} = Access.authorize(token)
-    assert has_element?(view, "#mcp-config")
-    assert has_element?(view, "#copy-mcp-config")
-    assert has_element?(view, "#revoke-mcp-token")
-
-    view |> element("#issue-mcp-token") |> render_click()
-    rotated = token(view)
-    assert Access.authorize(token) == :error
-    assert {:ok, ^username} = Access.authorize(rotated)
-
-    view |> element("#revoke-mcp-token") |> render_click()
-    refute has_element?(view, "#mcp-credentials")
-    refute has_element?(view, "#revoke-mcp-token")
-    assert Access.authorize(rotated) == :error
-  end
-
-  test "revisiting after unlocking keeps the configured token active without revealing it", %{
-    conn: conn,
-    username: username
-  } do
-    {:ok, token} = Access.issue(username)
-    :ok = Store.close(username)
-    {:ok, _profile, key} = MWTClient.Accounts.sign_in(username, "correct horse")
-    :ok = Store.open(username, key)
-    {:ok, view, _html} = live(conn, ~p"/agents")
-    assert has_element?(view, "#mcp-existing-token")
-    assert has_element?(view, "#mcp-token-lifetime")
-    refute has_element?(view, "#mcp-token")
-    assert {:ok, ^username} = Access.authorize(token)
-  end
-
-  test "offers the connection screen from the tools page and requires an unlocked identity", %{
-    conn: conn
-  } do
-    {:ok, view, _html} = live(conn, ~p"/tools")
-    assert has_element?(view, "#agent-access-link[href='/agents']")
-    assert has_element?(view, "#connect-agent[href='/agents']")
-    assert {:error, {:redirect, %{to: "/"}}} = live(build_conn(), ~p"/agents")
   end
 
   test "malformed HTTP item links keep the editor usable", %{conn: conn} do
@@ -66,22 +15,6 @@ defmodule MWTClientWeb.AgentAccessLiveTest do
       {:ok, view, _html} = live(conn, path)
       assert has_element?(view, "#request-form")
     end
-  end
-
-  test "token changes refresh other open connection screens", %{conn: conn, username: username} do
-    {:ok, first, _html} = live(conn, ~p"/agents")
-    {:ok, second, _html} = live(conn, ~p"/agents")
-    first |> element("#issue-mcp-token") |> render_click()
-    first_token = token(first)
-    assert has_element?(second, "#mcp-existing-token")
-    second |> element("#issue-mcp-token") |> render_click()
-    second_token = token(second)
-    assert Access.authorize(first_token) == :error
-    assert {:ok, ^username} = Access.authorize(second_token)
-    refute has_element?(first, "#mcp-token")
-    first |> element("#revoke-mcp-token") |> render_click()
-    refute has_element?(second, "#mcp-credentials")
-    refute Access.enabled?(username)
   end
 
   test "agent saves appear in open pages and direct links open the saved item", %{
@@ -165,17 +98,8 @@ defmodule MWTClientWeb.AgentAccessLiveTest do
     })
   end
 
-  defp token(view),
-    do:
-      view
-      |> render()
-      |> LazyHTML.from_fragment()
-      |> LazyHTML.query("#mcp-token")
-      |> LazyHTML.text()
-      |> String.trim()
-
   defp create(name, args, username) do
-    {:ok, result} = Tools.call(name, args, username, "http://127.0.0.1:12995")
+    {:ok, result} = Tools.call(name, args, allowed(username))
     refute result["isError"]
     result["structuredContent"]
   end

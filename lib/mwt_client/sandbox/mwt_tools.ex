@@ -80,7 +80,6 @@ defmodule MWTClient.Sandbox.MwtTools do
     %Caller{
       username: username,
       base_url: base_url(),
-      from: :vm,
       claims: claims,
       gate: &authorize(username, Map.put(&1, :claims, claims), wait_ms)
     }

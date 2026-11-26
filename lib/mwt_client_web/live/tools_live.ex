@@ -54,16 +54,6 @@ defmodule MWTClientWeb.ToolsLive do
               path={Map.get(@places, tool.id, tool.path)}
             />
           </div>
-
-          <.link
-            navigate={~p"/agents"}
-            id="connect-agent"
-            class="mt-5 flex items-center gap-3 rounded-xl border border-line-soft px-4 py-3 text-xs text-muted transition-colors hover:border-accent/40 hover:bg-panel hover:text-ink"
-          >
-            <.icon name="hero-command-line" class="size-4 text-accent" />
-            <span class="flex-1">Connect an agent to save work in MWT through MCP.</span>
-            <.icon name="hero-arrow-right" class="size-3.5" />
-          </.link>
         </div>
       </div>
     </Layouts.app>

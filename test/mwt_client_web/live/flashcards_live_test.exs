@@ -13,12 +13,11 @@ defmodule MWTClientWeb.FlashcardsLiveTest do
   end
 
   describe "with no cards" do
-    test "invites writing one or connecting an agent", %{conn: conn} do
+    test "invites writing one or asking an agent", %{conn: conn} do
       {:ok, view, _html} = live(conn, ~p"/tools/flashcards")
 
       assert has_element?(view, "#remember-empty")
       assert has_element?(view, "#empty-write[href='/tools/flashcards/cards']")
-      assert has_element?(view, "#empty-agents[href='/agents']")
       refute has_element?(view, "#session-setup")
     end
 

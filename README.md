@@ -209,17 +209,11 @@ card I remove as not worth it isn't written again.
 
 ## Agents and MWT's tools
 
-Agents can save notes, diagrams, flash cards and HTTP request samples into
-MWT, and read what is there:
-
-- **In the sandbox,** through the `mwt` command, under three grants
-  (read, create, change), with every change kept as a version I can
-  restore. They add HTTP samples but never read any: my request history
-  holds the credentials I sent.
-- **On this machine,** over MCP: open **Connect an agent** from the tools
-  page or the title bar, choose **Enable agent access**, and copy the
-  server URL and token into the agent's MCP settings (Streamable HTTP).
-  **Disable access** revokes it at once.
+Agents in the sandbox can save notes, diagrams, flash cards and HTTP
+request samples into MWT, and read what is there, through the `mwt`
+command, under three grants (read, create, change), with every change kept
+as a version I can restore. They add HTTP samples but never read any: my
+request history holds the credentials I sent.
 
 Then I can ask things like _"make a diagram of our checkout flow in MWT"_ or
 _"add flash cards with the key decisions of this thread"_. The tools

@@ -5,11 +5,38 @@ defmodule MWTClient.MCP.Protocol do
 
   @versions ~w(2025-11-25 2025-06-18 2025-03-26)
 
-  def versions, do: @versions
+  @instructions """
+  MWT is the user's encrypted developer toolbox, on their machine; you reach it from MWT's agent sandbox VM
+  through `mwt mcp`, with no token. You read its notes, diagrams and flash cards, the user's own included.
+  HTTP requests can't be read through these tools: save a sample (create_http_request, import_http_request)
+  only when the user asks for one; you can't read any, theirs or yours.
+  Create native diagrams, Markdown notes, or HTTP request samples; samples are saved without sending requests.
+  Save flash cards the user studies in remember sessions: the few decisions from a thread worth recalling in a
+  month, one question and answer per card (read mwt://guides/flashcards first).
+  Make notes, diagrams and cards when the user asks; unasked, only the rare cards that guide allows. An item the
+  user didn't need costs them more than it gives.
+  Use list/get tools to find and inspect existing work. update_note, update_diagram and update_flashcard edit
+  existing items by ID and the version get returned; supply only the fields you want to change. A change based on
+  an older version is refused: read the item again. Body/elements replace their complete saved content.
+  Each create/import call creates a new item; repeating a successful call creates a duplicate, except
+  create_flashcards, which skips cards equal to one already saved.
+  HTTP requests are append-only through MCP: save a new sample instead of updating an existing request.
+  Deletion, completing notes, reviewing flash cards and HTTP execution are not available through MCP.
+  Returned url opens the saved item in MWT; request_url is an API destination.
 
-  @doc "Answers one message from an agent on this machine, through `/mcp`."
-  def handle(message, username, base_url),
-    do: handle(message, Caller.local(username, base_url))
+  Tool schemas include field descriptions, defaults, examples and response contracts. No repository access
+  is needed. Built-in guides are available through resources/list and resources/read:
+  mwt://guides/notes, mwt://guides/diagrams, mwt://guides/http and mwt://guides/flashcards. Read the diagram
+  guide for table sizing and row anchors. All list tools use query, limit (default 20) and offset (default 0); keep query and limit
+  fixed and follow next_offset until null. Searches match every word.
+
+  Three grants decide each call: mwt-read (list/get), mwt-create (create/import) and mwt-change (update).
+  A call whose grant is off says so: ask with `mwt request GRANT --reason "..."`. A change may wait for the
+  user's approval; they see it as a diff.
+  Every change keeps the version it replaced, so the user can restore it.
+  """
+
+  def versions, do: @versions
 
   @doc """
   Answers one JSON-RPC message from `caller` (`MWTClient.MCP.Caller`): a
@@ -39,7 +66,7 @@ defmodule MWTClient.MCP.Protocol do
   def error(id, code, message),
     do: %{"jsonrpc" => "2.0", "id" => id, "error" => %{"code" => code, "message" => message}}
 
-  defp dispatch(id, "initialize", params, caller) do
+  defp dispatch(id, "initialize", params, _caller) do
     case params do
       %{
         "protocolVersion" => version,
@@ -58,30 +85,7 @@ defmodule MWTClient.MCP.Protocol do
             "name" => "mwt",
             "version" => Application.spec(:mwt_client, :vsn) |> to_string()
           },
-          "instructions" =>
-            where(caller) <>
-              """
-              Create native diagrams, Markdown notes, or HTTP request samples; samples are saved without sending requests.
-              Save flash cards the user studies in remember sessions: the few decisions from a thread worth recalling in a
-              month, one question and answer per card (read mwt://guides/flashcards first).
-              Make notes, diagrams and cards when the user asks; unasked, only the rare cards that guide allows. An item the
-              user didn't need costs them more than it gives.
-              Use list/get tools to find and inspect existing work. update_note, update_diagram and update_flashcard edit
-              existing items by ID and the version get returned; supply only the fields you want to change. A change based on
-              an older version is refused: read the item again. Body/elements replace their complete saved content.
-              Each create/import call creates a new item; repeating a successful call creates a duplicate, except
-              create_flashcards, which skips cards equal to one already saved.
-              HTTP requests are append-only through MCP: save a new sample instead of updating an existing request.
-              Deletion, completing notes, reviewing flash cards and HTTP execution are not available through MCP.
-              Returned url opens the saved item in MWT; request_url is an API destination.
-
-              Tool schemas include field descriptions, defaults, examples and response contracts. No repository access
-              is needed. Built-in guides are available through resources/list and resources/read:
-              mwt://guides/notes, mwt://guides/diagrams, mwt://guides/http and mwt://guides/flashcards. Read the diagram
-              guide for table sizing and row anchors. All list tools use query, limit (default 20) and offset (default 0); keep query and limit
-              fixed and follow next_offset until null. Note/diagram search matches every word; HTTP search matches a substring.
-
-              """ <> access(caller)
+          "instructions" => @instructions
         })
 
       _invalid ->
@@ -91,9 +95,9 @@ defmodule MWTClient.MCP.Protocol do
 
   defp dispatch(id, "ping", _params, _caller), do: result(id, %{})
 
-  defp dispatch(id, "tools/list", params, caller) do
+  defp dispatch(id, "tools/list", params, _caller) do
     if Map.get(params, "cursor") in [nil, ""],
-      do: result(id, %{"tools" => Tools.list(caller)}),
+      do: result(id, %{"tools" => Tools.list()}),
       else: error(id, -32602, "Invalid tools cursor.")
   end
 
@@ -143,34 +147,4 @@ defmodule MWTClient.MCP.Protocol do
     do: error(id, -32601, "Method not found.")
 
   defp result(id, result), do: %{"jsonrpc" => "2.0", "id" => id, "result" => result}
-
-  defp where(%Caller{from: :local}) do
-    """
-    MWT is a local encrypted developer toolbox. Tools operate only on the identity that issued your token.
-    """
-  end
-
-  defp where(%Caller{from: :vm}) do
-    """
-    MWT is the user's encrypted developer toolbox, on their machine; you reach it from MWT's agent sandbox VM
-    through `mwt mcp`, with no token. You read its notes, diagrams and flash cards, the user's own included.
-    HTTP requests are closed to reading from here: save a sample (create_http_request, import_http_request)
-    only when the user asks for one; you can't read any, theirs or yours.
-    """
-  end
-
-  defp access(%Caller{from: :local}) do
-    """
-    Tokens persist across restarts. Access requires the vault to be unlocked; use the same token again after unlocking.
-    """
-  end
-
-  defp access(%Caller{from: :vm}) do
-    """
-    Three grants decide each call: mwt-read (list/get), mwt-create (create/import) and mwt-change (update).
-    A call whose grant is off says so: ask with `mwt request GRANT --reason "..."`. A change may wait for the
-    user's approval; they see it as a diff.
-    Every change keeps the version it replaced, so the user can restore it.
-    """
-  end
 end
