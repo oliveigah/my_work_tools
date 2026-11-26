@@ -22,10 +22,15 @@ defmodule Mix.Tasks.Compile.Native do
   the presentations need missing), it says what to do, and compiling goes on: the
   sandbox only needs them to run a VM. `MWT_NATIVE_BUILD=0` skips this step.
 
-  It also says when `priv/microsandbox` holds another msb than
-  `scripts/microsandbox.pin` builds (its `VERSION`), which it doesn't
-  build: that takes minutes, through `scripts/install-runtime.sh` or
-  `scripts/build-microsandbox.sh`. No runtime at all says nothing.
+  When `priv/microsandbox` holds another msb than
+  `scripts/microsandbox.pin` builds (its `VERSION`), it builds the pinned
+  one in development (`cargo tauri dev`, `mix phx.server`), through
+  `scripts/build-microsandbox.sh`, before the programs above, which that
+  build replaces with the folder. It takes minutes, once after the pin
+  moves; a build that fails leaves the msb there was, says so, and is tried
+  again at the next compile. In tests and releases it only says so:
+  `scripts/install-runtime.sh` builds it there. No runtime at all builds
+  nothing and says nothing: the first one is built on purpose.
 
   The code reloader of the development server doesn't run it (its
   `:reloadable_compilers`), so a page never waits for Cargo.
@@ -45,33 +50,70 @@ defmodule Mix.Tasks.Compile.Native do
     else
       root = Path.dirname(Mix.Project.project_file())
       out = Path.join(root, "priv/microsandbox")
+      # msb first: its build replaces the folder the programs go in.
+      runtime = runtime(root, out, Mix.env())
       built = Enum.map(@programs, &build(root, out, &1))
-      check_runtime(root, out)
-      if :ok in built, do: {:ok, []}, else: {:noop, []}
+      if :ok in [runtime | built], do: {:ok, []}, else: {:noop, []}
     end
   end
 
-  defp check_runtime(root, out) do
+  defp runtime(root, out, env) do
     script = Path.join(root, "scripts/build-microsandbox.sh")
 
     with {:ok, built} <- File.read(Path.join(out, "VERSION")),
          true <- File.regular?(script),
-         {pinned, 0} <- System.cmd("bash", [script, "--version"], stderr_to_stdout: true),
-         warning when is_binary(warning) <- runtime_warning(built, pinned) do
-      Mix.shell().error(warning)
+         {pinned, 0} <- System.cmd("bash", [script, "--version"], stderr_to_stdout: true) do
+      case runtime_step(env, built, pinned) do
+        :current ->
+          :noop
+
+        {:warn, text} ->
+          Mix.shell().error(text)
+          :noop
+
+        {:build, text} ->
+          Mix.shell().info(text)
+
+          case System.cmd("bash", [script, out], into: IO.stream(), stderr_to_stdout: true) do
+            {_output, 0} ->
+              :ok
+
+            {_output, status} ->
+              Mix.shell().error(
+                "==> msb #{String.trim(pinned)} wasn't built (exit #{status}, above): MWT runs " <>
+                  "#{String.trim(built)} until it is, and the next compile tries again. " <>
+                  "(MWT_NATIVE_BUILD=0 skips this step.)"
+              )
+
+              :skipped
+          end
+      end
+    else
+      _no_runtime -> :noop
     end
   end
 
   @doc false
-  # What to say when the runtime's VERSION isn't the one the pin builds.
-  @spec runtime_warning(String.t(), String.t()) :: String.t() | nil
-  def runtime_warning(built, pinned) do
+  # What to do when the runtime's VERSION isn't the one the pin builds:
+  # build it in development, say so elsewhere.
+  @spec runtime_step(atom(), String.t(), String.t()) :: :current | {:build | :warn, String.t()}
+  def runtime_step(env, built, pinned) do
     {built, pinned} = {String.trim(built), String.trim(pinned)}
+    stale = "priv/microsandbox holds msb #{built}, scripts/microsandbox.pin says #{pinned}"
 
-    if built != pinned do
-      "==> priv/microsandbox holds msb #{built}, scripts/microsandbox.pin says #{pinned}: " <>
-        "MWT runs that one until ./scripts/install-runtime.sh (or " <>
-        "./scripts/build-microsandbox.sh) builds it."
+    cond do
+      built == pinned ->
+        :current
+
+      env == :dev ->
+        {:build,
+         "==> #{stale}: building it, a few minutes (on Fedora, MWT_MSB_SKIP_TESTS=1 " <>
+           "skips msb's filesystem tests if they fail on SELinux labels)"}
+
+      true ->
+        {:warn,
+         "==> #{stale}: MWT runs that one until ./scripts/install-runtime.sh (or " <>
+           "./scripts/build-microsandbox.sh) builds it."}
     end
   end
 

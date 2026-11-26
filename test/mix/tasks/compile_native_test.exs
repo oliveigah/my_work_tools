@@ -33,11 +33,25 @@ defmodule Mix.Tasks.Compile.NativeTest do
     assert Native.stale?(program, [source, other])
   end
 
-  test "a runtime other than the pinned one is told, the pinned one isn't" do
-    assert Native.runtime_warning("0.7.15+f9ae8e23d\n", "0.7.15+f9ae8e23d\n") == nil
+  test "a runtime other than the pinned one is built in development, told elsewhere" do
+    assert Native.runtime_step(:dev, "0.8.2+aed6456b4\n", "0.8.2+aed6456b4\n") == :current
+    assert Native.runtime_step(:test, "0.8.2+aed6456b4\n", "0.8.2+aed6456b4\n") == :current
 
-    warning = Native.runtime_warning("0.7.15+f9ae8e23d\n", "0.8.2+aed6456b4\n")
-    assert warning =~ "holds msb 0.7.15+f9ae8e23d, scripts/microsandbox.pin says 0.8.2+aed6456b4"
-    assert warning =~ "./scripts/install-runtime.sh"
+    stale =
+      "priv/microsandbox holds msb 0.7.15+f9ae8e23d, scripts/microsandbox.pin says 0.8.2+aed6456b4"
+
+    assert {:build, building} =
+             Native.runtime_step(:dev, "0.7.15+f9ae8e23d\n", "0.8.2+aed6456b4\n")
+
+    assert building =~ stale
+    assert building =~ "MWT_MSB_SKIP_TESTS=1"
+
+    for env <- [:test, :prod] do
+      assert {:warn, warning} =
+               Native.runtime_step(env, "0.7.15+f9ae8e23d\n", "0.8.2+aed6456b4\n")
+
+      assert warning =~ stale
+      assert warning =~ "./scripts/install-runtime.sh"
+    end
   end
 end

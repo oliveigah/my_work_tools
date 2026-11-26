@@ -267,7 +267,9 @@ The Agent Sandbox also needs its VM runtime, built once into
 ```
 
 After the first time, `mix compile` rebuilds the last two when their
-source changes. On Ubuntu 24.04 and later, AppArmor keeps the system's
+source changes, and, in development (`cargo tauri dev`), msb too when
+`scripts/microsandbox.pin` moves: the first start after that takes a few
+minutes longer. On Ubuntu 24.04 and later, AppArmor keeps the system's
 `bwrap` from doing what the sandbox needs: the packages set that up, and
 for an MWT run from source, once:
 
@@ -299,8 +301,8 @@ The report starts with what to look at first: a kernel changed under the
 same file name, where libkrun comes from, the store's migrations,
 breaking changes, security fixes, a call the seccomp filter refuses.
 Every msb command MWT runs is built in `MWTClient.Sandbox.Msb.Commands`,
-which `--only msb` checks; `mix compile` says when `priv/microsandbox`
-isn't the pinned build.
+which `--only msb` checks. When `priv/microsandbox` isn't the pinned
+build, `mix compile` builds it in development and says so elsewhere.
 
 To build the Debian and RPM packages into `dist/` (with Docker and Docker
 Compose; `PACKAGE_PLATFORM=linux/arm64` for ARM):
