@@ -14,7 +14,9 @@ defmodule MWTClient.Sandbox.GitTransport do
       first, at most once a minute, into MWT's store
       (`MWTClient.Sandbox.HandoffStore`), never into your repository,
       with your credentials and never prompting; else they are as you
-      last fetched them.
+      last fetched them. Served from the store, it also has what a
+      review fetched there (`fetch_review/3`), under `refs/review/`: a
+      pull request's head, or a commit on none of the remote's branches.
 
   No host config, internal refs, index or working tree is exposed or
   changed. Each transfer needs the grant Git: fetch from your
@@ -197,33 +199,42 @@ defmodule MWTClient.Sandbox.GitTransport do
     %{dir: dir} = Server.call(username, :projects, 1_000)
     store = HandoffStore.path(dir, project.path)
 
-    {repo, prefix, objects} =
+    {repo, prefixes, objects} =
       with :ok <- HandoffStore.ensure(store, project.path),
            :ok <- fetch_remote?(username, project),
            :ok <- fetch_remote(store, project.path) do
-        {store, "refs/upstream/", [objects, Path.join(store, "objects")]}
+        {store, ["refs/upstream/", "refs/review/"], [objects, Path.join(store, "objects")]}
       else
-        _ -> {project.path, "refs/remotes/origin/", [objects]}
+        _ -> {project.path, ["refs/remotes/origin/"], [objects]}
       end
 
-    case HostGit.run(repo, ["for-each-ref", "--format=%(objectname) %(refname)", prefix],
+    case HostGit.run(repo, ["for-each-ref", "--format=%(objectname) %(refname)" | prefixes],
            max: @max_refs,
            seconds: 10
          ) do
       {:ok, refs} ->
-        branches =
+        served =
           for line <- String.split(refs, "\n", trim: true),
-              [oid, ^prefix <> branch] <- [String.split(line, " ", parts: 2)],
-              branch != "HEAD",
+              [oid, ref] <- [String.split(line, " ", parts: 2)],
+              name = served_ref(ref),
+              name != nil,
               into: "",
-              do: "#{oid} refs/heads/#{branch}\n"
+              do: "#{oid} #{name}\n"
 
-        {:ok, branches, objects}
+        {:ok, served, objects}
 
       error ->
         error
     end
   end
+
+  # The remote's branches as branches; what reviews fetched as they are.
+  defp served_ref("refs/upstream/HEAD"), do: nil
+  defp served_ref("refs/upstream/" <> branch), do: "refs/heads/" <> branch
+  defp served_ref("refs/remotes/origin/HEAD"), do: nil
+  defp served_ref("refs/remotes/origin/" <> branch), do: "refs/heads/" <> branch
+  defp served_ref("refs/review/" <> _ = ref), do: ref
+  defp served_ref(_ref), do: nil
 
   defp fetch_remote?(username, project) do
     MwtTools.authorize(username, %{
@@ -252,35 +263,8 @@ defmodule MWTClient.Sandbox.GitTransport do
       end
 
     with false <- fresh? and :fresh,
-         url when is_binary(url) <-
-           HostGit.line(repo, ["config", "--get", "remote.origin.url"]) ||
-             {:error, "Your repository has no remote origin."},
-         {_, 0} <-
-           MWTClient.Executable.cmd(
-             "timeout",
-             [
-               "--kill-after=5",
-               "60",
-               "git",
-               "-C",
-               store,
-               "-c",
-               "protocol.ext.allow=never",
-               "-c",
-               "fetch.fsckObjects=true",
-               "-c",
-               "core.hooksPath=/dev/null",
-               "fetch",
-               "--quiet",
-               "--no-tags",
-               "--prune",
-               "--no-recurse-submodules",
-               url,
-               "+refs/heads/*:refs/upstream/*"
-             ],
-             env: [{"GIT_TERMINAL_PROMPT", "0"}, {"GIT_ASKPASS", "true"}, {"SSH_ASKPASS", "true"}],
-             stderr_to_stdout: true
-           ) do
+         {:ok, url} <- origin_url(repo),
+         {_, 0} <- fetch_origin(store, url, ["--prune", "+refs/heads/*:refs/upstream/*"]) do
       File.touch(stamp)
     else
       :fresh ->
@@ -310,6 +294,79 @@ defmodule MWTClient.Sandbox.GitTransport do
   end
 
   defp fetched_stamp(store), do: Path.join(store, "mwt-upstream-fetched")
+
+  @typedoc "What a review fetches from your remote by name: a pull request, or a commit."
+  @type review_target :: {:pull, pos_integer()} | {:commit, String.t()}
+
+  @doc """
+  Fetches what a review names from the remote `origin` of your repository
+  `repo` into the store, as `fetch_remote/2` fetches its branches: a pull
+  request's head (`refs/pull/N/head`, as GitHub keeps one, forks' too) into
+  `refs/review/pull/N`, or a commit by its full id (one on none of the
+  remote's branches) into `refs/review/commit/ID`. Every time it is asked:
+  a pull request moves. Returns the ref `remote-origin` serves it as.
+
+  The caller checks the grant Git: fetch from your remotes first; the VM
+  names only a number or a commit id, never a ref or a remote.
+  """
+  @spec fetch_review(Path.t(), Path.t(), review_target()) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def fetch_review(store, repo, target) do
+    {source, ref} =
+      case target do
+        {:pull, number} when is_integer(number) and number > 0 ->
+          {"refs/pull/#{number}/head", "refs/review/pull/#{number}"}
+
+        {:commit, id} ->
+          true = id =~ ~r/\A[0-9a-f]{40}(?:[0-9a-f]{24})?\z/
+          {id, "refs/review/commit/#{id}"}
+      end
+
+    with {:ok, url} <- origin_url(repo),
+         {_, 0} <- fetch_origin(store, url, ["+#{source}:#{ref}"]) do
+      {:ok, ref}
+    else
+      {:error, _} = error -> error
+      {output, _status} -> {:error, String.slice(output, 0, 300)}
+    end
+  end
+
+  defp origin_url(repo) do
+    case HostGit.line(repo, ["config", "--get", "remote.origin.url"]) do
+      url when is_binary(url) -> {:ok, url}
+      nil -> {:error, "Your repository has no remote origin."}
+    end
+  end
+
+  # git fetch of `url` into the store, with your credentials and never
+  # prompting: no hooks, no `ext::` commands, every object checked.
+  defp fetch_origin(store, url, refspecs) do
+    MWTClient.Executable.cmd(
+      "timeout",
+      [
+        "--kill-after=5",
+        "60",
+        "git",
+        "-C",
+        store,
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "fetch.fsckObjects=true",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--no-recurse-submodules",
+        url
+        | refspecs
+      ],
+      env: [{"GIT_TERMINAL_PROMPT", "0"}, {"GIT_ASKPASS", "true"}, {"SSH_ASKPASS", "true"}],
+      stderr_to_stdout: true
+    )
+  end
 
   defp ref_updates(refs) do
     for line <- String.split(refs, "\n", trim: true),

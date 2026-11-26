@@ -1,7 +1,8 @@
 # Projects: the clone, its slots, and other threads' tasks
 
-Read this when a slot isn't free, when the user asks you to carry on
-another thread's task, to catch up with their branch, or to free a slot.
+Read this when a slot isn't free, when the user asks you to review
+someone's work, to carry on another thread's task, to catch up with
+their branch, or to free a slot.
 How to hand off is `mwt help handoff`.
 
 ## The clone is the VM's
@@ -35,6 +36,26 @@ When the slot isn't free, nothing starts: it says why and lists the free
 slots. Ask the user to start a thread in one, or to add a slot on MWT's
 Projects page. What git ignores (`deps`, `_build`, `node_modules`) stays
 in a slot from its last task, so builds start warm.
+
+## Reviewing someone's work
+
+`mwt review` sets up a review in the free slot you are in: someone's
+work as uncommitted changes, nothing staged (new files intent-to-add),
+over where it parts from the branch it merges into, for the user to read
+in Zed. It fetches both remotes first.
+
+- `mwt review pr NUMBER|URL --onto BRANCH`: a pull request's head, forks'
+  too; the user's machine fetches it (Git: fetch from your remotes).
+- `mwt review branch NAME --onto BRANCH`: `remote-origin/NAME` or
+  `host-origin/NAME`; on both at different commits, say which.
+- `mwt review commit ID [--onto BRANCH]`: one commit, against its parent.
+
+`--onto` is the branch the work merges into: the one the user named, or
+ask them. The slot goes on a branch `review-…`, which is no task: don't
+commit, stage or hand off there. On a `review-…` branch, the uncommitted
+changes are the review: read, run and discuss them as the user asks,
+and change files only when they ask. The slot is taken while those
+changes are there; once the user discards them, it is free again.
 
 ## A slot another thread holds
 

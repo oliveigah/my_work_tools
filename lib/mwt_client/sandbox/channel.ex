@@ -77,6 +77,7 @@ defmodule MWTClient.Sandbox.Channel do
     Peer,
     Policy,
     Projects,
+    Reviews,
     Routes,
     Server,
     Shares,
@@ -114,7 +115,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   # The asks `answer/3` takes, each answered by a clause of `reply/3`;
   # `mcp` and `git` are served apart (`serve/2`).
-  @commands ~w(grants host why ports sync project worktree handoff handoffs call propose run
+  @commands ~w(grants host why ports sync project worktree review handoff handoffs call propose run
                request wait vm)
   # What acts on the user's behalf, refused while the VM is isolated.
   @acting ~w(request run call propose handoff)
@@ -722,7 +723,7 @@ defmodule MWTClient.Sandbox.Channel do
         "  #{String.pad_trailing(slot.name, width)}  #{Slots.words(slot)}#{mark}"
       end) ++
       [
-        "Each thread works only in the slot it is in: never change, build or run things in another slot, not even by absolute path. In your slot: take it first with mwt worktree new TASK --from BRANCH, named for what the user asked, even for a question, from the branch they want it based on (ask them when they named none); it stays yours until its handoff lands or is closed. More work while its handoff is open goes into its next revision. Free it with mwt worktree free only when the user says its task is done or dropped. Continue a sent-back branch with mwt worktree resume BRANCH."
+        "Each thread works only in the slot it is in: never change, build or run things in another slot, not even by absolute path. In your slot: take it first with mwt worktree new TASK --from BRANCH, named for what the user asked, even for a question, from the branch they want it based on (ask them when they named none); it stays yours until its handoff lands or is closed. More work while its handoff is open goes into its next revision. Free it with mwt worktree free only when the user says its task is done or dropped. Continue a sent-back branch with mwt worktree resume BRANCH. To review someone's work (a pull request, a branch, a commit), mwt review takes the slot instead (mwt help projects)."
       ]
   end
 
@@ -1033,6 +1034,23 @@ defmodule MWTClient.Sandbox.Channel do
 
       {:error, reason} ->
         {1, Projects.explain(reason)}
+    end
+  end
+
+  # A review set up in the slot the asker is in (`MWTClient.Sandbox.Reviews`):
+  # what to fetch first, as `key=value` lines for the script to read, then
+  # the slot put on it.
+  defp reply("review", %{"stage" => "prepare"} = ask, username) do
+    case Reviews.prepare(username, ask) do
+      {:ok, plan} -> {0, key_lines(fetch: plan.fetch || "")}
+      {:error, reason} -> {1, Reviews.explain(reason)}
+    end
+  end
+
+  defp reply("review", ask, username) do
+    case Reviews.start(username, ask) do
+      {:ok, words} -> {0, words}
+      {:error, reason} -> {1, Reviews.explain(reason)}
     end
   end
 

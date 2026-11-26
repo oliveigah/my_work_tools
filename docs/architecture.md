@@ -404,6 +404,14 @@ the VM                           your machine                  a Git server
   done on it since.
 - **Worktree slots** hold one task each: slot-0 is the clone itself, the
   others its worktrees. Builds stay warm and Zed's paths never move.
+- **A review is someone's work as uncommitted changes in a slot.**
+  `mwt review` puts a pull request, a branch or a commit on a branch
+  `review-…` at where it parts from the branch it merges into, always
+  named (`--onto`): projects merge into different branches. Your machine
+  fetches a pull request's head (forks' too) into MWT's store, under Git:
+  fetch from your remotes, and `remote-origin` serves it. That is all:
+  it is no task, so the slot is taken while those changes are there and
+  free once you discard them.
 - **A handoff is a task's exact commit,** with a title and notes, sent
   only when you ask. `mwt handoff` does every step that needs no
   judgment: fetch, commit, rebase onto the base, run the project's

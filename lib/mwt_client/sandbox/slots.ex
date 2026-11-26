@@ -1025,7 +1025,7 @@ defmodule MWTClient.Sandbox.Slots do
 
   def explain({:vague_task, task}),
     do:
-      "\"#{task}\" says nothing of the work. Name the task for what the user asked, in a few words: fix-login-timeout, explain-handoff-sync, review-pr-34."
+      "\"#{task}\" says nothing of the work. Name the task for what the user asked, in a few words: fix-login-timeout, explain-handoff-sync. To review someone's work, mwt review takes the slot instead."
 
   def explain({:not_your_slot, slot}),
     do:

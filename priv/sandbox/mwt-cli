@@ -287,6 +287,22 @@ mwt - ask MWT, the user's control panel, for access
       changes nothing. MWT does it too when a slot is freed or taken and
       when a handoff lands or is closed. Other branches are never touched.
 
+  mwt review pr NUMBER|URL --onto BRANCH
+  mwt review branch NAME --onto BRANCH
+  mwt review commit ID [--onto BRANCH]
+      Put someone's work in the free slot you are in, for the user to
+      read in Zed: a pull request's head (fetched from the user's remote
+      by the user's machine, forks' too, under Git: fetch from your
+      remotes), a branch of host-origin or remote-origin, or one commit
+      (against its parent unless --onto names a branch). --onto names the
+      branch the work merges into (always for a pull request or a branch;
+      a bare name is on the work's own remote first). It fetches both
+      remotes, puts the slot on a branch review-… at where the work parts
+      from that branch, and leaves the work's changes uncommitted, nothing
+      staged, new files intent-to-add. That is all: no task, no handoff.
+      The slot is taken while those changes are there; discarded, it is
+      free again.
+
   mwt handoff --title "what this is" [--body FILE] [--onto BASE] [--no-checks]
       Only once the user asks for it (/handoff), after they reviewed your
       uncommitted work in the VM. In your slot, it does every step that
@@ -329,7 +345,7 @@ mwt - ask MWT, the user's control panel, for access
 
 Exit status of grants, request, propose and wait on an ask: 0 the grant is on, 1 the
 ask was wrong, 2 still waiting for the user, 3 declined or given up, 4 MWT
-isn't answering (locked or closed). Of project, worktree, handoff and handoffs: 0 done,
+isn't answering (locked or closed). Of project, worktree, review, handoff and handoffs: 0 done,
 1 not done (the reason is printed), 4 MWT isn't answering. Of vm: 0 this is
 the VM MWT runs, 1 there is no record to compare, 3 this is not the VM MWT
 runs, 4 MWT isn't answering.
@@ -969,6 +985,54 @@ rebase_stopped() {
 
 plan_value() { printf '%s\n' "$2" | sed -n "s/^$1=//p" | head -n 1; }
 
+# A review in the slot you are in (MWTClient.Sandbox.Reviews): both
+# remotes fetched, so it is what they have now; then MWT checks the slot
+# and what to review, and has the user's machine fetch what no branch
+# has (a pull request's head) into its store, for this clone to fetch
+# from remote-origin; then MWT puts the slot on it.
+review_steps() {
+  local action=${positional[0]:-} target=${positional[1]:-} fields status plan refspec remote hint
+  case $action in
+    pr) hint='NUMBER|URL --onto BRANCH' ;;
+    branch) hint='NAME --onto BRANCH' ;;
+    commit) hint='ID [--onto BRANCH]' ;;
+    *)
+      echo "mwt: mwt review pr NUMBER|URL --onto BRANCH, mwt review branch NAME --onto BRANCH, or mwt review commit ID [--onto BRANCH]" >&2
+      exit 1
+      ;;
+  esac
+  if [ -z "$target" ] || [ "${#positional[@]}" -gt 2 ]; then
+    echo "mwt: name what to review, once: mwt review $action $hint" >&2
+    exit 1
+  fi
+  if ! git rev-parse --git-dir >/dev/null 2>&1; then
+    echo "mwt: this folder is in no git repository. Run mwt review in a project's slot (/work/NAME or /work/NAME.wt/slot-N)." >&2
+    exit 1
+  fi
+  identify
+  fields="\"cwd\":$(json "$(pwd -P)"),\"action\":$(json "$action"),\"target\":$(json "$target"),\"onto\":$(json "$onto"),$(identity)"
+
+  for remote in host-origin remote-origin; do
+    if ! git fetch -q "$remote"; then
+      echo "mwt: fetching $remote failed (git's words are above), so what is reviewed could be old. Nothing was set up." >&2
+      exit 1
+    fi
+  done
+  exchange "{\"command\":\"review\",\"stage\":\"prepare\",$fields}" 4
+  status=$(first_line "$reply")
+  plan=$(after_first "$reply")
+  if [ "$status" != 0 ]; then
+    printf '%s\n' "$plan"
+    case $status in 1 | 2 | 3 | 4) exit "$status" ;; *) exit 1 ;; esac
+  fi
+  refspec=$(plan_value fetch "$plan")
+  if [ -n "$refspec" ] && ! git fetch -q --no-tags remote-origin "$refspec"; then
+    echo "mwt: fetching it from remote-origin failed (git's words are above). Nothing was set up." >&2
+    exit 1
+  fi
+  send "{\"command\":\"review\",\"stage\":\"start\",$fields}"
+}
+
 # The first line of $1, and the rest after it (empty when there is none).
 first_line() { printf '%s' "${1%%$'\n'*}"; }
 after_first() {
@@ -1281,7 +1345,7 @@ while [ $# -gt 0 ]; do
         fi
       elif [ "$command" = wait ]; then
         id=$1
-      elif [ "$command" = worktree ] || [ "$command" = handoff ]; then
+      elif [ "$command" = worktree ] || [ "$command" = handoff ] || [ "$command" = review ]; then
         positional+=("$1")
       else
         grant=$1
@@ -1516,6 +1580,9 @@ case $command in
     esac
     identify
     send "{\"command\":\"worktree\",\"action\":$(json "$action"),\"cwd\":$(json "$(pwd -P)"),\"name\":$(json "$name"),\"from\":$(json "${from:-$onto}"),$(identity)}"
+    ;;
+  review)
+    review_steps
     ;;
   handoff)
     case ${positional[0]:-} in

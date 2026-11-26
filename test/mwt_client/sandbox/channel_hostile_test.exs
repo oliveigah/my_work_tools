@@ -66,6 +66,29 @@ defmodule MWTClient.Sandbox.ChannelHostileTest do
       {"worktree",
        Map.merge(me, %{"action" => "new", "cwd" => dir, "name" => "t", "from" => "main"})},
       {"worktree", Map.merge(me, %{"action" => "free", "cwd" => dir})},
+      {"review",
+       Map.merge(me, %{
+         "stage" => "prepare",
+         "action" => "pr",
+         "cwd" => dir,
+         "target" => "7",
+         "onto" => "main"
+       })},
+      {"review",
+       Map.merge(me, %{
+         "stage" => "start",
+         "action" => "branch",
+         "cwd" => dir,
+         "target" => "x",
+         "onto" => "main"
+       })},
+      {"review",
+       Map.merge(me, %{
+         "stage" => "start",
+         "action" => "commit",
+         "cwd" => dir,
+         "target" => "abc1234"
+       })},
       {"handoff",
        Map.merge(me, %{"stage" => "prepare", "cwd" => dir, "title" => "t", "onto" => "main"})},
       {"handoff", Map.merge(me, %{"stage" => "withdraw", "cwd" => dir, "reason" => "r"})},

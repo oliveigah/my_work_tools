@@ -618,7 +618,8 @@ defmodule MWTClient.Sandbox.Grant do
       start: :auto,
       purpose:
         "Before the VM reads remote-origin, this machine fetches your repository's own remote into MWT's store, never into your repository, " <>
-          "with your credentials, without prompting, at most once a minute. The VM never sees a credential or chooses the remote."
+          "with your credentials, without prompting, at most once a minute; and, for mwt review, a pull request's head or a commit on none of its branches, by number or id. " <>
+          "The VM never sees a credential or chooses the remote."
     },
     %{
       tools: :git_handoff,

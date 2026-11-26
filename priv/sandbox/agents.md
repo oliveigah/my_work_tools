@@ -43,11 +43,12 @@ catching up with their branch or their remote's (`mwt worktree sync`),
 carrying on another thread's task, freeing a slot.
 
 - **Take your slot first, before anything else,** even when the ask may
-  change no code (a question, a review, an investigation):
+  change no code (a question, an investigation):
   `mwt worktree new TASK --from BRANCH`, in the slot your thread was
   opened in. TASK says what the user asked, in a few words
-  (`fix-login-timeout`, `review-pr-34`; never `task`, `wip` or
-  `question`). BRANCH is the user's branch the work is based on, and
+  (`fix-login-timeout`, `explain-handoff-sync`; never `task`, `wip` or
+  `question`). To review someone's work (a pull request, a branch, a
+  commit), `mwt review` takes it instead: `mwt help projects`. BRANCH is the user's branch the work is based on, and
   where it lands: the one they named or, when they named none, the one
   they answer when you ask (`mwt project` lists them). Until your slot
   holds your branch it shows as free, and another thread may take it.

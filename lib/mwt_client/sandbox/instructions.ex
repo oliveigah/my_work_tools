@@ -349,7 +349,7 @@ defmodule MWTClient.Sandbox.Instructions do
 
   def usage(%Grant{kind: :mwt, tools: :git_fetch_remote}),
     do:
-      "use: nothing to do: git fetch remote-origin brings the remote's branches fresh while it is on, as the user's machine last fetched them while off."
+      "use: nothing to do: git fetch remote-origin brings the remote's branches fresh while it is on, as the user's machine last fetched them while off; mwt review pr fetches a pull request's head only while it is on."
 
   def usage(%Grant{kind: :mwt, tools: :git_handoff}),
     do: "use: mwt handoff, once the user asks for it. Off, nothing is handed off."

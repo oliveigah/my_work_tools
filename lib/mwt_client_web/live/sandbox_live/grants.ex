@@ -2017,7 +2017,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
           <% :git_fetch_remote -> %>
             Before <code class="font-mono">remote-origin</code>
             answers, this machine runs <code class="font-mono">git fetch</code>
-            of your repository's own remote, with your credentials and without prompting, into MWT's store, never into your repository, at most once a minute. Off, remote-origin shows the remote branches as you last fetched them.
+            of your repository's own remote, with your credentials and without prompting, into MWT's store, never into your repository, at most once a minute; and, for <code class="font-mono">mwt review</code>, a pull request's head or a commit the agent names by number or id. Off, remote-origin shows the remote branches as you last fetched them, and no pull request is fetched.
           <% :git_handoff -> %>
             <code class="font-mono">mwt handoff</code>: an agent's exact commit, into MWT's review store, never into your repository. Landing is never a grant: you decide it on the Handoffs page.
           <% :share_sync -> %>
