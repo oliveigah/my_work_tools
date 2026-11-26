@@ -3,6 +3,7 @@
 !scripts/
 !scripts/linux-packages.Dockerfile
 !scripts/build-microsandbox.sh
+!scripts/microsandbox.pin
 !mix.exs
 !mix.lock
 !.gitignore

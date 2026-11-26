@@ -71,9 +71,9 @@ defmodule MWTClient.Sandbox.NestedVirtTest do
         env: []
       }
 
-      refute "--nested-virt" in Msb.create_args(vm)
-      refute "--nested-virt" in Msb.create_args(Map.put(vm, :nested_virt, false))
-      assert "--nested-virt" in Msb.create_args(Map.put(vm, :nested_virt, true))
+      refute "--nested-virt" in Msb.Commands.create(vm)
+      refute "--nested-virt" in Msb.Commands.create(Map.put(vm, :nested_virt, false))
+      assert "--nested-virt" in Msb.Commands.create(Map.put(vm, :nested_virt, true))
     end
   end
 

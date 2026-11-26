@@ -32,4 +32,12 @@ defmodule Mix.Tasks.Compile.NativeTest do
     File.touch!(source, 3_000)
     assert Native.stale?(program, [source, other])
   end
+
+  test "a runtime other than the pinned one is told, the pinned one isn't" do
+    assert Native.runtime_warning("0.7.15+f9ae8e23d\n", "0.7.15+f9ae8e23d\n") == nil
+
+    warning = Native.runtime_warning("0.7.15+f9ae8e23d\n", "0.8.2+aed6456b4\n")
+    assert warning =~ "holds msb 0.7.15+f9ae8e23d, scripts/microsandbox.pin says 0.8.2+aed6456b4"
+    assert warning =~ "./scripts/install-runtime.sh"
+  end
 end

@@ -8,6 +8,8 @@ defmodule MWTClientWeb.SandboxLive.Setup do
 
   import MWTClientWeb.SandboxLive.Components
 
+  alias MWTClient.Sandbox.Msb.Commands
+
   @ssh_host MWTClient.Sandbox.Zed.ssh_host()
 
   @doc "The host name the VM has in your SSH config."
@@ -199,13 +201,14 @@ defmodule MWTClientWeb.SandboxLive.Setup do
       assign(assigns,
         # On stdin: the launcher runs msb confined, with no home folder of
         # yours, so it can't open the key itself.
-        authorize: "#{msb} ssh authorize --stdin < ~/.ssh/id_ed25519.pub",
+        authorize:
+          Enum.join([msb | Commands.ssh_authorize_stdin()], " ") <> " < ~/.ssh/id_ed25519.pub",
         ssh_config:
           """
           Host #{@ssh_host}
             HostName #{@ssh_host}
             User root
-            ProxyCommand #{msb} ssh serve #{assigns.vm.name} --stdio --no-inactivity-timeout
+            ProxyCommand #{Enum.join([msb | Commands.ssh_serve(assigns.vm.name)], " ")}
             IdentityFile ~/.ssh/id_ed25519
             IdentitiesOnly yes
             ForwardAgent no

@@ -11,8 +11,10 @@ defmodule MWTClient.Sandbox.Seccomp do
   It is a deny list, not an allow list. Nothing in msb, its libkrun or MWT's
   relay makes any of these calls (checked in their sources for 0.7.15:
   only the guest's own agent mounts or changes root, inside the VM, where
-  this filter doesn't apply). An allow list of what a VMM does would break
-  with any msb update that makes a new call.
+  this filter doesn't apply). `mix microsandbox.update` lists every line a
+  new release of msb adds that makes one; libkrun, a dependency, it doesn't
+  read. An allow list of what a VMM does would break with any msb update
+  that makes a new call.
 
   Nor can anything in the bubble make a user namespace, where it would have
   capabilities again: `unshare` and `setns` are refused, `clone` is refused

@@ -1,0 +1,24 @@
+# The microsandbox runtime MWT builds and ships, read by
+# scripts/build-microsandbox.sh, which refuses to build anything else.
+# `mix microsandbox.update VERSION` rewrites it and reports what changed
+# upstream; then ./scripts/install-runtime.sh, `mix test --only msb` and
+# `mix test --only vm`. KEY=VALUE lines only: shell and Elixir both read it.
+
+REPOSITORY=https://github.com/superradcompany/microsandbox.git
+# The upstream release, what `msb --version` prints, and its commit.
+UPSTREAM=0.8.2
+REVISION=aed6456b446fc7f4e441dceb314b993bb6925fa7
+
+# What that commit builds msb with, as its Cargo.lock says.
+LIBKRUN_VERSION=0.1.46
+LIBKRUN_SOURCE=git+https://github.com/superradcompany/libkrun?rev=77cad8a1b7d3c519fe12fd1e1e8dc6b2c5d383a3#77cad8a1b7d3c519fe12fd1e1e8dc6b2c5d383a3
+# The guest kernel: its file name, which msb looks for beside bin/, and the
+# vendor/libkrunfw commit it is built from. A new kernel can keep the name.
+LIBKRUNFW=libkrunfw.so.5.6.1
+KERNEL=f0493b6f1873ed6031bc0bb87568db0095a6d3b6
+
+# The release's files MWT takes as they are, by their digests.
+AGENTD_SHA256_X86_64=58d6c9b8cc19faeb78a31be0060a9980080c26a071d12ba1fa35545eed37db21
+AGENTD_SHA256_AARCH64=9f5be7d13e97de0284a09cad029b95e103ecec767a0b3f3c69bc4b0155a07c6d
+LIBKRUNFW_SHA256_X86_64=2b7ac057570c7b83ea418ddb88e5b6f1767427c3bf341837cc47123fdc83e161
+LIBKRUNFW_SHA256_AARCH64=59639169b759167a8362746b06b8e285d941487c6995bd11e9d9e46abbd8f227

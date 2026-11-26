@@ -30,6 +30,8 @@ defmodule MWTClient.Sandbox.Forwarder.SSH do
 
   @behaviour MWTClient.Sandbox.Forwarder
 
+  alias MWTClient.Sandbox.Msb.Commands
+
   # `$@` is ssh. Background jobs get /dev/null as stdin, so the watcher
   # reads MWT's end through fd 3. It writes nowhere: holding the port's
   # output open would keep MWT from hearing that ssh ended. The wrapper ends
@@ -105,7 +107,7 @@ defmodule MWTClient.Sandbox.Forwarder.SSH do
         "ServerAliveInterval=15",
         "ServerAliveCountMax=3",
         "ExitOnForwardFailure=no",
-        "ProxyCommand=#{shell_quote(launcher)} ssh serve #{shell_quote(vm)} --stdio --no-inactivity-timeout"
+        "ProxyCommand=" <> Enum.map_join([launcher | Commands.ssh_serve(vm)], " ", &shell_quote/1)
       ]) ++ [host(vm)]
   end
 
@@ -196,7 +198,7 @@ defmodule MWTClient.Sandbox.Forwarder.SSH do
   defp authorize(launcher, public_key) do
     # The launcher runs msb confined: the key is the one file of this
     # machine it is let read.
-    case System.cmd(launcher, ["ssh", "authorize", "--file", public_key],
+    case System.cmd(launcher, Commands.ssh_authorize_file(public_key),
            env: [{"MWT_MSB_READ", public_key}],
            stderr_to_stdout: true
          ) do

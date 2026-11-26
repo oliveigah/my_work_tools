@@ -2,12 +2,13 @@ defmodule MWTClient.Sandbox.Msb do
   @moduledoc """
   The `msb` command line, which is how MWT drives microsandbox: there is no
   Elixir SDK. Every call runs under `timeout`, so a stuck `msb` cannot stall
-  the sandbox process.
+  the sandbox process. The command lines themselves are built in
+  `MWTClient.Sandbox.Msb.Commands`, which the contract test checks.
 
   MWT ships its own runtime, built by `scripts/build-microsandbox.sh` into
-  `priv/microsandbox`: `msb` from the pinned commit of an upstream release
-  (superradcompany/microsandbox), that release's libkrunfw, which `msb`
-  finds beside its `bin/`, and MWT's relay. Whatever `msb` is on the PATH
+  `priv/microsandbox`: `msb` from the upstream release commit in
+  `scripts/microsandbox.pin` (superradcompany/microsandbox), that release's
+  libkrunfw, which `msb` finds beside its `bin/`, and MWT's relay. Whatever `msb` is on the PATH
   is never used.
 
   Each identity has its own microsandbox home, in its sandbox folder, not
@@ -21,7 +22,8 @@ defmodule MWTClient.Sandbox.Msb do
   """
 
   alias MWTClient.Accounts
-  alias MWTClient.Sandbox.{Bounded, Bubble, Channel, Disks, MemoryControl, Seccomp, Sockets}
+  alias MWTClient.Sandbox.{Bounded, Bubble, Seccomp, Sockets}
+  alias MWTClient.Sandbox.Msb.Commands
 
   # What `run/3` takes from a command: VM commands print a few KiB.
   @max_output 4 * 1024 * 1024
@@ -33,6 +35,18 @@ defmodule MWTClient.Sandbox.Msb do
     Keyword.get_lazy(config(), :runtime_dir, fn ->
       Application.app_dir(:mwt_client, "priv/microsandbox")
     end)
+  end
+
+  @doc """
+  What `scripts/build-microsandbox.sh` built the runtime from, as its
+  `VERSION` says (`0.7.15+f9ae8e23d`), or nil when there is no runtime.
+  """
+  @spec runtime_version() :: String.t() | nil
+  def runtime_version do
+    case File.read(Path.join(runtime_dir(), "VERSION")) do
+      {:ok, text} -> String.trim(text)
+      {:error, _} -> nil
+    end
   end
 
   @doc "MWT's `msb`, or nil when this build has no runtime."
@@ -410,70 +424,23 @@ defmodule MWTClient.Sandbox.Msb do
   """
   @spec status(String.t(), String.t()) :: :exists | :missing | {:error, String.t()}
   def status(username, name) do
-    case run(username, ["inspect", name, "--format", "json"], 20) do
-      {:ok, _record} ->
-        :exists
-
-      {:error, message} ->
-        if message =~ ~r/not found|no such|does not exist/i, do: :missing, else: {:error, message}
+    case run(username, Commands.inspect_vm(name), 20) do
+      {:ok, _record} -> :exists
+      {:error, message} -> if not_found?(message), do: :missing, else: {:error, message}
     end
   end
+
+  @doc """
+  Whether msb's refusal says the VM it was asked about doesn't exist.
+
+      iex> MWTClient.Sandbox.Msb.not_found?("error: sandbox not found: mwt-1")
+      true
+  """
+  @spec not_found?(String.t()) :: boolean()
+  def not_found?(message), do: message =~ ~r/not found|no such|does not exist/i
 
   @doc "Whether an image tag is in the identity's microsandbox cache."
   @spec image?(String.t(), String.t() | nil) :: boolean()
   def image?(_username, nil), do: false
-  def image?(username, tag), do: match?({:ok, _}, run(username, ["image", "inspect", tag], 20))
-
-  @doc """
-  The arguments of `msb create` for a VM with these parts, to run in the
-  bubble: every disk and folder is named by its path there
-  (`MWTClient.Sandbox.Bubble.inside/1`), and the proxy and DNS by the
-  relay's loopback ports.
-  """
-  @spec create_args(map()) :: [String.t()]
-  def create_args(
-        %{
-          name: name,
-          image: image,
-          cpus: cpus,
-          memory_gib: memory,
-          disk_gib: disk,
-          shell: shell
-        } = vm
-      ) do
-    disks =
-      Enum.flat_map(Disks.names(), fn disk ->
-        ["--mount-disk", "#{Bubble.inside(:disks)}/#{disk}.img:#{Disks.mount_point(disk)}"]
-      end)
-
-    # No folder of this machine is mounted: shared folders and /mnt/mwt are
-    # copied in while the VM runs (MWTClient.Sandbox.FolderSync), and the
-    # VM's memory is a disk of its own.
-    env = Enum.flat_map(vm.env, fn {key, value} -> ["--env", "#{key}=#{value}"] end)
-
-    # The CPU's virtualization, for VMs inside the VM: only when asked for
-    # (MWTClient.Sandbox.NestedVirt). microsandbox refuses it at start when
-    # this machine's KVM doesn't offer it.
-    nested = if Map.get(vm, :nested_virt, false), do: ["--nested-virt"], else: []
-
-    # Ports that exist only in the bubble, where the relay joins them to MWT.
-    # The agent channel: the VM's vsock port, joined to MWT's socket.
-    ["create", image, "--name", name, "--replace", "--pull", "never"] ++
-      ["--shell", shell] ++
-      [
-        "--cpus",
-        "#{cpus}",
-        "--memory",
-        "#{MemoryControl.minimum(memory)}G",
-        "--max-memory",
-        "#{memory}G",
-        "--root-disk",
-        "#{disk}G"
-      ] ++
-      nested ++
-      ["--proxy", "http://127.0.0.1:3128", "--dns-nameserver", "127.0.0.1:5353"] ++
-      ["--net", "public,private"] ++
-      ["--vsock", "#{Bubble.inside(:sockets)}/channel.sock:#{Channel.port()}"] ++
-      disks ++ env
-  end
+  def image?(username, tag), do: match?({:ok, _}, run(username, Commands.inspect_image(tag), 20))
 end

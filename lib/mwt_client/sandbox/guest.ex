@@ -34,6 +34,7 @@ defmodule MWTClient.Sandbox.Guest do
   """
 
   alias MWTClient.Sandbox.{Bounded, Msb}
+  alias MWTClient.Sandbox.Msb.Commands
 
   @type t :: %{
           root: Path.t(),
@@ -52,22 +53,22 @@ defmodule MWTClient.Sandbox.Guest do
   def vm(username, name) do
     %{
       root: "/work",
-      exec: fn words -> Msb.run(username, ["exec", name, "--" | words], 300) end,
+      exec: fn words -> Msb.run(username, Commands.exec(name, words), 300) end,
       run: fn words, seconds, max ->
-        Msb.run_status(username, ["exec", name, "--" | words], seconds, max)
+        Msb.run_status(username, Commands.exec(name, words), seconds, max)
       end,
       # git's `ext` transport: a command whose input and output carry the
       # protocol. `%s` becomes upload-pack or receive-pack.
       git_url: fn path ->
         "ext::" <>
           Enum.map_join(
-            [Msb.confined(username), "exec", "--stream", name, "--", "git", "%s", path],
+            [Msb.confined(username) | Commands.exec_stream(name, ["git", "%s", path])],
             " ",
             &ext_word/1
           )
       end,
       env: Msb.env(username),
-      stream: fn words -> [Msb.confined(username), "exec", "--stream", name, "--" | words] end,
+      stream: fn words -> [Msb.confined(username) | Commands.exec_stream(name, words)] end,
       place: & &1,
       show: :mount
     }

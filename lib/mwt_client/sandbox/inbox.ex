@@ -49,6 +49,7 @@ defmodule MWTClient.Sandbox.Inbox do
 
   alias MWTClient.Files
   alias MWTClient.Sandbox.{FolderSync, Grant, Guest, Instructions, JavaTrust, Memory, Msb}
+  alias MWTClient.Sandbox.Msb.Commands
 
   @vm "/mnt/mwt"
   # gcloud's OAuth client, public in its source: what a login it made names.
@@ -86,7 +87,7 @@ defmodule MWTClient.Sandbox.Inbox do
   def into_vm(record, username, name, data, opts \\ []) do
     mounted =
       if record.checked_at == nil,
-        do: Msb.run(username, ["exec", name, "--", "sh", "-c", @mount, "mwt-inbox", @vm], 60),
+        do: Msb.run(username, Commands.exec(name, ["sh", "-c", @mount, "mwt-inbox", @vm]), 60),
         else: {:ok, ""}
 
     case mounted do

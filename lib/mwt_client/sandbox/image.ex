@@ -32,6 +32,7 @@ defmodule MWTClient.Sandbox.Image do
   """
 
   alias MWTClient.Sandbox.{Build, Msb}
+  alias MWTClient.Sandbox.Msb.Commands
 
   @default_name "mwt_agent_sdb_image"
   @kept 3
@@ -172,7 +173,6 @@ defmodule MWTClient.Sandbox.Image do
   """
   @spec build_script(Path.t(), String.t(), keyword()) :: String.t()
   def build_script(dir, ref, opts \\ []) do
-    archive = Path.join(dir, "image.tar")
     q = &shell_quote/1
 
     cache =
@@ -186,13 +186,58 @@ defmodule MWTClient.Sandbox.Image do
     podman cp "$container:/etc/mwt/versions.txt" #{q.(Path.join(dir, "versions.txt"))} || true
     podman rm "$container" >/dev/null
     podman image inspect --format '{{.Size}}' #{q.(ref)} > #{q.(Path.join(dir, "size"))}
+    """ <> load_script(dir, ref) <> "echo \"==> ready: #{ref}\"\n"
+  end
+
+  @doc """
+  The shell script that hands podman's `ref` to microsandbox, through an
+  archive in `dir`: the end of `build_script/3`, and all of `load/3`. It
+  runs with `Msb.env/1`, as the build does.
+  """
+  @spec load_script(Path.t(), String.t()) :: String.t()
+  def load_script(dir, ref) do
+    archive = Path.join(dir, "image.tar")
+    q = &shell_quote/1
+    # msb's own words stay bare in the log; paths and tags are quoted.
+    word = fn text -> if text =~ ~r/\A--?[a-z-]+\z|\A[a-z]+\z/, do: text, else: q.(text) end
+
+    """
     echo "==> handing the image to microsandbox"
     rm -f #{q.(archive)}
     podman save --format docker-archive --output #{q.(archive)} #{q.(ref)}
-    MWT_MSB_READ=#{q.(archive)} "$MWT_MSB" load --input #{q.(archive)} --tag #{q.(ref)}
+    MWT_MSB_READ=#{q.(archive)} "$MWT_MSB" #{Enum.map_join(Commands.load(archive, ref), " ", word)}
     rm -f #{q.(archive)}
-    echo "==> ready: #{ref}"
     """
+  end
+
+  @doc """
+  Loads podman's `ref` into the identity's microsandbox again, through
+  `dir`: for an image another msb loaded (`Build.loaded_by`). Podman keeps
+  every build MWT keeps; one it no longer has must be built again.
+  """
+  @spec load(String.t(), Path.t(), String.t()) :: :ok | {:error, String.t()}
+  def load(username, dir, ref) do
+    with true <- podman?() || {:error, "podman isn't installed, and the image is loaded from it"},
+         :ok <- Msb.write_launcher(username),
+         :ok <- File.mkdir_p(dir) do
+      case MWTClient.Executable.cmd(
+             "bash",
+             ["-c", "set -euo pipefail\n" <> load_script(dir, ref)],
+             env: Msb.env(username),
+             stderr_to_stdout: true
+           ) do
+        {_output, 0} ->
+          :ok
+
+        {output, _status} ->
+          {:error,
+           "Loading #{ref} into this MWT's msb failed (build the image again if podman no longer has it): " <>
+             (output |> String.trim() |> String.slice(-1_000, 1_000))}
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "Loading #{ref} failed: #{inspect(reason)}"}
+    end
   end
 
   @doc "Reads what a finished build left in `dir` into a `Build`."
@@ -231,7 +276,7 @@ defmodule MWTClient.Sandbox.Image do
   """
   @spec delete(String.t(), String.t()) :: :ok
   def delete(username, ref) do
-    _ = Msb.run(username, ["image", "remove", ref, "localhost/" <> ref], 60)
+    _ = Msb.run(username, Commands.remove_images([ref, "localhost/" <> ref]), 60)
 
     if podman?() do
       MWTClient.Executable.cmd("podman", ["rmi", "--ignore", ref], stderr_to_stdout: true)

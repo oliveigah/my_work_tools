@@ -17,6 +17,7 @@ defmodule MWTClient.Sandbox.MemoryControl do
   """
 
   alias MWTClient.Sandbox.{Bubble, Msb}
+  alias MWTClient.Sandbox.Msb.Commands
 
   @mib 1024 * 1024
   @gib 1024 * @mib
@@ -28,15 +29,7 @@ defmodule MWTClient.Sandbox.MemoryControl do
 
   @doc "Reset the boot geometry before every start: live targets also persist in msb."
   def prepare(username, name, maximum_gib) do
-    Msb.run(username, [
-      "modify",
-      name,
-      "--next-start",
-      "--memory",
-      "#{minimum(maximum_gib)}G",
-      "--max-memory",
-      "#{maximum_gib}G"
-    ])
+    Msb.run(username, Commands.boot_memory(name, minimum(maximum_gib), maximum_gib))
   end
 
   @doc "Read host memory. Missing or malformed readings never mean zero available RAM."

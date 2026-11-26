@@ -22,6 +22,11 @@ defmodule Mix.Tasks.Compile.Native do
   the presentations need missing), it says what to do, and compiling goes on: the
   sandbox only needs them to run a VM. `MWT_NATIVE_BUILD=0` skips this step.
 
+  It also says when `priv/microsandbox` holds another msb than
+  `scripts/microsandbox.pin` builds (its `VERSION`), which it doesn't
+  build: that takes minutes, through `scripts/install-runtime.sh` or
+  `scripts/build-microsandbox.sh`. No runtime at all says nothing.
+
   The code reloader of the development server doesn't run it (its
   `:reloadable_compilers`), so a page never waits for Cargo.
   """
@@ -41,7 +46,32 @@ defmodule Mix.Tasks.Compile.Native do
       root = Path.dirname(Mix.Project.project_file())
       out = Path.join(root, "priv/microsandbox")
       built = Enum.map(@programs, &build(root, out, &1))
+      check_runtime(root, out)
       if :ok in built, do: {:ok, []}, else: {:noop, []}
+    end
+  end
+
+  defp check_runtime(root, out) do
+    script = Path.join(root, "scripts/build-microsandbox.sh")
+
+    with {:ok, built} <- File.read(Path.join(out, "VERSION")),
+         true <- File.regular?(script),
+         {pinned, 0} <- System.cmd("bash", [script, "--version"], stderr_to_stdout: true),
+         warning when is_binary(warning) <- runtime_warning(built, pinned) do
+      Mix.shell().error(warning)
+    end
+  end
+
+  @doc false
+  # What to say when the runtime's VERSION isn't the one the pin builds.
+  @spec runtime_warning(String.t(), String.t()) :: String.t() | nil
+  def runtime_warning(built, pinned) do
+    {built, pinned} = {String.trim(built), String.trim(pinned)}
+
+    if built != pinned do
+      "==> priv/microsandbox holds msb #{built}, scripts/microsandbox.pin says #{pinned}: " <>
+        "MWT runs that one until ./scripts/install-runtime.sh (or " <>
+        "./scripts/build-microsandbox.sh) builds it."
     end
   end
 

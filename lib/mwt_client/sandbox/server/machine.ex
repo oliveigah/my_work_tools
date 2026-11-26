@@ -30,6 +30,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
     VM
   }
 
+  alias MWTClient.Sandbox.Msb.Commands
   alias MWTClient.Sandbox.Server.{Copying, HostRuns, ShareSync, State}
 
   @build_log_limit 400
@@ -112,7 +113,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
                  # anonymity until the next start.
                  _cleared <- clear_legacy_env(username, name, grants),
                  {:ok, _} <- MemoryControl.prepare(username, name, memory_gib),
-                 {:ok, output} <- Bubble.start(bubble, ["start", name], 120),
+                 {:ok, output} <- Bubble.start(bubble, Commands.start(name), 120),
                  {:ok, _} <- Bubble.resize_memory(username, memory_gib * 1024) do
               {:ok, output, boot(job)}
             end
@@ -219,11 +220,14 @@ defmodule MWTClient.Sandbox.Server.Machine do
     options = Map.merge(@create_defaults, options || %{})
 
     with :ok <- check_options(state, options) do
+      load = load_again(state)
+      busy = if load, do: "#{busy} (loading the image into this MWT's msb first)", else: busy
+
       state =
         state |> State.write_inbox() |> State.change(:vm, &%{&1.vm | busy: busy, error: nil})
 
       spec = vm_spec(state)
-      args = Msb.create_args(Map.put(spec, :env, []))
+      args = Commands.create(Map.put(spec, :env, []))
 
       record = record(State.now(), state.image.tag, true)
 
@@ -242,7 +246,8 @@ defmodule MWTClient.Sandbox.Server.Machine do
         boot: boot_job(state, record, options.seed_memory),
         spec: :erlang.phash2(spec),
         args: args,
-        options: options
+        options: options,
+        load: load
       }
 
       {:reply, :ok, State.task(state, {:vm, :create}, fn -> run_create(job) end)}
@@ -276,6 +281,21 @@ defmodule MWTClient.Sandbox.Server.Machine do
     end
   end
 
+  @doc """
+  What to load again before the VM is created: the current image, when the
+  msb that loaded it (`Build.loaded_by`) isn't `runtime`, this MWT's. Nil
+  when it is, or when the image is no build of MWT's.
+  """
+  @spec load_again(map(), String.t() | nil) ::
+          %{ref: String.t(), dir: Path.t(), runtime: String.t() | nil} | nil
+  def load_again(state, runtime \\ Msb.runtime_version()) do
+    case Enum.find(state.builds, &(&1.ref == state.image.tag)) do
+      %Build{loaded_by: ^runtime} -> nil
+      %Build{ref: ref} -> %{ref: ref, dir: build_dir(state), runtime: runtime}
+      nil -> nil
+    end
+  end
+
   defp run_create(job) do
     # A clean stop first: the disks are copied and changed below, and a disk
     # the VM still writes must not be.
@@ -283,6 +303,31 @@ defmodule MWTClient.Sandbox.Server.Machine do
     # Copy commands address the VM by its reused name. None of the old
     # tasks may still issue one when the replacement starts.
     :ok = Copying.drain(job.server)
+
+    # Before anything of the VM's changes: an image that can't be loaded
+    # leaves its disks and Home as they were.
+    loaded = if job.load, do: Image.load(job.username, job.load.dir, job.load.ref), else: :ok
+
+    case loaded do
+      :ok ->
+        job |> create_stopped() |> Map.put(:loaded, job.load)
+
+      {:error, _message} = error ->
+        %{
+          result: error,
+          spec: job.spec,
+          ref: job.ref,
+          record: job.record,
+          snapshots: job.snapshots,
+          taken: nil,
+          booted: nil,
+          options: job.options,
+          loaded: nil
+        }
+    end
+  end
+
+  defp create_stopped(job) do
     Disks.ensure!(job.folders, job.sizes)
 
     # Home is copied before anything changes it, so emptying it or going back
@@ -385,7 +430,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
     created = if job.record.created_at, do: DateTime.to_iso8601(job.record.created_at), else: ""
     args = [job.record.id, created, job.record.image || "", job.name]
 
-    case Msb.run(job.username, ["exec", job.name, "--", "/mnt/mwt/bin/mwt-boot" | args], 60) do
+    case Msb.run(job.username, Commands.exec(job.name, ["/mnt/mwt/bin/mwt-boot" | args]), 60) do
       {:ok, _output} ->
         :ok
 
@@ -581,6 +626,29 @@ defmodule MWTClient.Sandbox.Server.Machine do
     end
   end
 
+  # The image a create loaded again is this runtime's now, whether or not
+  # the VM came up.
+  defp loaded_again(state, nil), do: state
+
+  defp loaded_again(state, %{ref: ref, runtime: runtime}) do
+    state
+    |> State.change(:builds, fn state ->
+      Enum.map(state.builds, &if(&1.ref == ref, do: %{&1 | loaded_by: runtime}, else: &1))
+    end)
+    |> State.log(%{
+      outcome: :vm,
+      summary: "Image #{ref} loaded again, into msb #{runtime}",
+      details: [
+        EventDetails.section("Why", [
+          {"Image", ref},
+          {"Loaded into", "msb #{runtime}"},
+          {"Because",
+           "another msb had loaded it, and microsandbox 0.8 doesn't serve an image 0.7 loaded"}
+        ])
+      ]
+    })
+  end
+
   @doc """
   Takes the result of a task that `vm_task/3`, `create/3`, `seed_task/1` or `check/1` started.
   """
@@ -622,6 +690,7 @@ defmodule MWTClient.Sandbox.Server.Machine do
   def finished(state, {:vm, :create}, %{} = done) do
     state =
       state
+      |> loaded_again(Map.get(done, :loaded))
       |> State.change(:snapshots, fn _ -> done.snapshots end)
       |> State.changed()
 
@@ -959,21 +1028,20 @@ defmodule MWTClient.Sandbox.Server.Machine do
   no process is killed and the VM doesn't need recreation.
   """
   def clear_legacy_env(username, name, grants) do
-    args =
+    keys =
       grants
       |> Inbox.env()
       |> Enum.map(&elem(&1, 0))
       |> Enum.uniq()
-      |> Enum.flat_map(&["--env-rm", &1])
 
-    case args do
+    case keys do
       [] ->
         :ok
 
       _ ->
         # The runtime cannot update exec defaults live. Persist this for
         # the next boot without stopping a user's running VM.
-        case Msb.run(username, ["modify", name, "--next-start" | args], 30) do
+        case Msb.run(username, Commands.remove_env(name, keys), 30) do
           {:ok, _} ->
             :ok
 
@@ -1055,6 +1123,8 @@ defmodule MWTClient.Sandbox.Server.Machine do
   `vm_images` rule keeps go, except the one the VM was created from.
   """
   def built(state, %Build{} = build) do
+    # The build script loaded it, with this MWT's msb.
+    build = %{build | loaded_by: Msb.runtime_version()}
     builds = [build | Enum.reject(state.builds, &(&1.ref == build.ref))]
 
     {kept, removed} =

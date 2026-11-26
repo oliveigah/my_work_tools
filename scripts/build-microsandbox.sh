@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Builds the microsandbox runtime MWT ships with: msb from the pinned commit
-# of an upstream release (superradcompany/microsandbox), and that release's
-# libkrunfw. Everything is pinned here, so every MWT build carries the same
-# runtime.
+# Builds the microsandbox runtime MWT ships with: msb from the upstream
+# release commit pinned in scripts/microsandbox.pin
+# (superradcompany/microsandbox), and that release's libkrunfw. Everything
+# is pinned there, so every MWT build carries the same runtime; `mix
+# microsandbox.update VERSION` moves the pin.
 #
 # Output (default priv/microsandbox, which the release copies along):
 #   bin/msb                 the CLI, guest agent embedded
-#   lib/libkrunfw.so.5.6.1  the guest kernel; msb finds it beside bin/
+#   lib/$LIBKRUNFW          the guest kernel; msb finds it beside bin/
+#   VERSION                 what --version prints: a build that differs is stale
 #
 # Needs git, curl, sha256sum, a C compiler and Rust/Cargo (strace too, for two
 # of the filesystem tests). Downloads go through checksums; the source must be
@@ -14,45 +16,43 @@
 set -Eeuo pipefail
 
 if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
-  printf 'Usage: ./scripts/build-microsandbox.sh [OUTPUT_DIR]\n'
+  printf 'Usage: ./scripts/build-microsandbox.sh [OUTPUT_DIR | --version]\n'
   printf "Build msb from the pinned upstream release commit, and libkrunfw. Default output: priv/microsandbox\n"
+  printf '%s\n' '--version prints the runtime version the pin builds, and builds nothing.'
   printf 'Env: MWT_MSB_SOURCE, MWT_MSB_DOWNLOADS, CARGO_TARGET_DIR, MWT_MSB_SKIP_TESTS=1\n'
   exit 0
 fi
 [[ $# -le 1 ]] || { printf 'At most one argument. Use --help for usage.\n' >&2; exit 1; }
+
+project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=microsandbox.pin
+source "$project/scripts/microsandbox.pin"
+# This runtime's identity, written to VERSION: the release, and the first 9
+# characters of the commit it was built from.
+VERSION=$UPSTREAM+${REVISION:0:9}
+if [[ "${1:-}" == --version ]]; then
+  printf '%s\n' "$VERSION"
+  exit 0
+fi
 [[ $(uname -s) == Linux ]] || { printf 'This build targets Linux.\n' >&2; exit 1; }
 
-# The v0.7.15 release's commit. Until 2026-11-16 this was MWT's fork, with
-# "fix: ESTALE for host replaced files" for folders mounted live; since then
-# nothing of this machine is mounted in the VM, so the stock release does.
-REPOSITORY=https://github.com/superradcompany/microsandbox.git
-REVISION=f9ae8e23df767929d513348b3543210322a9723f
-# The upstream release it is based on: its guest agent and libkrunfw, and what
-# `msb --version` prints.
-UPSTREAM=0.7.15
-# This runtime's identity, written to VERSION: a build whose VERSION differs
-# is stale.
-VERSION=$UPSTREAM+${REVISION:0:9}
-LIBKRUNFW=libkrunfw.so.5.6.1
-# From the v0.7.15 release's asset digests.
 case $(uname -m) in
   x86_64)
     ARCH=x86_64
-    AGENTD_SHA256=c9b9cc8bf660ed49db0ce5732adc74fadd53ceb4a3f16a1575101610f8e2a1fd
-    LIBKRUNFW_SHA256=e54cd5d8849162bbdb136d3342f0601be1b713a2af529bd60d335ec2d44fdb7c
+    AGENTD_SHA256=$AGENTD_SHA256_X86_64
+    LIBKRUNFW_SHA256=$LIBKRUNFW_SHA256_X86_64
     ;;
   aarch64)
     ARCH=aarch64
-    AGENTD_SHA256=04fe96ce2103d17ba88e22c3c90642a1071f5e75bec16525e84c9d53fb5c1008
-    LIBKRUNFW_SHA256=eb59d55be54791221c58201e333c21a4f39086b374a1eeea01517f85fdae171c
+    AGENTD_SHA256=$AGENTD_SHA256_AARCH64
+    LIBKRUNFW_SHA256=$LIBKRUNFW_SHA256_AARCH64
     ;;
   *) printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
 esac
-RELEASE=https://github.com/superradcompany/microsandbox/releases/download/v$UPSTREAM
+RELEASE=${REPOSITORY%.git}/releases/download/v$UPSTREAM
 
-project=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 output=${1:-$project/priv/microsandbox}
-# MWT_MSB_SOURCE may name an existing checkout (your clone of the fork); it
+# MWT_MSB_SOURCE may name an existing checkout (a clone of microsandbox); it
 # must be at REVISION with no local changes, and is never modified.
 source=${MWT_MSB_SOURCE:-$project/tmp/microsandbox-src/$REVISION}
 downloads=${MWT_MSB_DOWNLOADS:-$project/tmp/microsandbox-downloads}
@@ -92,6 +92,23 @@ if [[ $(git -C "$source" rev-parse HEAD) != "$REVISION" ]]; then
 fi
 if [[ -n $(git -C "$source" status --porcelain --untracked-files=no) ]]; then
   printf '%s has local changes; refusing to build anything but %s.\n' "$source" "$REVISION" >&2
+  exit 1
+fi
+# The pin says what this commit builds with; a pin that doesn't is wrong.
+libkrun=$(awk '$0 == "name = \"msb_krun\"" { getline v; getline s; print v; print s; exit }' "$source/Cargo.lock" |
+  sed -n 's/^\(version\|source\) = "\(.*\)"$/\2/p' | paste -sd ' ')
+if [[ "$libkrun" != "$LIBKRUN_VERSION $LIBKRUN_SOURCE" ]]; then
+  printf 'The pin says libkrun %s from %s; %s/Cargo.lock says %s.\n' \
+    "$LIBKRUN_VERSION" "$LIBKRUN_SOURCE" "$source" "${libkrun:-nothing}" >&2
+  exit 1
+fi
+kernel=$(git -C "$source" rev-parse HEAD:vendor/libkrunfw)
+if [[ "$kernel" != "$KERNEL" ]]; then
+  printf 'The pin says the kernel is vendor/libkrunfw at %s; %s has %s.\n' "$KERNEL" "$REVISION" "$kernel" >&2
+  exit 1
+fi
+if ! grep -q "LIBKRUNFW_VERSION: &str = \"${LIBKRUNFW#libkrunfw.so.}\"" "$source/crates/utils/lib/lib.rs"; then
+  printf 'The pin says msb looks for %s; crates/utils/lib/lib.rs says otherwise.\n' "$LIBKRUNFW" >&2
   exit 1
 fi
 

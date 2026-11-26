@@ -88,11 +88,18 @@ defmodule MWTClient.Sandbox.CopyBack do
   """
 
   # This machine's side of step 3: the list into the VM, the archive into
-  # a file, which may grow to at most `MWT_BLOCKS` KiB.
+  # a file of at most `MWT_BLOCKS` KiB; more ends it with 99
+  # (`@too_large`). Not `ulimit -f`, which holds every file the command
+  # writes: msb writes its own database as it goes, and was killed.
   @fetch ~S"""
-  ulimit -f "$MWT_BLOCKS" || exit 1
-  "$@" <"$MWT_INPUT" >"$MWT_OUTPUT"
+  set -o pipefail
+  limit=$((MWT_BLOCKS * 1024))
+  "$@" <"$MWT_INPUT" | head -c "$((limit + 1))" >"$MWT_OUTPUT"
+  status=$?
+  [ "$(wc -c <"$MWT_OUTPUT")" -le "$limit" ] || exit 99
+  exit "$status"
   """
+  @too_large 99
 
   @typedoc "One path of the VM's folder, as listed (`FolderSync.parse_list/2`)."
   @type entry :: FolderSync.entry()
@@ -443,7 +450,7 @@ defmodule MWTClient.Sandbox.CopyBack do
         detail = output |> Bounded.failure(errors, @error_bytes) |> error_text()
 
         why =
-          if status == 128 + 25,
+          if status == @too_large,
             do: "it was larger than the files asked for",
             else: "exit #{status}: #{detail}"
 

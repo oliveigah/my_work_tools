@@ -280,8 +280,27 @@ Tests:
 ```bash
 mix test              # the whole suite, about a minute and a half
 mix precommit         # format, compile warnings and tests, before a change goes in
+mix test --only msb   # what MWT asks of msb, against the one in priv/microsandbox: seconds, no VM
 mix test --only vm    # boots a real VM: confinement, network, disks
 ```
+
+msb is built from the upstream release in `scripts/microsandbox.pin`,
+which `scripts/build-microsandbox.sh` refuses to build anything but. To
+move to another release:
+
+```bash
+mix microsandbox.update 0.8.2   # rewrites the pin, reports what changed upstream in tmp/
+./scripts/install-runtime.sh    # or ./scripts/build-microsandbox.sh
+mix test --only msb
+mix test --only vm
+```
+
+The report starts with what to look at first: a kernel changed under the
+same file name, where libkrun comes from, the store's migrations,
+breaking changes, security fixes, a call the seccomp filter refuses.
+Every msb command MWT runs is built in `MWTClient.Sandbox.Msb.Commands`,
+which `--only msb` checks; `mix compile` says when `priv/microsandbox`
+isn't the pinned build.
 
 To build the Debian and RPM packages into `dist/` (with Docker and Docker
 Compose; `PACKAGE_PLATFORM=linux/arm64` for ARM):

@@ -102,4 +102,45 @@ defmodule MWTClient.Sandbox.ImageTest do
     # Loaded by the confined msb, let read the archive and nothing else.
     assert script =~ ~s(MWT_MSB_READ='#{dir}/image.tar' "$MWT_MSB" load --input)
   end
+
+  test "loading again hands podman's image to msb, as the end of a build does" do
+    script = Image.load_script("/build dir", "box:2026-11-12.1")
+
+    assert script =~
+             "podman save --format docker-archive --output '/build dir/image.tar' 'box:2026-11-12.1'"
+
+    assert script =~
+             ~s(MWT_MSB_READ='/build dir/image.tar' "$MWT_MSB" load --input '/build dir/image.tar' --tag 'box:2026-11-12.1')
+
+    assert String.ends_with?(
+             Image.build_script("/build dir", "box:2026-11-12.1"),
+             "==> ready: box:2026-11-12.1\"\n"
+           )
+
+    assert Image.build_script("/build dir", "box:2026-11-12.1") =~ script
+  end
+
+  test "the current image is loaded again before a create only when another msb loaded it" do
+    alias MWTClient.Sandbox.Server.Machine
+
+    builds = [
+      %{build("box", "2026-11-12.2", 10) | loaded_by: "0.8.2+aed6456b4"},
+      %{build("box", "2026-11-12.1", 30) | loaded_by: "0.7.15+f9ae8e23d"},
+      build("box", "2026-11-11.1", 60)
+    ]
+
+    state = fn tag -> %{builds: builds, image: %{tag: tag}, dir: "/sandbox"} end
+
+    assert Machine.load_again(state.("box:2026-11-12.2"), "0.8.2+aed6456b4") == nil
+
+    assert Machine.load_again(state.("box:2026-11-12.1"), "0.8.2+aed6456b4") ==
+             %{ref: "box:2026-11-12.1", dir: "/sandbox/build", runtime: "0.8.2+aed6456b4"}
+
+    # Built before MWT kept who loaded it.
+    assert %{ref: "box:2026-11-11.1"} =
+             Machine.load_again(state.("box:2026-11-11.1"), "0.8.2+aed6456b4")
+
+    # An image MWT didn't build (a test's alpine) is left alone.
+    assert Machine.load_again(state.("alpine"), "0.8.2+aed6456b4") == nil
+  end
 end

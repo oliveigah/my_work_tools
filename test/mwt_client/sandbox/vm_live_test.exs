@@ -42,6 +42,11 @@ defmodule MWTClient.Sandbox.VMLiveTest do
   alias MWTClient.Sandbox.Server.Machine
 
   @moduletag :vm
+
+  # Alpine's packages over plain HTTP, which MWT reads and lets through:
+  # over HTTPS they would need MWT's CA, which reaches the VM with
+  # /mnt/mwt, whose copy needs the bash being installed.
+  @apk "sed -i 's|^https://|http://|' /etc/apk/repositories && apk add --no-cache"
   @moduletag timeout: 600_000
 
   setup do
@@ -160,7 +165,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     }
 
     args =
-      Msb.create_args(%{
+      Msb.Commands.create(%{
         name: name,
         image: "alpine",
         shell: "/bin/sh",
@@ -262,7 +267,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     bubble = %{username: username, name: name, disks: folders.dir}
 
     create =
-      Msb.create_args(%{
+      Msb.Commands.create(%{
         name: name,
         image: "alpine",
         shell: "/bin/sh",
@@ -400,7 +405,8 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     ## Out only through MWT, DNS included
 
     assert {:ok, "<!doctype html>"} = exec.("wget -q -T 30 -O - http://example.com/ | head -c 15")
-    assert [%{port: 80} | _] = events(username, :tunnel)
+    # Plain HTTP is read, as every request MWT can read.
+    assert [%{port: 80, host: "example.com"} | _] = events(username, :read)
     assert "example.com" in Enum.map(events(username, :lookup), & &1.host)
 
     assert {:ok, elsewhere} =
@@ -412,16 +418,14 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     ## The agent channel and the boot script, with tools fetched through MWT
 
     # bash and socat for the `mwt` command, python3 for memo: Alpine has none.
-    assert {:ok, _} =
-             exec.(
-               "apk add --no-cache bash socat python3 >/dev/null 2>&1; bash --version | head -1"
-             )
+    assert {:ok, "GNU bash" <> _} =
+             exec.("#{@apk} bash socat python3 >/dev/null 2>&1 && bash --version | head -1")
 
     ## A shared folder, copied in: one way, its repository left out
 
     # GNU find, stat and tar for the copy's side; MWT's image has them.
     assert {:ok, _} =
-             exec.("apk add --no-cache findutils coreutils tar >/dev/null 2>&1; echo ok")
+             exec.("#{@apk} findutils coreutils tar >/dev/null 2>&1 && echo ok")
 
     # Its store on the work disk, shown read-only at the same path.
     guest = Guest.vm(username, name)
@@ -492,9 +496,9 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert File.read!(Path.join(Workspace.from_vm(workspace), "probe.txt")) == "probe\n"
     assert File.read!(Path.join(Workspace.from_vm(workspace), "sub/deep.txt")) == "deep\n"
 
-    # The built-in command grant is still off.
+    # The built-in grant for commands agents write is listed.
     assert {:ok, grants} = exec.("/mnt/mwt/bin/mwt grants")
-    assert grants =~ "id: `commands` · Ask to run commands · off"
+    assert grants =~ "id: `agent-commands` · open use of host commands (every run asks) ·"
 
     ## Credential migration and scope in an actual running VM
 
@@ -509,7 +513,8 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert {:ok, "gone\n"} = exec.("test -e /mnt/mwt/bin/mwt || echo gone")
     inbox = copy_inbox.(Inbox.record(inbox_dir, "vm-live"), fresh: true)
     assert {:ok, off} = exec.("cat /mnt/mwt/grant-env/#{token.id}.sh")
-    assert off =~ "this token grant is off"
+    assert off =~ ~r/no grant over \S+ is on/
+    assert off =~ "return 125"
 
     # A change reaches the copy at the next look: each changed file replaced
     # whole, by a rename.
@@ -912,9 +917,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     git.(["config", "user.email", "me@example.test"])
 
     assert {:ok, _} =
-             exec.(
-               "apk add --no-cache git bash socat findutils coreutils tar python3 && git --version"
-             )
+             exec.("#{@apk} git bash socat findutils coreutils tar python3 && git --version")
 
     # The rest of the shared folder is copied in when synced; the
     # repository is not.

@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 
-# MWT ships its own microsandbox runtime: msb from a pinned commit of MWT's
-# fork, its libkrunfw (see scripts/build-microsandbox.sh), MWT's relay and
+# MWT ships its own microsandbox runtime: msb from the upstream release
+# commit in scripts/microsandbox.pin, its libkrunfw (see
+# scripts/build-microsandbox.sh), MWT's relay and
 # its presentations. They link only glibc (the presentations nothing), so
 # they are built once, on the older glibc of the two package targets, and both packages
 # carry the same files.
@@ -20,7 +21,7 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 ENV CARGO_HTTP_MULTIPLEXING=false CARGO_NET_RETRY=10
 
 WORKDIR /src
-COPY scripts/build-microsandbox.sh ./scripts/
+COPY scripts/build-microsandbox.sh scripts/microsandbox.pin ./scripts/
 ARG TARGETARCH
 # Every stage shares Cargo's registry and git caches, and stages build in
 # parallel. Cargo's own lock is in /root/.cargo, outside these mounts, so

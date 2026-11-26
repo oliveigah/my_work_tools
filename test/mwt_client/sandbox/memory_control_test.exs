@@ -87,7 +87,7 @@ defmodule MWTClient.Sandbox.MemoryControlTest do
 
   test "create separates boot RAM from the hotplug ceiling" do
     args =
-      Msb.create_args(%{
+      Msb.Commands.create(%{
         name: "vm",
         image: "alpine",
         cpus: 2,

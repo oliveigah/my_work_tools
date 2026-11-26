@@ -47,7 +47,7 @@ defmodule MWTClient.Sandbox.ShellTest do
 
   test "SSH uses Bash independently of the image's CMD or passwd entry" do
     args =
-      Msb.create_args(%{
+      Msb.Commands.create(%{
         name: "test",
         image: "box:1",
         shell: "/bin/bash",

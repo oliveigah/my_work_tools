@@ -26,11 +26,11 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cache=${MWT_RUNTIME_CACHE:-/work/mwt-runtime}
 out=$root/priv/microsandbox
 
-# The version build-microsandbox.sh writes to VERSION: its UPSTREAM release
-# and the first 9 characters of its REVISION.
-pinned() { sed -n "s/^$1=\(.*\)$/\1/p" "$root/scripts/build-microsandbox.sh" | head -1; }
-revision=$(pinned REVISION)
-want=$(pinned UPSTREAM)+${revision:0:9}
+# What scripts/microsandbox.pin builds, as build-microsandbox.sh writes it
+# to VERSION.
+# shellcheck source=microsandbox.pin
+revision=$(source "$root/scripts/microsandbox.pin" && printf '%s' "$REVISION")
+want=$("$root/scripts/build-microsandbox.sh" --version)
 
 built=$cache/runtimes/$want
 if [[ $(cat "$built/VERSION" 2>/dev/null) != "$want" ]]; then

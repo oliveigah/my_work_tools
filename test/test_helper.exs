@@ -25,12 +25,17 @@ MWTClient.NestedVirtHelpers.fake_host!(nested_virt_root, :allowed)
 # The D-Bus tests start a private dbus-daemon, so they need one installed.
 # The `:dpkg` tests build and read a Debian package, with dpkg-deb; the
 # `:rpmbuild` ones a Fedora package, with rpmbuild (rpm-build on Fedora).
+# The `:msb` tests check what MWT asks of microsandbox against the msb in
+# priv/microsandbox (scripts/install-runtime.sh), with no VM: seconds, after
+# every change of scripts/microsandbox.pin; `mix test --only msb`.
 # The `:vm` tests boot a real VM: they need KVM, bwrap, MWT's runtime in
 # priv/microsandbox (scripts/install-runtime.sh in the agent sandbox) and the
 # internet; `mix test --only vm` runs them.
 # The `:bwrap` tests run a command in the bubble a confined action runs
 # in (`MWTClient.Sandbox.Confine`), which needs bwrap and user namespaces.
-exclude = if MWTClient.DBusDaemon.available?(), do: [:bench, :vm], else: [:bench, :vm, :dbus]
+exclude =
+  if MWTClient.DBusDaemon.available?(), do: [:bench, :msb, :vm], else: [:bench, :msb, :vm, :dbus]
+
 exclude = if MWTClient.Sandbox.Confine.available() == :ok, do: exclude, else: [:bwrap | exclude]
 exclude = if System.find_executable("dpkg-deb"), do: exclude, else: [:dpkg | exclude]
 exclude = if System.find_executable("rpmbuild"), do: exclude, else: [:rpmbuild | exclude]

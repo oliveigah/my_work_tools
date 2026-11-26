@@ -167,6 +167,13 @@ network card, which msb doesn't offer.
   namespaces of its own, a seccomp filter, no home folder, no network but
   loopback, reaching MWT only over Unix sockets. On Ubuntu that is MWT's
   own copy of bwrap under an AppArmor profile the package installs.
+- **msb, pinned.** One file, `scripts/microsandbox.pin`, names the
+  release, its commit and the digests of the files taken as they are; the
+  build checks every line of it against the source. Every msb command MWT
+  runs is built in one module (`Msb.Commands`), so an update is checked in
+  seconds against the new msb's flags (`mix test --only msb`) before a VM
+  boots (`--only vm`). `mix microsandbox.update` moves the pin and writes
+  what changed upstream, to read before building.
 - **Disks, not writable folders.** The VM's Home, Cache and Work are ext4
   images that nothing on your machine mounts (`e2fsck` and `resize2fs`
   run in a bubble too). A folder the VM could write let a planted git

@@ -123,6 +123,43 @@ defmodule MWTClient.Sandbox.CopyBackTest do
     assert File.read!(Path.join(context.here, "a.txt")) == "two, longer"
   end
 
+  test "an archive larger than the files asked for lands nothing", context do
+    put(context, "a.txt", "small")
+
+    # The pack, and only it, sends more than the files it was asked for.
+    guest = %{
+      context.guest
+      | stream: fn words ->
+          if Enum.any?(words, &String.contains?(&1, "tar -c")),
+            do: ["sh", "-c", "cat >/dev/null; head -c 200000 /dev/zero"],
+            else: context.guest.stream.(words)
+        end
+    }
+
+    assert {record, nil} = run(%{context | guest: guest})
+    assert record.status.error =~ "larger than the files asked for"
+    assert listing(context.here) == []
+  end
+
+  # msb writes its own database while it streams the archive: only the
+  # archive is held to the size of what was asked for.
+  test "what the command writes elsewhere doesn't count against the archive", context do
+    put(context, "a.txt", "small")
+    side = Path.join(context.base, "side.db")
+
+    guest = %{
+      context.guest
+      | stream: fn words ->
+          ["sh", "-c", ~s(head -c 300000 /dev/zero > "$0"; shift; exec "$@"), side, "--" | words]
+        end
+    }
+
+    assert {record, nil} = run(%{context | guest: guest})
+    assert record.status.error == nil
+    assert File.read!(Path.join(context.here, "a.txt")) == "small"
+    assert File.stat!(side).size == 300_000
+  end
+
   describe "an entry breaking a rule lands nothing" do
     for {name, make, why} <- [
           {"a symlink", :link, "symlink"},
