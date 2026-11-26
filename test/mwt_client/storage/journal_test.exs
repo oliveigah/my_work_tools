@@ -115,6 +115,26 @@ defmodule MWTClient.Storage.JournalTest do
     assert count.() == [[0]]
   end
 
+  test "request completions keep their first exchange and fill missing durations", %{
+    username: username
+  } do
+    Journal.record(username, Map.merge(row(1), %{exchange_id: "x1", ms: 17}))
+    :ok = Journal.flush(username)
+
+    Journal.record(username, Map.put(row(2), :exchange_id, "x1"))
+    Journal.record(username, Map.put(row(3), :exchange_id, "x2"))
+    Journal.record_exchange(username, "x1", %{request: :first}, 12)
+    Journal.record_exchange(username, "x1", %{request: :duplicate}, 99)
+    Journal.record_took(username, "x2", 8)
+
+    assert Journal.exchange(username, "e1") == %{request: :first}
+    assert Journal.exchange(username, "e2") == %{request: :first}
+    assert Journal.exchange(username, "e3") == nil
+
+    assert Storage.run(username, :journal, & &1.query!("SELECT ms FROM events ORDER BY seq").rows) ==
+             [[17], [12], [8]]
+  end
+
   test "a card is kept while a line names it, and goes after it", %{username: username} do
     card = %{card: %{id: "card-1", title: "GET api.github.com/user"}, choice: "you allowed once"}
 

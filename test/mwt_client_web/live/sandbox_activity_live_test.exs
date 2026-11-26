@@ -342,14 +342,27 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
 
   test "a running request's line is marked and shows its request; once it ends, the response and how long it took",
        %{conn: conn, username: username} do
+    alias MWTClient.Sandbox
     alias MWTClient.Sandbox.Exchange
+
+    {:ok, grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "token",
+        "name" => "Activity credential",
+        "purpose" => "Redact the current value",
+        "hosts" => "api.anthropic.com",
+        "env" => "QA_TOKEN",
+        "value" => "first-synthetic-test-value"
+      })
+
+    current_value = "rotated-synthetic-test-value"
 
     request =
       Exchange.request(%{
         method: "POST",
         host: "api.anthropic.com",
         path: "/v1/messages",
-        headers: [{"content-type", "application/json"}],
+        headers: [{"content-type", "application/json"}, {"x-qa", current_value}],
         body: ~s({"stream":true})
       })
 
@@ -369,10 +382,14 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
     assert has_element?(view, "#event-running-event-a1[data-since]")
 
+    :ok = Sandbox.set_value(username, grant.id, current_value)
+
     # Opened while it runs: the request as MWT read it, the response to come.
     render_hook(view, "open_event", %{"id" => "event-a1"})
     assert has_element?(view, "#event-running-event-a1")
     assert has_element?(view, "#event-request-event-a1", ~s("stream"))
+    assert has_element?(view, "#event-request-event-a1", "real credential withheld by MWT")
+    refute has_element?(view, "#event-request-event-a1", current_value)
     assert has_element?(view, "#event-response-running-event-a1", "Still running")
 
     response =
@@ -391,11 +408,16 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
 
     refute has_element?(view, "#event-running-event-a1")
     assert has_element?(view, "#event-response-status-event-a1", "200 OK")
+    assert has_element?(view, "#event-request-event-a1", "real credential withheld by MWT")
+    refute has_element?(view, "#event-request-event-a1", current_value)
     assert has_element?(view, "#event-event-a1 summary", ~r/\d+(\.\d)? m?s\b/)
 
     # The journal keeps how long it took.
     :ok = MWTClient.Storage.Journal.flush(username)
-    assert [%Event{ms: ms}] = MWTClient.Sandbox.events(username, %{q: "api.anthropic.com"})
+
+    assert [%Event{ms: ms}] =
+             Sandbox.events(username, %{q: "api.anthropic.com", group: "traffic"})
+
     assert is_integer(ms)
   end
 

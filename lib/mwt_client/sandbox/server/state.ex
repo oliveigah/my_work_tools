@@ -435,8 +435,16 @@ defmodule MWTClient.Sandbox.Server.State do
   """
   def saved(state) do
     if state.flush, do: Process.cancel_timer(state.flush)
-    :ok = persist(state)
+    _ = persist(state)
     %{state | flush: nil}
+  end
+
+  @doc "Commits a change that must reach disk before it can be acknowledged."
+  def save(state) do
+    with :ok <- persist(state) do
+      if state.flush, do: Process.cancel_timer(state.flush)
+      {:ok, %{state | flush: nil}}
+    end
   end
 
   @doc """
@@ -483,7 +491,7 @@ defmodule MWTClient.Sandbox.Server.State do
           system: :sandbox
         )
 
-        :ok
+        {:error, :storage}
     end
   end
 
@@ -696,6 +704,7 @@ defmodule MWTClient.Sandbox.Server.State do
         projects: Enum.map(state.projects, &MWTClient.Sandbox.Project.upgrade/1)
     }
     |> Map.delete(:yolo)
+    |> Map.delete(:gate_secrets)
   end
 
   # A server running since before handoffs had rows of their own

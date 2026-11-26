@@ -1530,10 +1530,11 @@ defmodule MWTClientWeb.SandboxLive.Grants do
 
     limits = Map.new(assigns.networks, &{&1.id, &1.limits})
     snapshot = MWTClient.Sandbox.Policy.snapshot(assigns.grants, [], assigns.locks, limits)
+    port = if kind == :request, do: 443
 
     for host <- Enum.uniq(hosts),
         is_binary(host),
-        {:refuse, reason} <- [MWTClient.Sandbox.Policy.reach(snapshot, host, assigns.now)],
+        {:refuse, reason} <- [MWTClient.Sandbox.Policy.reach(snapshot, host, assigns.now, port)],
         words = unreached_words(host, reason),
         do: words
   end

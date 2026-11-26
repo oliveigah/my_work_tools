@@ -47,11 +47,13 @@ defmodule MWTClient.Sandbox.Gate do
     CertificateAuthority,
     Decision,
     Destinations,
+    Dns,
     EventDetails,
     Firewall,
     Grant,
     HostLimits,
     Made,
+    Network,
     Placeholder,
     Policy,
     Reading,
@@ -110,10 +112,11 @@ defmodule MWTClient.Sandbox.Gate do
       settings_body_kib(state),
       Map.get(state, :reading),
       Map.get(state, :locks, %{}),
-      Map.new(Map.get(state, :networks, []), &{&1.id, &1.limits})
+      Map.new(Map.get(state, :networks, []), &{&1.id, &1.limits}),
+      Map.get(state, :credentials, [])
     }
 
-    if Map.get(state, :gate) == inputs do
+    if Map.get(state, :gate) == inputs and Map.has_key?(state, :gate_secrets) do
       state
     else
       version = (Map.get(state, :gate_version) || 0) + 1
@@ -148,7 +151,21 @@ defmodule MWTClient.Sandbox.Gate do
       # Apart too: read for every request MWT reads (`secrets/1`), and the
       # view is many times its size to copy out.
       :ets.insert(@table, {{state.username, :secrets}, view.secrets})
-      state |> Map.put(:gate, inputs) |> Map.put(:gate_version, version)
+
+      state
+      |> Map.put(:gate, inputs)
+      |> Map.put(:gate_version, version)
+      |> Map.put(:gate_secrets, view.secrets)
+    end
+  end
+
+  @doc "The compiled secret patterns for the server's activity log."
+  def log_secrets(state) do
+    case Map.fetch(state, :gate_secrets) do
+      {:ok, secrets} -> secrets
+      # On the first message after a development reload the view may
+      # still describe the state before the upgrade.
+      :error -> Values.secrets(state)
     end
   end
 
@@ -584,9 +601,7 @@ defmodule MWTClient.Sandbox.Gate do
     else
       decision =
         Policy.decide(
-          view.grants
-          |> Policy.snapshot([], Map.get(view, :locks, %{}), Map.get(view, :limits, %{}))
-          |> Map.merge(facts(username, view.grants, ip)),
+          Map.merge(policy_view(view), facts(username, view.grants, ip)),
           {:connection, ip, port},
           State.now()
         )
@@ -607,54 +622,86 @@ defmodule MWTClient.Sandbox.Gate do
     end
   end
 
-  @doc """
-  Whether a request MWT built from a fixed call may connect to `ip` and
-  `port` (`MWTClient.Sandbox.Egress.FixedCall`): `{:ok, grant_id}`, under
-  the fixed call, or `{:deny, why}`. Which network grant lets its host's
-  request out, as it would the agent's own, was decided with the call by
-  name (`Policy.reach/3`), and is again as it is authorized; here, every
-  check of the address stands, as for the VM's own connections:
-  isolated, refused; this machine or a reserved address, refused; a host
-  on the Internet at an address that isn't public (a name moved onto your
-  network), refused. The firewall hears of it as of any connection.
-  """
+  @doc "Resolves a fixed call using the selected network's resolver."
+  def resolve_fixed(username, %{network: network, host: host}, port) do
+    view = view(username)
+    now = State.now()
+
+    with false <- isolated?(username, view),
+         snapshot = policy_view(view),
+         ^network <- Policy.network_of_host(snapshot, host),
+         decision <- Policy.reach(snapshot, host, now, port),
+         false <- match?({:refuse, _}, decision),
+         %Grant{} = grant <-
+           Enum.find(Policy.fixed_grants(snapshot, network, host, port), fn grant ->
+             Grant.on?(grant, now) and is_nil(Network.excepted(grant, [host]))
+           end),
+         {:ok, addresses} <- Dns.resolve_fixed(host, grant) do
+      {:ok, addresses, %{anchor: grant.anchor, resolver: grant.resolver}}
+    else
+      {:error, _} = error -> error
+      _ -> {:error, "No active network grant covers #{host}:#{port}"}
+    end
+  end
+
+  @doc "Checks the resolved address and returns the grant and interface for the dial."
   def fixed_destination(username, ip, port, fixed) do
     view = view(username)
     shown = "#{:inet.ntoa(ip)}"
-    class = Destinations.classify(ip, Destinations.host_addresses(), Routes.networks())
 
-    blocked = fn summary ->
-      log(username, %{
-        outcome: :blocked,
-        summary: "#{fixed.host} at #{shown} · fixed call #{fixed.name} · #{summary}",
-        host: fixed.host,
-        port: port,
-        grant_id: fixed.grant_id
-      })
+    if isolated?(username, view) do
+      refused(username)
+      {:deny, "Refused by MWT's firewall"}
+    else
+      snapshot = Map.merge(policy_view(view), facts(username, view.grants, ip))
 
-      {:deny, summary}
-    end
+      case Policy.fixed_opening(snapshot, fixed.network, fixed.host, ip, port, State.now()) do
+        {:ok, grant, _about}
+        when grant.anchor == fixed.anchor and grant.resolver == fixed.resolver ->
+          class =
+            if Destinations.classify(ip, snapshot.own, snapshot.networks) == :public,
+              do: :public,
+              else: :granted
 
-    cond do
-      isolated?(username, view) ->
-        refused(username)
-        {:deny, "Refused by MWT's firewall"}
+          case Watch.observe(username, {:connect, shown, port, class}) do
+            :pass -> {:ok, grant.id, grant.anchor, fixed.grant_id}
+            _refused -> {:deny, "Refused by MWT's firewall"}
+          end
 
-      class == :refused ->
-        blocked.("this machine or a reserved address, always refused")
+        result ->
+          why =
+            case result do
+              {:refuse, {:network_down, grant}} ->
+                "#{grant.name}'s network route is down"
 
-      fixed.network == "internet" and class != :public ->
-        blocked.("an address on your network, which a host on the Internet never goes to")
+              {:refuse, {:locked, resource, _}} ->
+                MWTClient.Sandbox.Resource.locked_words(resource)
 
-      true ->
-        watched = if class == :public, do: :public, else: :granted
+              {:refuse, :reserved} ->
+                "this machine or a reserved address"
 
-        case Watch.observe(username, {:connect, shown, port, watched}) do
-          :pass -> {:ok, fixed.grant_id}
-          _refused -> {:deny, "Refused by MWT's firewall"}
-        end
+              {:refuse, _} ->
+                "no active network grant opens that address and port"
+
+              _changed ->
+                "the network route or resolver changed"
+            end
+
+          log(username, %{
+            outcome: :blocked,
+            summary: "#{fixed.host} at #{shown}:#{port} · fixed call #{fixed.name} · #{why}",
+            host: fixed.host,
+            port: port,
+            grant_id: fixed.grant_id
+          })
+
+          {:deny, why}
+      end
     end
   end
+
+  defp policy_view(view),
+    do: Policy.snapshot(view.grants, [], Map.get(view, :locks, %{}), Map.get(view, :limits, %{}))
 
   defp connect(username, decision, ip, port) do
     case decision do

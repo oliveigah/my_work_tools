@@ -149,9 +149,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     with {:ok, head, rest} <- connect_head(client, "", connect_by),
          {:ok, host, port} <- connect_target(head),
          {:ok, ip} <- address(host),
-         {:ok, reach} <- destination(client, username, ip, port, options),
-         # A grant with a way out of its own keeps its connections on it.
-         anchor = anchor(username, reach),
+         {:ok, reach, anchor} <- destination(client, username, ip, port, options),
          target = %{ip: ip, port: port, anchor: anchor},
          {from_client, from_server, link} <- opening(client, rest, target, reach, options) do
       first = first(from_client)
@@ -275,7 +273,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     receive do
       {^ref, answer} ->
         case reach(username, answer) do
-          {:ok, reach} -> with :ok <- established(client), do: {:ok, reach}
+          {:ok, reach, anchor} -> with :ok <- established(client), do: {:ok, reach, anchor}
           {:error, :grant_off} -> {:deny, :grant_off}
           denied -> denied
         end
@@ -285,7 +283,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
           receive do
             {^ref, answer} ->
               case reach(username, answer) do
-                {:ok, reach} -> {:ok, reach}
+                {:ok, reach, anchor} -> {:ok, reach, anchor}
                 _denied -> {:error, :denied}
               end
           end
@@ -293,22 +291,28 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     end
   end
 
-  defp reach(username, {:ok, grant}) do
-    with :ok <- Gate.held_by(username, grant), do: {:ok, {:open, grant}}
+  defp reach(username, {:ok, grant}),
+    do: reach(username, {:ok, grant, Gate.anchor(username, grant)})
+
+  defp reach(username, {:ok, grant, anchor, action}) do
+    with :ok <- Gate.held_by(username, action), do: reach(username, {:ok, grant, anchor})
+  end
+
+  defp reach(username, {:ok, grant, anchor}) do
+    with :ok <- Gate.held_by(username, grant), do: {:ok, {:open, grant}, anchor}
   end
 
   # A network grant's that would ask you: asked once its first bytes say
   # whether MWT reads it (`asked/6`).
   defp reach(username, {:ask, grant}) do
-    with :ok <- Gate.held_by(username, grant), do: {:ok, {:asking, grant}}
+    with :ok <- Gate.held_by(username, grant),
+         do: {:ok, {:asking, grant}, Gate.anchor(username, grant)}
   end
 
   defp reach(_username, {:deny, reason}), do: {:deny, reason}
 
   defp established(client),
     do: :gen_tcp.send(client, "HTTP/1.1 200 Connection Established\r\n\r\n")
-
-  defp anchor(username, {_open_or_asking, grant}), do: Gate.anchor(username, grant)
 
   ## The first bytes
 

@@ -81,6 +81,47 @@ defmodule MWTClient.Sandbox.PolicyTest do
     Policy.decide(snapshot([one.grant | more]), {:connection, one.ip, one.port}, @now)
   end
 
+  test "a fixed HTTPS call uses a grant covering port 443 on its configured interface" do
+    host = "api.office.example"
+    ip = {10, 20, 30, 40}
+
+    https = %{
+      network_grant(:on, nil, ["*.office.example:443"], [])
+      | anchor: "office"
+    }
+
+    database = %{
+      https
+      | id: "db",
+        network: https.id,
+        scope: ["*.office.example:5432"],
+        destinations: ["*.office.example:5432"],
+        allowances: [allowance(:all, nil)]
+    }
+
+    world = snapshot([https, database]) |> Map.put(:via, "office")
+    assert {:ask, ^https, _} = Policy.reach(world, host, @now, 443)
+    assert {:ok, ^https, _} = Policy.fixed_opening(world, https.id, host, ip, 443, @now)
+
+    fixed = %{network: https.id, host: host, anchor: "office", resolver: nil}
+    request = %{under: https.id}
+    assert Policy.fixed_route_current?(world, request, fixed, @now)
+
+    updated = %{https | resolver: "10.20.30.1"}
+
+    refute Policy.fixed_route_current?(
+             %{world | grants: [updated, database]},
+             request,
+             fixed,
+             @now
+           )
+
+    other_route = %{world | via: "default"}
+
+    assert {:refuse, {:network_down, ^https}} =
+             Policy.fixed_opening(other_route, https.id, host, ip, 443, @now)
+  end
+
   # The entries that name `ip` exactly, with a port that fits: said here as
   # text, apart from the parser.
   defp names_exactly?(destinations, ip, port) do

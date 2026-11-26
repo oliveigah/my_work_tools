@@ -53,7 +53,9 @@ defmodule MWTClient.Sandbox.Server.Running do
         {nil, state}
 
       {began, running} ->
-        Process.demonitor(began.ref, [:flush])
+        # Flushing scans the server's mailbox. A queued DOWN can be
+        # ignored once its ref is removed from request_monitors.
+        Process.demonitor(began.ref)
 
         state = %{
           state

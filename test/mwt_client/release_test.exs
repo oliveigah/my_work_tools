@@ -42,4 +42,11 @@ defmodule MWTClient.ReleaseTest do
           do: assert(stage =~ line, "#{name} lacks #{line}")
     end
   end
+
+  test "the package build context includes the release settings and native sources" do
+    allowed = @root |> Path.join(".dockerignore") |> File.read!() |> String.split("\n")
+
+    for pattern <- ["!Makefile", "!c_src/", "!c_src/**", "!rel/", "!rel/**"],
+        do: assert(pattern in allowed)
+  end
 end

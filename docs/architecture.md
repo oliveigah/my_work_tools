@@ -264,7 +264,8 @@ clock (`Policy.decide/3`):
 3. Across resources, the strictest answer wins: a refusal over an ask,
    an ask over a yes. Several asks make one card.
 4. A lock refuses everything through its resource, whatever the grants
-   say. Isolation locks everything.
+   say. MWT saves a manual lock or unlock before confirming it, and reads
+   the saved locks when the sandbox server restarts. Isolation locks everything.
 
 | The agent does | Grants it needs |
 | -------------- | --------------- |
@@ -286,7 +287,10 @@ clock (`Policy.decide/3`):
   (`Egress.FixedCall`), marked as a fixed call in MWT's memory, where
   nothing the VM sends can forge the mark. It covers the credentials it
   names, in what it builds and nothing else, and its request still
-  leaves as the agent's would: the network's grants have a say. *Not
+  leaves under the network's grants. Its HTTPS port must fit the grant's
+  scope, and it uses the network's resolver and outbound interface where
+  configured. The proxy checks the route before dialing and checks the
+  grant again before inserting credentials. *Not
   chosen:* the VM sending a request MWT signed (a mistake in the check
   lets an altered request through), and a fixed call covering its
   network too (it let a call out with the Internet off).

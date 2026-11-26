@@ -45,7 +45,18 @@ defmodule MWTClient.Sandbox.Dns do
 
   require Logger
 
-  alias MWTClient.Sandbox.{Decision, EventDetails, Gate, Grant, Peer, Routes, Server, Sockets}
+  alias MWTClient.Sandbox.{
+    Decision,
+    Destinations,
+    EventDetails,
+    Gate,
+    Grant,
+    Peer,
+    Routes,
+    Server,
+    Sockets
+  }
+
   alias MWTClient.Vault.Store
 
   @answer_within 5_000
@@ -459,6 +470,45 @@ defmodule MWTClient.Sandbox.Dns do
   defp way_words({address, port, anchor}), do: "#{:inet.ntoa(address)}:#{port}, through #{anchor}"
   defp way_words(_other), do: nil
 
+  @doc "Resolves a fixed call for this dial alone, without recording a VM DNS answer."
+  def resolve_fixed(host, grant) do
+    with :error <- Destinations.parse_ip(host),
+         {:ok, addresses} <- fixed_addresses(host, grant) do
+      case addresses do
+        [] -> {:error, "#{host} doesn't resolve"}
+        addresses -> {:ok, addresses}
+      end
+    else
+      {:ok, ip} -> {:ok, [ip]}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp fixed_addresses(host, %Grant{resolver: nil}), do: {:ok, Destinations.resolve(host)}
+
+  defp fixed_addresses(host, grant) do
+    labels = String.split(normal(host), ".")
+
+    if byte_size(host) <= 254 and Enum.all?(labels, &(byte_size(&1) in 1..63)) do
+      with {:ok, way} <- way(grant) do
+        name = IO.iodata_to_binary(for label <- labels, do: [byte_size(label), label])
+
+        addresses =
+          for type <- [1, 28],
+              <<id::16>> = :crypto.strong_rand_bytes(2),
+              query = header(id, 0x100, 0) <> <<name::binary, 0, type::16, 1::16>>,
+              {:ok, <<^id::16, 1::1, _::11, 0::4, _::binary>> = answer} <- [forward(query, way)],
+              {ips, _ttl} = addresses(answer, host),
+              ip <- ips,
+              do: ip
+
+        {:ok, Enum.uniq(addresses)}
+      end
+    else
+      {:error, "#{host} isn't a DNS name"}
+    end
+  end
+
   # Where a covered name is asked: the grant's resolver, through its way
   # out when it has one, or this machine's.
   defp way(%Grant{resolver: nil}), do: {:ok, resolver()}
@@ -638,8 +688,11 @@ defmodule MWTClient.Sandbox.Dns do
     with {:ok, socket} <- :gen_udp.open(0, [:binary, family, active: false] ++ options) do
       answer =
         with :ok <- :gen_udp.send(socket, address, port, message),
-             {:ok, {_from, _port, answer}} <- :gen_udp.recv(socket, 0, @answer_within) do
+             {:ok, {^address, ^port, answer}} <- :gen_udp.recv(socket, 0, @answer_within) do
           {:ok, answer}
+        else
+          {:ok, _} -> {:error, :unexpected_resolver}
+          {:error, _} = error -> error
         end
 
       :gen_udp.close(socket)

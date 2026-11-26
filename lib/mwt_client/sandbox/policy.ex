@@ -729,13 +729,70 @@ defmodule MWTClient.Sandbox.Policy do
   credential in it, the network's grants decide where it goes, as they
   do for the agent's own requests.
   """
-  @spec reach(snapshot(), String.t() | nil, DateTime.t()) :: answer()
-  def reach(snapshot, host, now) do
-    reach(snapshot, network_of_host(snapshot, host), host, %{}, now)
+  @spec reach(snapshot(), String.t() | nil, DateTime.t(), :inet.port_number() | nil) :: answer()
+  def reach(snapshot, host, now, port \\ nil) do
+    reach(snapshot, network_of_host(snapshot, host), host, %{pattern: nil}, now, port)
   end
 
-  defp reach(snapshot, network, host, about, now),
-    do: network_say(snapshot, network, %{host: host, under: nil, about: about}, now)
+  defp reach(snapshot, network, host, about, now, port \\ 443) do
+    snapshot =
+      if port,
+        do: %{snapshot | grants: fixed_grants(snapshot, network, host, port)},
+        else: snapshot
+
+    network_say(snapshot, network, %{host: host, under: nil, about: about}, now)
+  end
+
+  @doc "Grants over a fixed call's network whose scope includes its host and port."
+  def fixed_grants(snapshot, network, host, port) do
+    name = String.downcase(host || "")
+
+    for %Grant{kind: :network} = grant <- snapshot.grants,
+        Network.id_of(grant) == network,
+        grant.internet or Enum.any?(specs(grant), &named_port?(&1, name, port)),
+        do: grant
+  end
+
+  defp named_port?(%{match: {kind, pattern}, ports: ports}, name, port)
+       when kind in [:host, :names],
+       do: (ports == :any or port in ports) and Destinations.name_covers?(kind, pattern, name)
+
+  defp named_port?(_spec, _name, _port), do: false
+
+  @doc "Selects the network grant for a fixed call's resolved address and outbound route."
+  def fixed_opening(snapshot, network, host, ip, port, now) do
+    class = Destinations.classify(ip, snapshot.own, Map.get(snapshot, :networks, []))
+    grants = fixed_grants(snapshot, network, host, port)
+
+    cond do
+      class == :refused ->
+        {:refuse, :reserved}
+
+      network == "internet" and class != :public ->
+        {:refuse, :private}
+
+      network_of_host(snapshot, host) != network ->
+        {:refuse, {:outside, network}}
+
+      refused = network_limits(snapshot, network, [host], List.first(grants)) ->
+        refused
+
+      true ->
+        covering = Enum.reject(grants, &Network.excepted(&1, [host]))
+        answered = %{Destinations.unmap(ip) => [host]}
+        snapshot |> Map.merge(%{grants: covering, answered: answered}) |> opening(ip, port, now)
+    end
+  end
+
+  @doc "Whether the socket's fixed-call route still matches its grant."
+  def fixed_route_current?(snapshot, request, fixed, now) do
+    network_of_host(snapshot, fixed.host) == fixed.network and
+      Enum.any?(fixed_grants(snapshot, fixed.network, fixed.host, 443), fn grant ->
+        grant.id == request.under and Grant.on?(grant, now) and
+          is_nil(Network.excepted(grant, [fixed.host])) and
+          grant.anchor == fixed.anchor and grant.resolver == fixed.resolver
+      end)
+  end
 
   # What refuses a use of `network` whatever its grants say, or nil: the
   # network locked, or one of `names` on its list of blocked hosts.

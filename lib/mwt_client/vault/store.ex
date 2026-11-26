@@ -129,6 +129,18 @@ defmodule MWTClient.Vault.Store do
   end
 
   @doc """
+  Sends an asynchronous message to the identity's store if registered.
+  If it exits before receiving the message, sending to its old pid is harmless.
+  """
+  @spec cast(module(), String.t(), term()) :: :ok
+  def cast(store, username, message) do
+    case Registry.lookup(@registry, key(store, username)) do
+      [{pid, _value}] -> GenServer.cast(pid, message)
+      [] -> :ok
+    end
+  end
+
+  @doc """
   The handles a store published for itself, for lock free reads.
 
   The liveness check matters: the registry clears its entries from a monitor,

@@ -1205,10 +1205,16 @@ defmodule MWTClientWeb.SandboxLive do
              kind in ["credential", "network", "machine", "mwt"] do
     resource = MWTClient.Sandbox.Resource.from_path(kind, params["id"])
 
-    _ =
+    result =
       if event == "lock_resource",
         do: Sandbox.lock(socket.assigns.username, resource),
         else: Sandbox.unlock(socket.assigns.username, resource)
+
+    socket =
+      case result do
+        {:error, :storage} -> put_flash(socket, :error, "MWT could not save the resource lock.")
+        _ -> socket
+      end
 
     {:noreply, refresh(socket)}
   end

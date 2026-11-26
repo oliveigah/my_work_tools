@@ -153,6 +153,35 @@ defmodule MWTClient.Sandbox.LocksTest do
     assert {:error, :not_found} = Sandbox.lock(username, {:network, "nothing"})
   end
 
+  test "lock and unlock acknowledgments follow the saved change", %{username: username} do
+    assert :ok = Sandbox.lock(username, :machine)
+
+    assert {:ok, %{locks: %{machine: %{you: %DateTime{}}}}} =
+             MWTClient.Storage.Documents.get(username, "sandbox")
+
+    assert :ok = Sandbox.unlock(username, :machine)
+    assert {:ok, %{locks: locks}} = MWTClient.Storage.Documents.get(username, "sandbox")
+    refute Map.has_key?(locks, :machine)
+  end
+
+  test "a failed lock write leaves the last saved setting in force", %{username: username} do
+    :ok = Sandbox.lock(username, :mwt)
+
+    MWTClient.Storage.run(username, :library, fn repo ->
+      repo.query!("""
+      CREATE TRIGGER refuse_sandbox_save
+      BEFORE INSERT ON documents WHEN new.name = 'sandbox'
+      BEGIN SELECT RAISE(ABORT, 'fixture refuses the write'); END
+      """)
+    end)
+
+    assert {:error, :storage} = Sandbox.lock(username, :machine)
+    assert {:error, :storage} = Sandbox.unlock(username, :mwt)
+    locks = Sandbox.snapshot(username).locks
+    refute Map.has_key?(locks, :machine)
+    assert Locks.holders(locks, :mwt) == [:you]
+  end
+
   test "a locked network refuses its connections", %{username: username} do
     {:ok, network} =
       Sandbox.create_grant(username, %{

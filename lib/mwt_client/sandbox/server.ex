@@ -115,6 +115,7 @@ defmodule MWTClient.Sandbox.Server do
     Grants,
     HostRuns,
     Kept,
+    Locks,
     Machine,
     Running,
     ShareSync,
@@ -961,59 +962,51 @@ defmodule MWTClient.Sandbox.Server do
   # whatever the grants say, until you unlock it. Its connections close,
   # and what waited on its grants is refused. No grant changes.
   defp answer({:lock, resource}, _from, state) do
-    case resource_name(state, resource) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
+    with name when is_binary(name) <- resource_name(state, resource),
+         {:ok, locked} <- state |> Locks.lock(resource, :you) |> State.save() do
+      touched = for g <- state.grants, Grant.resource(g) == resource, do: g.id
+      agents? = &(resource == :machine and &1.kind == :command and &1.script_from == :agent)
 
-      name ->
-        touched = for g <- state.grants, Grant.resource(g) == resource, do: g.id
+      locked =
+        locked
+        |> then(
+          &Enum.reduce(touched, &1, fn id, acc -> Approvals.settle_waiting(acc, id, :locked) end)
+        )
+        |> Approvals.settle_waiting_where(agents?, :locked)
+        |> State.log(%{
+          outcome: :grant,
+          summary: "#{name} locked by you: every use refused until you unlock it"
+        })
+        |> HostRuns.stop_running(
+          HostRuns.running_with(state, resource),
+          "#{name} was locked by you"
+        )
+        |> State.write_inbox()
 
-        # The commands agents write run on your machine under no grant:
-        # locking it refuses those waiting too.
-        agents? = &(resource == :machine and &1.kind == :command and &1.script_from == :agent)
-
-        state =
-          state
-          |> MWTClient.Sandbox.Server.Locks.lock(resource, :you)
-          |> then(
-            &Enum.reduce(touched, &1, fn id, acc -> Approvals.settle_waiting(acc, id, :locked) end)
-          )
-          |> Approvals.settle_waiting_where(agents?, :locked)
-          |> State.log(%{
-            outcome: :grant,
-            summary: "#{name} locked by you: every use refused until you unlock it"
-          })
-          |> HostRuns.stop_running(
-            HostRuns.running_with(state, resource),
-            "#{name} was locked by you"
-          )
-          |> State.write_inbox()
-          |> State.changed()
-
-        {:reply, :ok, state}
+      {:reply, :ok, locked}
+    else
+      nil -> {:reply, {:error, :not_found}, state}
+      {:error, :storage} = error -> {:reply, error, state}
     end
   end
 
   defp answer({:unlock, resource}, _from, state) do
-    case resource_name(state, resource) do
-      nil ->
-        {:reply, {:error, :not_found}, state}
+    with name when is_binary(name) <- resource_name(state, resource),
+         {:ok, unlocked} <- state |> Locks.unlock(resource, :you) |> State.save() do
+      still =
+        if Map.has_key?(unlocked.locks, resource),
+          do: ": the isolation still holds it, until you release the VM",
+          else: ""
 
-      name ->
-        state = MWTClient.Sandbox.Server.Locks.unlock(state, resource, :you)
+      unlocked =
+        unlocked
+        |> State.log(%{outcome: :grant, summary: "#{name} unlocked by you#{still}"})
+        |> State.write_inbox()
 
-        still =
-          if Map.has_key?(state.locks, resource),
-            do: ": the isolation still holds it, until you release the VM",
-            else: ""
-
-        state =
-          state
-          |> State.log(%{outcome: :grant, summary: "#{name} unlocked by you#{still}"})
-          |> State.write_inbox()
-          |> State.changed()
-
-        {:reply, :ok, state}
+      {:reply, :ok, unlocked}
+    else
+      nil -> {:reply, {:error, :not_found}, state}
+      {:error, :storage} = error -> {:reply, error, state}
     end
   end
 
@@ -1753,9 +1746,10 @@ defmodule MWTClient.Sandbox.Server do
   # through for them as any request's.
   defp answer({:authorize_fixed, request, fixed}, _from, state) do
     action = Enum.find(state.grants, &(&1.id == fixed.grant_id and &1.kind == :request))
+    snapshot = State.policy(state)
+    now = State.now()
 
-    decision =
-      action && Policy.decide(State.policy(state), {:call, %{grant: action.id}}, State.now())
+    decision = action && Policy.decide(snapshot, {:call, %{grant: action.id}}, now)
 
     refuse = fn why ->
       state =
@@ -1774,6 +1768,9 @@ defmodule MWTClient.Sandbox.Server do
 
       match?({:refuse, _}, decision) ->
         refuse.("a grant it needs no longer gives it, or you locked what it reaches")
+
+      not Policy.fixed_route_current?(snapshot, request, fixed, now) ->
+        refuse.("the network grant or route changed before it was sent")
 
       String.downcase(request.host || "") != String.downcase(SavedRequest.host(action) || "") or
           request.method != action.method ->
@@ -2088,9 +2085,8 @@ defmodule MWTClient.Sandbox.Server do
   # What a request MWT read carried and what came back, kept with its
   # events once the request ended, and how long it took.
   defp cast_in({:exchange, id, exchange}, state) do
-    keep_exchange(state, id, exchange)
     {ms, state} = Running.ended(state, id)
-    {:noreply, request_ended(state, id, ms)}
+    {:noreply, request_ended(state, id, ms, exchange)}
   end
 
   # The VM's busiest processes, from the monitor.
@@ -2108,20 +2104,22 @@ defmodule MWTClient.Sandbox.Server do
     {:noreply, State.change(state, :proxy, fn _ -> status end)}
   end
 
-  defp keep_exchange(state, id, exchange),
-    do: Journal.record_exchange(state.username, id, redacted(state, exchange))
-
   # A real value in what a request carried, though none should be, is
   # hidden before it is kept or shown.
   defp redacted(state, exchange) do
-    secrets = Values.secrets(state)
+    secrets = Gate.log_secrets(state)
     Exchange.redact(exchange, &Secrets.replace(secrets, &1, @withheld))
   end
 
   # A request ended: its lines say how long it took, and the pages hear of
   # it, to stop marking it running and read what it carried, if kept.
-  defp request_ended(state, id, ms) do
-    if ms, do: Journal.record_took(state.username, id, ms)
+  defp request_ended(state, id, ms, exchange) do
+    cond do
+      exchange -> Journal.record_exchange(state.username, id, redacted(state, exchange), ms)
+      ms -> Journal.record_took(state.username, id, ms)
+      true -> :ok
+    end
+
     State.broadcast(state, {:sandbox_exchange, id, ms})
     state
   end
@@ -2254,7 +2252,7 @@ defmodule MWTClient.Sandbox.Server do
   end
 
   defp info(:flush, state) do
-    :ok = State.persist(state)
+    _ = State.persist(state)
     {:noreply, %{state | flush: nil}}
   end
 
@@ -2321,11 +2319,12 @@ defmodule MWTClient.Sandbox.Server do
        when is_map_key(state.request_monitors, ref) do
     {{id, ms, unfinished}, state} = Running.down(state, ref)
 
-    if unfinished,
-      do: keep_exchange(state, id, Map.put(unfinished, :note, @call_ended))
-
-    {:noreply, request_ended(state, id, ms)}
+    exchange = unfinished && Map.put(unfinished, :note, @call_ended)
+    {:noreply, request_ended(state, id, ms, exchange)}
   end
+
+  # A completion can have removed its monitor while DOWN was already queued.
+  defp info({:DOWN, _ref, :process, _pid, _reason}, state), do: {:noreply, state}
 
   defp info({:ports, pid, snapshot}, %{forwarder: pid} = state),
     do: {:noreply, Forwarding.forwarded(state, snapshot)}
@@ -2358,6 +2357,7 @@ defmodule MWTClient.Sandbox.Server do
         |> Map.replace(:ca, :redacted)
         # What the network path's view was made from: values and the CA.
         |> Map.replace(:gate, :redacted)
+        |> Map.replace(:gate_secrets, :redacted)
         |> Map.replace(:waiters, :redacted)
         # What running requests carried, kept should their calls end first.
         |> Map.replace(:requests_running, :redacted)

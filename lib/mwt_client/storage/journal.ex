@@ -7,8 +7,9 @@ defmodule MWTClient.Storage.Journal do
   An app hands it rows with `record/2`, which never waits on the disk:
   they are kept here and written once a second, or as soon as 1,000 are
   waiting, whichever comes first. What a request carried and got back
-  (`record_exchange/3`) is written after them, with each event that names
-  it, so it is kept only when an event does; 16 MiB of them waiting are
+  (`record_exchange/4`) is written after them, with each event that names
+  it, so it is kept only when an event does. The journal compresses it
+  and takes its duration in the same message. 16 MiB of them waiting are
   written at once too. What an event says when opened
   (`record_details/3`, `MWTClient.Sandbox.EventDetails`) is written after
   its event, in the same transaction. `flush/1` writes what waits now, so a
@@ -83,25 +84,16 @@ defmodule MWTClient.Storage.Journal do
   identity is locked: there is no journal to write to.
   """
   @spec record(String.t(), row()) :: :ok
-  def record(username, %{} = row) do
-    case Store.whereis(__MODULE__, username) do
-      nil -> :ok
-      pid -> GenServer.cast(pid, {:record, row})
-    end
-  end
+  def record(username, %{} = row), do: Store.cast(__MODULE__, username, {:record, row})
 
   @doc """
   Keeps an exchange (`MWTClient.Sandbox.Exchange`) to be written with the
   next batch, for every event that names `exchange_id`: none, and it isn't
-  kept.
+  kept. If given, `ms` fills in the duration of those events.
   """
-  @spec record_exchange(String.t(), String.t(), map()) :: :ok
-  def record_exchange(username, exchange_id, exchange) do
-    case Store.whereis(__MODULE__, username) do
-      nil -> :ok
-      pid -> GenServer.cast(pid, {:exchange, exchange_id, Values.term(exchange)})
-    end
-  end
+  @spec record_exchange(String.t(), String.t(), map(), non_neg_integer() | nil) :: :ok
+  def record_exchange(username, exchange_id, exchange, ms \\ nil),
+    do: Store.cast(__MODULE__, username, {:exchange, exchange_id, exchange, ms})
 
   @doc """
   Keeps how long a request took, in milliseconds, to be written with the
@@ -109,12 +101,8 @@ defmodule MWTClient.Storage.Journal do
   none yet.
   """
   @spec record_took(String.t(), String.t(), non_neg_integer()) :: :ok
-  def record_took(username, exchange_id, ms) do
-    case Store.whereis(__MODULE__, username) do
-      nil -> :ok
-      pid -> GenServer.cast(pid, {:took, exchange_id, ms})
-    end
-  end
+  def record_took(username, exchange_id, ms),
+    do: Store.cast(__MODULE__, username, {:took, exchange_id, ms})
 
   @doc """
   Keeps an event's details (`MWTClient.Sandbox.EventDetails`) to be
@@ -307,17 +295,19 @@ defmodule MWTClient.Storage.Journal do
   def handle_cast({:record, row}, state),
     do: waiting(%{state | rows: [row | state.rows], count: state.count + 1})
 
+  def handle_cast({:exchange, exchange_id, exchange, ms}, state) do
+    state = if ms, do: queue_took(state, exchange_id, ms), else: state
+    {:blob, blob} = Values.term(exchange)
+    queue_exchange(state, exchange_id, blob)
+  end
+
+  # An exchange sent by the previous code during a development reload.
   def handle_cast({:exchange, exchange_id, {:blob, blob}}, state) do
-    waiting(%{
-      state
-      | exchanges: [{exchange_id, blob} | state.exchanges],
-        count: state.count + 1,
-        bytes: state.bytes + byte_size(blob)
-    })
+    queue_exchange(state, exchange_id, blob)
   end
 
   def handle_cast({:took, exchange_id, ms}, state),
-    do: waiting(%{state | took: [{exchange_id, ms} | state.took], count: state.count + 1})
+    do: waiting(queue_took(state, exchange_id, ms))
 
   def handle_cast({:kept, record}, state) do
     blob = elem(record, tuple_size(record) - 1) |> elem(1)
@@ -338,6 +328,18 @@ defmodule MWTClient.Storage.Journal do
         bytes: state.bytes + byte_size(blob)
     })
   end
+
+  defp queue_exchange(state, exchange_id, blob) do
+    waiting(%{
+      state
+      | exchanges: [{exchange_id, blob} | state.exchanges],
+        count: state.count + 1,
+        bytes: state.bytes + byte_size(blob)
+    })
+  end
+
+  defp queue_took(state, exchange_id, ms),
+    do: %{state | took: [{exchange_id, ms} | state.took], count: state.count + 1}
 
   # While writes fail, a full batch waits for the next try rather than
   # trying again at every row: each try can wait out the busy timeout.
@@ -391,9 +393,9 @@ defmodule MWTClient.Storage.Journal do
       Storage.transaction(state.username, :journal, fn repo ->
         if state.lost, do: insert(repo, [lost_row(state.lost)])
         for chunk <- Enum.chunk_every(rows, 40), do: insert(repo, chunk)
-        for {exchange_id, blob} <- exchanges, do: insert_exchange(repo, exchange_id, blob)
+        for chunk <- Enum.chunk_every(exchanges, 40), do: insert_exchanges(repo, chunk)
         for {event_id, blob} <- details, do: insert_details(repo, event_id, blob)
-        for {exchange_id, ms} <- took, do: update_took(repo, exchange_id, ms)
+        for chunk <- Enum.chunk_every(took, 40), do: update_took(repo, chunk)
         for record <- kept, do: insert_kept(repo, record)
       end)
 
@@ -545,24 +547,39 @@ defmodule MWTClient.Storage.Journal do
   end
 
   # Once for each event that names it; for none, nothing.
-  defp insert_exchange(repo, exchange_id, blob) do
+  defp insert_exchanges(repo, exchanges) do
+    exchanges = Enum.uniq_by(exchanges, &elem(&1, 0))
+
     repo.query!(
       """
+      WITH completed(exchange_id, exchange) AS (VALUES #{pairs(exchanges)})
       INSERT INTO events_exchanges (event_id, exchange)
-      SELECT id, ? FROM events WHERE exchange_id = ?
+      SELECT events.id, completed.exchange
+      FROM completed JOIN events ON events.exchange_id = completed.exchange_id
+      WHERE events.exchange_id IS NOT NULL
       ON CONFLICT (event_id) DO NOTHING
       """,
-      [{:blob, blob}, exchange_id]
+      for({exchange_id, blob} <- exchanges, value <- [exchange_id, {:blob, blob}], do: value)
     )
   end
 
   # Written after the events, in the same batch as theirs or a later one.
-  defp update_took(repo, exchange_id, ms) do
+  # The first duration wins, even if a completion was reported twice.
+  defp update_took(repo, took) do
+    took = Enum.uniq_by(took, &elem(&1, 0))
+
     repo.query!(
-      "UPDATE events SET ms = ? WHERE exchange_id = ? AND ms IS NULL",
-      [ms, exchange_id]
+      """
+      WITH completed(exchange_id, ms) AS (VALUES #{pairs(took)})
+      UPDATE events SET ms = completed.ms
+      FROM completed
+      WHERE events.exchange_id = completed.exchange_id AND events.ms IS NULL
+      """,
+      for({exchange_id, ms} <- took, value <- [exchange_id, ms], do: value)
     )
   end
+
+  defp pairs(rows), do: Enum.map_join(rows, ", ", fn _row -> "(?, ?)" end)
 
   # Forty rows to a statement, under SQLite's limit on parameters. An id
   # recorded twice is written once.

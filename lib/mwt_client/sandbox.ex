@@ -583,11 +583,12 @@ defmodule MWTClient.Sandbox do
   MWT's tools. Every use of it is refused, whatever its grants say, until
   you unlock it; agents can't ask for that. No grant changes.
   """
-  @spec lock(username(), MWTClient.Sandbox.Resource.id()) :: :ok | {:error, :not_found}
+  @spec lock(username(), MWTClient.Sandbox.Resource.id()) :: :ok | {:error, :not_found | :storage}
   def lock(username, resource), do: Server.call(username, {:lock, resource})
 
   @doc "Unlocks a resource you locked (`lock/2`)."
-  @spec unlock(username(), MWTClient.Sandbox.Resource.id()) :: :ok | {:error, :not_found}
+  @spec unlock(username(), MWTClient.Sandbox.Resource.id()) ::
+          :ok | {:error, :not_found | :storage}
   def unlock(username, resource), do: Server.call(username, {:unlock, resource})
 
   @doc """

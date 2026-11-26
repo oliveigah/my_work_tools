@@ -28,14 +28,11 @@ defmodule MWTClient.Sandbox.Egress.FixedCall do
   (`MWTClient.Sandbox.SavedRequest.send/4` did before): `exit` 0 for 2xx,
   22 for any other, 124 at the time limit; the body's first 256 KiB.
 
-  It resolves the host with this machine's resolver, as the proxy does
-  for a CONNECT by name, for its own connection only: the answer isn't
-  kept as one MWT's DNS gave the VM (`resolve/2` says why). A network
-  with a way out of its own (an anchor) isn't followed: the connection
-  goes wherever this machine routes it.
+  It resolves the host through the network's resolver, for this dial alone.
+  The connection uses that network's destination scope and outbound interface.
   """
 
-  alias MWTClient.Sandbox.Destinations
+  alias MWTClient.Sandbox.Gate
   alias MWTClient.Sandbox.Egress.Tcp
 
   @keep 256 * 1024
@@ -76,11 +73,12 @@ defmodule MWTClient.Sandbox.Egress.FixedCall do
     port = uri.port || 443
     path = (uri.path || "/") <> if(uri.query, do: "?" <> uri.query, else: "")
     ref = make_ref()
-    fixed = Map.merge(mark, %{host: uri.host, notify: self(), ref: ref})
+    fixed = Map.merge(mark, %{host: String.downcase(uri.host), notify: self(), ref: ref})
 
     result =
-      with {:ok, ip} <- resolve(uri.host),
-           {:ok, client} <- pair(username, fixed),
+      with :ok <- https_port(port),
+           {:ok, [ip | _], route} <- Gate.resolve_fixed(username, fixed, port),
+           {:ok, client} <- pair(username, Map.merge(fixed, route)),
            :ok <- connect(client, ip, port, deadline),
            {:ok, tls} <- handshake(client, uri.host, deadline) do
         try do
@@ -94,29 +92,8 @@ defmodule MWTClient.Sandbox.Egress.FixedCall do
     report(result, ref)
   end
 
-  # The host's address, by this machine's resolver, for this call's own
-  # connection only. Nothing is recorded as MWT's DNS answer
-  # (`Gate.answered/5`): that record is what the VM's own lookups leave
-  # (`MWTClient.Sandbox.Dns`, through a network grant's resolver where it
-  # has one), and a connection of the VM's to an address it holds goes
-  # under a network grant naming the host. This machine's resolver may
-  # answer otherwise than the grant's (split DNS, a VPN's own), so a
-  # record from here would open to the VM, for a minute, an address its
-  # own lookup never gave. The call needs none: its connection is
-  # checked by `Gate.fixed_destination/4`, and `Gate.route/6` takes the
-  # name of a fixed call's connection as MWT's own.
-  defp resolve(host) do
-    case Destinations.parse_ip(host) do
-      {:ok, ip} ->
-        {:ok, ip}
-
-      :error ->
-        case Destinations.resolve(host) do
-          [ip | _] -> {:ok, ip}
-          [] -> {:error, "#{host} doesn't resolve"}
-        end
-    end
-  end
+  defp https_port(443), do: :ok
+  defp https_port(_port), do: {:error, "Fixed calls use HTTPS port 443."}
 
   # Two connected sockets on the loopback, this process holding one end;
   # the other served as the proxy serves the VM's, with the call's mark.

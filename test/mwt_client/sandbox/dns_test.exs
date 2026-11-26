@@ -121,6 +121,56 @@ defmodule MWTClient.Sandbox.DnsTest do
     assert answer == <<0x1234::16, 0x8180::16, rest::binary, "the answer">>
   end
 
+  test "a fixed call resolves on its network without recording a VM DNS answer", %{
+    username: username
+  } do
+    {:ok, udp} = :gen_udp.open(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+    {:ok, port} = :inet.port(udp)
+    host = "api.office.example"
+    ip = {10, 20, 30, 40}
+
+    start_supervised!(
+      {Task,
+       fn ->
+         for type <- ["A", "AAAA"] do
+           {:ok, {address, client, <<id::16, _::16, 1::16, 0::48, question::binary>> = query}} =
+             :gen_udp.recv(udp, 0)
+
+           assert Dns.question(query) == {:ok, host, type}
+
+           {count, record} =
+             if type == "A",
+               do: {1, <<0xC00C::16, 1::16, 1::16, 60::32, 4::16, 10, 20, 30, 40>>},
+               else: {0, <<>>}
+
+           :ok =
+             :gen_udp.send(udp, address, client, [
+               <<id::16, 0x8180::16, 1::16, count::16, 0::32>>,
+               question,
+               record
+             ])
+         end
+       end}
+    )
+
+    resolver = "127.0.0.1:#{port}"
+
+    {:ok, grant} =
+      Sandbox.create_grant(username, %{
+        "kind" => "network",
+        "name" => "Office",
+        "purpose" => "Use the office resolver",
+        "destinations" => "#{host}:443",
+        "resolver" => resolver
+      })
+
+    {:ok, _} = Sandbox.turn_on(username, grant.id, 60, :all)
+    fixed = %{network: grant.network, host: host}
+
+    assert {:ok, [^ip], %{resolver: ^resolver}} = Gate.resolve_fixed(username, fixed, 443)
+    assert Gate.answered_for(username, ip) == %{}
+  end
+
   @tag :capture_log
   test "a name the firewall refuses is answered REFUSED here, and never asked of the resolver",
        %{username: username} do

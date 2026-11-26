@@ -6,6 +6,11 @@
 !scripts/microsandbox.pin
 !mix.exs
 !mix.lock
+!Makefile
+!c_src/
+!c_src/**
+!rel/
+!rel/**
 !.gitignore
 !config/
 !config/**
@@ -17,7 +22,7 @@
 !priv/**
 !src-tauri/
 !src-tauri/**
-# The relay and the ACP shell, built in a stage of their own.
+# The relay and presentations, built in a stage of their own.
 !native/
 !native/**
 native/*/target/
