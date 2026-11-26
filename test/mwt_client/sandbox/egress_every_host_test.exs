@@ -24,23 +24,24 @@ defmodule MWTClient.Sandbox.EgressEveryHostTest do
     host_ca = CA.new("example.com's CA")
     host = start_host(host_ca, "example.com")
     proxy = proxy(username, host)
-    %{username: username, ca: ca, host_ca: host_ca.cert, proxy: proxy}
+    %{username: username, ca: ca, host_ca: host_ca.cert, host: host, proxy: proxy}
   end
 
   # A proxy whose read requests and tunnels both go to `host`, here.
-  defp proxy(username, host) do
+  defp proxy(username, host, waits \\ []) do
     test = self()
 
-    options = [
-      upstream: fn target ->
-        send(test, {:read_target, target})
-        :ssl.connect(~c"127.0.0.1", host, verify: :verify_none, active: false, mode: :binary)
-      end,
-      upstream_tcp: fn target ->
-        send(test, {:tunnel_target, target})
-        :gen_tcp.connect(~c"127.0.0.1", host, [:binary, active: false])
-      end
-    ]
+    options =
+      [
+        upstream: fn target ->
+          send(test, {:read_target, target})
+          :ssl.connect(~c"127.0.0.1", host, verify: :verify_none, active: false, mode: :binary)
+        end,
+        upstream_tcp: fn target ->
+          send(test, {:tunnel_target, target})
+          :gen_tcp.connect(~c"127.0.0.1", host, [:binary, active: false])
+        end
+      ] ++ MWTClient.SandboxProxy.client_waits(waits)
 
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
@@ -264,11 +265,13 @@ defmodule MWTClient.Sandbox.EgressEveryHostTest do
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
 
-    options = [
-      upstream: fn _target ->
-        {:error, {:tls_alert, {:unknown_ca, ~c"TLS client: generated CLIENT ALERT: Unknown CA"}}}
-      end
-    ]
+    options =
+      [
+        upstream: fn _target ->
+          {:error,
+           {:tls_alert, {:unknown_ca, ~c"TLS client: generated CLIENT ALERT: Unknown CA"}}}
+        end
+      ] ++ MWTClient.SandboxProxy.client_waits()
 
     spawn_link(fn -> accept(listen, username, options) end)
 
@@ -285,8 +288,9 @@ defmodule MWTClient.Sandbox.EgressEveryHostTest do
     assert summary =~ "a CA this machine doesn't trust"
   end
 
-  test "a server that greets first inside TLS is heard", %{ca: ca, proxy: proxy} do
-    {:ok, tls} = tls(proxy, [ca], nil)
+  test "a server that greets first inside TLS is heard", %{username: username, ca: ca, host: host} do
+    # The client stays quiet: a short wait for it to speak is enough.
+    {:ok, tls} = tls(proxy(username, host, server_first: 100), [ca], nil)
     assert {:ok, "* OK greeting\r\n"} = :ssl.recv(tls, 0, 5_000)
   end
 

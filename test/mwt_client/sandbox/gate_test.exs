@@ -258,7 +258,8 @@ defmodule MWTClient.Sandbox.GateTest do
 
       spawn_link(fn ->
         {:ok, client} = :gen_tcp.accept(listen)
-        pid = spawn(fn -> receive(do: (:go -> Tcp.run(client, username, []))) end)
+        options = SandboxProxy.client_waits()
+        pid = spawn(fn -> receive(do: (:go -> Tcp.run(client, username, options))) end)
         :ok = :gen_tcp.controlling_process(client, pid)
         send(pid, :go)
         Process.sleep(:infinity)

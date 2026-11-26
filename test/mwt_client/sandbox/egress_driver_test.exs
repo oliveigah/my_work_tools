@@ -21,7 +21,11 @@ defmodule MWTClient.Sandbox.EgressDriverTest do
   end
 
   defp proxy(username) do
-    options = [drivers: [SandboxLineDriver, Http1, Raw]]
+    options =
+      [
+        drivers: [SandboxLineDriver, Http1, Raw]
+      ] ++ MWTClient.SandboxProxy.client_waits()
+
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
     spawn_link(fn -> accept(listen, username, options) end)

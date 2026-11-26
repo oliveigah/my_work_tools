@@ -115,10 +115,15 @@ defmodule MWTClient.Vault.Store do
   @doc "The registered name of one store for one identity."
   def via(store, username), do: {:via, Registry, {@registry, key(store, username)}}
 
-  @doc "The pid of one store, or nil when the identity is locked."
+  @doc """
+  The pid of one store, or nil when the identity is locked.
+
+  A store that just ended stays in the registry until the registry hears of
+  it, a moment after: right after a lock, it would be handed back.
+  """
   def whereis(store, username) do
     case Registry.lookup(@registry, key(store, username)) do
-      [{pid, _value}] -> pid
+      [{pid, _value}] -> if Process.alive?(pid), do: pid
       [] -> nil
     end
   end

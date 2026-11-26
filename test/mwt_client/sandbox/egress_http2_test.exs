@@ -24,18 +24,19 @@ defmodule MWTClient.Sandbox.EgressHttp2Test do
   defp proxy(username, host) do
     test = self()
 
-    options = [
-      upstream: fn target ->
-        send(test, {:read_target, target})
+    options =
+      [
+        upstream: fn target ->
+          send(test, {:read_target, target})
 
-        :ssl.connect(~c"127.0.0.1", host,
-          verify: :verify_none,
-          active: false,
-          mode: :binary,
-          alpn_advertised_protocols: target.alpn
-        )
-      end
-    ]
+          :ssl.connect(~c"127.0.0.1", host,
+            verify: :verify_none,
+            active: false,
+            mode: :binary,
+            alpn_advertised_protocols: target.alpn
+          )
+        end
+      ] ++ MWTClient.SandboxProxy.client_waits()
 
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)

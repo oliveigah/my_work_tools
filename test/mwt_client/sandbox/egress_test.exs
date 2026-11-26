@@ -17,11 +17,16 @@ defmodule MWTClient.Sandbox.EgressTest do
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
 
-    options = [
-      upstream: fn _host ->
-        :ssl.connect(~c"127.0.0.1", upstream, verify: :verify_none, active: false, mode: :binary)
-      end
-    ]
+    options =
+      [
+        upstream: fn _host ->
+          :ssl.connect(~c"127.0.0.1", upstream,
+            verify: :verify_none,
+            active: false,
+            mode: :binary
+          )
+        end
+      ] ++ MWTClient.SandboxProxy.client_waits()
 
     spawn_link(fn -> accept(listen, username, options) end)
 
@@ -572,7 +577,9 @@ defmodule MWTClient.Sandbox.EgressTest do
 
   test "a connection waiting for you opens when you allow it", %{username: username} do
     {server, port} = local_server(username, :ask)
-    proxy = proxy_with(username, answer_within: 50)
+
+    proxy =
+      proxy_with(username, [answer_within: 50] ++ MWTClient.SandboxProxy.client_waits())
 
     spawn_link(fn ->
       {:ok, socket} = :gen_tcp.accept(server)
@@ -589,10 +596,11 @@ defmodule MWTClient.Sandbox.EgressTest do
   end
 
   test "a server that speaks first is heard without the wait for the client", %{
-    username: username,
-    proxy: proxy
+    username: username
   } do
     {server, port} = local_server(username, :all)
+    # The waits for a quiet client as MWT has them.
+    proxy = proxy_with(username, [])
 
     spawn_link(fn ->
       {:ok, socket} = :gen_tcp.accept(server)

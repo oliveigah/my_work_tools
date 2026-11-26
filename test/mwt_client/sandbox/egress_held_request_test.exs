@@ -22,11 +22,16 @@ defmodule MWTClient.Sandbox.EgressHeldRequestTest do
     {:ok, {_, host_port}} = :ssl.sockname(host)
     spawn_link(fn -> serve(host, test) end)
 
-    options = [
-      upstream: fn _target ->
-        :ssl.connect(~c"127.0.0.1", host_port, verify: :verify_none, active: false, mode: :binary)
-      end
-    ]
+    options =
+      [
+        upstream: fn _target ->
+          :ssl.connect(~c"127.0.0.1", host_port,
+            verify: :verify_none,
+            active: false,
+            mode: :binary
+          )
+        end
+      ] ++ SandboxProxy.client_waits()
 
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)

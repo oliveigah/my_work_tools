@@ -18,6 +18,16 @@ defmodule MWTClient.Sandbox.SavingTest do
     Map.merge(identity, %{base: base, pid: Store.whereis(Server, identity.username)})
   end
 
+  # MWT starting again from what is on disk: locked and unlocked, the server
+  # starts as at an unlock. A crash wouldn't do: a server restarted after one
+  # takes its grants as it last handed them on (`Server.Kept`), and whether
+  # that was before or after a grant planted here depends on what else it
+  # was sent in between.
+  defp start_again(%{username: username, key: key}) do
+    :ok = Store.close(username)
+    :ok = Store.open(username, key)
+  end
+
   defp shares_on_disk(%{username: username, key: key}) do
     saved = State.restore(username, key)
     Enum.map(saved.settings.shares, & &1.path)
@@ -67,15 +77,8 @@ defmodule MWTClient.Sandbox.SavingTest do
     refute Map.has_key?(saved.values, "kube")
     assert saved.dropped_files == ["Kubeconfig"]
 
-    # Started again from that, it says so once, and saves the grants without it.
-    ref = Process.monitor(context.pid)
-
-    ExUnit.CaptureLog.capture_log(fn ->
-      GenServer.cast(context.pid, :no_handler_matches_this)
-      assert_receive {:DOWN, ^ref, :process, _, _crash}
-    end)
-
-    MWTClient.VaultHelpers.restarted(Server, context.username, context.pid)
+    # MWT started again from that says so once, and saves the grants without it.
+    start_again(context)
 
     assert Enum.any?(
              Sandbox.events(context.username),
@@ -111,14 +114,7 @@ defmodule MWTClient.Sandbox.SavingTest do
     refute Map.has_key?(grant, :checks)
     assert saved.dropped_checks == [{"GitHub, checked", ["the key can't push"]}]
 
-    ref = Process.monitor(context.pid)
-
-    ExUnit.CaptureLog.capture_log(fn ->
-      GenServer.cast(context.pid, :no_handler_matches_this)
-      assert_receive {:DOWN, ^ref, :process, _, _crash}
-    end)
-
-    MWTClient.VaultHelpers.restarted(Server, context.username, context.pid)
+    start_again(context)
 
     assert Enum.any?(
              Sandbox.events(context.username),

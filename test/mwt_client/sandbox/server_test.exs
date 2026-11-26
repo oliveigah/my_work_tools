@@ -119,13 +119,15 @@ defmodule MWTClient.Sandbox.ServerTest do
     Phoenix.PubSub.subscribe(MWTClient.PubSub, Server.State.topic(username))
 
     # A layer podman refuses at once, or no podman at all: either way the
-    # build prints its first line and fails fast.
-    :sys.replace_state(pid, fn state ->
-      state = put_in(state.settings.image_layer, "NOT AN INSTRUCTION\n")
-      Server.Machine.start_build(state)
-    end)
+    # build prints its first line and fails fast, so the port is looked at
+    # in the state that started it, before the server can hear it end.
+    started =
+      :sys.replace_state(pid, fn state ->
+        state = put_in(state.settings.image_layer, "NOT AN INSTRUCTION\n")
+        Server.Machine.start_build(state)
+      end)
 
-    assert is_port(:sys.get_state(pid).build)
+    assert is_port(started.build)
     assert_receive {:sandbox_build_line, "==> podman build " <> _}, 5_000
 
     image = built(username)

@@ -561,27 +561,18 @@ defmodule MWTClient.Sandbox.CopyBack do
   end
 
   # Into place: every folder of `from-vm/` writable for as long as it
-  # takes, what the VM hasn't removed, its folders made, each file renamed
-  # over what is there; then folders 0555 again.
+  # takes, the ones the VM removed too (a file is unlinked from a folder
+  # only while it is writable), what the VM hasn't removed, its folders
+  # made, each file renamed over what is there; then folders 0555 again.
   defp move(here, staged, plan, listed) do
-    folders = [here | for({path, :dir} <- listed, do: Path.join(here, path))]
+    kept = for {path, :dir} <- listed, do: path
+    folders = [here | Enum.map(kept ++ plan.remove, &Path.join(here, &1))]
 
     try do
       Enum.each(folders, &chmod_folder(&1, 0o755))
 
-      plan.remove
-      |> Enum.sort_by(&(-depth(&1)))
-      |> Enum.each(fn path ->
-        full = Path.join(here, path)
-
-        case File.lstat(full) do
-          {:ok, %File.Stat{type: :directory}} -> File.rm_rf(full)
-          {:ok, _} -> File.rm(full)
-          {:error, _gone} -> :ok
-        end
-      end)
-
-      with :ok <- each_ok(plan.folders, &folder(here, &1)),
+      with :ok <- each_ok(Enum.sort_by(plan.remove, &(-depth(&1))), &remove(here, &1)),
+           :ok <- each_ok(plan.folders, &folder(here, &1)),
            :ok <- each_ok(plan.bring, &place(here, staged, &1)) do
         :ok
       end
@@ -589,6 +580,30 @@ defmodule MWTClient.Sandbox.CopyBack do
       Enum.each(folders, &chmod_folder(&1, 0o555))
     end
   end
+
+  # What the VM hasn't: a folder with all it holds, anything else as
+  # itself, a link never followed.
+  defp remove(here, path) do
+    full = Path.join(here, path)
+
+    removed =
+      case File.lstat(full) do
+        {:ok, %File.Stat{type: :directory}} -> File.rm_rf(full)
+        {:ok, _other} -> File.rm(full)
+        {:error, _gone} -> :ok
+      end
+
+    case removed do
+      :ok -> :ok
+      {:ok, _paths} -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason, _path} -> cannot_remove(path, reason)
+      {:error, reason} -> cannot_remove(path, reason)
+    end
+  end
+
+  defp cannot_remove(path, reason),
+    do: {:error, {:failed, "#{path} couldn't be removed here: #{:file.format_error(reason)}"}}
 
   # Only a real folder: a link in its place leads out of `from-vm/`.
   defp chmod_folder(path, mode) do

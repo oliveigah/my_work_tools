@@ -25,12 +25,13 @@ defmodule MWTClient.Sandbox.EgressPlainHttpTest do
   defp proxy(username, host) do
     test = self()
 
-    options = [
-      upstream_tcp: fn target ->
-        send(test, {:upstream, target})
-        :gen_tcp.connect(~c"127.0.0.1", host, [:binary, active: false])
-      end
-    ]
+    options =
+      [
+        upstream_tcp: fn target ->
+          send(test, {:upstream, target})
+          :gen_tcp.connect(~c"127.0.0.1", host, [:binary, active: false])
+        end
+      ] ++ SandboxProxy.client_waits()
 
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)

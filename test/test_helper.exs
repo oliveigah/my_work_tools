@@ -5,6 +5,14 @@
 # test makes sets its own user.name and user.email.
 System.put_env(%{"GIT_CONFIG_GLOBAL" => "/dev/null", "GIT_CONFIG_NOSYSTEM" => "1"})
 
+# A run has a temporary folder of its own, so two runs at once on one machine
+# (in two checkouts, say) never share a test's folder: tests name theirs with
+# `System.unique_integer/1`, unique only within a run. MWT's own folders are
+# named by the run's OS process already (config/test.exs).
+tmp = Path.join(System.tmp_dir!(), "mwt_client_test_tmp_#{System.pid()}")
+File.mkdir_p!(tmp)
+System.put_env("TMPDIR", tmp)
+
 # What tests put in place of each identity's VM and of Zed (config/test.exs).
 MWTClient.StandIns.start()
 
@@ -62,4 +70,7 @@ ExUnit.after_suite(fn _result ->
   # Each test identity has a folder of sockets of its own.
   File.rm_rf!(Application.get_env(:mwt_client, MWTClient.Sandbox.Server)[:channel_dir])
   File.rm_rf!(nested_virt_root)
+  # What a test left: as far as it can go, since a folder of it may be one a
+  # test left read-only.
+  File.rm_rf(tmp)
 end)

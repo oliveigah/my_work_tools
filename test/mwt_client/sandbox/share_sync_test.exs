@@ -63,12 +63,12 @@ defmodule MWTClient.Sandbox.ShareSyncTest do
     assert File.read!(shown(context, "sub/notes.md")) == "notes\n"
     assert File.exists?(context.vm <> ShareMounts.store(context.folder))
 
+    # The folder as the last sync found it. Not what it sent, nor whether one
+    # runs: the files made for the test were still settling, and the sync
+    # that follows up on them may already have come.
     entry = Sandbox.snapshot(context.username).sync[context.folder]
     assert entry.status.synced_at
-    # Two files and a folder; the files may count again while settling.
-    assert entry.status.sent >= 3
-    assert entry.progress == nil
-    refute entry.due?
+    assert entry.status.files == 2
   end
 
   test "a change reaches the VM only when a sync is asked for", context do
@@ -116,13 +116,17 @@ defmodule MWTClient.Sandbox.ShareSyncTest do
     assert {:ok, _} = wait(context, :all)
     File.write!(shown(context, "plan.md"), "planted in the VM\n")
 
-    state = :sys.get_state(context.pid)
-    :sys.replace_state(context.pid, fn _ -> Server.ShareSync.reset(state) end)
+    reset_at = DateTime.utc_now()
+    :sys.replace_state(context.pid, &Server.ShareSync.reset/1)
     assert {:ok, %{} = statuses} = wait(context, [])
     assert statuses == %{}
 
     assert File.read!(shown(context, "plan.md")) == "plan\n"
-    assert Sandbox.snapshot(context.username).sync[context.folder].status.sent >= 1
+    # When the copy last changed, not what the last sync sent: the files
+    # made for the test were still settling at the first sync, whose
+    # follow-up may come after this one and send nothing.
+    status = Sandbox.snapshot(context.username).sync[context.folder].status
+    assert DateTime.compare(status.changed_at, reset_at) != :lt
   end
 
   test "a file this machine won't let MWT read is named in the log, once", context do

@@ -17,6 +17,16 @@ defmodule MWTClient.SandboxProxy do
   alias MWTClient.Sandbox.Egress.Tcp
 
   @doc """
+  The waits for a quiet client a test's proxy passes to `Tcp.run/3`
+  (`:client_first`, `:server_first`): long, so a client that speaks first
+  is taken as one however late a loaded run makes it. A test of a client
+  that stays quiet overrides them.
+  """
+  @spec client_waits(keyword()) :: keyword()
+  def client_waits(overrides \\ []),
+    do: Keyword.merge([client_first: 10_000, server_first: 10_000], overrides)
+
+  @doc """
   Starts both for `username`'s sandbox, linked to the caller. Returns the
   proxy's port and the sandbox's CA certificate.
   """
@@ -27,11 +37,16 @@ defmodule MWTClient.SandboxProxy do
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
 
-    options = [
-      upstream: fn _host ->
-        :ssl.connect(~c"127.0.0.1", upstream, verify: :verify_none, active: false, mode: :binary)
-      end
-    ]
+    options =
+      [
+        upstream: fn _host ->
+          :ssl.connect(~c"127.0.0.1", upstream,
+            verify: :verify_none,
+            active: false,
+            mode: :binary
+          )
+        end
+      ] ++ client_waits()
 
     spawn_link(fn -> accept(listen, username, options) end)
     [{:Certificate, ca, _}] = username |> Sandbox.ca_pem() |> :public_key.pem_decode()

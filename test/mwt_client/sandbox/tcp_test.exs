@@ -29,17 +29,19 @@ defmodule MWTClient.Sandbox.TcpTest do
   # An extension MWT doesn't read (supported_versions), to skip over.
   @other <<43::16, 3::16, 2, 3, 4>>
 
-  # What Erlang's own client sends, to be sure of real bytes.
+  # What Erlang's own client sends, to be sure of real bytes. The waits are
+  # long, as a loaded run can starve the client for seconds; closing the
+  # socket once the hello came ends it.
   defp real_hello(options) do
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
 
     spawn(fn ->
-      _ = :ssl.connect(~c"127.0.0.1", port, [verify: :verify_none] ++ options, 1_000)
+      _ = :ssl.connect(~c"127.0.0.1", port, [verify: :verify_none] ++ options, 30_000)
     end)
 
-    {:ok, socket} = :gen_tcp.accept(listen, 5_000)
-    {:ok, data} = :gen_tcp.recv(socket, 0, 5_000)
+    {:ok, socket} = :gen_tcp.accept(listen, 30_000)
+    {:ok, data} = :gen_tcp.recv(socket, 0, 30_000)
     :gen_tcp.close(socket)
     data
   end

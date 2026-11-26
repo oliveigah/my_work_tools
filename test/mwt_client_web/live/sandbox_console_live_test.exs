@@ -15,6 +15,10 @@ defmodule MWTClientWeb.SandboxConsoleLiveTest do
 
   @moduletag :tmp_dir
 
+  # A run is a real shell, which a loaded run can make take more than the
+  # second `render_async/1` waits by default.
+  @run_within 10_000
+
   setup %{conn: conn} do
     sign_in(conn, "console-live")
   end
@@ -36,7 +40,7 @@ defmodule MWTClientWeb.SandboxConsoleLiveTest do
     |> form("#console-form", console: %{command: "echo hello; echo oops >&2; exit 2"})
     |> render_submit()
 
-    render_async(view)
+    render_async(view, @run_within)
     assert has_element?(view, "#console-runs [id^=console-output-text-]", "hello")
     assert has_element?(view, "#console-runs [id^=console-output-text-]", "oops")
     assert has_element?(view, "#console-runs", "exit 2")
@@ -99,7 +103,7 @@ defmodule MWTClientWeb.SandboxConsoleLiveTest do
     |> form("#console-form", console: %{command: "echo sk_live_real-value-0123456789 > leak"})
     |> render_submit()
 
-    render_async(view)
+    render_async(view, @run_within)
     assert has_element?(view, "#console-error", "holds the real value of Stripe")
     refute File.exists?(Path.join(dir, "leak"))
     # Refused before it ran, it isn't a run.
@@ -138,7 +142,7 @@ defmodule MWTClientWeb.SandboxConsoleLiveTest do
     # Run again: as it ran, a new run, the newest, opened.
     [seventh] = Enum.filter(Sandbox.console_runs(username), &(&1.command == "echo run-7"))
     view |> element("#console-again-#{seventh.id}") |> render_click()
-    render_async(view)
+    render_async(view, @run_within)
 
     assert [%{command: "echo run-7", id: newest} | _] = Sandbox.console_runs(username)
     assert newest > seventh.id

@@ -27,16 +27,17 @@ defmodule MWTClient.Sandbox.EgressHostRulesTest do
   defp proxy(username, host) do
     test = self()
 
-    options = [
-      upstream: fn target ->
-        send(test, {:read_target, target})
-        :ssl.connect(~c"127.0.0.1", host, verify: :verify_none, active: false, mode: :binary)
-      end,
-      upstream_tcp: fn target ->
-        send(test, {:tunnel_target, target})
-        :gen_tcp.connect(~c"127.0.0.1", host, [:binary, active: false])
-      end
-    ]
+    options =
+      [
+        upstream: fn target ->
+          send(test, {:read_target, target})
+          :ssl.connect(~c"127.0.0.1", host, verify: :verify_none, active: false, mode: :binary)
+        end,
+        upstream_tcp: fn target ->
+          send(test, {:tunnel_target, target})
+          :gen_tcp.connect(~c"127.0.0.1", host, [:binary, active: false])
+        end
+      ] ++ SandboxProxy.client_waits()
 
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)

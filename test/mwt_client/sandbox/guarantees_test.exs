@@ -39,11 +39,16 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
 
-    options = [
-      upstream: fn _host ->
-        :ssl.connect(~c"127.0.0.1", upstream, verify: :verify_none, active: false, mode: :binary)
-      end
-    ]
+    options =
+      [
+        upstream: fn _host ->
+          :ssl.connect(~c"127.0.0.1", upstream,
+            verify: :verify_none,
+            active: false,
+            mode: :binary
+          )
+        end
+      ] ++ MWTClient.SandboxProxy.client_waits()
 
     spawn_link(fn -> accept(listen, username, options) end)
     [{:Certificate, ca, _}] = username |> Sandbox.ca_pem() |> :public_key.pem_decode()

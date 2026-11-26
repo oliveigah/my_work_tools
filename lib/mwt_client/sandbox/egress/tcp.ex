@@ -126,12 +126,20 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
       whole; tests make it short
     * `:body_within` - how long, in milliseconds, the start of a request's
       body may take to arrive (10 seconds, `Driver.Http1`)
+    * `:client_first` - how long, in milliseconds, a client let through
+      may stay quiet before MWT also connects, in case the server speaks
+      first (100 ms)
+    * `:server_first` - how long, in milliseconds, a client may stay quiet
+      before MWT takes it that the server speaks first (1.4 seconds)
     * `:fixed` - the mark of a fixed call, on a connection MWT opened
       itself to send what it built (`MWTClient.Sandbox.Egress.FixedCall`):
       its destination, route and requests are decided by the call
       (`Gate.fixed_destination/4`, `Gate.route/6`, `Gate.authorize/3`), and
       a cut answer is told to the caller. Only MWT passes it: the VM's
       connections take the options of the config.
+
+  Tests whose clients speak first make `:client_first` and `:server_first`
+  long, as a loaded run makes their clients late.
   """
   def run(client, username, options \\ []) do
     started = System.monotonic_time(:millisecond)
@@ -315,10 +323,10 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   # A network grant's connection that waits for you: nothing is connected to
   # before you decide, so a client that stays quiet (a server that greets
   # first: MySQL, SMTP) is asked about by its silence.
-  defp opening(client, rest, _target, {:asking, _grant}, _options) do
+  defp opening(client, rest, _target, {:asking, _grant}, options) do
     case rest do
       "" ->
-        case :gen_tcp.recv(client, 0, @server_first) do
+        case :gen_tcp.recv(client, 0, server_first(options)) do
           {:ok, data} -> {complete_record(client, data), "", nil}
           {:error, :timeout} -> {"", "", nil}
           {:error, reason} -> {:error, reason}
@@ -330,9 +338,9 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   end
 
   defp opening(client, "", target, {:open, _grant}, options) do
-    case :gen_tcp.recv(client, 0, @client_first) do
+    case :gen_tcp.recv(client, 0, Keyword.get(options, :client_first, @client_first)) do
       {:ok, data} -> {complete_record(client, data), "", nil}
-      {:error, :timeout} -> either(client, upstream_tcp(options).(target))
+      {:error, :timeout} -> either(client, upstream_tcp(options).(target), options)
       {:error, reason} -> {:error, reason}
     end
   end
@@ -340,9 +348,11 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   defp opening(client, rest, _target, {:open, _grant}, _options),
     do: {complete_record(client, rest), "", nil}
 
-  defp either(_client, {:error, _reason} = failed), do: {"", "", failed}
+  defp server_first(options), do: Keyword.get(options, :server_first, @server_first)
 
-  defp either(client, {:ok, upstream}) do
+  defp either(_client, {:error, _reason} = failed, _options), do: {"", "", failed}
+
+  defp either(client, {:ok, upstream}, options) do
     :inet.setopts(client, active: :once)
     :inet.setopts(upstream, active: :once)
 
@@ -354,7 +364,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
       {:tcp_closed, ^upstream} -> {"", "", {:error, :closed}}
       {:tcp_error, ^upstream, reason} -> {"", "", {:error, reason}}
     after
-      @server_first -> {"", "", {:ok, upstream}}
+      server_first(options) -> {"", "", {:ok, upstream}}
     end
   end
 
@@ -573,7 +583,7 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
             start(core, driver, "", "")
 
           true ->
-            case :ssl.recv(tls, 0, @server_first) do
+            case :ssl.recv(tls, 0, server_first(core.options)) do
               {:ok, data} ->
                 case detect(core, data, within(@detect_within)) do
                   {Raw, data} ->

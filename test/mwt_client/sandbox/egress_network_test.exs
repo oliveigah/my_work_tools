@@ -20,15 +20,16 @@ defmodule MWTClient.Sandbox.EgressNetworkTest do
   end
 
   # A proxy whose read requests go to `service`, a TLS server here.
-  defp proxy(username, service) do
+  defp proxy(username, service, waits \\ []) do
     test = self()
 
-    options = [
-      upstream: fn target ->
-        send(test, {:read_target, target})
-        :ssl.connect(~c"127.0.0.1", service, verify: :verify_none, active: false, mode: :binary)
-      end
-    ]
+    options =
+      [
+        upstream: fn target ->
+          send(test, {:read_target, target})
+          :ssl.connect(~c"127.0.0.1", service, verify: :verify_none, active: false, mode: :binary)
+        end
+      ] ++ SandboxProxy.client_waits(waits)
 
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
@@ -429,7 +430,9 @@ defmodule MWTClient.Sandbox.EgressNetworkTest do
     } do
       service = tcp_service(true)
       network_grant(username, service, :ask)
-      socket = connect(proxy(username, https_service()), "127.0.0.1:#{service}")
+      # The client stays quiet: a short wait for it to speak is enough.
+      socket =
+        connect(proxy(username, https_service(), server_first: 100), "127.0.0.1:#{service}")
 
       approval = waiting(username)
       assert {"Not read", "the server speaks first"} in approval.facts

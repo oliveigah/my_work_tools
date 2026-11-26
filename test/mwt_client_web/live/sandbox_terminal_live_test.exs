@@ -17,9 +17,11 @@ defmodule MWTClientWeb.SandboxTerminalLiveTest do
     sign_in(conn, "terminal-live")
   end
 
+  # Each line runs in a real shell, which a loaded run can make take more
+  # than the second `render_async/1` waits by default.
   defp type(view, command) do
     view |> element("#terminal-form") |> render_submit(%{command: command})
-    render_async(view)
+    render_async(view, 10_000)
   end
 
   test "with the VM stopped, its line says so and takes nothing", %{conn: conn} do

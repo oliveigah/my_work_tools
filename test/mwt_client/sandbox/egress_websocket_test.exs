@@ -22,11 +22,12 @@ defmodule MWTClient.Sandbox.EgressWebSocketTest do
   end
 
   defp proxy(username, host) do
-    options = [
-      upstream: fn _target ->
-        :ssl.connect(~c"127.0.0.1", host, verify: :verify_none, active: false, mode: :binary)
-      end
-    ]
+    options =
+      [
+        upstream: fn _target ->
+          :ssl.connect(~c"127.0.0.1", host, verify: :verify_none, active: false, mode: :binary)
+        end
+      ] ++ MWTClient.SandboxProxy.client_waits()
 
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)

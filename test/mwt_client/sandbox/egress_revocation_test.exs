@@ -21,6 +21,7 @@ defmodule MWTClient.Sandbox.EgressRevocationTest do
   defp proxy(username, options \\ []) do
     {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
     {:ok, port} = :inet.port(listen)
+    options = options ++ MWTClient.SandboxProxy.client_waits()
     spawn_link(fn -> accept(listen, username, options) end)
     port
   end
