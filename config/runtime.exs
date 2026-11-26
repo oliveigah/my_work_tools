@@ -59,17 +59,14 @@ if config_env() == :dev do
 end
 
 if config_env() == :prod do
-  # The secret key base is used to sign/encrypt cookies and other secrets.
-  # A default value is used in config/dev.exs and config/test.exs but you
-  # want to use a different value for prod and you most likely don't want
-  # to check this value into version control, so we use an environment
-  # variable instead.
+  # The secret key base signs the session cookie and LiveView's tokens. One
+  # written into the app would be the same in every copy of it, so anyone
+  # could sign what MWT trusts. Sessions live only in memory
+  # (MWTClientWeb.Session), so none outlives a restart anyway: a new key each
+  # start costs nothing. SECRET_KEY_BASE is for a deployment that wants one
+  # of its own.
   secret_key_base =
-    System.get_env("SECRET_KEY_BASE") ||
-      raise """
-      environment variable SECRET_KEY_BASE is missing.
-      You can generate one by calling: mix phx.gen.secret
-      """
+    System.get_env("SECRET_KEY_BASE") || Base.encode64(:crypto.strong_rand_bytes(48))
 
   host = System.get_env("PHX_HOST") || "example.com"
 

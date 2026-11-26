@@ -89,6 +89,11 @@ RUN --mount=type=cache,id=mwt-deb-mix-home,target=/root/.mix \
     && exit 1
 
 COPY config ./config
+# How the release starts: never as an Erlang node (rel/env.sh.eex).
+COPY rel ./rel
+# MWT's own NIF, built by elixir_make through the Makefile (c_src).
+COPY Makefile ./
+COPY c_src ./c_src
 COPY lib ./lib
 COPY assets ./assets
 COPY priv ./priv
@@ -188,6 +193,11 @@ RUN --mount=type=cache,id=mwt-rpm-mix-home,target=/root/.mix \
     && exit 1
 
 COPY config ./config
+# How the release starts: never as an Erlang node (rel/env.sh.eex).
+COPY rel ./rel
+# MWT's own NIF, built by elixir_make through the Makefile (c_src).
+COPY Makefile ./
+COPY c_src ./c_src
 COPY lib ./lib
 COPY assets ./assets
 COPY priv ./priv

@@ -230,15 +230,10 @@ defmodule MWTClient.Sandbox.Bubble do
         :ok = Msb.write_launcher(username)
         filter = Msb.seccomp_file(username)
 
-        # Detached (a session of its own), with its output in a file and its
-        # process id written down, so a failure before the relay runs shows.
-        launcher =
-          ~s(echo $$ > "$MWT_PIDFILE"; exec "$@" > "$MWT_LOG" 2>&1 < /dev/null 3< "$MWT_SECCOMP")
-
         {_, 0} =
           MWTClient.Executable.cmd(
             "setsid",
-            ["--fork", "sh", "-c", launcher, "mwt-bubble" | words(spec, msb_words)],
+            ["--fork", "sh", "-c", launcher(), "mwt-bubble" | words(spec, msb_words)],
             env: [
               {"MWT_PIDFILE", Sockets.host_path(username, "bubble.pid")},
               {"MWT_LOG", Sockets.host_path(username, "bubble.log")},
@@ -249,6 +244,20 @@ defmodule MWTClient.Sandbox.Bubble do
 
         await_start(username, System.monotonic_time(:millisecond) + seconds * 1_000)
     end
+  end
+
+  @doc """
+  The shell that becomes the bubble, detached (a session of its own), with
+  its output in a file and its process id written down, so a failure
+  before the relay runs shows. Beside the id goes the time the process
+  started (`/proc/PID/stat`'s 22nd field; its name, `sh`, holds no space),
+  by which `MWTClient.Sandbox.Peer` knows it from a later process given
+  the same id. `exec` keeps both.
+  """
+  @spec launcher() :: String.t()
+  def launcher do
+    ~s[echo "$$ $(cut -d' ' -f22 /proc/$$/stat)" > "$MWT_PIDFILE"; ] <>
+      ~s(exec "$@" > "$MWT_LOG" 2>&1 < /dev/null 3< "$MWT_SECCOMP")
   end
 
   defp await_start(username, deadline) do

@@ -45,7 +45,7 @@ defmodule MWTClient.Sandbox.Dns do
 
   require Logger
 
-  alias MWTClient.Sandbox.{Decision, EventDetails, Gate, Grant, Routes, Server, Sockets}
+  alias MWTClient.Sandbox.{Decision, EventDetails, Gate, Grant, Peer, Routes, Server, Sockets}
   alias MWTClient.Vault.Store
 
   @answer_within 5_000
@@ -210,7 +210,7 @@ defmodule MWTClient.Sandbox.Dns do
     case :gen_tcp.listen(0, [:binary, ifaddr: {:local, path}, active: false, backlog: 256]) do
       {:ok, socket} ->
         File.chmod(path, 0o600)
-        acceptor = spawn_link(fn -> accept(socket, username, seen) end)
+        acceptor = spawn_link(fn -> accept(socket, username, seen, nil) end)
         {:ok, %{username: username, path: path, socket: socket, acceptor: acceptor}}
 
       {:error, reason} ->
@@ -233,21 +233,19 @@ defmodule MWTClient.Sandbox.Dns do
     :ok
   end
 
-  defp accept(socket, username, seen) do
+  # A connection from outside the VM's bubble is closed unanswered
+  # (`MWTClient.Sandbox.Peer`; `refused_at` is when that was last said).
+  defp accept(socket, username, seen, refused_at) do
     case :gen_tcp.accept(socket) do
       {:ok, client} ->
-        {:ok, pid} =
-          Task.Supervisor.start_child(MWTClient.Sandbox.TaskSupervisor, fn ->
-            receive do
-              :go -> serve(client, username, seen)
-            after
-              5_000 -> :ok
-            end
-          end)
+        case Peer.admit(client, username, "DNS", refused_at) do
+          {true, refused_at} ->
+            serve_in_task(client, username, seen)
+            accept(socket, username, seen, refused_at)
 
-        :ok = :gen_tcp.controlling_process(client, pid)
-        send(pid, :go)
-        accept(socket, username, seen)
+          {false, refused_at} ->
+            accept(socket, username, seen, refused_at)
+        end
 
       {:error, :closed} ->
         exit(:normal)
@@ -255,6 +253,20 @@ defmodule MWTClient.Sandbox.Dns do
       {:error, reason} ->
         exit(reason)
     end
+  end
+
+  defp serve_in_task(client, username, seen) do
+    {:ok, pid} =
+      Task.Supervisor.start_child(MWTClient.Sandbox.TaskSupervisor, fn ->
+        receive do
+          :go -> serve(client, username, seen)
+        after
+          5_000 -> :ok
+        end
+      end)
+
+    :ok = :gen_tcp.controlling_process(client, pid)
+    send(pid, :go)
   end
 
   # One connection carries one question (from UDP in the VM) or several

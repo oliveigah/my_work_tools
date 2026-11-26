@@ -38,6 +38,11 @@ config :mwt_client, MWTClient.Sandbox.Msb,
 config :mwt_client, MWTClient.Sandbox.Projects, guest: &MWTClient.StandIns.guest/1
 config :mwt_client, MWTClient.Sandbox.Zed, open: &MWTClient.StandIns.open_zed/2
 
+# Stand-ins for the relay and msb connect to the VM's sockets from the
+# suite's own BEAM, or from programs it starts: that counts as the bubble,
+# unless a test says what does (MWTClient.Sandbox.Peer).
+config :mwt_client, MWTClient.Sandbox.Peer, roots: &MWTClient.StandIns.peer_roots/1
+
 # The workspace goes in a home folder of each identity's own, under the
 # test data folder, never yours; opening it opens nothing.
 config :mwt_client, MWTClient.Sandbox.Workspace,

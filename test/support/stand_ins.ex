@@ -50,6 +50,19 @@ defmodule MWTClient.StandIns do
   def guest(username), do: lookup(:guest, username)
 
   @doc """
+  Makes `pids` the processes whose own and descendants' connections to
+  `username`'s sockets count as its bubble's (`MWTClient.Sandbox.Peer`),
+  until the test ends; `[]` leaves only the bubble `bubble.pid` names.
+  """
+  def put_peer_roots(username, pids), do: put(:peer_roots, username, pids)
+
+  @doc false
+  # Peer's `:roots`: by default the suite's own BEAM, where stand-ins for
+  # the relay and msb connect from.
+  def peer_roots(username),
+    do: lookup(:peer_roots, username) || [List.to_integer(:os.getpid())]
+
+  @doc """
   The home folder `username`'s workspace goes in: one of its own, inside
   the test data folder, made when first asked for.
   """

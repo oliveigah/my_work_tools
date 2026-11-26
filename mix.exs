@@ -47,9 +47,14 @@ defmodule MWTClient.MixProject do
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
-      # :native builds MWT's own Rust programs when their source changed
-      # (Mix.Tasks.Compile.Native).
-      compilers: [:phoenix_live_view] ++ Mix.compilers() ++ [:native],
+      # :elixir_make builds MWT's own NIF (c_src, through the Makefile:
+      # MWTClient.ProcessGuard). :native builds MWT's own Rust programs when
+      # their source changed (Mix.Tasks.Compile.Native).
+      compilers: [:phoenix_live_view, :elixir_make] ++ Mix.compilers() ++ [:native],
+      make_targets: ["all"],
+      make_clean: ["clean"],
+      # Says nothing when the NIF is up to date.
+      make_args: ["--silent"],
       listeners: [Phoenix.CodeReloader],
       # Scripts kept from reviews (benches, probes), run one at a time when
       # asked, not part of the suite.
@@ -108,7 +113,7 @@ defmodule MWTClient.MixProject do
       {:telemetry_poller, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
-      {:bandit, "~> 1.5"},
+      {:bandit, "~> 1.15"},
       {:elixirkit, github: "livebook-dev/elixirkit"},
       {:req, "~> 0.7.4"},
       {:mdex, "~> 0.14.1"},
@@ -116,7 +121,9 @@ defmodule MWTClient.MixProject do
       {:jsv, "~> 0.28"},
       {:ecto_sqlite3, "~> 0.26.0"},
       # Pinned apart: the top of this file relies on how it builds its NIF.
-      {:exqlite, "~> 0.43.0"}
+      {:exqlite, "~> 0.43.0"},
+      # Builds MWT's own NIF (c_src); exqlite builds its with it too.
+      {:elixir_make, "~> 0.10.0", runtime: false}
     ]
   end
 

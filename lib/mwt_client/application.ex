@@ -7,6 +7,9 @@ defmodule MWTClient.Application do
 
   @impl true
   def start(_type, _args) do
+    # Before anything of an identity is in memory: no other program of
+    # yours reads it from here on.
+    :ok = MWTClient.ProcessGuard.start()
     :ok = MWTClient.LogFile.install()
     pubsub = System.get_env("ELIXIRKIT_PUBSUB")
     discard_legacy_history()

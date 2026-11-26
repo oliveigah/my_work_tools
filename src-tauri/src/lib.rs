@@ -173,10 +173,9 @@ fn elixir_command(app_handle: &tauri::AppHandle) -> std::process::Command {
         command.env("PHX_SERVER", "true");
         command.env("PHX_HOST", "127.0.0.1");
         command.env("PORT", DESKTOP_PORT);
-        command.env(
-            "SECRET_KEY_BASE",
-            "fFVYOHjB1Go6gFlKCrVNtCRXvJeFbfs9EPLqc1kWNe2PV4aC/apcSxrX7hafE0MN",
-        );
+        // MWT makes a new key each start (config/runtime.exs); one left in
+        // the environment by another Phoenix project would fix it.
+        command.env_remove("SECRET_KEY_BASE");
         command
     }
 }

@@ -20,7 +20,9 @@ defmodule MWTClient.Sandbox.Sockets do
   It sits in `$XDG_RUNTIME_DIR/mwt/<id>`, readable by you only: Unix socket
   paths are short (108 bytes), too short for the identity's own folder, and
   the runtime directory is gone after a logout, like the VM. Tests set
-  `:channel_dir`.
+  `:channel_dir`. Other programs running as you can reach it too, so the
+  VM's three sockets let in only the bubble's processes
+  (`MWTClient.Sandbox.Peer`).
   """
 
   alias MWTClient.Accounts

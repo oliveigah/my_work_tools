@@ -41,6 +41,7 @@ the platform's `git/`.
 | `save_timer.ex`                   | the save-after-a-pause timer the stores share                                        |
 | `tools.ex`                        | the catalogue of apps the tool picker shows                                          |
 | `updates.ex`, `log_file.ex`       | MWT's own updates and log                                                            |
+| `process_guard.ex`                | keeps other programs of yours out of MWT's memory: its process isn't dumpable (a NIF, `c_src/`) |
 
 The sandbox runs git through a runner of its own, `sandbox/host_git.ex`, and
 not `git/`: it fetches from repositories an agent shaped, so it checks every

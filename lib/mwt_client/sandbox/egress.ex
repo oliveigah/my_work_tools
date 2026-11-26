@@ -27,6 +27,7 @@ defmodule MWTClient.Sandbox.Egress do
   require Logger
 
   alias MWTClient.Sandbox.Egress.Tcp
+  alias MWTClient.Sandbox.Peer
   alias MWTClient.Sandbox.Server
   alias MWTClient.Sandbox.Sockets
   alias MWTClient.Vault.Store
@@ -178,19 +179,27 @@ defmodule MWTClient.Sandbox.Egress do
     Server.cast(username, {:proxy, status})
   end
 
-  defp accept(socket, username, options, said_at \\ nil) do
+  # `said_at`: when the last "too many" was said; `refused_at`: when the
+  # last connection from outside the bubble was (`MWTClient.Sandbox.Peer`).
+  defp accept(socket, username, options, said_at \\ nil, refused_at \\ nil) do
     case :gen_tcp.accept(socket) do
       {:ok, client} ->
-        limit =
-          Application.get_env(:mwt_client, __MODULE__, [])
-          |> Keyword.get(:max_connections, @max_connections)
+        case Peer.admit(client, username, "proxy", refused_at) do
+          {false, refused_at} ->
+            accept(socket, username, options, said_at, refused_at)
 
-        if held(username) >= limit do
-          :gen_tcp.close(client)
-          accept(socket, username, options, too_many(username, limit, said_at))
-        else
-          serve(client, username, options)
-          accept(socket, username, options, said_at)
+          {true, refused_at} ->
+            limit =
+              Application.get_env(:mwt_client, __MODULE__, [])
+              |> Keyword.get(:max_connections, @max_connections)
+
+            if held(username) >= limit do
+              :gen_tcp.close(client)
+              accept(socket, username, options, too_many(username, limit, said_at), refused_at)
+            else
+              serve(client, username, options)
+              accept(socket, username, options, said_at, refused_at)
+            end
         end
 
       {:error, :closed} ->

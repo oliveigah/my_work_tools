@@ -74,6 +74,7 @@ defmodule MWTClient.Sandbox.Channel do
     Inbound,
     Instructions,
     Param,
+    Peer,
     Policy,
     Projects,
     Routes,
@@ -164,7 +165,7 @@ defmodule MWTClient.Sandbox.Channel do
          ]) do
       {:ok, socket} ->
         File.chmod(path, 0o600)
-        acceptor = spawn_link(fn -> accept(socket, username, %{}) end)
+        acceptor = spawn_link(fn -> accept(socket, username, %{}, nil) end)
 
         {:ok, %{username: username, path: path, socket: socket, acceptor: acceptor, reading: %{}}}
 
@@ -215,17 +216,24 @@ defmodule MWTClient.Sandbox.Channel do
 
   # Each connection is served in a task of its own, at most
   # `@max_connections` at once: `open` holds the monitors of those that
-  # run. One more is closed unanswered.
-  defp accept(socket, username, open) do
+  # run. One more is closed unanswered, and so is one from outside the
+  # VM's bubble (`MWTClient.Sandbox.Peer`; `refused_at` is when that was
+  # last said).
+  defp accept(socket, username, open, refused_at) do
     case :gen_tcp.accept(socket) do
       {:ok, client} ->
         open = ended(open)
 
-        if map_size(open) >= @max_connections do
-          :gen_tcp.close(client)
-          accept(socket, username, open)
-        else
-          accept(socket, username, serve_in_task(client, username, open))
+        case Peer.admit(client, username, "agent channel", refused_at) do
+          {false, refused_at} ->
+            accept(socket, username, open, refused_at)
+
+          {true, refused_at} when map_size(open) >= @max_connections ->
+            :gen_tcp.close(client)
+            accept(socket, username, open, refused_at)
+
+          {true, refused_at} ->
+            accept(socket, username, serve_in_task(client, username, open), refused_at)
         end
 
       {:error, :closed} ->

@@ -135,7 +135,8 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     pid =
       Sockets.host_path(username, "bubble.pid")
       |> File.read!()
-      |> String.trim()
+      |> String.split()
+      |> hd()
       |> String.to_integer()
 
     Host.read(pid).rss
@@ -284,7 +285,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     ## the VM's own) under the seccomp filter (`seccomp_test.exs` says what
     ## it refuses; `Bubble`'s test tries it).
 
-    relay = Sockets.host_path(username, "bubble.pid") |> File.read!() |> String.trim()
+    relay = Sockets.host_path(username, "bubble.pid") |> File.read!() |> String.split() |> hd()
 
     {children, 0} = System.cmd("pgrep", ["-P", relay])
     bubbled = [relay | String.split(children, "\n", trim: true)]

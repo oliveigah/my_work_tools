@@ -34,6 +34,20 @@ exclude =
     do: exclude,
     else: [:present | exclude]
 
+# The `:no_ptrace` tests check what the kernel keeps a program of yours from
+# reading in MWT's process, which one holding CAP_SYS_PTRACE (bit 19), as
+# root's do, reads anyway: as root, run them under
+# `setpriv --bounding-set=-sys_ptrace`.
+sys_ptrace? =
+  with {:ok, status} <- File.read("/proc/self/status"),
+       [_, caps] <- Regex.run(~r/^CapEff:\s*([0-9a-f]+)$/m, status) do
+    Bitwise.band(String.to_integer(caps, 16), Bitwise.bsl(1, 19)) != 0
+  else
+    _ -> false
+  end
+
+exclude = if sys_ptrace?, do: [:no_ptrace | exclude], else: exclude
+
 # What the app logs while a test runs shows only when that test fails, under
 # its failure: a run that passes prints its dots and its counts.
 #

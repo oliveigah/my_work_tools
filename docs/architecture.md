@@ -70,7 +70,8 @@ A password change re-seals the data key and re-encrypts nothing.
   writes, and Compact gives space back to the disk.
 
 **Not covered:** plaintext in memory while unlocked (SQLite's page
-cache, BEAM binaries); file sizes, which say how much you keep; an older
+cache, BEAM binaries), which only root reads (MWT's process isn't
+dumpable: [Other programs on this machine](#other-programs-on-this-machine)); file sizes, which say how much you keep; an older
 page put back by someone who can write your home folder (integrity is
 per page, not per file); a data key that leaked, since it never rotates.
 
@@ -111,7 +112,8 @@ do anything inside the VM and send any bytes on the channels it opens to
 MWT. It isn't assumed to hold a working exploit against KVM or
 microsandbox; if it does, the bubble decides what it reaches. Not
 defended: what you approve, leaks of what you gave the VM, and other
-programs running as you.
+programs running as you, beyond what
+[Other programs on this machine](#other-programs-on-this-machine) says.
 
 | Promise | Kept by |
 | ------- | ------- |
@@ -147,6 +149,7 @@ MWT ──msb exec───────▶ the VM: boot, /mnt/mwt and shared fol
 MWT, Zed ──msb ssh───▶ the VM: ports 4100-4199 forwarded here, Zed's remote project
 
 msb and the relay run in a bubble (bwrap): no home folder, no network but loopback
+the VM's three sockets let in only the bubble's processes (Sandbox.Peer)
 ```
 
 **Six channels, each because msb offers nothing else for its job.** The
@@ -424,6 +427,43 @@ the VM                           your machine                  a Git server
 - **MWT's tools are open to agents in the VM only.** Agents work there,
   so an endpoint on this machine would be a second way in, with a token
   of its own, for agents that no longer run here.
+
+## Other programs on this machine
+
+MWT is one person's, on their machine: other accounts and other machines
+get nothing of it, and programs running as you get as little as one
+process of yours can keep from another.
+
+- **Other accounts and machines.** The server listens on loopback and
+  takes only loopback names (DNS rebinding). A session is a random token
+  kept in memory, in a cookie signed with a key made at each start: one
+  written into the app was the same in every copy. The release never
+  starts as an Erlang node (`rel/env.sh.eex`): epmd listens on every
+  interface, and the cookie, the same in every copy of a package and on
+  the process's command line, let whoever reached it run code in MWT.
+  Identities' folders and the VM's sockets are yours only.
+- **Programs running as you** are you to the kernel. MWT keeps them out
+  of two things:
+  - its memory: its process isn't dumpable (`ProcessGuard`), so none
+    traces it or reads it through `/proc`;
+  - the VM's sockets: the kernel says which process connected, and only
+    the bubble's get in (`Sandbox.Peer`), so connecting doesn't make a
+    program the VM to MWT.
+
+  Still in their reach: MWT's files (the VM's disks and msb's keys; the
+  databases are encrypted), the VM the way Zed reaches it
+  (`ssh mwt-sandbox`), the bubble's namespaces, which you own (from in
+  there, the relay carries a program's connections as the VM's), host
+  commands and the tools they run, and a window made to look like MWT's
+  that asks your password.
+- **Not chosen: MWT as a user of its own.** The kernel would keep your
+  programs out of its files, memory, sockets and bubble, with nothing
+  for MWT to get right, and a program running as you would reach only
+  what the VM does, through Zed. It takes a system user and a service
+  installed as root, a helper running as you for all MWT does with your
+  account (host commands, git on your repositories, shared folders,
+  notifications, Zed, updates), and a fake window still gets the
+  password. Worth it once MWT should hold against a compromised account.
 
 ## Updates
 
