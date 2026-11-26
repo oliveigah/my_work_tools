@@ -45,7 +45,7 @@ RUN arch="$(uname -m)" \
 # Rust through rustup, which is what mise would run anyway. This way the
 # toolchains stay in the image while CARGO_HOME (the registry, cargo install)
 # lives in /cache, and rust-toolchain.toml files still pick their version.
-# The musl target builds MWT's ACP shell, static (scripts/build-acp.sh), when
+# The musl target builds MWT's presentations, static (scripts/build-present.sh), when
 # MWT itself is developed in the VM.
 ENV RUSTUP_HOME=/usr/local/share/rustup CARGO_HOME=/usr/local/share/cargo
 RUN arch="$(uname -m)" \

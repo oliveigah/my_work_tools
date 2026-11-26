@@ -75,8 +75,7 @@ defmodule MWTClient.Sandbox.SavingTest do
       assert_receive {:DOWN, ^ref, :process, _, _crash}
     end)
 
-    _ = :sys.get_state(Store.supervisor(context.username))
-    assert Store.whereis(Server, context.username) not in [nil, context.pid]
+    MWTClient.VaultHelpers.restarted(Server, context.username, context.pid)
 
     assert Enum.any?(
              Sandbox.events(context.username),
@@ -119,7 +118,7 @@ defmodule MWTClient.Sandbox.SavingTest do
       assert_receive {:DOWN, ^ref, :process, _, _crash}
     end)
 
-    _ = :sys.get_state(Store.supervisor(context.username))
+    MWTClient.VaultHelpers.restarted(Server, context.username, context.pid)
 
     assert Enum.any?(
              Sandbox.events(context.username),

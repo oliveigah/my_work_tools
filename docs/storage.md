@@ -337,17 +337,17 @@ over 100,000 events: 47 ms. A scan of every row's details: 175 ms.
 
 ### Small state
 
-The sandbox's state (grants, values, CA, projects), MCP access,
-agent threads and the flash cards' settings are small and are read whole.
-Each stays a term, in a `documents(name, term, updated_at)` row of
-`library.db` (`MWTClient.Storage.Documents`), written as before: the
-sandbox and agent threads a moment after a change, MCP access and the
-settings at once.
+The sandbox's state (grants, values, CA, projects), MCP access and the
+flash cards' settings are small and are read whole. Each stays a term, in
+a `documents(name, term, updated_at)` row of `library.db`
+(`MWTClient.Storage.Documents`), written as before: the sandbox a moment
+after a change, MCP access and the settings at once. An `agent_threads`
+document an older MWT wrote (the threads it saw through its ACP shell,
+since removed) stays unread.
 
 | Document              | Was               | Written by                         |
 | --------------------- | ----------------- | ---------------------------------- |
 | `sandbox`             | `sandbox.bin`     | `MWTClient.Sandbox.Server.State`   |
-| `agent_threads`       | `agent_threads.bin` | `MWTClient.Sandbox.AgentThreads` |
 | `mcp.access`          | `mcp_access.bin`  | `MWTClient.MCP.Access`             |
 | `flashcards.settings` | `flashcards.bin`  | `MWTClient.Flashcards.Library`     |
 
@@ -793,9 +793,8 @@ Step 5 was built on 2026-11-16:
   databases alone while it is locked (`with_storage/3` in
   `test/support/vault_helpers.ex`); those that made the disk refuse a
   write now make the database refuse it, with a trigger.
-  `test/mwt_client/storage/documents_test.exs` covers the module, and an
-  `agent_threads.bin` imported at unlock; the MCP tests, an
-  `mcp_access.bin`.
+  `test/mwt_client/storage/documents_test.exs` covers the module; the MCP
+  tests, an `mcp_access.bin` imported at unlock.
 
 ## Open
 

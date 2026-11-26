@@ -644,8 +644,8 @@ defmodule MWTClient.Sandbox.Projects do
   defp with_zed(result, _guest), do: result
 
   # The base a deleted task branch records again when resumed, made again
-  # at its latest handoff's commit (such as one sent back after landing,
-  # which deleted it), as `mwt worktree new` did: what makes it a task,
+  # at its latest handoff's commit (such as one taken back out after
+  # landing, which deleted it), as `mwt worktree new` did: what makes it a task,
   # which hands off.
   defp restore_base(%{base_branch: branch}) when is_binary(branch), do: TaskBase.ref(branch)
   defp restore_base(%{base_ref: ref}), do: ref

@@ -1,94 +1,13 @@
-defmodule MWTClient.Sandbox.HandoffsSentBackTest do
+defmodule MWTClient.Sandbox.HandoffsNotLandingTest do
   @moduledoc """
-  A handoff that doesn't land: sent back with a note, refused for a real
-  value it brings, or left in the VM. Accepting has
-  handoffs_accepting_test.exs, so the two run side by side.
-  The sandbox, VM stand-in and helpers are `MWTClient.HandoffsCase`'s.
+  A handoff that doesn't land: refused for a real value it brings, or left
+  in the VM. Accepting has handoffs_accepting_test.exs, so the two run side
+  by side. The sandbox, VM stand-in and helpers are `MWTClient.HandoffsCase`'s.
   """
   use MWTClient.HandoffsCase, async: true
 
   alias MWTClient.Sandbox
-
-  alias MWTClient.Sandbox.{
-    AgentThreads,
-    Channel,
-    Guest,
-    Handoff,
-    Handoffs,
-    Project,
-    Projects
-  }
-
-  alias MWTClientWeb.SandboxLive.Handoffs, as: HandoffsPage
-
-  describe "sending back" do
-    setup context do
-      {_project, tree} = project_with_worktree(context)
-      commit(tree, [{"a.txt", "one\ntwo\nthree\nfour\n"}], "the fix")
-
-      {0, _} =
-        Channel.answer("handoff", ask(tree, %{"thread_id" => "thread-a"}), context.username)
-
-      %{tree: tree}
-    end
-
-    defp sent_back_event(handoff),
-      do: handoff.timeline |> Enum.filter(&(&1.kind == :sent_back)) |> List.last()
-
-    test "says the note in the handoff's thread when MWT can reach it", %{
-      username: username,
-      tree: tree
-    } do
-      # The thread's mwt-acp, attached to the channel, with the thread open.
-      {:ok, socket} =
-        :gen_tcp.connect({:local, Channel.socket_path(username)}, 0, [
-          :binary,
-          packet: :line,
-          active: false
-        ])
-
-      line = fn message -> :ok = :gen_tcp.send(socket, Jason.encode!(message) <> "\n") end
-      line.(%{command: "attach", agent: "claude-acp", pid: 1})
-      line.(%{type: "opened", thread: "thread-a", folder: tree, working: false})
-
-      Enum.find_value(1..100, fn _ ->
-        match?(%{open?: true}, AgentThreads.get(username, "thread-a")) ||
-          (Process.sleep(10) && nil)
-      end)
-
-      task = Task.async(fn -> Handoffs.send_back(username, 1, "Add a test.") end)
-      {:ok, said} = :gen_tcp.recv(socket, 0, 2_000)
-
-      assert %{"type" => "say", "id" => say_id, "thread" => "thread-a", "text" => text} =
-               Jason.decode!(said)
-
-      assert text == "MWT (handoff #1 sent back): Add a test."
-
-      # By then the handoff says it, for the agent that looks.
-      assert {0, listed} = Channel.answer("handoffs", %{"cwd" => tree}, username)
-      assert listed =~ "sent back to you" and listed =~ "Add a test."
-
-      line.(%{type: "said", id: say_id})
-      assert {:ok, %Handoff{status: :sent_back} = handoff} = Task.await(task)
-      assert %{note: "Add a test.", delivery: %{said?: true}} = sent_back_event(handoff)
-
-      assert HandoffsPage.delivery_words(sent_back_event(handoff).delivery) =~
-               "went to its thread"
-    end
-
-    test "says why the note didn't go to its thread", %{username: username} do
-      assert {:ok, handoff} = Handoffs.send_back(username, 1, "Add a test.")
-      assert %{delivery: %{said?: false, why: why}} = sent_back_event(handoff)
-      assert why == "The VM isn't running."
-      assert HandoffsPage.delivery_words(sent_back_event(handoff).delivery) =~ "mwt handoffs"
-
-      # Sent back again: each send back says its own.
-      assert {:ok, handoff} = Handoffs.send_back(username, 1, "And another.")
-
-      assert [%{delivery: %{said?: false}}, %{note: "And another.", delivery: %{said?: false}}] =
-               Enum.filter(handoff.timeline, &(&1.kind == :sent_back))
-    end
-  end
+  alias MWTClient.Sandbox.{Guest, Handoffs, Project, Projects}
 
   describe "a handoff bringing a real value" do
     @real "ghp_REAL_SECRET_VALUE_0123"

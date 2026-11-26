@@ -15,16 +15,26 @@ defmodule MWTClient.Sandbox.ServerCrashTest do
   # tells the test what it was asked. After a stop it is gone, as a relay
   # is, having run `stopped` first.
   defp fake_relay(username, stopped \\ fn -> :ok end) do
+    path = relay_path(username)
+    listen = relay_socket(path)
+    test = self()
+    spawn_link(fn -> relay(listen, path, test, stopped) end)
+    on_exit(fn -> File.rm(path) end)
+  end
+
+  defp relay_path(username) do
     Sockets.ensure!(username)
-    path = Sockets.path(username, "control.sock")
+    Sockets.path(username, "control.sock")
+  end
+
+  # The relay's control socket, listening, owned by the calling process.
+  defp relay_socket(path) do
     File.rm(path)
 
     {:ok, listen} =
       :gen_tcp.listen(0, [:binary, ifaddr: {:local, path}, active: false, packet: :line])
 
-    test = self()
-    spawn_link(fn -> relay(listen, path, test, stopped) end)
-    on_exit(fn -> File.rm(path) end)
+    listen
   end
 
   defp relay(listen, path, test, stopped) do
@@ -105,8 +115,7 @@ defmodule MWTClient.Sandbox.ServerCrashTest do
     end)
 
     # The supervisor has seen the crash and brought the sandbox back.
-    _ = :sys.get_state(Store.supervisor(username))
-    assert Store.whereis(Server, username) not in [nil, pid]
+    MWTClient.VaultHelpers.restarted(Server, username, pid)
     refute_received {:relay_asked, "stop"}
   end
 
@@ -151,17 +160,43 @@ defmodule MWTClient.Sandbox.ServerCrashTest do
        %{username: username} do
     pid = Store.whereis(Server, username)
     worker = vm_action(pid, :create)
-    ref = Process.monitor(worker)
     {os_pid, gone} = launched_bubble(username)
 
-    # The relay listens only once the create's task has ended: the stop is
-    # asked again until it does.
-    closing = Task.async(fn -> Store.close(username) end)
-    assert_receive {:DOWN, ^ref, :process, ^worker, :killed}
-    fake_relay(username, gone)
+    # A relay listens only once the create's task has ended, so locking
+    # asks it to stop again until it does. This one listens once locking
+    # has asked twice, the first time with nothing listening, however long
+    # it takes to get there: it closes the other stores and saves the
+    # sandbox first. A trace session of its own sees each ask.
+    test = self()
+    path = relay_path(username)
+    on_exit(fn -> File.rm(path) end)
 
-    assert_receive {:relay_asked, "stop"}
-    assert :ok = Task.await(closing)
+    spawn_link(fn ->
+      ref = Process.monitor(worker)
+      session = :trace.session_create(:locking_during_create, self(), [])
+      _ = :trace.function(session, {Bubble, :stop_by, 3}, true, [:local])
+      _ = :trace.process(session, pid, true, [:call])
+      send(test, :watching)
+
+      receive do
+        {:DOWN, ^ref, :process, ^worker, reason} -> send(test, {:create_ended, reason})
+      end
+
+      for _ask <- 1..2 do
+        receive do
+          {:trace, ^pid, :call, {Bubble, :stop_by, _args}} -> :ok
+        end
+      end
+
+      :trace.session_destroy(session)
+      relay(relay_socket(path), path, test, gone)
+    end)
+
+    assert_receive :watching
+    :ok = Store.close(username)
+
+    assert_received {:create_ended, :killed}
+    assert_received {:relay_asked, "stop"}
     refute bubble?(os_pid)
   end
 

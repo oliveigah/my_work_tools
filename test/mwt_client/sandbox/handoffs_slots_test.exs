@@ -104,10 +104,10 @@ defmodule MWTClient.Sandbox.HandoffsSlotsTest do
       assert sha(mirror, "host-origin/master") == landed_fix.head
       assert git(mirror, ["branch", "--list", "cart", "docs"]) =~ "cart"
 
-      # Sent back after you accepted it: its thread is told to make the
+      # Taken back out after you landed it: its thread is told to make the
       # branch again first, and a thread in a free slot resumes it from its
       # handoff's commit.
-      {:ok, _} = Handoffs.send_back(username, 1, "One more thing.")
+      {:ok, _} = Handoffs.undo(username, 1)
       assert {0, listed} = Channel.answer("handoffs", %{"cwd" => slot(mirror, 3)}, username)
       assert listed =~ "Its branch fix was deleted in the VM when it landed."
       assert listed =~ "Run mwt worktree resume fix in your slot before you change anything"

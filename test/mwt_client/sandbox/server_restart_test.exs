@@ -22,10 +22,7 @@ defmodule MWTClient.Sandbox.ServerRestartTest do
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
-    _ = :sys.get_state(Store.supervisor(username))
-    restarted = Store.whereis(Server, username)
-    assert restarted not in [nil, pid]
-    restarted
+    MWTClient.VaultHelpers.restarted(Server, username, pid)
   end
 
   test "a restart after a failure turns on nothing you turned off, nor off what you turned on",

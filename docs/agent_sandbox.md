@@ -173,7 +173,7 @@ its job:
 | ------- | --------- | ---- | ------- | ------------------------------ |
 | **Proxy** | the VM | network card → msb (`--proxy`) → relay, `127.0.0.1:3128` in the bubble → `proxy.sock` | every TCP connection ([Network](#network)) | msb's only hook for TCP, which the VM can't go around |
 | **DNS** | the VM | network card → msb (`--dns-nameserver`) → relay, `127.0.0.1:5353` → `dns.sock` | every lookup ([DNS](#dns)) | msb sends lookups to a nameserver of its own, never through the proxy |
-| **Agent channel** | the VM | vsock port 5000 → msb (`--vsock`) → `channel.sock` | `mwt` and its MCP, git fetches from `host-origin` and `remote-origin` (`mwt::`), Zed's threads (`mwt-acp`), the ports report ([Agent channel](#agent-channel)) | the proxy refuses this machine's own addresses, so nothing on the network reaches MWT |
+| **Agent channel** | the VM | vsock port 5000 → msb (`--vsock`) → `channel.sock` | `mwt` and its MCP, git fetches from `host-origin` and `remote-origin` (`mwt::`), the ports report ([Agent channel](#agent-channel)) | the proxy refuses this machine's own addresses, so nothing on the network reaches MWT |
 | **`msb exec`** | MWT | msb's agent in the VM | the boot script; `/mnt/mwt`, shared folders and OptMem copied in; the monitor's samples; slots and handoffs (git over `ext::`); Kill | msb's vsock carries the VM's connections to this machine, never this machine's into the VM |
 | **`msb ssh serve`** | MWT, and Zed | the launcher → msb's SSH server → msb's agent in the VM | ports 4100 to 4199 forwarded here ([Servers in the VM](#servers-in-the-vm-on-your-machine)), Zed's remote project | msb's only way to carry TCP into the VM, and Zed needs an SSH server |
 | **Relay control** | MWT | `control.sock`, to the relay | `status`, `stop`, the VM's memory resized | msb records the VM's pid as the bubble sees it, so only something inside can stop it |
@@ -309,11 +309,10 @@ packages depend on.
   its binary until it stops, and going back to an older `msb` isn't safe
   once a newer one migrated the database.
 - **MWT's programs,** with no dependencies, so built without network: the
-  relay (`native/mwt_relay`, `scripts/build-relay.sh`, `bin/mwt-relay`),
-  the ACP shell (`native/mwt_acp`, `build-acp.sh`, `bin/mwt-acp`;
-  [Agent threads](#agent-threads)) and the presentations
-  (`native/mwt_present`, `build-present.sh`, `bin/mwt-present`;
-  [Presentations](#presentations)). The last two run in the VM, linked
+  relay (`native/mwt_relay`, `scripts/build-relay.sh`, `bin/mwt-relay`)
+  and the presentations (`native/mwt_present`, `build-present.sh`,
+  `bin/mwt-present`; [Presentations](#presentations)). The presentations
+  run in the VM, linked
   statically (`x86_64-unknown-linux-musl`). `mix compile`
   (`Mix.Tasks.Compile.Native`) rebuilds one missing or older than its
   script or crate; one it can't build (no `cargo`, no musl target) is said,
@@ -571,7 +570,7 @@ disks.
 | `profile.sh`, `bashrc.sh`, `env.sh`                  | Tool paths and interactive defaults; no credential exports                      |
 | `grant-env/<id>.sh`, `tokens/<id>`, `logins/<id>.json` | A [credential](#credentials)'s environment, for `mwt exec <id> -- COMMAND` while a grant over it is on; its placeholder; its Google login file |
 | `bin/git-credential`, `git/<id>`                     | git's credential helper; the hosts a selected credential answers git for        |
-| `bin/mwt`, `bin/mwt-acp`, `bin/mwt-present`          | The [`mwt` command](#agent-channel); the ACP shell; the presentations           |
+| `bin/mwt`, `bin/mwt-present`                         | The [`mwt` command](#agent-channel); the presentations                          |
 | `bin/mwt-boot`, `agents-block.md`, `handoff-command.md`, `bin/memo` | What the boot script copies; `memo` when you have OptMem       |
 | `AGENTS.md`, `grants.md`, `host.md`                  | What agents are told; what `mwt grants` prints; [your machine](#host-commands)  |
 | `guides/<topic>.md`                                  | What only some tasks need, which `mwt help TOPIC` prints                        |
@@ -605,8 +604,10 @@ the VM: MWT's instructions as a block between markers at the top of
 as the MCP server `mwt` for Codex and Claude Code, unless one is there
 ([MWT's tools in the VM](#mwt-tools-in-the-vm)); `memo` onto the memory
 disk, with an empty memory when there is none; `/etc/mwt-vm`, which
-`mwt vm` checks against the VM MWT runs; Claude (MWT) and Codex (MWT) in
-the VM's `~/.config/zed/settings.json`; MWT's CA in Chromium's certificate
+`mwt vm` checks against the VM MWT runs; out of the VM's
+`~/.config/zed/settings.json`, the agents Claude (MWT) and Codex (MWT) an
+older MWT put there for its ACP shell, since removed, and the adapters that
+shell installed, `/cache/mwt-acp`; MWT's CA in Chromium's certificate
 store (`~/.pki/nssdb`), when the image has `certutil` (`libnss3-tools`, in
 the default Containerfile), since Chromium, Playwright's included, trusts
 that store and not the system's bundle. It starts `mwt ports --watch`.
@@ -1016,7 +1017,7 @@ The main modules, `MWTClient.Sandbox.*` in `lib/mwt_client/sandbox/`:
 | `Placeholder`, `Secrets`, `CertificateAuthority`, `Roots`             | Swapping values in; finding them; MWT's CA; the system roots |
 | `CredentialEndpoint`, `Made`                                          | Credential endpoints MWT answers; the values it made there   |
 | `Describe`, `GraphQL`, `RequestView`, `Chunked`, `Shown`, `Inbound`   | A request as facts; text the VM chose, made safe to show     |
-| `Channel`, `Why`, `Explain`, `MwtTools`, `AgentThreads`               | The `mwt` socket; `mwt why`; `mwt mcp`; Zed's agent threads  |
+| `Channel`, `Why`, `Explain`, `MwtTools`                               | The `mwt` socket; `mwt why`; `mwt mcp`                       |
 | `HostCommand`, `HostRun`, `HostInfo`, `Confine`, `Bounded`            | Commands on this machine: checked, run, confined; `host.md`  |
 | `Bubble`, `Seccomp`, `Sockets`, `Msb`, `VM`                           | The bubble, its filter and sockets; `msb`; the VM's record   |
 | `Settings`, `Resources`, `MemoryControl`, `NestedVirt`, `Monitor`     | How the VM is built; CPUs and memory; nesting; the monitor   |
@@ -1048,7 +1049,7 @@ The main modules, `MWTClient.Sandbox.*` in `lib/mwt_client/sandbox/`:
   then `scripts/install-runtime.sh` builds msb once per version into
   `/work/mwt-runtime/runtimes/VERSION` (`MWT_RUNTIME_CACHE`, with its
   source, downloads and Cargo target), copies it into the slot's
-  `priv/microsandbox`, and builds the relay, ACP shell and presentations
+  `priv/microsandbox`, and builds the relay and presentations
   from the slot's checkout each time, since branches change them; then
   `mix test --only vm` runs real VMs, in about a minute.
 
@@ -2263,7 +2264,7 @@ Every credential has three ways to reach a tool: variables, the token
 file, git's helper. Tools that find credentials otherwise (a helper they
 call, a local server they ask) get a presentation: a small program,
 `/mnt/mwt/bin/mwt-present` (`native/mwt_present`, static, built as
-`mwt-acp` is), that shows a placeholder the way a tool family expects. It
+the relay is), that shows a placeholder the way a tool family expects. It
 holds only placeholders, so adding one is no trust decision. A credential
 names the ones it needs (`presents`, edited on its page, as a Google
 credential's login file or metadata server);
@@ -4000,201 +4001,12 @@ The sections named tell the rest ([Grant kinds](#grant-kinds),
 The protocol is one connection per ask: one line of JSON in
 (`{"command": "request", ...}`, at most 64 KiB, within 10 seconds), the
 exit status on the first line back, then text, then close; a run answers
-`ran STATUS`, a note for stderr, then the output. Only `attach`, from
-`mwt-acp`, keeps its connection ([Agent threads](#agent-threads)). Any
+`ran STATUS`, a note for stderr, then the output. Any
 process in the VM can ask; that is accepted, since all it can do is ask.
 It can also connect as often as it likes, so what it holds of MWT is
 bounded: 64 connections served at once (one more is closed unanswered, and
 `mwt` says MWT isn't answering), and MCP messages as
 [MWT's tools](#mwt-tools-in-the-vm) say.
-
-<a id="agent-threads"></a>
-
-## Agent threads
-
-MWT's link to the agent threads you run in Zed
-(`MWTClient.Sandbox.AgentThreads`). MWT sees each thread of an MWT agent
-(its agent, folder, title, and whether it is working) and can say
-something in an open one: it arrives in the thread as a message and the
-agent acts on it. It knows nothing about handoffs or grants; they use it.
-The first use is a handoff you send back: its note goes to the thread that
-made it, instead of waiting for you to tell the thread to look.
-
-### Why through ACP
-
-Zed talks to every agent through ACP (Agent Client Protocol): JSON-RPC,
-one message per line, over the agent process's stdin and stdout. Zed's
-remote server in the VM starts each agent's adapter (`claude-agent-acp`,
-`codex-acp`) and pipes to it. A program in that pipe sees every thread of
-every agent, and can start a turn in one with the same messages Zed sends.
-Nothing else fits both agents: Claude Code's background wake-ups are
-Claude's only and die with the session, no Codex hook runs in the
-background, MCP has nothing that starts a turn, and Zed has no way to post
-into a thread from outside.
-
-### mwt-acp, a thin shell
-
-`mwt-acp` is what Zed starts instead of the adapter. It starts the adapter
-and passes every line both ways as it came, unparsed where it doesn't
-need to look, so new fields and each adapter's own extensions go through.
-
-- **What it reads**, without changing it: `session/new`, `session/load`
-  and `session/resume`, and their answers (a thread opened, its id and
-  folder); `session/close` (closed); a `session/prompt` and its answer
-  (working, idle); `session_info_update` (the title).
-- **What it adds**, only when MWT says so: the message to the agent, and
-  a `session/update` of type `user_message_chunk` to Zed, so it shows in
-  the thread as a message. When the agent offers `_session/steering`
-  (both adapters do, in `initialize`'s `_meta`), the shell steers first,
-  opting in to `idleBehavior: "promptRequired"`: the message joins the
-  turn that runs, or, with none running, the agent hands it back and the
-  shell starts the turn with a `session/prompt` of its own. Otherwise it
-  is that prompt at once (an adapter queues it behind a running turn).
-  Its requests have ids Zed never uses (`mwt-acp-N`), and their answers
-  stay with the shell. Its own prompt counts as working until its answer.
-- **What it knows of each agent:** which adapter to start, and its
-  environment as Zed gives it (Claude's adapter gets an empty
-  `ANTHROPIC_API_KEY`). An adapter's new version needs no change here,
-  only a new ACP version does.
-- One process per agent per Zed window, serving all its threads, as the
-  adapters do. Rust with no dependencies (`native/mwt_acp`), linked
-  statically (musl), so it runs whatever your image is; the rest goes
-  through the VM's own tools (socat for the channel, curl, sha256sum, tar
-  and npm for installs). `scripts/build-acp.sh`, which `install-runtime.sh`
-  and the package build run, builds it beside msb and the relay
-  (`priv/microsandbox/bin/mwt-acp`), and the inbox carries it to the VM as
-  `bin/mwt-acp` when the build has it.
-- `mwt-acp --resolve AGENT` says which adapter it would start, installing
-  it if needed; `--zed-settings FILE` writes its agents into Zed's
-  settings; `MWT_ACP_COMMAND` starts another adapter (tests).
-
-### Its agents in Zed
-
-`mwt-boot` puts two agents in the VM's own Zed settings
-(`~/.config/zed/settings.json`, which Zed's remote server merges after
-yours), beside Zed's own: **Claude (MWT)** and **Codex (MWT)**, each a
-`custom` agent whose command is `mwt-acp` with the adapter's registry id
-(`claude-acp`, `codex-acp`). It writes only those two entries. Zed's own
-Claude and Codex stay as they are, a fallback; their threads aren't agent
-threads.
-
-### The adapters follow the registry
-
-Zed installs or updates a registry agent only when you start a thread with
-its own entry, then deletes the older versions, so a variant that ran
-Zed's copy would fall behind. `mwt-acp` follows the registry itself, and
-nobody updates anything by hand:
-
-- It reads the version from the ACP registry
-  (`https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`):
-  Zed's copy in the VM
-  (`~/.local/share/zed/external_agents/registry/registry.json`), which Zed
-  refreshes hourly, or its own fetch when that copy is missing or more
-  than a day old.
-- It starts Zed's installed copy when that is the version; otherwise its
-  own, in `/cache/mwt-acp/<agent>/<version>`, installed as the registry
-  says (Claude's archive, checked against its `sha256`; Codex's npm
-  package), removing its older ones. The downloads are public and go
-  through MWT's proxy like any other.
-
-### MWT's side
-
-Each `mwt-acp` keeps one connection open on the agent channel:
-`{"command": "attach", "agent": "claude-acp", "pid": …}`, then one JSON
-message per line, both ways. Up: `opened` (thread, folder, title,
-working), `closed`, `working`, `idle`, `title`, and `said` or `failed`
-(with why) for what MWT said. Down: `say` (id, thread, text). The channel
-hands the connection to `AgentThreads`, whose loop runs in the channel's
-task for it. When it drops (MWT restarted), `mwt-acp` connects again,
-sooner at first, and sends its open threads again; one that has exited
-closes all of its threads. The lines are the VM's word: only known events
-are taken, ids must look like ids, and titles and folders are made safe to
-show (`Shown`). At most 64 threads are open through one `mwt-acp` and 128
-in all; an `opened` past them is dropped, and MWT can't speak in that
-thread.
-
-`AgentThreads`, one per unlocked identity, holds the open threads and a
-record of every thread it has seen:
-
-```
-AgentThreads.list(username)        every thread: agent, folder, title, open or closed, working or idle, dates
-AgentThreads.get(username, id)     one thread, or nil when MWT never saw it
-AgentThreads.say(username, thread_id, text, from: "handoff #21 sent back")
-  -> :ok                           delivered: into the turn that runs, or starting one
-  -> {:error, :closed}             seen, now closed (archived or closed in Zed, its mwt-acp gone)
-  -> {:error, :unknown}            never seen through mwt-acp: Zed's own agents, a terminal
-  -> {:error, :vm_not_running}     not open, and the VM isn't running
-  -> {:error, :timeout}            no word from mwt-acp in 10 s
-  -> {:error, {:failed, why}}      the agent refused it
-AgentThreads.explain(error)        what an error means, for you
-```
-
-- **A thread's id** is its ACP session id, which is Claude Code's session
-  id or Codex's thread id: the id `mwt` sends (`CLAUDE_CODE_SESSION_ID`,
-  `CODEX_THREAD_ID`), handoffs record, and a slot's hold names
-  (`branch.TASK.mwt-thread`).
-- **Delivered at once or refused.** A thread that is working gets the
-  message in its running turn; agents handle being interrupted. Nothing is
-  queued for a thread that isn't open: the caller hears why, and decides.
-- **The message says it is MWT's,** with the caller's `from`, so neither
-  you nor the agent takes it for something you typed:
-  `MWT (handoff #21 sent back): <the note>`.
-- **The record** keeps each thread's agent, folder, title, when it opened
-  and was last active, and the last 20 things MWT said in it, for the 500
-  most recently active threads, across restarts: the `agent_threads`
-  document of the identity's encrypted `library.db`. It outlives Zed's
-  sidebar: archiving a thread in Zed (a mark in Zed's list on your
-  machine) only closes it here; Zed removes a worktree with the last
-  thread it archives only when Zed created it, and the conversation stays
-  in the VM's Home, in `~/.claude/projects` and `~/.codex/sessions`.
-  Pages hear `{:agent_threads_changed, id}` on the sandbox's topic.
-
-### First uses
-
-- **Send back** says the note to the thread recorded on the handoff, after
-  the handoff says it is sent back, so the agent that hears it finds it so
-  in `mwt handoffs`. The send back's line on the handoff's page says
-  whether it went ("The note went to its thread in Zed", or why not: its
-  thread isn't open, isn't an MWT thread, the VM isn't running). The note
-  stays on the handoff either way.
-- **The Projects page** shows each held slot's thread: its title, and
-  whether it is working, idle or closed, or that MWT can't reach it.
-- **A thread's state moves no slot.** A slot is held by its task's branch
-  ([Worktree slots](#worktree-slots)): a thread that closes never makes MWT
-  switch or free one.
-
-### What agents are told
-
-`mwt project` and `mwt worktree new` end with a line saying whether MWT
-can reach the thread, by the id `mwt` sent. When it can't (Zed's own
-Claude or Codex, an agent in a terminal), the agent tells you once, early,
-that a handoff you send back and other news from MWT won't arrive by
-themselves; to have that, you start a thread with **Claude (MWT)** or
-**Codex (MWT)** in the same folder and give it the task there, where
-`mwt worktree resume BRANCH` moves the task's hold. Until then, the agent
-looks at `mwt handoffs` itself when you mention a handoff.
-
-### Limits
-
-- **Zed shows the thread as idle** while a turn MWT started runs: no
-  spinner, no Stop button. Zed 1.28 (ACP v1) shows a turn as running only
-  when it sent the prompt itself. Typing then sends a second prompt, which
-  Claude's adapter queues behind the turn and Codex's runs after it.
-  Claude Code's own background wake-ups look the same.
-- **Only threads in Zed's agent panel**, started with an MWT agent. An
-  agent run in a terminal doesn't speak ACP.
-- **Only open threads** get messages.
-- **ACP v2** (behind a flag in Zed 1.28) changes the protocol; `mwt-acp`
-  follows when Zed moves.
-
-### Open
-
-- Claude's adapter, after a plan-mode restart with a fresh context, gives
-  Claude Code a new session id under the same ACP id: `mwt` would then
-  send an id MWT doesn't know.
-- Whether Zed lets go of threads you didn't close or archive, which would
-  make an open-looking thread closed.
-- Keeping whole conversations in the record, not only their facts.
 
 <a id="mwt-tools-in-the-vm"></a>
 
@@ -4392,7 +4204,7 @@ only on your machine for now.
 | **Handoff** | A task's exact commit, with its title and notes, which an agent sends once you reviewed it in the VM and asked (`mwt handoff`). Handing off again makes a revision. |
 | **Catch up** | The agent rebasing its task onto its base as you have it now: `git fetch host-origin`, `git rebase host-origin/<base>` (`mwt handoff` does both); or MWT replaying a handoff's commits there, from the Handoffs page, where they apply cleanly. |
 | **Land** | Putting a handoff on a branch of yours, once you click Land: as it is (a fast-forward) when that branch hasn't moved, else as one commit (`accept` in the code). |
-| **Send back** | Returning a handoff to its thread with a note. |
+| **More work** | Asking a handoff's thread, in Zed, for changes; its next handoff revises the same one. |
 
 ```
 the VM                           your machine                  a Git server
@@ -4573,8 +4385,7 @@ mwt project                         where you are, the slots, the rules
   title, and stops at new files it wasn't told about; catches up by
   rebasing the task onto `host-origin/<base>` (going on with a rebase the
   agent resolved, first, before anything else: until it ends the worktree
-  is on no branch), only replaying what came after a task's earlier
-  landing as one commit; runs the project's checks once per commit
+  is on no branch); runs the project's checks once per commit
   (`--no-checks` when you say so); and sends that exact commit. Behind
   its base, a handoff is refused: it wasn't checked with your newer
   commits.
@@ -4596,6 +4407,13 @@ mwt project                         where you are, the slots, the rules
   holding a grant's real value is refused.
 - **Withdraw is optional:** a revision is pinned, so landing it never
   takes work done since; the decision panel says when the task moved on.
+- **More work is asked in its thread,** in Zed, where you reviewed it:
+  the handoff stays open, and the thread's next `mwt handoff`, once you
+  ask, revises it. MWT says nothing in a thread itself: Zed has no way,
+  from outside, to open one thread or post in it, and the shell MWT once
+  put between Zed and the agents for that is gone (Decisions,
+  2026-11-26). The handoff keeps its thread's name and the folder it
+  worked in, to find it again.
 - **A handoff that came too soon:** you close it and say so in its
   thread; it undoes its commits and keeps the work uncommitted
   (`git reset $(git merge-base HEAD host-origin/<base>)`).
@@ -4615,8 +4433,8 @@ mwt project                         where you are, the slots, the rules
 ### Landing
 
 - **The Handoffs page** shows a handoff's notes, commits, files and diff,
-  and keeps the decision apart: **Land** (where and how), **Send back**
-  (with a note) or **Close**.
+  and keeps the decision apart: **Land** (where and how), **More work**
+  (its thread, opened in Zed) or **Close**.
 - **Where:** the task's base by default, or any branch of yours where it
   applies without conflicts, or a new `mwt/` branch from one.
 - **How:** **as it is** when that branch hasn't moved since the handoff
@@ -4629,7 +4447,7 @@ mwt project                         where you are, the slots, the rules
   since. A task based on another task's branch lands its own changes
   only, as one commit.
 - **Catching up,** when its own branch moved under it, takes a click
-  (`Handoffs.catch_up/2`, `Handoffs.ask_to_catch_up/2`):
+  (`Handoffs.catch_up/2`), or a word in its thread:
     - **Catch up here**, where its changes apply cleanly: MWT replays its
       commits onto the branch's tip in its review store, never in your
       repository (`MWTClient.Sandbox.CatchUp`), keeping each commit's
@@ -4637,12 +4455,12 @@ mwt project                         where you are, the slots, the rules
       lands as it is. Its checks ran before that, and the timeline says
       so. A merge commit in it stops it. The thread's own branch keeps
       the commits it had; its next handoff catches up the same way.
-    - **Ask its thread to catch up**, the only way where they conflict:
-      it is sent back with a note MWT writes, naming the branch, how far
-      it moved and the files that conflict, and saying the note is your
-      ask to hand off again. The thread hears *sent back to catch up*,
-      rebases with `mwt handoff`, resolves the conflicts, runs the checks
-      and hands off again by itself, with no `/handoff` from you.
+    - **Its thread catches up**, the only way where they conflict: the
+      page opens its thread in Zed, where you ask it to. It rebases with
+      `mwt handoff`, which stops at the conflicts (`mwt handoffs` names
+      the files), resolves them, runs the checks and hands off again: an
+      ask to catch up is also an ask to hand off, so no `/handoff` from
+      you.
 - **Safety:** landing checks the branch is still where the preview saw
   it and moves it with a compare-and-swap; a branch checked out in a
   worktree of yours moves by a fast-forward there, never over pending
@@ -4657,13 +4475,13 @@ mwt project                         where you are, the slots, the rules
 - **What you saw is what lands:** Land names the revision the page
   shows; one its thread handed off since lands nothing, and the page
   says so and shows the new one. A revision being received holds your
-  clicks on that identity's handoffs (Land, Close, Send back) and the
+  clicks on that identity's handoffs (Land, Close, Catch up here) and the
   thread's withdrawal until it is in, and then adds to the record as it
   is, so nothing done meanwhile is lost.
-- **Send back** works before and after landing, and MWT tells the thread
-  when it can reach it. Closing and sending back leave the VM's branches
-  and files alone; landing leaves its files alone, and deletes the task's
-  branch when nothing was done on it since (below).
+- **More work** is offered only while the handoff waits: once landed, its
+  slot may be another task's, and more work is a new task. Closing leaves
+  the VM's branches and files alone; landing leaves its files alone, and
+  deletes the task's branch when nothing was done on it since (below).
 
 <a id="after-landing"></a>
 
@@ -4689,17 +4507,19 @@ work is done and safely on your branch, so it is when the branch goes
   know; that worktree's folder gone; the VM not running when you landed
   it. A branch kept stays until someone deletes it in the VM: nothing
   sweeps the clone later.
-- **Sent back after landing,** its thread is told first that the branch
-  went, and to run `mwt worktree resume BRANCH` in its slot before it
-  changes anything (`mwt handoffs` says it too): resume makes the branch
-  again at the handoff's commit, with its base and the thread's hold, and
-  needs a slot with no uncommitted work. Git keeps a deleted branch's
-  commits in the VM for weeks before pruning them; a handoff sent back
-  later than that can't be resumed from the VM, and MWT doesn't bring the
-  commit back from its review store.
+- **More after landing is a new task:** its thread takes its slot again
+  (`mwt worktree new TASK --from BRANCH`, from the branch it landed on),
+  and its handoff is a new one. A landed handoff gets no revision.
 - **Undo** of a landing reopens the handoff without its branch in the VM:
-  it lands again from MWT's review store, and its thread resumes it if
-  you send it back.
+  it lands again from MWT's review store. For more on it, its thread runs
+  `mwt worktree resume BRANCH` in its slot before it changes anything
+  (`mwt handoffs` says so): resume makes the branch again at the
+  handoff's commit, with its base and the thread's hold, and needs a slot
+  with no uncommitted work; the revision then goes on from the branch it
+  had landed on, while that branch is there. Git keeps a deleted branch's
+  commits in the VM for weeks before pruning them; later than that it
+  can't be resumed from the VM, and MWT doesn't bring the commit back from
+  its review store.
 
 ### Left in the VM
 
@@ -4968,7 +4788,7 @@ notification ([Desktop notifications](#desktop-notifications)).
 - **Handoffs:** the open ones and the closed. A handoff's page: the agent's
   notes (Markdown, with a Raw tab), its timeline and thread, its worktree to
   open in Zed, what lands (commits, files, the diff when you ask), and the
-  decision apart, kept in view: Land, Send back or Close; Undo and Reopen
+  decision apart, kept in view: Land, More work or Close; Undo and Reopen
   after ([Handoffs](#handoffs), [Landing](#landing)).
 - **Grants:** three tabs, *Resources* (each resource with *Lock* and
   its grants, *Add credential* and *Add network*, from a preset or by
@@ -5290,6 +5110,7 @@ history is in git.
 | 2026-11-15 | The VM's CPUs and memory start at what this machine can spare, its memory shared with the desktop by resizing it live, and VMs inside the VM stay off unless you turn them on, since they put KVM's nested-virtualization code, where guest-to-host escapes were found, within the VM's reach ([Creating the VM](#creating-the-vm)). |
 | 2026-11-15 | Agents in the VM use MWT's notes, diagrams and flash cards over MCP (`mwt mcp`, on the agent channel, no token) under three built-in grants, `mwt-read`, `mwt-create` and `mwt-change`, and every item keeps its versions instead of being marked as an agent's, so any change is undone by restoring one ([MWT's tools in the VM](#mwt-tools-in-the-vm)). |
 | 2026-11-15 | MWT reaches agent threads in Zed through `mwt-acp`, a thin ACP proxy Zed starts for Claude (MWT) and Codex (MWT), which installs the adapters the ACP registry names, passes every message through, tells MWT which threads are open and puts MWT's messages in an open one at once, a thread that isn't open being an error, not a queue ([Agent threads](#agent-threads)). |
+| 2026-11-26 | MWT no longer reaches agent threads, and a handoff is no longer sent back: `mwt-acp` sat in every message between Zed and the agents, followed ACP, Zed and the adapters' own extensions, installed the adapters itself, and served one use, saying a sent-back note in its thread, while review and most asks happen in Zed anyway. Nothing else reaches a thread from outside: Zed can't open or post into a given one (`zed://agent?prompt=` starts a new thread; a CLI for it was declined in August 2026), and Claude Code's channels don't load through the Agent SDK. So the handoff page opens the thread's folder in Zed, and you ask there; more work after landing is a new task ([Handoffs](#handoffs), [Landing](#landing)). |
 | 2026-11-15 | The MWT you use every day is the installed package, which loads no code from a folder a VM can write; agents work on MWT in the VM and hand it off, formatting only what Zed formats on save, the same way, so a file you save stays as it is ([Developing MWT](#developing-mwt)). |
 | 2026-11-16 | Shared folders are copied into the VM one way, every few seconds, never mounted, since a mount handed the VM what a repository keeps beside its code and needed a microsandbox fork to stay coherent; what the VM changes in a copy stays there, set aside in `/work/.rescued` when MWT next writes that path ([Shared folders](#shared-folders)). |
 | 2026-11-16 | Starting, stopping and recreating the VM wait for its file copies to finish or fail, since `msb exec` names a VM by a name a recreate reuses ([Shared folders](#shared-folders)). |
@@ -5433,7 +5254,7 @@ Open: not built, or not tried yet.
   a security problem.
 - **Not tried yet:** the real-VM suite on MWT's own image (it uses Alpine);
   the live VPN check (a VPN name resolved, a VPN host reached, a grant's way
-  out); a large repository through the clone; Claude (MWT) live in Zed.
+  out); a large repository through the clone.
 - **Export:** the sandbox's credentials, networks, grants and settings
   are in it ([Export](#export), `docs/transfer.md`); still not: the VM's
   OptMem read through the running VM, items' versions, and how the CA
@@ -5446,12 +5267,5 @@ Open: not built, or not tried yet.
 - **Handoffs:** landing on a repository's own remote; revisions read through
   `host-origin`; handoffs in MWT's Git tool, and that tool on repositories in the
   VM; MWT's review store cleaned up when its repository is gone.
-- **Agent threads:** telling the thread that asked when you turn its grant
-  on; the threads on the Overview; saying when one waits for your permission
-  (`session/request_permission`); keeping whole conversations in the record.
-- **Zed and ACP:** a turn MWT started shown as running (a fix on Zed's side
-  is being looked into); `mwt-acp` following Zed to ACP v2; whether Zed lets
-  go of threads you didn't close; the new session id Claude's adapter gives
-  Claude Code under the same ACP id after a plan-mode restart.
 - **Notifications** elsewhere than GNOME (KDE, macOS), and a sound or urgency
   per kind of approval.

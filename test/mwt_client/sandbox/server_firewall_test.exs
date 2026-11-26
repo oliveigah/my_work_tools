@@ -318,8 +318,7 @@ defmodule MWTClient.Sandbox.ServerFirewallTest do
       assert_receive {:DOWN, ^ref, :process, ^pid, _crash}
     end)
 
-    _ = :sys.get_state(Store.supervisor(username))
-    assert Store.whereis(Server, username) not in [nil, pid]
+    MWTClient.VaultHelpers.restarted(Server, username, pid)
 
     assert isolated?(username)
     assert :refuse = Gate.lookup(username, "example.com")

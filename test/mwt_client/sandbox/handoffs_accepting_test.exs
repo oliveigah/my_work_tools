@@ -2,7 +2,7 @@ defmodule MWTClient.Sandbox.HandoffsAcceptingTest do
   @moduledoc """
   A handoff accepted: onto its base or a branch that moved, as it is or as
   one commit, undone while it stays there. What doesn't land has
-  handoffs_sent_back_test.exs.
+  handoffs_not_landing_test.exs.
   The sandbox, VM stand-in and helpers are `MWTClient.HandoffsCase`'s.
   """
   use MWTClient.HandoffsCase, async: true
@@ -158,7 +158,7 @@ defmodule MWTClient.Sandbox.HandoffsAcceptingTest do
       assert {:ok, nil} = Handoffs.worktree(username, 1)
     end
 
-    test "conflicts once your branch moved: sent back to its thread with a note", %{
+    test "conflicts once your branch moved: its thread is told which files", %{
       username: username,
       repo: repo,
       tree: tree
@@ -173,12 +173,9 @@ defmodule MWTClient.Sandbox.HandoffsAcceptingTest do
       assert Handoffs.explain(reason) =~ "Its changes conflict with master in: a.txt"
       assert git(repo, ["status", "--porcelain"]) == ""
 
-      assert {:ok, %Handoff{status: :sent_back}} =
-               Handoffs.send_back(username, 1, "Catch up with mine.")
-
       {:ok, _} = Projects.mirror(username, "app")
       assert {0, listed} = Channel.answer("handoffs", %{"cwd" => tree}, username)
-      assert listed =~ "sent back to you" and listed =~ "Catch up with mine."
+      assert listed =~ "open, waiting for the user"
       assert listed =~ "conflicts with the user's master (host-origin/master here) in: a.txt"
 
       assert {:ok, %Handoff{status: :closed}} = Handoffs.close(username, 1)

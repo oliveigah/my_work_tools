@@ -51,10 +51,7 @@ defmodule MWTClientWeb.SandboxHandoffsLiveTest do
     assert [%{summary: "Claude handed off #" <> _, open: open}] = handoffs.()
     assert open == "/tools/sandbox/handoffs?id=#{handoff.id}"
 
-    {:ok, _} = Handoffs.send_back(username, handoff.id, "add a test")
-    assert handoffs.() == []
-
-    # Handed off again, it waits for you again.
+    # Handed off again, its notification says so, still one.
     {0, _} =
       Channel.answer(
         "handoff",
@@ -86,10 +83,10 @@ defmodule MWTClientWeb.SandboxHandoffsLiveTest do
     assert has_element?(view, "#handoff-information #handoff-thread", "Fix the login thread")
     assert has_element?(view, "#handoff-information #handoff-description", "Done, with tests.")
 
-    # The decision, apart: the three ways it can end, Land chosen first.
+    # The decision, apart: land it, more work, or close it, Land chosen first.
     assert has_element?(view, "#handoff-decision-state", "Waiting for you")
     assert has_element?(view, "#handoff-choose-land[aria-selected=true]")
-    assert has_element?(view, "#handoff-choose-send_back[aria-selected=false]")
+    assert has_element?(view, "#handoff-choose-more[aria-selected=false]")
     assert has_element?(view, "#handoff-choose-close[aria-selected=false]")
     refute has_element?(view, "#handoff-information #handoff-accept")
 
@@ -107,9 +104,10 @@ defmodule MWTClientWeb.SandboxHandoffsLiveTest do
     assert has_element?(view, "#handoff-hints", "mix.exs, which runs when you build")
 
     # The other two show only once chosen; choosing does nothing else.
-    refute has_element?(view, "#handoff-send-back")
-    view |> element("#handoff-choose-send_back") |> render_click()
-    assert has_element?(view, "#handoff-send-back-button", "Send back to its thread")
+    refute has_element?(view, "#handoff-more-work")
+    view |> element("#handoff-choose-more") |> render_click()
+    assert has_element?(view, "#handoff-open-thread", "Open its thread in Zed")
+    assert has_element?(view, "#handoff-more-work-thread", "Fix the login thread")
     refute has_element?(view, "#handoff-accept")
     view |> element("#handoff-choose-close") |> render_click()
     assert has_element?(view, "#handoff-close", "Close without landing")
@@ -223,6 +221,14 @@ defmodule MWTClientWeb.SandboxHandoffsLiveTest do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/handoffs?id=#{handoff.id}")
     assert has_element?(view, "#handoff-worktree", "mwt worktree resume fix")
     refute has_element?(view, "#handoff-open-zed")
+
+    # More work still opens the folder it was handed off from, where its
+    # thread is in Zed's list.
+    view |> element("#handoff-choose-more") |> render_click()
+    view |> element("#handoff-open-thread") |> render_click()
+    assert_received {:zed, address}
+    assert address =~ "app.wt/slot-1"
+    assert has_element?(view, "#notices", "its thread is “Fix the login thread”")
   end
 
   test "where it lands and how are chosen on the page: a new mwt/ branch", %{

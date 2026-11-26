@@ -7,9 +7,6 @@ defmodule Mix.Tasks.Compile.Native do
 
     * the relay, `native/mwt_relay`, the first process in the VM's bubble
       (`scripts/build-relay.sh`, into `priv/microsandbox/bin/mwt-relay`);
-    * the ACP shell, `native/mwt_acp`, which runs in the VM for MWT's
-      agents in Zed (`scripts/build-acp.sh`, into
-      `priv/microsandbox/bin/mwt-acp`);
     * the presentations, `native/mwt_present`, which `mwt exec` runs in the
       VM when a token grant asks for one (`scripts/build-present.sh`, into
       `priv/microsandbox/bin/mwt-present`).
@@ -21,8 +18,8 @@ defmodule Mix.Tasks.Compile.Native do
 
   A checkout without the crates builds nothing: the package build copies no
   `native/` into the stages that compile, and builds the programs in a
-  stage of its own. When a build can't run (no `cargo`, or the shell's
-  musl target missing), it says what to do, and compiling goes on: the
+  stage of its own. When a build can't run (no `cargo`, or the musl target
+  the presentations need missing), it says what to do, and compiling goes on: the
   sandbox only needs them to run a VM. `MWT_NATIVE_BUILD=0` skips this step.
 
   The code reloader of the development server doesn't run it (its
@@ -33,7 +30,6 @@ defmodule Mix.Tasks.Compile.Native do
 
   @programs [
     {"native/mwt_relay", "scripts/build-relay.sh", "mwt-relay"},
-    {"native/mwt_acp", "scripts/build-acp.sh", "mwt-acp"},
     {"native/mwt_present", "scripts/build-present.sh", "mwt-present"}
   ]
 

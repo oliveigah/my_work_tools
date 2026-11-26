@@ -46,10 +46,6 @@ defmodule MWTClient.Sandbox.Channel do
   VM can ask, which is accepted: all it can do is ask. The server keeps one
   waiting ask per grant and ten in all.
 
-  One ask keeps its connection: `{"command": "attach", ...}`, from an
-  `mwt-acp` in the VM, which `MWTClient.Sandbox.AgentThreads` serves for as
-  long as it stays open.
-
   One listener per unlocked identity. Microsandbox opens the socket for each
   connection, so when MWT restarts, the channel works again without touching
   the VM.
@@ -65,8 +61,6 @@ defmodule MWTClient.Sandbox.Channel do
   require Logger
 
   alias MWTClient.Sandbox.{
-    AgentThread,
-    AgentThreads,
     Approval,
     Explain,
     Gate,
@@ -103,7 +97,7 @@ defmodule MWTClient.Sandbox.Channel do
   @mcp_limit 2_000_000
   @read_timeout 10_000
   # What the VM can hold of MWT through the channel: connections served at
-  # once (an attached `mwt-acp` keeps one, an ask waiting for you another),
+  # once (an ask waiting for you keeps one),
   # MCP messages being read at once (up to `@mcp_limit` each), and how long
   # one may take to arrive, whole.
   @max_connections 64
@@ -118,14 +112,14 @@ defmodule MWTClient.Sandbox.Channel do
   @run_unreachable 123
 
   # The asks `answer/3` takes, each answered by a clause of `reply/3`;
-  # `attach`, `mcp` and `git` are served apart (`serve/2`).
+  # `mcp` and `git` are served apart (`serve/2`).
   @commands ~w(grants host why ports sync project worktree handoff handoffs call propose run
                request wait vm)
   # What acts on the user's behalf, refused while the VM is isolated.
   @acting ~w(request run call propose handoff)
   @isolated "MWT's firewall isolated this VM: nothing it sends leaves through MWT until the user releases it. The user has been told. Stop, and tell them what you were doing."
 
-  @doc "The commands an ask may name, besides `attach`, `mcp` and `git`."
+  @doc "The commands an ask may name, besides `mcp` and `git`."
   @spec commands() :: [String.t()]
   def commands, do: @commands
 
@@ -275,8 +269,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   @doc false
   # One ask: a line of JSON in, an exit status and text out. An `mcp` ask is
-  # followed by one MCP message, a line of its own (`serve_mcp/3`); an
-  # `attach` keeps its connection, for `AgentThreads`.
+  # followed by one MCP message, a line of its own (`serve_mcp/3`).
   def serve(client, username) do
     ask =
       case :gen_tcp.recv(client, 0, @read_timeout) do
@@ -285,22 +278,10 @@ defmodule MWTClient.Sandbox.Channel do
       end
 
     case ask do
-      %{"command" => "attach"} -> attach(client, username, ask)
       %{"command" => "mcp"} -> serve_mcp(client, ask, username)
       %{"command" => "git"} -> GitTransport.serve(client, username, ask)
       _other -> serve_ask(client, ask, username)
     end
-  end
-
-  # An `mwt-acp` keeping its connection: served by `AgentThreads` until it
-  # ends, instead of one answer and close.
-  defp attach(client, username, ask) do
-    AgentThreads.attach(username, client, ask)
-  catch
-    :exit, _reason ->
-      :gen_tcp.send(client, encode({4, unanswered(username)}))
-  after
-    :gen_tcp.close(client)
   end
 
   defp serve_ask(client, ask, username) do
@@ -532,7 +513,6 @@ defmodule MWTClient.Sandbox.Channel do
     state =
       case handoff.status do
         :open -> "open, waiting for the user"
-        :sent_back -> "sent back to you"
         :withdrawn -> "withdrawn: taken back for more work; mwt handoff again updates it"
         :accepted -> "landed: " <> Handoffs.accepted_words(handoff.accepted)
         :closed -> "closed by the user"
@@ -556,7 +536,7 @@ defmodule MWTClient.Sandbox.Channel do
   defp place_lines(_handoff, nil, _held), do: []
 
   defp place_lines(%{status: status} = handoff, look, held)
-       when status in [:open, :sent_back, :withdrawn] do
+       when status in [:open, :withdrawn] do
     case held do
       nil ->
         if Handoff.branch_deleted?(handoff),
@@ -613,23 +593,6 @@ defmodule MWTClient.Sandbox.Channel do
   end
 
   defp capitalized(<<first::utf8, rest::binary>>), do: String.upcase(<<first::utf8>>) <> rest
-
-  # What the user said the last time they sent it back.
-  defp note_lines(%{status: :sent_back, timeline: timeline}) do
-    case timeline |> Enum.filter(&(&1.kind == :sent_back)) |> List.last() do
-      %{note: note, catch_up: true} ->
-        [
-          "  Sent back to catch up: #{note}",
-          "  It is the user's ask to hand off again: run mwt handoff until it hands off."
-        ]
-
-      %{note: note} when note not in [nil, ""] ->
-        ["  The user's note: #{note}"]
-
-      _ ->
-        []
-    end
-  end
 
   defp note_lines(%{status: :withdrawn, timeline: timeline}) do
     case timeline |> Enum.filter(&(&1.kind == :withdrawn)) |> List.last() do
@@ -718,17 +681,6 @@ defmodule MWTClient.Sandbox.Channel do
   defp slot_label(%{name: "slot-0"}), do: "slot-0 (the clone itself)"
   defp slot_label(%{name: name}), do: name
 
-  # Whether MWT can say something in this thread (`AgentThreads`): only a
-  # thread open through mwt-acp, one of MWT's agents in Zed.
-  @doc false
-  def reach_words(%AgentThread{open?: true} = thread),
-    do:
-      "MWT can reach this thread (#{AgentThread.agent_name(thread)}): what MWT says to it, such as a handoff the user sends back with a note, arrives here as a message from MWT."
-
-  def reach_words(_not_reachable),
-    do:
-      "MWT can't reach this thread: it wasn't started with Claude (MWT) or Codex (MWT) in Zed's agent panel. So a handoff the user sends back, and other news from MWT, won't arrive here by themselves. Tell the user once, early: to have that, they start a thread with Claude (MWT) or Codex (MWT) in Zed's agent panel, in the same folder, and give it the task there; a task this thread holds moves there with mwt worktree resume BRANCH. Until then, look at mwt handoffs yourself when the user mentions a handoff."
-
   # A slot on a task branch: yours, another thread's (read-only here), or
   # either, when MWT has no thread on record or the agent names none.
   defp held_place(slot, :yours),
@@ -809,8 +761,8 @@ defmodule MWTClient.Sandbox.Channel do
   defp freed_words(slot) do
     after_words =
       case slot.handoff do
-        %{status: status, id: id} when status in [:open, :sent_back, :withdrawn] ->
-          " Its handoff ##{id} is #{Slots.status_word(status)}: if the user sends it back, continue it with mwt worktree resume #{slot.branch}."
+        %{status: status, id: id} when status in [:open, :withdrawn] ->
+          " Its handoff ##{id} is #{Slots.status_word(status)}: to do more on it later, continue it with mwt worktree resume #{slot.branch}."
 
         nil ->
           " It has no handoff."
@@ -962,10 +914,8 @@ defmodule MWTClient.Sandbox.Channel do
   defp reply("project", ask, username) do
     case Projects.place(username, ask["cwd"]) do
       {:ok, project, where, look} ->
-        reach = reach_words(AgentThreads.get(username, ask["thread_id"]))
         branches = Projects.mirrored(username, project.name)
-
-        {0, project_words(project, where, look, ask["thread_id"], branches) <> "\n" <> reach}
+        {0, project_words(project, where, look, ask["thread_id"], branches)}
 
       {:error, reason} ->
         {1, Projects.explain(reason)}
@@ -990,8 +940,7 @@ defmodule MWTClient.Sandbox.Channel do
            thread: ask["thread_id"]
          ) do
       {:ok, _project, slot, outcome, onto, where} ->
-        reach = reach_words(AgentThreads.get(username, ask["thread_id"]))
-        {0, taken_words(slot, outcome, onto, where) <> "\n" <> reach}
+        {0, taken_words(slot, outcome, onto, where)}
 
       {:error, reason} ->
         {1, Projects.explain(reason)}
@@ -1010,18 +959,11 @@ defmodule MWTClient.Sandbox.Channel do
            thread_id: ask["thread_id"]
          }) do
       {:ok, plan} ->
-        landed =
-          case plan.landed do
-            nil -> []
-            l -> [landed: l.commit, landed_from: l.from, landed_branch: l.branch]
-          end
-
         amend = if plan.amend, do: [amend: plan.amend], else: []
 
         {0,
          key_lines(
-           [onto: plan.onto, ref: plan.ref, title: plan.title, checks: plan.checks] ++
-             landed ++ amend
+           [onto: plan.onto, ref: plan.ref, title: plan.title, checks: plan.checks] ++ amend
          )}
 
       {:error, reason} ->

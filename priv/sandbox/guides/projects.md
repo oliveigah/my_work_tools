@@ -47,7 +47,7 @@ no `mwt worktree` or `mwt handoff`.
 Only if the user asks your thread to carry on that task instead of the
 other: `mwt worktree resume BRANCH`, which moves the hold to you.
 
-A handoff sent back after its slot went to another task: ask the user to
+More work on a handoff whose slot went to another task: ask the user to
 start a thread in a free slot to continue it; that thread runs
 `mwt worktree resume BRANCH`. Never switch another task's slot.
 
@@ -55,9 +55,9 @@ start a thread in a free slot to continue it; that thread runs
 
 Your slot is free again once its handoff lands or is closed. Landed with
 nothing done on it since, its branch is deleted and your slot is on no
-branch, at the same commit. If the user sends it back after that, run
-`mwt worktree resume BRANCH` in your slot before you change anything: it
-makes the branch again at the handoff's commit. Free it
+branch, at the same commit. If the user takes the landing back out and
+asks for more, run `mwt worktree resume BRANCH` in your slot before you
+change anything: it makes the branch again at the handoff's commit. Free it
 yourself (`mwt worktree free`; refused with uncommitted work, the branch
 stays) only when the user says its task is done or dropped with no
 handoff to come. Other slots are freed by their own threads, or by the
@@ -72,15 +72,3 @@ into your task: `git fetch host-origin`, then
 `git add` and `git rebase --continue` at each conflict. `mwt handoff` does
 so itself, and goes on with a rebase you resolved. Never merge their
 branch in: the history would carry the merge.
-
-## A thread MWT can't reach
-
-`mwt project` and `mwt worktree new` say whether MWT can reach your
-thread. One started with Zed's own Claude or Codex, or an agent in a
-terminal, gets nothing from MWT: a handoff the user sends back, and other
-news from MWT, won't arrive by themselves. Tell the user once, early: to
-have that, they start a thread with **Claude (MWT)** or **Codex (MWT)** in
-Zed's agent panel, in the same folder, and give it the task there; a task
-this thread already holds moves there with `mwt worktree resume BRANCH`.
-Until then, look at `mwt handoffs` yourself when the user mentions a
-handoff.

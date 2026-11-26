@@ -35,9 +35,6 @@ defmodule MWTClient.Sandbox.Inbox do
       it, the instructions as a block for the agents' own files, the
       `/handoff` command for them, and your `memo` tool when you have
       OptMem;
-    * `bin/mwt-acp` - the ACP shell Zed starts for MWT's agents
-      (`MWTClient.Sandbox.AgentThreads`), which `bin/mwt-boot` puts in the
-      VM's Zed settings; when this build has it (`scripts/build-acp.sh`);
     * `host.md` - your machine, for writing host commands
       (`MWTClient.Sandbox.HostInfo`), written by `write_host/2`.
 
@@ -142,11 +139,8 @@ defmodule MWTClient.Sandbox.Inbox do
       memo -> put_changed(dir, "bin/memo", Files.read!(memo), 0o755)
     end
 
-    # The ACP shell Zed starts for MWT's agents, when this build has it.
-    case acp_shell() do
-      nil -> drop(dir, "bin/mwt-acp")
-      shell -> put_changed(dir, "bin/mwt-acp", Files.read!(shell), 0o755)
-    end
+    # An ACP shell MWT no longer has, which an older MWT put here.
+    drop(dir, "bin/mwt-acp")
 
     # The presentations `mwt exec` runs for a grant that asks for one.
     case presenter() do
@@ -390,13 +384,6 @@ defmodule MWTClient.Sandbox.Inbox do
   @spec presenter() :: Path.t() | nil
   def presenter do
     path = Path.join(MWTClient.Sandbox.Msb.runtime_dir(), "bin/mwt-present")
-    if File.regular?(path, [:raw]), do: path
-  end
-
-  @doc "MWT's ACP shell (`native/mwt_acp`), built beside msb, or nil."
-  @spec acp_shell() :: Path.t() | nil
-  def acp_shell do
-    path = Path.join(MWTClient.Sandbox.Msb.runtime_dir(), "bin/mwt-acp")
     if File.regular?(path, [:raw]), do: path
   end
 end

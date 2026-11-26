@@ -72,13 +72,11 @@ defmodule MWTClient.Sandbox.HandoffsRevisionPinnedTest do
     {0, _} = worktree(username, one, "new", %{"name" => "fix"})
     commit(one, [{"a.txt", "first\n"}], "the fix")
     {0, _} = Channel.answer("handoff", ask(one), username)
-    {:ok, _} = Handoffs.send_back(username, 1, "The signup page too.")
     commit(one, [{"b.txt", "more\n"}], "more")
 
     revising = receiving(context, fn -> Channel.answer("handoff", ask(one), username) end)
 
-    # Meanwhile the note's delivery is marked on it, as a send-back's is
-    # once its thread answers, outside the lock.
+    # Meanwhile something is marked on it, outside the lock.
     {:ok, _} =
       Server.call(
         username,
@@ -88,11 +86,11 @@ defmodule MWTClient.Sandbox.HandoffsRevisionPinnedTest do
              handoff
              | timeline:
                  Enum.map(handoff.timeline, fn
-                   %{kind: :sent_back} = event -> Map.put(event, :delivery, %{said?: true})
+                   %{kind: :opened} = event -> Map.put(event, :marked, true)
                    event -> event
                  end)
            }
-         end, "#1: the note went to its thread"}
+         end, "#1: marked"}
       )
 
     send(revising.paused, :go)
@@ -100,7 +98,7 @@ defmodule MWTClient.Sandbox.HandoffsRevisionPinnedTest do
 
     {:ok, record} = HandoffRecords.get(username, 1)
     assert %{status: :open, revision: 2} = record
-    assert %{delivery: %{said?: true}} = Enum.find(record.timeline, &(&1.kind == :sent_back))
+    assert %{marked: true} = Enum.find(record.timeline, &(&1.kind == :opened))
     assert List.last(record.timeline).kind == :updated
   end
 

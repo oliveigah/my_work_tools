@@ -51,7 +51,7 @@ defmodule MWTClient.Sandbox.Slots do
 
   Taking a slot starts a new branch from the task's base, `host-origin/<base>`
   as the clone last fetched it (`mwt worktree new` fetches first), or
-  checks out an existing branch, such as one whose handoff was sent back
+  checks out an existing branch, such as one whose handoff needs more work
   after its slot went to another task (`:resume`). A thread takes only the
   slot it is in, never another: the folder a thread was opened in is where
   it works, and another slot may be another thread's, even a free one. A
@@ -911,7 +911,6 @@ defmodule MWTClient.Sandbox.Slots do
   @doc "A handoff's status, in words."
   @spec status_word(Handoff.status()) :: String.t()
   def status_word(:open), do: "open"
-  def status_word(:sent_back), do: "sent back"
   def status_word(:accepted), do: "landed"
   def status_word(:closed), do: "closed"
   def status_word(:withdrawn), do: "withdrawn"
@@ -1030,10 +1029,6 @@ defmodule MWTClient.Sandbox.Slots do
   def more_work_words(%{handoff: %Handoff{status: :withdrawn, id: id}} = slot),
     do:
       "You took its handoff ##{id} back: do the new work on #{slot.branch}, and hand off again once the user asks."
-
-  def more_work_words(%{handoff: %Handoff{status: :sent_back, id: id}} = slot),
-    do:
-      "Its handoff ##{id} was sent back: do the new work on #{slot.branch}, and hand off again once the user asks."
 
   def more_work_words(%{handoff: %Handoff{id: id, status: status}} = slot),
     do:

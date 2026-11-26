@@ -1,55 +1,15 @@
 defmodule MWTClient.Sandbox.HandoffsLandingInTurnTest do
   @moduledoc """
-  Where a handoff lands when another landed before it: a later revision
-  where the previous one did, tasks from one base one after the other.
+  Where a handoff lands when another landed before it: tasks from one
+  base one after the other.
   Apart from handoffs_landing_test.exs so the two run side by side.
   The sandbox, VM stand-in and helpers are `MWTClient.HandoffsCase`'s.
   """
   use MWTClient.HandoffsCase, async: true
 
-  alias MWTClient.Sandbox.{Channel, Handoff, Handoffs, Projects}
+  alias MWTClient.Sandbox.{Channel, Handoffs, Projects}
 
   describe "landing elsewhere" do
-    test "later revisions land where the previous revision did, caught up with it",
-         context do
-      %{username: username, repo: repo} = context
-      {_project, tree} = project_with_worktree(context)
-      mwt = cli(context, tree)
-      commit(tree, [{"task.txt", "task\n"}], "first")
-      {_, 0} = mwt.(["handoff", "--title", "The fix"])
-      {:ok, first} = Handoffs.accept(username, 1, {:branch, "master", "fix"})
-      branch = first.accepted.branch
-      # Each landing deleted the task's branch: sent back, its thread
-      # makes it again before it changes anything.
-      {:ok, _} = Handoffs.send_back(username, 1, "More work")
-      {_, 0} = mwt.(["worktree", "resume", "fix"])
-      first_head = sha(tree, "HEAD")
-      File.write!(Path.join(tree, "task.txt"), "revision\n")
-      assert {said, 0} = mwt.(["handoff", "--title", "The fix"])
-      refute said =~ "Rebased"
-      assert sha(tree, "HEAD~1") == first_head
-      assert {:ok, _} = Handoffs.accept(username, 1)
-      assert git(repo, ["show", branch <> ":task.txt"]) == "revision\n"
-
-      {:ok, _} = Handoffs.send_back(username, 1, "Another revision")
-      {_, 0} = mwt.(["worktree", "resume", "fix"])
-      git(repo, ["checkout", "-q", branch])
-      commit(repo, [{"host.txt", "host\n"}], "host work")
-      host = sha(repo, "HEAD")
-      git(repo, ["checkout", "-q", "master"])
-      File.write!(Path.join(tree, "task.txt"), "another revision\n")
-      # It catches up with what you added there before it goes.
-      assert {said, 0} = mwt.(["handoff", "--title", "The fix"])
-      assert said =~ "Rebased onto host-origin/#{branch}"
-      assert sha(tree, "HEAD~1") == host
-      assert {:ok, updated} = Handoffs.accept(username, 1)
-      assert updated.accepted.branch == branch
-      assert sha(repo, branch <> "~1") == host
-      assert git(repo, ["show", branch <> ":host.txt"]) == "host\n"
-      assert git(repo, ["show", branch <> ":task.txt"]) == "another revision\n"
-      assert {:ok, %Handoff{landed: nil}} = Handoffs.undo(username, 1)
-    end
-
     test "tasks from one base land one after the other, the second caught up first", context do
       %{username: username, repo: repo, mirror: mirror} = context
       {_project, first} = project_with_worktree(context, "task-a")

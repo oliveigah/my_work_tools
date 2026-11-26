@@ -86,20 +86,6 @@ defmodule MWTClient.Storage.DocumentsTest do
     assert Documents.get(username, "test.doc") == {:ok, :kept}
   end
 
-  test "agent threads kept in agent_threads.bin come in at unlock", %{
-    username: username,
-    key: key
-  } do
-    thread = %MWTClient.Sandbox.AgentThread{id: "thread-1", title: "Revisit storage"}
-    :ok = MWTClient.Vault.Store.close(username)
-    seal(username, key, "agent_threads.bin", %{threads: [thread]})
-
-    :ok = MWTClient.Vault.Store.open(username, key)
-
-    assert %{id: "thread-1", title: "Revisit storage"} =
-             MWTClient.Sandbox.AgentThreads.get(username, "thread-1")
-  end
-
   defp seal(username, key, file, term) do
     path = Accounts.store_path(username, file)
     File.write!(path, Vault.seal(key, term))

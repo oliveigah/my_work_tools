@@ -164,7 +164,7 @@ defmodule MWTClient.Sandbox.HandoffRecords do
     end
   end
 
-  @doc "The handoffs waiting for you: open, sent back or taken back. Newest first."
+  @doc "The handoffs waiting for you: open or taken back. Newest first."
   @spec waiting(String.t()) :: [Handoff.t()]
   def waiting(username),
     do: records(username, "WHERE h.waiting = 1 ORDER BY h.changed_at DESC, h.id DESC", [])

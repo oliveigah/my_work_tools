@@ -2,8 +2,8 @@
 
 # MWT ships its own microsandbox runtime: msb from a pinned commit of MWT's
 # fork, its libkrunfw (see scripts/build-microsandbox.sh), MWT's relay and
-# its ACP shell. They link only glibc (the shell nothing), so they are built
-# once, on the older glibc of the two package targets, and both packages
+# its presentations. They link only glibc (the presentations nothing), so
+# they are built once, on the older glibc of the two package targets, and both packages
 # carry the same files.
 FROM docker.io/library/ubuntu:22.04 AS microsandbox-build
 
@@ -39,15 +39,10 @@ COPY native/mwt_relay ./native/mwt_relay
 RUN --mount=type=cache,id=mwt-relay-target-${TARGETARCH},target=/src/native/mwt_relay/target \
     bash scripts/build-relay.sh /out/microsandbox
 
-# MWT's ACP shell runs in the VM, whose image is yours: it is linked
-# statically, so it goes beside them too (see scripts/build-acp.sh).
+# The presentations `mwt exec` runs in the VM, whose image is yours: they
+# are linked statically, so they go beside them too (see
+# scripts/build-present.sh).
 RUN rustup target add "$(uname -m)-unknown-linux-musl"
-COPY scripts/build-acp.sh ./scripts/
-COPY native/mwt_acp ./native/mwt_acp
-RUN --mount=type=cache,id=mwt-acp-target-${TARGETARCH},target=/src/native/mwt_acp/target \
-    bash scripts/build-acp.sh /out/microsandbox
-
-# So do the presentations `mwt exec` runs there (see scripts/build-present.sh).
 COPY scripts/build-present.sh ./scripts/
 COPY native/mwt_present ./native/mwt_present
 RUN --mount=type=cache,id=mwt-present-target-${TARGETARCH},target=/src/native/mwt_present/target \

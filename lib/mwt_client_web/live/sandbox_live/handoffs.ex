@@ -7,15 +7,15 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
   Zed, before you asked for it. Here you decide how it ends, and only so:
   land it (`Handoffs.accept/3`), as one commit with its changes, on a
   branch you choose, the task's base unless you choose another, or on a
-  new `mwt/NAME` branch from it; send it back to its thread with a note;
-  or close it without landing. Any branch takes it while its changes
+  new `mwt/NAME` branch from it; ask its thread for more, in Zed, where
+  the work is reviewed; or close it without landing. Any branch takes it while its changes
   apply there without conflicts; a checked-out one needs no pending
   tracked work.
 
   So one handoff's page has two parts. On the right, kept in view, your
   decision: the three choices, each with what it needs and the button
   that does it, or, once decided, what was decided and the way back
-  (Undo, Reopen, send back after landing). On the left, what you decide
+  (Undo, Reopen). On the left, what you decide
   it from: where it comes from and where it is in the VM (Open in Zed),
   the agent's notes, what lands (its commits and files, the diff when you
   ask for it) and its history.
@@ -123,11 +123,10 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
 
   attr :view, :any, required: true, doc: "the handoff open, with what was worked out, or nil"
   attr :diff, :boolean, required: true, doc: "whether its diff is shown"
-  attr :note_form, :any, required: true
 
   attr :decision, :string,
     default: "land",
-    doc: "the decision shown for a handoff waiting for one: land, send_back or close"
+    doc: "the decision shown for a handoff waiting for one: land, more or close"
 
   attr :vm, :any, required: true
   attr :now, DateTime, required: true
@@ -139,7 +138,6 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
         view={@view}
         filter={@place.filter}
         diff={@diff}
-        note_form={@note_form}
         decision={@decision}
         vm={@vm}
         now={@now}
@@ -319,12 +317,6 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
                   {handoff.title}
                 </span>
                 <span
-                  :if={handoff.status == :sent_back}
-                  class="rounded-full border border-warn/40 px-1.5 py-px text-[10px] font-medium text-warn-strong"
-                >
-                  Sent back
-                </span>
-                <span
                   :if={handoff.status == :withdrawn}
                   id={"handoff-withdrawn-#{handoff.id}"}
                   class="rounded-full border border-warn/40 px-1.5 py-px text-[10px] font-medium text-warn-strong"
@@ -358,7 +350,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
               <span
                 :if={
                   (handoff.stats[:behind] || 0) > 0 and
-                    handoff.status in [:open, :sent_back, :withdrawn]
+                    handoff.status in [:open, :withdrawn]
                 }
                 id={"handoff-behind-#{handoff.id}"}
                 class="flex items-center gap-1 text-warn-strong"
@@ -368,7 +360,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
               <span
                 :if={
                   (handoff.stats[:conflicts] || 0) > 0 and
-                    handoff.status in [:open, :sent_back, :withdrawn]
+                    handoff.status in [:open, :withdrawn]
                 }
                 class="flex items-center gap-1 text-bad"
                 title="Conflicts with its target branch as it is now"
@@ -426,7 +418,6 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
   attr :view, :map, required: true
   attr :filter, :string, required: true, doc: "the half of the list it goes back to"
   attr :diff, :boolean, required: true
-  attr :note_form, :any, required: true
   attr :decision, :string, required: true
   attr :vm, :any, required: true
   attr :now, DateTime, required: true
@@ -479,7 +470,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
             7
           )}</span>
           <span
-            :if={@facts && @facts.behind > 0 && @handoff.status in [:open, :sent_back, :withdrawn]}
+            :if={@facts && @facts.behind > 0 && @handoff.status in [:open, :withdrawn]}
             id="handoff-behind"
             class="ml-2 text-warn-strong"
           >
@@ -500,7 +491,6 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
       <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_21rem]">
         <.decision
           view={@view}
-          note_form={@note_form}
           decision={@decision}
           now={@now}
         />
@@ -569,39 +559,15 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
             text={event.note}
             class="mt-1 rounded-lg border border-line-soft bg-deep/40 px-3 py-2 text-[12px] leading-5"
           />
-          <p
-            :if={event[:delivery]}
-            id={"handoff-event-#{i}-delivery"}
-            class={[
-              "mt-1 flex items-start gap-1.5 text-[11px] leading-5",
-              if(event.delivery.said?, do: "text-ok-strong", else: "text-faint")
-            ]}
-          >
-            <.icon
-              name={
-                if(event.delivery.said?,
-                  do: "hero-chat-bubble-left-right-micro",
-                  else: "hero-chat-bubble-left-ellipsis-micro"
-                )
-              }
-              class="mt-1 size-3.5 shrink-0"
-            />
-            <span>{delivery_words(event.delivery)}</span>
-          </p>
         </li>
       </ol>
     </section>
     """
   end
 
-  @doc "Whether a send back's note reached its thread, in words."
-  def delivery_words(%{said?: true}), do: "The note went to its thread in Zed."
-
-  def delivery_words(%{why: why}),
-    do: "#{why} The agent reads the note when it runs mwt handoffs."
-
   defp event_icon(:opened), do: "hero-arrow-down-on-square-micro"
   defp event_icon(:updated), do: "hero-arrow-up-circle-micro"
+  # Sent back to its thread with a note, which older MWTs offered.
   defp event_icon(:sent_back), do: "hero-arrow-uturn-left-micro"
   defp event_icon(:withdrawn), do: "hero-wrench-screwdriver-micro"
   defp event_icon(:caught_up), do: "hero-arrow-path-micro"
@@ -637,8 +603,21 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
       </div>
       <div :if={@handoff.thread} class="min-w-0">
         <dt class="text-[10px] font-semibold uppercase tracking-wide text-faint">Thread</dt>
-        <dd id="handoff-thread" class="truncate text-ink" title={Handoffs.who(@handoff)}>
+        <dd
+          id="handoff-thread"
+          class="truncate text-ink"
+          title={
+            Enum.join(Enum.reject([Handoffs.who(@handoff), @handoff.thread_id], &is_nil/1), " · ")
+          }
+        >
           {@handoff.thread}
+        </dd>
+        <dd
+          id="handoff-thread-folder"
+          class="truncate font-mono text-[11px] text-faint"
+          title="Where it worked: its thread is in this folder's list in Zed"
+        >
+          in {@handoff.source.top}
         </dd>
       </div>
       <div class="min-w-0">
@@ -651,7 +630,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
         </dd>
       </div>
       <.in_the_vm
-        :if={@handoff.status in [:open, :sent_back, :withdrawn]}
+        :if={@handoff.status in [:open, :withdrawn]}
         handoff={@handoff}
         worktree={@view.worktree}
         vm={@vm}
@@ -722,12 +701,11 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
   ## Your decision
 
   attr :view, :map, required: true
-  attr :note_form, :any, required: true
   attr :decision, :string, required: true
   attr :now, DateTime, required: true
 
-  # The three ways a handoff ends, and only those: land it (where and how),
-  # send it back to its thread with a note, or close it without landing.
+  # The three things to do with a handoff: land it (where and how), ask its
+  # thread for more, in Zed, or close it without landing.
   # Once decided, what was decided, and the way back.
   defp decision(assigns) do
     assigns = assign(assigns, handoff: assigns.view.handoff, accept: assigns.view.accept)
@@ -776,7 +754,6 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
                 <.icon name="hero-arrow-uturn-left-micro" class="size-3.5" /> Undo the landing
               </.button>
             </div>
-            <.send_back handoff={@handoff} note_form={@note_form} after_landing />
           <% :closed -> %>
             <div class="space-y-3 px-4 py-3">
               <p class="text-[12px] text-muted">
@@ -805,9 +782,9 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
                 tone="ok"
               />
               <.choice
-                value="send_back"
-                label="Send back"
-                icon="hero-arrow-uturn-left-micro"
+                value="more"
+                label="More work"
+                icon="hero-chat-bubble-left-right-micro"
                 chosen={@decision}
                 tone="warn"
               />
@@ -820,8 +797,8 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
               />
             </div>
             <%= case @decision do %>
-              <% "send_back" -> %>
-                <.send_back handoff={@handoff} note_form={@note_form} />
+              <% "more" -> %>
+                <.more_work handoff={@handoff} />
               <% "close" -> %>
                 <.close_it handoff={@handoff} />
               <% _land -> %>
@@ -873,10 +850,8 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
   defp decision_state(%Handoff{status: :withdrawn}),
     do: "None yet: its thread took it back for more work"
 
-  defp decision_state(%Handoff{status: :sent_back}),
-    do: "Sent back: waiting for its thread, or for you"
-
-  defp decision_state(_handoff), do: "Waiting for you: land it, send it back, or close it"
+  defp decision_state(_handoff),
+    do: "Waiting for you: land it, ask its thread for more, or close it"
 
   attr :view, :map, required: true
 
@@ -1066,7 +1041,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
               </ul>
               <%= if own_branch?(@handoff, plan) do %>
                 <p class="mt-1.5 text-muted">
-                  Its thread resolves them: one click sends it back to catch up with {plan.from}, and it hands off again by itself once its checks pass.
+                  Its thread resolves them: open it in Zed and ask it to catch up with {plan.from} and hand off again.
                 </p>
                 <.catch_up_buttons handoff={@handoff} plan={plan} here={false} />
               <% else %>
@@ -1074,11 +1049,11 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
                   Choose another branch, or
                   <button
                     type="button"
-                    phx-click="handoff_decision"
-                    phx-value-choice="send_back"
+                    id="handoff-conflicts-open-thread"
+                    phx-click="open_handoff_worktree"
                     class="cursor-pointer text-accent hover:underline"
-                  >send it back</button>
-                  so its thread rebases onto {plan.from} and hands off again.
+                  >open its thread in Zed</button>
+                  and ask it to rebase onto {plan.from} and hand off again.
                 </p>
               <% end %>
             </div>
@@ -1138,8 +1113,9 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
   attr :here, :boolean, required: true, doc: "whether MWT can catch it up itself: no conflicts"
 
   # The standard ways to bring it up to date with its own branch: MWT
-  # replays its commits there itself, when they apply cleanly; or its
-  # thread catches up, resolves and hands off again, which runs its checks.
+  # replays its commits there itself, when they apply cleanly; or you ask
+  # its thread, in Zed, to catch up, resolve and hand off again, which runs
+  # its checks.
   defp catch_up_buttons(assigns) do
     ~H"""
     <div id="handoff-catch-up" class="mt-2 flex flex-wrap items-center gap-1.5">
@@ -1157,11 +1133,9 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
       </button>
       <button
         type="button"
-        id="handoff-ask-catch-up"
-        phx-click="ask_catch_up_handoff"
-        phx-value-id={@handoff.id}
-        phx-disable-with="Sending…"
-        title={"Sends it back with a note MWT writes: catch up with #{@plan.from}, resolve, run the checks and hand off again, without waiting for you."}
+        id="handoff-catch-up-thread"
+        phx-click="open_handoff_worktree"
+        title={"Opens its thread in Zed, where you ask it to catch up with #{@plan.from} and hand off again."}
         class={[
           "inline-flex cursor-pointer items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-all",
           if(@here,
@@ -1170,13 +1144,13 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
           )
         ]}
       >
-        <.icon name="hero-arrow-uturn-left-micro" class="size-3.5" /> Ask its thread to catch up
+        <.icon name="hero-code-bracket-square-micro" class="size-3.5" /> Open its thread in Zed
       </button>
       <.help id="handoff-catch-up-help" label="About catching up">
         <%= if @here do %>
-          Catch up here: MWT replays its commits onto {@plan.from} in its own store, never in your repository, keeping their authors and messages, as a new revision that lands as it is. Its checks ran on them before that. Ask its thread to catch up: its next handoff does the same in the VM and runs the checks, and it hands off again by itself.
+          Catch up here: MWT replays its commits onto {@plan.from} in its own store, never in your repository, keeping their authors and messages, as a new revision that lands as it is. Its checks ran on them before that. Or ask its thread, in Zed, to catch up and hand off again: its next handoff does the same in the VM and runs the checks.
         <% else %>
-          Its thread runs mwt handoff, which rebases onto {@plan.from} and stops at the conflicts; it resolves them keeping what both sides meant, runs the checks and hands off again by itself: the note MWT sends says that is your ask.
+          Ask its thread, in Zed, to catch up and hand off again: its mwt handoff rebases onto {@plan.from} and stops at the conflicts; it resolves them keeping what both sides meant, runs the checks and hands off again.
         <% end %>
       </.help>
     </div>
@@ -1199,54 +1173,42 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
   defp ready?(_), do: false
 
   attr :handoff, :map, required: true
-  attr :note_form, :any, required: true
 
-  attr :after_landing, :boolean,
-    default: false,
-    doc: "sent back for more work after it landed, as you tried it on your machine"
-
-  defp send_back(assigns) do
+  # More work is asked of its thread, in Zed, where the work is reviewed:
+  # MWT opens its folder there, and you pick the thread in Zed's list. Zed
+  # has no way, from outside, to open one thread or say something in it.
+  # Only while it waits: once landed, its slot may be another task's, and
+  # more work is a new task.
+  defp more_work(assigns) do
     ~H"""
-    <.form
-      for={@note_form}
-      id="handoff-send-back"
-      phx-submit="send_back_handoff"
-      class={["space-y-2 px-4 py-3", @after_landing && "border-t border-line-soft bg-deep/30"]}
-    >
-      <input type="hidden" name="handoff" value={@handoff.id} />
+    <div id="handoff-more-work" class="space-y-2 px-4 py-3">
       <p class="flex items-center gap-1.5 text-[12px] text-muted">
-        <%= if @after_landing do %>
-          Found something on your machine? Send it back for more work.
-        <% else %>
-          What should its thread do next?
-        <% end %>
-        <.help id="handoff-send-back-help" label="About sending it back">
-          <%= if @after_landing do %>
-            What landed stays where it went (Undo takes it out). The thread reads your note with mwt handoffs and works on it, uncommitted for you to review in the VM; once you ask, its next handoff updates this one.
-          <% else %>
-            The handoff stays open. The thread reads your note with mwt handoffs and works on it, uncommitted for you to review in the VM; once you ask, its next handoff updates this one.
-          <% end %>
+        Want changes? Ask its thread, in Zed.
+        <.help id="handoff-more-work-help" label="About asking for more">
+          The handoff stays open. Its thread works on what you ask, uncommitted for you to review there; once you ask, its next handoff updates this one.
         </.help>
       </p>
-      <textarea
-        name={@note_form[:note].name}
-        id="handoff-note"
-        rows={if @after_landing, do: "2", else: "5"}
-        placeholder={"A note for #{if @handoff.thread, do: "the thread \"#{@handoff.thread}\"", else: "the agent"}: what to change, or to catch up again"}
-        class={[input_classes(), "min-h-[3.25rem] text-xs"]}
-      >{@note_form[:note].value}</textarea>
-      <.button
-        type="submit"
-        id="handoff-send-back-button"
-        variant={if @after_landing, do: "secondary", else: "primary"}
-        class="w-full justify-center"
+      <p
+        :if={@handoff.thread}
+        id="handoff-more-work-thread"
+        class="truncate text-[11px] text-faint"
+        title={@handoff.thread}
       >
-        <.icon name="hero-arrow-uturn-left-micro" class="size-3.5" /> Send back to its thread
+        Its thread: “{@handoff.thread}”
+      </p>
+      <.button
+        type="button"
+        id="handoff-open-thread"
+        variant="primary"
+        class="w-full justify-center"
+        phx-click="open_handoff_worktree"
+      >
+        <.icon name="hero-code-bracket-square-micro" class="size-3.5" /> Open its thread in Zed
       </.button>
-      <p :if={not @after_landing} class="text-center text-[11px] leading-4 text-faint">
+      <p class="text-center text-[11px] leading-4 text-faint">
         Nothing lands; its next handoff updates this one.
       </p>
-    </.form>
+    </div>
     """
   end
 
@@ -1436,7 +1398,6 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
         case @status do
           :accepted -> "hero-check-circle"
           :closed -> "hero-x-circle"
-          :sent_back -> "hero-arrow-uturn-left"
           :withdrawn -> "hero-wrench-screwdriver"
           _waiting -> "hero-arrow-down-on-square"
         end
@@ -1447,7 +1408,6 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
         case @status do
           :accepted -> "text-violet-strong"
           :closed -> "text-bad"
-          :sent_back -> "text-warn-strong"
           :withdrawn -> "text-warn-strong"
           _waiting -> "text-ok-strong"
         end
@@ -1462,7 +1422,6 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
     {label, classes} =
       case assigns.status do
         :open -> {"Waiting to land", "bg-ok-soft text-ok-strong"}
-        :sent_back -> {"Sent back", "bg-warn-soft text-warn-strong"}
         :withdrawn -> {"Taken back", "bg-warn-soft text-warn-strong"}
         :accepted -> {"Landed", "bg-violet/15 text-violet-strong"}
         :closed -> {"Closed", "bg-bad-soft text-bad"}

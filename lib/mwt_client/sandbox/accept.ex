@@ -527,7 +527,7 @@ defmodule MWTClient.Sandbox.Accept do
     do:
       "Its changes conflict with #{branch} in: " <>
         Enum.join(files, ", ") <>
-        ". Choose another branch, or send it back so its thread catches up with #{branch} and hands off again."
+        ". Choose another branch, or ask its thread, in Zed, to catch up with #{branch} and hand off again."
 
   def explain({:pending, onto, path, files}),
     do:

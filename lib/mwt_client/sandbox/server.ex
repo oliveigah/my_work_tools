@@ -50,7 +50,7 @@ defmodule MWTClient.Sandbox.Server do
   Every approval waiting for you, and every open handoff, is notified
   (`MWTClient.Notifications`, with `MWTClient.Sandbox.Notices`); the
   notification is withdrawn once the approval is decided or gives up, or the
-  handoff is accepted, closed or sent back, and a command coming back with
+  handoff is accepted or closed, and a command coming back with
   its output gets a new one.
 
   It also keeps the image's builds and the copies of the VM's Home disk, as

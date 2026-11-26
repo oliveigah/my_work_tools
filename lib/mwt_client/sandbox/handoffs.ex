@@ -2,9 +2,9 @@ defmodule MWTClient.Sandbox.Handoffs do
   @moduledoc """
   The handoffs of one identity, as the agent channel and the pages use
   them: opened by agents with `mwt handoff` once you reviewed their work
-  in the VM and asked, then landed on your branch (`accept/3`), sent back
-  or closed by you. Landing syncs what you reviewed there; it isn't where
-  you review it.
+  in the VM and asked, then landed on your branch (`accept/3`) or closed
+  by you. Landing syncs what you reviewed there; it isn't where you review
+  it, nor where you ask for more: that is its thread, in Zed.
 
   The sandbox (`MWTClient.Sandbox.Server`) keeps the records. The git work
   (in the VM, the store, your repository) runs here, in the caller's
@@ -14,7 +14,6 @@ defmodule MWTClient.Sandbox.Handoffs do
 
   alias MWTClient.Sandbox.{
     Accept,
-    AgentThreads,
     CatchUp,
     Handoff,
     HandoffRecords,
@@ -67,8 +66,8 @@ defmodule MWTClient.Sandbox.Handoffs do
   end
 
   # One change of an identity's handoffs at a time: a revision being
-  # received (its fetch may take minutes), a landing, a catch-up, a close,
-  # a send-back or a withdrawal. Each reads a handoff, works on it, then
+  # received (its fetch may take minutes), a landing, a catch-up, a close
+  # or a withdrawal. Each reads a handoff, works on it, then
   # writes it; two at once would each write what it read, and the one
   # written last would undo the other. The cost: a click waits for a
   # revision being received. The lock goes with the process holding it.
@@ -101,7 +100,7 @@ defmodule MWTClient.Sandbox.Handoffs do
              Handoff.size_limit_mib()
            ) do
       handoff = build(existing, id, words, project, base, source, head)
-      handoff = %{handoff | base_commit: comparison_base(guest, source, base, existing, head)}
+      handoff = %{handoff | base_commit: comparison_base(base)}
 
       result =
         with {:ok, facts} <- Handoff.facts(store, handoff),
@@ -213,40 +212,13 @@ defmodule MWTClient.Sandbox.Handoffs do
   defp restore(store, id, nil), do: HandoffStore.drop(store, id)
   defp restore(store, id, previous), do: HandoffStore.point(store, id, previous.head)
 
-  defp comparison_base(_guest, _source, %{branch: nil, commit: commit}, nil, _head), do: commit
-  defp comparison_base(_guest, _source, _base, nil, _head), do: nil
-
-  defp comparison_base(guest, source, base, previous, head) do
-    cond do
-      previous.landed &&
-          match?(
-            {:ok, _},
-            guest.exec.([
-              "git",
-              "-C",
-              source.top,
-              "merge-base",
-              "--is-ancestor",
-              previous.landed.head,
-              head
-            ])
-          ) ->
-        previous.landed.head
-
-      previous.landed ->
-        nil
-
-      # Not the last revision's base: since then the thread may have caught
-      # up with the branch, and what it brings is measured from where it
-      # is now. Reusing the old one counted the branch's own new commits as
-      # the handoff's, and called them conflicts.
-      is_nil(base.branch) ->
-        base.commit
-
-      true ->
-        nil
-    end
-  end
+  # What a revision is measured from: a base commit as it is; a base branch
+  # where it is now (nil), never where the last revision's was, since the
+  # thread may have caught up with it since. Reusing the old one counted
+  # the branch's own new commits as the handoff's, and called them
+  # conflicts.
+  defp comparison_base(%{branch: nil, commit: commit}), do: commit
+  defp comparison_base(_base), do: nil
 
   # What a new revision sets on its handoff's record (`opened/4`); the
   # rest stays as the record has it, its timeline gaining the revision's
@@ -283,7 +255,7 @@ defmodule MWTClient.Sandbox.Handoffs do
 
   # A new revision changes what it says of the work, and adds its event,
   # on the record as it is now: what changed on it while the revision was
-  # received (a delivery marked, its size worked out again) stays.
+  # received (an event marked, its size worked out again) stays.
   defp opened(username, project, _existing, revised) do
     summary = "#{who(revised)} updated ##{revised.id}: \"#{revised.title}\""
     event = List.last(revised.timeline)
@@ -353,7 +325,6 @@ defmodule MWTClient.Sandbox.Handoffs do
          ref: base.ref,
          title: title,
          checks: project.checks,
-         landed: landed(project, existing),
          amend: amend(existing, head)
        }}
     end
@@ -361,38 +332,15 @@ defmodule MWTClient.Sandbox.Handoffs do
 
   # The commit a new revision folds its changes into: the last revision's,
   # while the branch is still at it (nothing committed on it since, by
-  # the user or anyone) and it hasn't landed. Its revision stays in the
-  # store as it was; a commit made after it is never rewritten.
-  defp amend(%Handoff{head: head, landed: nil}, head), do: head
+  # the user or anyone). Its revision stays in the store as it was; a
+  # commit made after it is never rewritten. Only a handoff waiting for
+  # you gets a revision, so none has landed.
+  defp amend(%Handoff{head: head}, head), do: head
   defp amend(_existing, _head), do: nil
 
-  # What the last landing made, when it landed as one commit that is still
-  # on the branch it landed on: one commit with the task's changes, which
-  # shares no history with the task, and the head it was made from. `mwt
-  # handoff` rebases only the commits after that head onto the branch: the
-  # rest is in that commit. A fast-forward landing needs none of this: the
-  # task's own commits are on the branch.
-  defp landed(project, %Handoff{landed: %{commit: commit, head: head, branch: branch}})
-       when commit != head do
-    tip = Accept.tip(project.path, branch)
-
-    if tip &&
-         match?(
-           {:ok, _},
-           MWTClient.Sandbox.HostGit.run(project.path, [
-             "merge-base",
-             "--is-ancestor",
-             commit,
-             tip
-           ])
-         ),
-       do: %{commit: commit, from: head, branch: branch}
-  end
-
-  defp landed(_project, _existing), do: nil
-
-  # A revision of a handoff that landed goes on from where it landed, while
-  # that branch is there: its catch-up brings what you added to it since.
+  # A revision of a handoff taken back out after it landed goes on from
+  # the branch it landed on, while that branch is there: its catch-up
+  # brings what you added to it since.
   defp task_base(project, guest, source, ask, existing) do
     continuation =
       existing && existing.host_branch && Accept.tip(project.path, existing.host_branch) &&
@@ -507,7 +455,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   `ask.cwd` in the VM: as when you ask its thread for more work before
   landing it. Withdrawn, it can't be landed; the agent's next
   `mwt handoff` from that branch makes a new revision of it, open again.
-  You can still close it, or send it back. Only the thread holding the
+  You can still close it. Only the thread holding the
   branch takes it back. `ask` holds `cwd`, `reason` (what you asked for
   now) and who asks.
   """
@@ -636,7 +584,7 @@ defmodule MWTClient.Sandbox.Handoffs do
         |> HandoffRecords.current(project.name, DateTime.utc_now())
         |> Enum.map(fn handoff ->
           facts =
-            if handoff.status in [:open, :sent_back, :withdrawn],
+            if handoff.status in [:open, :withdrawn],
               do: ok(Handoff.facts(HandoffStore.path(dir, handoff.repo), handoff))
 
           {handoff, facts}
@@ -658,7 +606,7 @@ defmodule MWTClient.Sandbox.Handoffs do
          {:ok, facts} <- Handoff.facts(store, handoff) do
       stats = Handoff.stats(facts)
 
-      if handoff.status in [:open, :sent_back, :withdrawn] and stats != handoff.stats,
+      if handoff.status in [:open, :withdrawn] and stats != handoff.stats,
         do: Server.call(username, {:handoff_stats, id, stats})
 
       {:ok, facts}
@@ -757,7 +705,7 @@ defmodule MWTClient.Sandbox.Handoffs do
     exclusive(username, fn ->
       with {:ok, %Handoff{status: status} = handoff, store} <- find(username, id),
            true <- status != :withdrawn or {:error, :withdrawn},
-           true <- status in [:open, :sent_back] or {:error, :not_open},
+           true <- status == :open or {:error, :not_open},
            true <- shown in [nil, handoff.head] or {:error, {:revised, handoff.revision}},
            {:ok, destination} <- destination(username, id, destination),
            {:ok, accepted} <- Accept.run(store, handoff, destination, opts) do
@@ -806,7 +754,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   def catch_up(username, id) do
     exclusive(username, fn ->
       with {:ok, %Handoff{status: status} = handoff, store} <- find(username, id),
-           true <- status in [:open, :sent_back] or {:error, :not_open},
+           true <- status == :open or {:error, :not_open},
            branch when is_binary(branch) <- handoff.base_branch || {:error, :no_branch},
            tip when is_binary(tip) <-
              Accept.tip(handoff.repo, branch) || {:error, {:branch_gone, branch}},
@@ -997,150 +945,6 @@ defmodule MWTClient.Sandbox.Handoffs do
     end
   end
 
-  @doc """
-  Sends a handoff back to its thread with a note: an open one, or one you
-  landed and want more work on. What landed stays where it went (undo it
-  first to take it out); the agent's next handoff from that branch updates
-  this one.
-
-  The note goes to the thread that made the handoff, as a message, when
-  MWT can reach it (`MWTClient.Sandbox.AgentThreads`): open in Zed, started
-  with an MWT agent. Either way the agent can read it with `mwt handoffs`.
-  The `:sent_back` event says which (`delivery`).
-
-  With `catch_up: true` it is a catch-up (`ask_to_catch_up/2`): the
-  thread hears it as one, and that the note is also your ask to hand off
-  again once it has caught up.
-  """
-  @spec send_back(String.t(), pos_integer(), String.t(), keyword()) ::
-          {:ok, Handoff.t()} | {:error, error()}
-  def send_back(username, id, note, opts \\ []) do
-    note = String.trim(note)
-    catch_up? = Keyword.get(opts, :catch_up, false)
-
-    # The record changes under the lock; the thread hears of it after,
-    # since its agent may take a while to answer, and its delivery is
-    # marked on the record as it is then.
-    result =
-      exclusive(username, fn ->
-        with {:ok, %Handoff{status: status}, _store} <- find(username, id),
-             true <- status in [:open, :sent_back, :withdrawn, :accepted] or {:error, :not_open} do
-          update(username, id, "##{id} sent back", fn handoff ->
-            text =
-              cond do
-                catch_up? -> "You asked its thread to catch up and hand off again"
-                handoff.status == :accepted -> "You sent it back for more, after landing it"
-                true -> "You sent it back"
-              end
-
-            %{
-              handoff
-              | status: :sent_back,
-                accepted: nil,
-                timeline:
-                  handoff.timeline ++
-                    [event(:sent_back, text, %{note: note, catch_up: catch_up?})]
-            }
-          end)
-        end
-      end)
-
-    with {:ok, handoff} <- result, do: {:ok, tell_thread(username, handoff, note, catch_up?)}
-  end
-
-  @doc """
-  Sends an open handoff back to catch up with the branch it is on, which
-  moved under it: in one click, with a note MWT writes (`catch_up_note/3`),
-  naming the branch, how far it moved and the files that conflict. The
-  note is also your ask to hand off again, so the thread rebases,
-  resolves, runs the checks and hands off without waiting for you.
-  """
-  @spec ask_to_catch_up(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
-  def ask_to_catch_up(username, id) do
-    with {:ok, %Handoff{base_branch: branch} = handoff, store} <- find(username, id),
-         true <- is_binary(branch) or {:error, :no_branch},
-         {:ok, facts} <- Handoff.facts(store, handoff) do
-      send_back(username, id, catch_up_note(branch, facts.behind, facts.conflicts),
-        catch_up: true
-      )
-    end
-  end
-
-  @doc """
-  The note a catch-up sends: what moved, what conflicts, what to do, and
-  that it is the ask to hand off again.
-
-      iex> MWTClient.Sandbox.Handoffs.catch_up_note("master", 1, ["a.txt"])
-      "Catch up with master: it has 1 commit this handoff doesn't, which changes the same lines in a.txt. Run mwt handoff: it fetches and rebases onto host-origin/master, and stops at the conflicts. Resolve them keeping what both sides meant, git add each, and run mwt handoff again until it hands off. This note is the user's ask to hand off again once it has caught up and its checks pass."
-  """
-  @spec catch_up_note(String.t(), non_neg_integer(), [String.t()]) :: String.t()
-  def catch_up_note(branch, behind, conflicts) do
-    commits = if behind == 1, do: "1 commit", else: "#{behind} commits"
-
-    moved =
-      case conflicts do
-        [] ->
-          "it has #{commits} this handoff wasn't built or tested with."
-
-        files ->
-          "it has #{commits} this handoff doesn't, which changes the same lines in #{Enum.join(files, ", ")}."
-      end
-
-    steps =
-      case conflicts do
-        [] ->
-          "Run mwt handoff: it fetches, rebases onto host-origin/#{branch} and runs the checks."
-
-        _files ->
-          "Run mwt handoff: it fetches and rebases onto host-origin/#{branch}, and stops at the conflicts. " <>
-            "Resolve them keeping what both sides meant, git add each, and run mwt handoff again until it hands off."
-      end
-
-    "Catch up with #{branch}: #{moved} #{steps} " <>
-      "This note is the user's ask to hand off again once it has caught up and its checks pass."
-  end
-
-  # After the handoff says it is sent back, so the agent that hears it finds
-  # it so in `mwt handoffs`.
-  defp tell_thread(username, handoff, note, catch_up?) do
-    text = if note == "", do: "No note: ask the user what they want.", else: note
-
-    # A landed handoff's branch is gone, and its slot is on no branch: the
-    # thread makes it again before changing anything, while the slot is
-    # still free (a slot with uncommitted work can't take it).
-    text =
-      if Handoff.branch_deleted?(handoff),
-        do: resume_words(handoff.source.branch) <> "\n" <> text,
-        else: text
-
-    delivery =
-      case AgentThreads.say(username, handoff.thread_id, text,
-             from:
-               if(catch_up?,
-                 do: "handoff ##{handoff.id} sent back to catch up",
-                 else: "handoff ##{handoff.id} sent back"
-               )
-           ) do
-        :ok -> %{said?: true}
-        {:error, reason} -> %{said?: false, why: AgentThreads.explain(reason)}
-      end
-
-    summary =
-      if delivery.said?,
-        do: "##{handoff.id}: the note went to its thread",
-        else: "##{handoff.id}: the note didn't go to its thread. #{delivery.why}"
-
-    marked =
-      update(username, handoff.id, summary, fn handoff ->
-        %{handoff | timeline: deliveries(handoff.timeline, delivery)}
-      end)
-
-    case marked do
-      {:ok, handoff} -> handoff
-      {:error, _reason} -> handoff
-    end
-  end
-
   @doc "What a thread does first to carry on a handoff whose branch MWT deleted when it landed."
   @spec resume_words(String.t()) :: String.t()
   def resume_words(branch),
@@ -1148,27 +952,12 @@ defmodule MWTClient.Sandbox.Handoffs do
       "Its branch #{branch} was deleted in the VM when it landed. Run mwt worktree resume #{branch} " <>
         "in your slot before you change anything: it makes the branch again at the handoff's commit."
 
-  # On the last send back, which this delivery was for.
-  defp deliveries(timeline, delivery) do
-    case Enum.find_index(Enum.reverse(timeline), &(&1.kind == :sent_back)) do
-      nil ->
-        timeline
-
-      from_end ->
-        List.update_at(
-          timeline,
-          length(timeline) - 1 - from_end,
-          &Map.put(&1, :delivery, delivery)
-        )
-    end
-  end
-
   @doc "Closes an open handoff without landing it."
   @spec close(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
   def close(username, id) do
     exclusive(username, fn ->
       with {:ok, %Handoff{status: status}, _store} <- find(username, id),
-           true <- status in [:open, :sent_back, :withdrawn] or {:error, :not_open} do
+           true <- status in [:open, :withdrawn] or {:error, :not_open} do
         update(username, id, "##{id} closed", fn handoff ->
           %{
             handoff
@@ -1242,8 +1031,7 @@ defmodule MWTClient.Sandbox.Handoffs do
   def explain(:not_open), do: "That handoff isn't open any more."
 
   def explain(:withdrawn),
-    do:
-      "Its agent took it back for more work: it can be landed once handed off again. You can close it, or send it back with a note."
+    do: "Its agent took it back for more work: it can be landed once handed off again, or closed."
 
   def explain({:not_a_task, branch}),
     do:
@@ -1271,10 +1059,6 @@ defmodule MWTClient.Sandbox.Handoffs do
   def explain({:not_withdrawable, %Handoff{id: id, status: :withdrawn}, _branch}),
     do:
       "You took handoff ##{id} back already: do the work, and hand off again once the user asks."
-
-  def explain({:not_withdrawable, %Handoff{id: id, status: :sent_back}, _branch}),
-    do:
-      "Handoff ##{id} was sent back to you already: do the work, and hand off again once the user asks."
 
   def explain({:not_withdrawable, %Handoff{id: id, status: status}, branch}),
     do:

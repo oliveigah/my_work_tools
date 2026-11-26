@@ -41,12 +41,11 @@ defmodule MWTClient.Sandbox.Handoff do
   ]
 
   @typedoc """
-  `:open`, waiting for you; `:sent_back`, by you, with a note;
-  `:withdrawn`, taken back by its agent for more work (`mwt handoff
-  withdraw`), and not landed until handed off again; `:accepted` (landed);
-  `:closed`.
+  `:open`, waiting for you; `:withdrawn`, taken back by its agent for more
+  work (`mwt handoff withdraw`), and not landed until handed off again;
+  `:accepted` (landed); `:closed`.
   """
-  @type status :: :open | :sent_back | :withdrawn | :accepted | :closed
+  @type status :: :open | :withdrawn | :accepted | :closed
 
   @typedoc "Where it comes from: the repository in the VM (its git folder), its worktree, its branch."
   @type source :: %{folder: String.t(), top: String.t(), branch: String.t()}
@@ -208,7 +207,10 @@ defmodule MWTClient.Sandbox.Handoff do
       not String.ends_with?(branch, ["/", ".", ".lock"])
   end
 
-  @doc "Keeps handoffs made with the mirror (`host/<branch>` bases) readable."
+  @doc """
+  Keeps older handoffs readable: those made with the mirror (`host/<branch>`
+  bases), and those an older MWT sent back to their thread, open again.
+  """
   def upgrade(handoff) do
     fields = Map.delete(handoff, :__struct__)
     branch = Map.get(fields, :mirrored_branch) || handoff.onto
@@ -218,6 +220,7 @@ defmodule MWTClient.Sandbox.Handoff do
       fields
       |> Map.put_new(:base_branch, branch)
       |> Map.put_new(:base_ref, "refs/remotes/host/" <> branch)
+      |> Map.update(:status, :open, &if(&1 == :sent_back, do: :open, else: &1))
     )
   end
 
@@ -311,9 +314,9 @@ defmodule MWTClient.Sandbox.Handoff do
       end
   end
 
-  @doc "Whether the handoff waits for you: open, sent back, or taken back by its agent."
+  @doc "Whether the handoff waits for you: open, or taken back by its agent."
   @spec waiting?(t()) :: boolean()
-  def waiting?(%__MODULE__{status: status}), do: status in [:open, :sent_back, :withdrawn]
+  def waiting?(%__MODULE__{status: status}), do: status in [:open, :withdrawn]
 
   @doc """
   What a search of the handoffs looks in, normalized
@@ -413,7 +416,6 @@ defmodule MWTClient.Sandbox.Handoff do
   end
 
   defp status_words(:open), do: "waiting for you"
-  defp status_words(:sent_back), do: "sent back"
   defp status_words(:withdrawn), do: "taken back by its agent"
   defp status_words(:accepted), do: "landed"
   defp status_words(:closed), do: "closed"

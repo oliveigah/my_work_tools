@@ -20,11 +20,11 @@ defmodule Mix.Tasks.Compile.NativeTest do
   test "a program is built when it is missing or older than any of its sources", %{dir: dir} do
     source = file(dir, "main.rs", 1_000)
     other = file(dir, "Cargo.toml", 1_000)
-    program = Path.join(dir, "mwt-acp")
+    program = Path.join(dir, "mwt-present")
 
     assert Native.stale?(program, [source, other])
 
-    file(dir, "mwt-acp", 2_000)
+    file(dir, "mwt-present", 2_000)
     refute Native.stale?(program, [source, other])
     # A source that isn't there (no Cargo.lock yet) changes nothing.
     refute Native.stale?(program, [source, Path.join(dir, "Cargo.lock")])

@@ -94,13 +94,19 @@ defmodule MWTClient.Sandbox.HandoffRecordsTest do
   test "the latest of a branch, and those waiting", %{username: username} do
     branch = %{folder: "/work/app/.git", top: "/work/app.wt/slot-1", branch: "fix"}
     :ok = HandoffRecords.put(username, landed(1, 2, source: branch))
-    :ok = HandoffRecords.put(username, handoff(2, source: branch, status: :sent_back))
+    :ok = HandoffRecords.put(username, handoff(2, source: branch, status: :withdrawn))
     :ok = HandoffRecords.put(username, handoff(3, project: "other", source: branch))
 
     assert %{id: 2} = HandoffRecords.latest(username, "app", "fix")
     assert %{id: 3} = HandoffRecords.latest(username, "other", "fix")
     assert HandoffRecords.latest(username, "app", "nothing") == nil
     assert username |> HandoffRecords.waiting() |> Enum.map(& &1.id) |> Enum.sort() == [2, 3]
+  end
+
+  # The older MWT kept it as waiting, which it still is.
+  test "one an older MWT sent back to its thread reads as open", %{username: username} do
+    :ok = HandoffRecords.put(username, handoff(1, status: :sent_back))
+    assert {:ok, %Handoff{status: :open}} = HandoffRecords.get(username, 1)
   end
 
   test "landed or closed a month ago, one is archived; one waiting never is", %{

@@ -8,7 +8,7 @@ defmodule MWTClient.Sandbox.HandoffsSlotsUpkeepTest do
   """
   use MWTClient.HandoffsCase, async: true
 
-  alias MWTClient.Sandbox.{Channel, Guest, Handoff, Handoffs, Project, Projects}
+  alias MWTClient.Sandbox.{Channel, Guest, Handoff, Project, Projects}
 
   describe "worktree slots" do
     setup {MWTClient.HandoffsCase, :with_slots}
@@ -205,7 +205,7 @@ defmodule MWTClient.Sandbox.HandoffsSlotsUpkeepTest do
       assert git(one, ["branch", "--show-current"]) == ""
     end
 
-    test "a handoff sent back after its slot went to another task resumes in a free slot", %{
+    test "a handoff whose slot went to another task resumes in a free slot", %{
       username: username,
       repo: repo,
       mirror: mirror
@@ -218,10 +218,9 @@ defmodule MWTClient.Sandbox.HandoffsSlotsUpkeepTest do
       # Freed while the user looks at it, then taken by another task.
       {0, _} = worktree(username, one, "free")
       {0, _} = worktree(username, one, "new", %{"name" => "other"})
-      {:ok, _} = Handoffs.send_back(username, 1, "Add a test.")
 
       assert {0, listed} = Channel.answer("handoffs", %{"cwd" => one}, username)
-      assert listed =~ "sent back to you"
+      assert listed =~ "open, waiting for the user"
 
       assert listed =~
                "Its branch is in no worktree now. To continue it, ask the user to start a thread in a free slot, which runs: mwt worktree resume fix"
@@ -252,7 +251,7 @@ defmodule MWTClient.Sandbox.HandoffsSlotsUpkeepTest do
       assert already =~ "fix is in slot-2 already"
 
       assert {0, listed} = Channel.answer("handoffs", %{"cwd" => two}, username)
-      assert listed =~ "#1  sent back to you (this branch)"
+      assert listed =~ "#1  open, waiting for the user (this branch)"
       assert listed =~ "In slot-2, #{two}."
 
       # Its next revision comes from the new slot.

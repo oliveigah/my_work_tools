@@ -26,7 +26,6 @@ defmodule MWTClient.Vault.Store do
   @stores [
     MWTClient.Places,
     MWTClient.Sandbox.Channel,
-    MWTClient.Sandbox.AgentThreads,
     MWTClient.Sandbox.Dns,
     MWTClient.Sandbox.Egress,
     MWTClient.Sandbox.Monitor,

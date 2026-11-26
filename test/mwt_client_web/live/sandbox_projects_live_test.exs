@@ -4,7 +4,7 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
   import Phoenix.LiveViewTest
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.{AgentThread, Guest, Projects}
+  alias MWTClient.Sandbox.{Guest, Projects}
   alias MWTClientWeb.SandboxLive.Projects, as: Page
 
   @me [
@@ -530,67 +530,5 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
     assert text.("#slot-no-zed-app-slot-2") =~ "no Zed window open"
     assert LazyHTML.query(page, "#slot-no-zed-app-slot-1") |> Enum.count() == 0
     assert LazyHTML.query(page, "#slot-no-zed-app-slot-3") |> Enum.count() == 0
-  end
-
-  test "a held slot says what its thread is doing, as MWT's agent threads see it", %{
-    username: username,
-    repo: repo,
-    shared: shared,
-    vm: vm
-  } do
-    {:ok, _} = Sandbox.add_share(username, shared)
-    {:ok, _} = Projects.open(username, repo)
-    {:ok, "slot-1"} = Projects.add_slot(username, "app")
-    {:ok, "slot-2"} = Projects.add_slot(username, "app")
-    {:ok, "slot-3"} = Projects.add_slot(username, "app")
-    mirror = Path.join(vm, "app")
-
-    take =
-      &Projects.take_slot(username, "#{mirror}.wt/#{&1}", :new, &2, thread: &3, from: "master")
-
-    {:ok, _, _, :started, _, _} = take.("slot-1", "fix", "thread-a")
-    {:ok, _, _, :started, _, _} = take.("slot-2", "cart", "thread-b")
-    {:ok, _, _, :started, _, _} = take.("slot-3", "docs", nil)
-
-    snapshot = Sandbox.snapshot(username)
-    {:ok, look} = Projects.slots(username, "app")
-
-    threads = %{
-      "thread-a" => %AgentThread{
-        id: "thread-a",
-        agent: "claude-acp",
-        title: "Fix the login",
-        open?: true,
-        working?: true
-      }
-    }
-
-    render = fn threads ->
-      html =
-        render_component(&Page.page/1,
-          overview: Projects.overview(username),
-          mirror: snapshot.mirror,
-          waiting_handoffs: snapshot.waiting_handoffs,
-          editing: nil,
-          dialog: nil,
-          worktrees: %{"app" => {:ok, look}},
-          threads: threads,
-          vm: %{status: :running},
-          now: DateTime.utc_now()
-        )
-
-      page = LazyHTML.from_fragment(html)
-      &(page |> LazyHTML.query(&1) |> LazyHTML.text())
-    end
-
-    text = render.(threads)
-    assert text.("#slot-holder-app-slot-1") =~ "Fix the login, open, working"
-    # Its thread wasn't started with an MWT agent, or MWT never saw it.
-    assert text.("#slot-holder-app-slot-2") =~ "its thread isn't one MWT can reach"
-    # No thread on record.
-    assert text.("#slot-holder-app-slot-3") == ""
-
-    closed = put_in(threads["thread-a"].open?, false)
-    assert render.(closed).("#slot-holder-app-slot-1") =~ "Fix the login, closed"
   end
 end

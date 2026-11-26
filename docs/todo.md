@@ -485,10 +485,6 @@ findings fixed (guarantees 35 to 46 in `docs/agent_sandbox.md`; the
 (`docs/dated/20261121-threat_model_fable5.2_review.md`) has the details of
 what is left:
 
-- **Agent threads**: any attached `mwt-acp` can take over an open thread's
-  id and settle another's message (`agent_threads.ex`), and a handoff's
-  note goes to the thread id its ask claimed. Inside the VM's own trust,
-  but one process there can take the notes you send another.
 - **Isolation and a request action's call under way**: an isolation stops
   running commands, not a request action's call already sent
   (`server/host_runs.ex`).

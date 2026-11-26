@@ -16,7 +16,6 @@ defmodule MWTClient.Storage.ImportCheck do
   alias MWTClient.HttpClient.Resources
   alias MWTClient.MCP.Access
   alias MWTClient.Notes.Library, as: Notes
-  alias MWTClient.Sandbox.AgentThreads
   alias MWTClient.Storage.Documents
   alias MWTClient.Storage.Legacy
   alias MWTClient.Vault
@@ -27,7 +26,6 @@ defmodule MWTClient.Storage.ImportCheck do
     flashcards: "flashcards.bin",
     http_history: "http_history.bin",
     mcp_access: "mcp_access.bin",
-    agent_threads: "agent_threads.bin",
     sandbox: "sandbox.bin"
   }
 
@@ -103,7 +101,6 @@ defmodule MWTClient.Storage.ImportCheck do
       settings(before.flashcards, Flashcards.settings(username)),
       history(list(before.http_history), Resources.all(username)),
       mcp(before.mcp_access, username),
-      threads(before.agent_threads, AgentThreads.list(username)),
       sandbox(before.sandbox, username)
     ]
   end
@@ -290,14 +287,6 @@ defmodule MWTClient.Storage.ImportCheck do
       end
 
     result("MCP access", 1, if(Access.enabled?(username), do: 1, else: 0), %{}, %{}, differing)
-  end
-
-  defp threads(nil, now), do: result("agent threads", %{}, Map.new(now, &{&1.id, &1}), [])
-
-  defp threads(%{threads: before}, now) do
-    old = Map.new(before, &{&1.id, &1})
-    new = Map.new(now, &{&1.id, &1})
-    result("agent threads", old, new, [])
   end
 
   defp sandbox(nil, _username), do: result("sandbox", 0, 0, %{}, %{}, [])

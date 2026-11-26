@@ -40,7 +40,11 @@ This is a web application written using the Phoenix web framework.
   the clock read twice for one value, once in each of two seconds; a page's
   `start_async` after a click, not waited for (`render_async/1`); a sandbox
   task still writing into a folder a cleanup removes (register that cleanup
-  before signing in: `unlocked_identity/1` waits for the identity's tasks).
+  before signing in: `unlocked_identity/1` waits for the identity's tasks);
+  a lock's work waited for with `assert_receive` while it runs elsewhere
+  (lock in the test, and react to it from a process of your own); a restart
+  checked with one `:sys.get_state` of the supervisor
+  (`VaultHelpers.restarted/3`).
 - `mix test test/x_test.exs --slowest 10` shows a test you made slow. On the
   whole suite it runs every test one at a time (it turns on `--trace`), for
   minutes.

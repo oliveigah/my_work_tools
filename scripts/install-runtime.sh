@@ -7,13 +7,13 @@
 #     Work disk), one per version, so checkouts that pin different ones
 #     don't rebuild over each other. Built once, in a few minutes, with
 #     build-microsandbox.sh;
-#   - the relay, the ACP shell and the presentations built from this
-#     checkout (build-relay.sh, build-acp.sh, build-present.sh), since their
+#   - the relay and the presentations built from this checkout
+#     (build-relay.sh, build-present.sh), since their
 #     source can differ from one branch to the next. They take seconds.
 #
 # Meant for the agent sandbox's worktree slots, where VMs run only with VMs
 # inside the VM turned on (/dev/kvm). On your machine, build-microsandbox.sh
-# build-relay.sh and build-acp.sh do the same into priv/microsandbox directly.
+# build-relay.sh and build-present.sh do the same into priv/microsandbox directly.
 set -Eeuo pipefail
 if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
   printf 'Usage: ./scripts/install-runtime.sh\n'
@@ -47,5 +47,4 @@ mkdir -p -- "$out"
 cp -a -- "$built/." "$out/"
 
 "$root/scripts/build-relay.sh" "$out"
-"$root/scripts/build-acp.sh" "$out"
 "$root/scripts/build-present.sh" "$out"

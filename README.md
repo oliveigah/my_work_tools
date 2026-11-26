@@ -136,7 +136,7 @@ One place for all of it:
 | **Overview**       | The VM at a glance: start, stop or recreate it, what it uses, approvals waiting, a terminal into it, servers running, grants that are on, the latest activity. |
 | **Approvals**      | The cards waiting for a decision, the commands running on my machine, and what was decided.                                                |
 | **Projects**       | The repositories open in the VM, their branches and their worktree slots.                                                                  |
-| **Handoffs**       | Where a task I reviewed in Zed becomes official: landed on my branch, sent back with a note, or closed.                                    |
+| **Handoffs**       | Where a task I reviewed in Zed becomes official: landed on my branch, or closed; more is asked in its thread.                              |
 | **Grants**         | My resources, every grant over them, on or off, how long it stays on, whether each use asks, and a console to try one as the VM.          |
 | **Activity log**   | Every connection, lookup and action the VM made, filterable, down to the request as the VM sent it and how it was decided.                 |
 | **Firewall**       | The _VM isolated_ switch, the rules and what they found.                                                                                   |
@@ -270,11 +270,10 @@ The Agent Sandbox also needs its VM runtime, built once into
 ```bash
 ./scripts/build-microsandbox.sh   # msb and its guest kernel
 ./scripts/build-relay.sh          # MWT's relay, beside them
-./scripts/build-acp.sh            # MWT's shell for Zed's agents (needs: rustup target add x86_64-unknown-linux-musl)
-./scripts/build-present.sh        # the helpers the VM's `mwt exec` runs (same target)
+./scripts/build-present.sh        # the helpers the VM's `mwt exec` runs (needs: rustup target add x86_64-unknown-linux-musl)
 ```
 
-After the first time, `mix compile` rebuilds the last three when their
+After the first time, `mix compile` rebuilds the last two when their
 source changes. On Ubuntu 24.04 and later, AppArmor keeps the system's
 `bwrap` from doing what the sandbox needs: the packages set that up, and
 for an MWT run from source, once:

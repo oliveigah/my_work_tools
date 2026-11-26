@@ -56,25 +56,22 @@ finished.
 The user lands it on the task's base unless they choose another branch,
 or on a new `mwt/` branch from one: as it is, these very commits (a
 fast-forward), when that branch hasn't moved since; else as one commit
-with its changes. Your next fetch brings what landed. A revision after a
-landing catches up with the branch it landed on.
+with its changes. Your next fetch brings what landed.
 
-`mwt handoffs` says what the user did: landed it, closed it, or sent it
-back with a note, even after it landed.
+`mwt handoffs` says what the user did: landed it or closed it. They ask
+for more in your thread.
 
 - **More work while it waits for them** goes on the same branch: the
   handoff they have stays as it was, and your next `mwt handoff`, once
   they ask, updates it with a new revision.
   `mwt handoff withdraw --reason "..."` takes it back meanwhile, only when
   the user wants it kept from landing.
-- **Sent back with a note:** do what it asks, uncommitted for them to
-  review as before, and hand off again once they ask: that updates the
-  same handoff.
-- **Sent back to catch up:** their branch moved under the handoff. The
-  note is also their ask to hand off again: run `mwt handoff`; where it
-  stops at conflicts, resolve each keeping what both sides meant, `git add`
-  it, and run `mwt handoff` again, until it hands off. Don't wait for
-  `/handoff` this time.
+- **Asked to catch up** (or to resolve its conflicts): their branch moved
+  under the handoff, and `mwt handoffs` says how far and which files
+  conflict. The ask is also their ask to hand off again: run
+  `mwt handoff`; where it stops at conflicts, resolve each keeping what
+  both sides meant, `git add` it, and run `mwt handoff` again, until it
+  hands off. Don't wait for `/handoff` this time.
 - **It came too soon** (the user says so, and closes it): undo its commits
   but keep the work, uncommitted for them to see again:
   `git reset $(git merge-base HEAD BASE_REF)`, using the task's recorded

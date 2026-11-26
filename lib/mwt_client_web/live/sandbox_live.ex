@@ -20,7 +20,6 @@ defmodule MWTClientWeb.SandboxLive do
   alias MWTClient.Sandbox
 
   alias MWTClient.Sandbox.{
-    AgentThreads,
     Decision,
     Event,
     Grant,
@@ -149,7 +148,6 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(:page_size, @page_size)
      |> assign(:share_form, to_form(%{"path" => ""}, as: :share))
      |> assign(:share_error, nil)
-     |> assign(:note_form, note_form())
      |> assign(:handoff_id, nil)
      |> assign(:handoff_diff, false)
      |> assign(:handoff_place, HandoffsPage.place())
@@ -542,7 +540,6 @@ defmodule MWTClientWeb.SandboxLive do
                   listing={@handoff_listing}
                   view={@handoff_view}
                   diff={@handoff_diff}
-                  note_form={@note_form}
                   decision={@handoff_decision}
                   vm={@vm}
                   now={@now}
@@ -555,7 +552,6 @@ defmodule MWTClientWeb.SandboxLive do
                   editing={@project_editing}
                   dialog={@project_dialog}
                   worktrees={@project_worktrees}
-                  threads={@agent_threads}
                   ports={@ports}
                   leftovers={@leftovers}
                   vm={@vm}
@@ -2711,7 +2707,7 @@ defmodule MWTClientWeb.SandboxLive do
   # Which of the three ways to end it the panel shows: nothing happens
   # until its button is pressed.
   def handle_event("handoff_decision", %{"choice" => choice}, socket)
-      when choice in ["land", "send_back", "close"],
+      when choice in ["land", "more", "close"],
       do: {:noreply, assign(socket, :handoff_decision, choice)}
 
   def handle_event("accept_change", %{"accept" => params}, socket) do
@@ -2761,13 +2757,22 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
-  # Back to the VM, where the work is looked at: the worktree its branch is
-  # in, as worked out when the page opened it.
+  # Back to the VM, where the work is looked at and more is asked of its
+  # thread: the worktree its branch is in, as worked out when the page
+  # opened it, else the folder it was handed off from, where its thread is
+  # in Zed's list (a landed one's branch is gone).
   def handle_event("open_handoff_worktree", _params, socket) do
-    with %{handoff: handoff, worktree: %{path: path}} <- socket.assigns.handoff_view do
+    with %{handoff: handoff} = view <- socket.assigns.handoff_view do
+      path =
+        case view.worktree do
+          %{path: path} -> path
+          _none_or_unknown -> handoff.source.top
+        end
+
       case Projects.open(socket.assigns.username, handoff.project, path) do
         {:ok, _project} ->
-          {:noreply, put_notice(socket, :success, "Opened in Zed", body: path)}
+          body = if handoff.thread, do: "#{path}: its thread is “#{handoff.thread}”", else: path
+          {:noreply, put_notice(socket, :success, "Opened in Zed", body: body)}
 
         {:error, reason} ->
           {:noreply,
@@ -2784,26 +2789,6 @@ defmodule MWTClientWeb.SandboxLive do
       Handoffs.undo(socket.assigns.username, handoff_id(id)),
       "Taken back out"
     )
-  end
-
-  def handle_event("send_back_handoff", %{"handoff" => id, "send_back" => params}, socket) do
-    result = Handoffs.send_back(socket.assigns.username, handoff_id(id), params["note"] || "")
-
-    socket =
-      if match?({:ok, _}, result),
-        do: assign(socket, note_form: note_form(), handoff_decision: "land"),
-        else: socket
-
-    done =
-      with {:ok, handoff} <- result,
-           %{delivery: delivery} <-
-             handoff.timeline |> Enum.filter(&(&1.kind == :sent_back)) |> List.last() do
-        "Sent back. " <> HandoffsPage.delivery_words(delivery)
-      else
-        _ -> "Sent back"
-      end
-
-    handoff_action(socket, result, done)
   end
 
   # MWT replays its commits onto its branch itself: a new revision that
@@ -2826,23 +2811,6 @@ defmodule MWTClientWeb.SandboxLive do
          |> assign_handoff()
          |> put_notice(:warning, "Not caught up", body: Handoffs.explain(reason))}
     end
-  end
-
-  # Sent back with the note MWT writes: its thread catches up, resolves,
-  # runs the checks and hands off again by itself.
-  def handle_event("ask_catch_up_handoff", %{"id" => id}, socket) do
-    result = Handoffs.ask_to_catch_up(socket.assigns.username, handoff_id(id))
-
-    done =
-      with {:ok, handoff} <- result,
-           %{delivery: delivery} <-
-             handoff.timeline |> Enum.filter(&(&1.kind == :sent_back)) |> List.last() do
-        "Asked to catch up. " <> HandoffsPage.delivery_words(delivery)
-      else
-        _ -> "Asked to catch up"
-      end
-
-    handoff_action(socket, result, done)
   end
 
   def handle_event("close_handoff", %{"id" => id}, socket) do
@@ -3029,10 +2997,6 @@ defmodule MWTClientWeb.SandboxLive do
   end
 
   def handle_info({:sandbox_changed, _area}, socket), do: {:noreply, schedule_refresh(socket)}
-
-  # A thread of an MWT agent opened, closed, started or ended a turn.
-  def handle_info({:agent_threads_changed, _id}, socket),
-    do: {:noreply, schedule_refresh(socket)}
 
   def handle_info({:sandbox_build_line, _line}, socket), do: {:noreply, schedule_refresh(socket)}
 
@@ -3259,17 +3223,9 @@ defmodule MWTClientWeb.SandboxLive do
     |> assign(:now, DateTime.utc_now() |> DateTime.truncate(:second))
     |> assign(snapshot)
     |> assign(:grant_map, grant_map)
-    |> assign(:agent_threads, agent_threads(username))
     |> assign(:marks, RequestView.marks(snapshot.grants))
     |> follow_handoff()
     |> assign_page_data(grant_map)
-  end
-
-  # The threads of MWT's agents, by id, for the holders of worktree slots.
-  defp agent_threads(username) do
-    username |> AgentThreads.list() |> Map.new(&{&1.id, &1})
-  catch
-    :exit, _locked -> %{}
   end
 
   # The handoff being looked at, with what MWT works out about it against
@@ -3304,7 +3260,7 @@ defmodule MWTClientWeb.SandboxLive do
 
         # A withdrawn one doesn't land until handed off again; where its
         # branch is still shows.
-        if handoff.status in [:open, :sent_back, :withdrawn],
+        if handoff.status in [:open, :withdrawn],
           do: %{
             view
             | accept: if(handoff.status != :withdrawn, do: accept_state(view, %{}, username)),
@@ -3466,8 +3422,6 @@ defmodule MWTClientWeb.SandboxLive do
       _ -> nil
     end
   end
-
-  defp note_form, do: to_form(%{"note" => ""}, as: :send_back)
 
   # The open projects, read when the page opens, after you act on a project
   # and every few seconds (`tick_projects/1`), with their slots, read from

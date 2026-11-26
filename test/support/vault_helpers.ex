@@ -59,6 +59,41 @@ defmodule MWTClient.VaultHelpers do
     :ok
   end
 
+  @doc """
+  The process `store` runs in for `username` once its supervisor has
+  started it again after `old` ended, waited for as long as 5 s.
+
+  A test that saw `old` end can't learn that from one `:sys.get_state/1`
+  of the supervisor: `old`'s exit reaches the supervisor from `old`, apart
+  from what the test sends it, in no set order, and under a busy run after
+  it. So it asks the supervisor again, each answer saying it handled what
+  had reached it, until the store is a new process. Still `old`, or none,
+  after 5 s fails the test.
+  """
+  def restarted(store, username, old) do
+    deadline = System.monotonic_time(:millisecond) + 5_000
+    await_restart(store, username, old, deadline)
+  end
+
+  defp await_restart(store, username, old, deadline) do
+    _ = :sys.get_state(Store.supervisor(username))
+
+    case Store.whereis(store, username) do
+      pid when is_pid(pid) and pid != old ->
+        pid
+
+      _not_yet ->
+        if System.monotonic_time(:millisecond) < deadline,
+          do: await_restart(store, username, old, deadline),
+          else:
+            raise(
+              "#{inspect(store)} wasn't started again 5 s after #{inspect(old)} ended: " <>
+                "registered #{inspect(Store.whereis(store, username))}, its supervisor's children " <>
+                inspect(DynamicSupervisor.which_children(Store.supervisor(username)))
+            )
+    end
+  end
+
   @doc "Unlocks an extra identity alongside the current one."
   def also_unlock(username, password \\ "correct horse") do
     unlocked_identity(username, password).username

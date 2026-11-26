@@ -31,6 +31,8 @@ defmodule MWTClient.Sandbox.InstructionsTest do
 
       etc = Path.join(base, "etc")
       File.mkdir_p!(etc)
+      cache = Path.join(base, "cache")
+      File.mkdir_p!(cache)
 
       boot = fn args ->
         # POSIX sh, as in an image without bash. XDG_CONFIG_HOME is unset so
@@ -43,13 +45,21 @@ defmodule MWTClient.Sandbox.InstructionsTest do
             {"MWT_INBOX", inbox},
             {"HOME", home},
             {"MWT_ETC", etc},
+            {"MWT_CACHE", cache},
             {"XDG_CONFIG_HOME", nil}
           ],
           stderr_to_stdout: true
         )
       end
 
-      %{inbox: inbox, home: home, etc: etc, boot: fn -> boot.([]) end, boot_as: boot}
+      %{
+        inbox: inbox,
+        home: home,
+        etc: etc,
+        cache: cache,
+        boot: fn -> boot.([]) end,
+        boot_as: boot
+      }
     end
 
     test "puts MWT's CA in Chromium's certificate store, when the image has certutil", %{
@@ -236,24 +246,58 @@ defmodule MWTClient.Sandbox.InstructionsTest do
       assert File.regular?(Path.join(home, ".optmem/memory/LOG.txt"))
     end
 
-    test "MWT's agents go into the VM's Zed settings, when the inbox has the ACP shell", %{
-      inbox: inbox,
+    test "the adapters an older MWT's ACP shell installed go, and the rest of the cache stays",
+         %{cache: cache, boot: boot} do
+      adapter = Path.join(cache, "mwt-acp/claude-acp/0.112.0/claude-agent-acp")
+      File.mkdir_p!(Path.dirname(adapter))
+      File.write!(adapter, "old")
+      File.mkdir_p!(Path.join(cache, "mise"))
+
+      assert {"", 0} = boot.()
+      refute File.exists?(Path.join(cache, "mwt-acp"))
+      assert File.dir?(Path.join(cache, "mise"))
+      # Gone, nothing more to do.
+      assert {"", 0} = boot.()
+    end
+
+    test "the agents an older MWT put in the VM's Zed settings go, and the rest stays", %{
       home: home,
       boot: boot
     } do
-      # Without the shell, Zed's settings aren't touched.
+      # No settings: none are made.
       assert {"", 0} = boot.()
       refute File.exists?(Path.join(home, ".config/zed/settings.json"))
 
-      File.mkdir_p!(Path.join(inbox, "bin"))
-      shell = Path.join(inbox, "bin/mwt-acp")
-      File.write!(shell, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/acp-args\"\n")
-      File.chmod!(shell, 0o755)
+      settings = Path.join(home, ".config/zed/settings.json")
+      File.mkdir_p!(Path.dirname(settings))
+
+      File.write!(
+        settings,
+        Jason.encode!(%{
+          "theme" => "One Dark",
+          "agent_servers" => %{
+            "Mine" => %{"type" => "custom", "command" => "/usr/local/bin/mwt-acp-not"},
+            "Claude (MWT)" => %{"type" => "custom", "command" => "/mnt/mwt/bin/mwt-acp"},
+            "Codex (MWT)" => %{"type" => "custom", "command" => "/mnt/mwt/bin/mwt-acp"}
+          }
+        })
+      )
 
       assert {"", 0} = boot.()
 
-      assert File.read!(Path.join(home, "acp-args")) ==
-               "--zed-settings\n#{home}/.config/zed/settings.json\n--command\n#{shell}\n"
+      assert Jason.decode!(File.read!(settings)) == %{
+               "theme" => "One Dark",
+               "agent_servers" => %{
+                 "Mine" => %{"type" => "custom", "command" => "/usr/local/bin/mwt-acp-not"}
+               }
+             }
+
+      # One it can't read as JSON is left as it is, and the boot says so.
+      broken = ~s|{"agent_servers": {"Claude (MWT)": {"command": "/mnt/mwt/bin/mwt-acp"},},}|
+      File.write!(settings, broken)
+      assert {output, 1} = boot.()
+      assert output =~ "could not take MWT's old agents out of Zed's settings"
+      assert File.read!(settings) == broken
     end
   end
 
@@ -266,11 +310,8 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     assert text =~ "~/.optmem/memo wake"
     assert text =~ "mwt_denied_by_user"
     assert text =~ "mwt_isolated"
-    assert text =~ "A message from MWT"
     # Every code is explained where it is looked up.
     assert Instructions.guides()["access"] =~ "mwt_grant_off"
-    # A thread MWT can't reach: `mwt project` says so, and the guide too.
-    assert Instructions.guides()["projects"] =~ "**Claude (MWT)**"
   end
 
   test "the standing text holds what every task needs, and sends to a guide for the rest" do

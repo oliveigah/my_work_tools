@@ -5,7 +5,7 @@ edition = "2021"
 description = "MWT's presentations: a token grant's placeholder shown the way a tool family looks for its credential, for one command's lifetime"
 publish = false
 
-# No dependencies, as for mwt-relay and mwt-acp: the build needs no network,
+# No dependencies, as for mwt-relay: the build needs no network,
 # and there is less to trust. It holds only placeholders.
 [dependencies]
 

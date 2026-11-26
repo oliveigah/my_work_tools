@@ -24,8 +24,8 @@ defmodule MWTClient.Sandbox.HandoffSearchTest do
           %{at: ~U[2026-11-20 10:00:00Z], kind: :opened, text: "claude handed it off"},
           %{
             at: ~U[2026-11-20 11:00:00Z],
-            kind: :sent_back,
-            text: "You sent it back",
+            kind: :withdrawn,
+            text: "claude took it back for more work",
             note: "Cover the expired cookie case too"
           }
         ]

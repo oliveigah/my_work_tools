@@ -253,8 +253,8 @@ mwt - ask MWT, the user's control panel, for access
       another thread holds, you only read.
 
   mwt worktree resume BRANCH
-      Put an existing branch, such as one whose handoff was sent back after
-      its slot went to another task, in the slot you are in, when it is
+      Put an existing branch, such as one whose handoff needs more work
+      after its slot went to another task, in the slot you are in, when it is
       free. A branch deleted when its handoff landed is made again at the
       handoff's commit: resume it before you change anything. Run in the slot that has BRANCH, held by another thread, it
       moves the hold to yours: only when the user asks you to carry on
@@ -299,9 +299,8 @@ mwt - ask MWT, the user's control panel, for access
       the revision they have.
 
   mwt handoffs
-      The project's handoffs: open, sent back (with the user's note),
-      withdrawn, and those landed or closed in the last 30 days; and
-      whether each still applies to its branch.
+      The project's handoffs: open, withdrawn, and those landed or closed
+      in the last 30 days; and whether each still applies to its branch.
 
   mwt vm
       Which VM this is, and whether it is the one MWT runs. When the network
@@ -611,7 +610,7 @@ edit_notes() {
 # the work is the agent's to say), conflicts, failing checks. Nothing is
 # sent until all of it went through.
 handoff_steps() {
-  local reply status plan top subject checks conflicts fresh head log branch base_ref base_name landed landed_from landed_branch upstream amend onto="$onto"
+  local reply status plan top subject checks conflicts fresh head log branch base_ref base_name amend onto="$onto"
   top=$(git rev-parse --show-toplevel 2>/dev/null) || {
     echo "mwt: this folder is in no git repository. Hand off from your slot." >&2
     exit 1
@@ -653,9 +652,6 @@ handoff_steps() {
   base_name=${base_ref#refs/remotes/}
   subject=$(plan_value title "$plan")
   checks=$(plan_value checks "$plan")
-  landed=$(plan_value landed "$plan")
-  landed_from=$(plan_value landed_from "$plan")
-  landed_branch=$(plan_value landed_branch "$plan")
   amend=$(plan_value amend "$plan")
   cd "$top" || exit 1
 
@@ -733,23 +729,9 @@ handoff_steps() {
   # 3. Caught up with the selected base as the user has it now: the task's
   # own commits replayed on top of it, so the branch reads as its work
   # alone, and lands as it is when that branch doesn't move meanwhile.
-  # When the user landed this task before as one commit, which shares no
-  # history with it, only what came after the head that commit was made
-  # from is replayed: the rest is in it already.
-  upstream=$base_ref
-  if [ -n "$landed" ] && git cat-file -e "$landed^{commit}" 2>/dev/null &&
-    git merge-base --is-ancestor "$landed" "$base_ref" &&
-    ! git merge-base --is-ancestor "$landed" HEAD &&
-    git merge-base --is-ancestor "$landed_from" HEAD; then
-    upstream=$landed_from
-  fi
   if ! git merge-base --is-ancestor "$base_ref" HEAD; then
-    if git rebase -q --onto "$base_ref" "$upstream" >"$gitdir/mwt-rebase.log" 2>&1; then
-      if [ "$upstream" = "$base_ref" ]; then
-        echo "Rebased onto $base_name, the task's current base."
-      else
-        echo "Rebased onto $base_name, the task's current base, after what landed on $landed_branch before."
-      fi
+    if git rebase -q "$base_ref" >"$gitdir/mwt-rebase.log" 2>&1; then
+      echo "Rebased onto $base_name, the task's current base."
     else
       rebase_stopped
     fi

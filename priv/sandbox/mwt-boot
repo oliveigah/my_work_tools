@@ -24,10 +24,11 @@
 #   - which VM this is, when MWT names it: `mwt-boot ID CREATED IMAGE NAME`
 #     writes /etc/mwt-vm, which `mwt vm` sends MWT to compare with the VM it
 #     runs, and a line every interactive login shell prints with the answer;
-#   - MWT's agents for Zed, Claude (MWT) and Codex (MWT), into the VM's own
-#     Zed settings (~/.config/zed/settings.json, which Zed's remote server
-#     merges after the user's), when MWT has its ACP shell (bin/mwt-acp):
-#     only those two entries, the rest of the file is left alone;
+#   - out of the VM's own Zed settings (~/.config/zed/settings.json), the
+#     agents Claude (MWT) and Codex (MWT), which an older MWT put there for
+#     an ACP shell it no longer has: only those two entries, the rest of the
+#     file is left alone; and the adapters that shell installed for itself,
+#     in /cache/mwt-acp;
 #   - MWT's CA into Chromium's certificate store (~/.pki/nssdb), when the
 #     image has certutil (libnss3-tools): Chromium, Playwright's included,
 #     trusts that store, not the system's bundle, so without it every page
@@ -40,8 +41,9 @@
 # so its servers open on the user's machine. It needs bash, ss and socat,
 # keeps running after this script, and doesn't start twice.
 #
-# MWT_INBOX, HOME and MWT_ETC (for /etc) can be set to try it outside a VM;
-# then the watcher isn't started, and Claude Code's command isn't run.
+# MWT_INBOX, HOME, MWT_ETC (for /etc) and MWT_CACHE (for /cache) can be set
+# to try it outside a VM; then the watcher isn't started, and Claude Code's
+# command isn't run.
 set -u
 inbox=${MWT_INBOX:-/mnt/mwt}
 block=$inbox/agents-block.md
@@ -162,10 +164,51 @@ if [ -x "$inbox/bin/memo" ]; then
   fi
 fi
 
-if [ -x "$inbox/bin/mwt-acp" ]; then
-  "$inbox/bin/mwt-acp" --zed-settings "${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json" \
-    --command "$inbox/bin/mwt-acp" ||
-    { echo "mwt-boot: could not put MWT's agents in Zed's settings" >&2; status=1; }
+# An older MWT put two agents in Zed's settings, Claude (MWT) and Codex
+# (MWT), each starting its ACP shell (bin/mwt-acp), which MWT no longer has:
+# Zed would list agents that can't start. Each goes while it still starts
+# that shell. A file Python can't read as JSON (comments, trailing commas)
+# is left as it is, with a word on stderr. Not needed once every VM made
+# before has booted with this.
+zed_settings=${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json
+if [ -f "$zed_settings" ] && grep -qF 'mwt-acp' "$zed_settings"; then
+  python3 -I - "$zed_settings" <<'PYTHON' ||
+import json, os, sys
+
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        settings = json.load(f)
+except ValueError as error:
+    sys.exit(f"{error}; left as it is")
+servers = settings.get("agent_servers") if isinstance(settings, dict) else None
+if isinstance(servers, dict):
+    old = [
+        name
+        for name in ("Claude (MWT)", "Codex (MWT)")
+        if isinstance(servers.get(name), dict)
+        and str(servers[name].get("command", "")).endswith("/mwt-acp")
+    ]
+    if old:
+        for name in old:
+            del servers[name]
+        if not servers:
+            del settings["agent_servers"]
+        partial = path + ".mwt-partial"
+        with open(partial, "w") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+        os.replace(partial, path)
+PYTHON
+    { echo "mwt-boot: could not take MWT's old agents out of Zed's settings, $zed_settings" >&2; status=1; }
+fi
+
+# The adapters that shell installed for itself, apart from Zed's own (in
+# Home): nothing starts them now, and they hold a few versions each.
+old_adapters=${MWT_CACHE:-/cache}/mwt-acp
+if [ -e "$old_adapters" ]; then
+  rm -rf "$old_adapters" ||
+    { echo "mwt-boot: could not remove the ACP shell's old adapters, $old_adapters" >&2; status=1; }
 fi
 
 if command -v certutil >/dev/null 2>&1 && [ -r "$inbox/ca.pem" ]; then

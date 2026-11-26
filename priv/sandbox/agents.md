@@ -70,9 +70,6 @@ a slot.
 - **Hand off only when the user asks,** with `/handoff` or in words: a
   handoff is them deciding the work is done. Then follow
   `mwt help handoff`.
-- **A message from MWT** (`MWT (handoff #21 sent back): …`) is MWT
-  bringing you something the user did, such as the note of a handoff they
-  sent back: act on it as on that note.
 - **Commits are the user's.** MWT sets each project's `user.name` and
   `user.email` to those they commit with: don't change them, don't pass
   `--author`, and add no `Co-Authored-By` or "Generated with" lines. If

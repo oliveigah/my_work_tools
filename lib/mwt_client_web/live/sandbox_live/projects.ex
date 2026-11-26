@@ -16,7 +16,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
 
   import MWTClientWeb.SandboxLive.Components
 
-  alias MWTClient.Sandbox.{AgentThread, Slots, Zed}
+  alias MWTClient.Sandbox.{Slots, Zed}
   alias MWTClientWeb.SandboxLive.Servers
 
   attr :overview, :map, required: true, doc: "from `MWTClient.Sandbox.Projects.overview/1`"
@@ -32,10 +32,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   attr :ports, :map,
     default: %{address: nil, status: :off, ports: []},
     doc: "the VM's servers on this machine (the snapshot's `ports`)"
-
-  attr :threads, :map,
-    default: %{},
-    doc: "the threads of MWT's agents, by id (`MWTClient.Sandbox.AgentThreads`)"
 
   attr :worktrees, :map,
     required: true,
@@ -100,7 +96,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
         editing={@editing && @editing.name == project.name && @editing}
         worktrees={@worktrees[project.name]}
         ports={@ports}
-        threads={@threads}
         vm={@vm}
         now={@now}
       />
@@ -121,7 +116,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   attr :editing, :any, required: true
   attr :worktrees, :any, required: true
   attr :ports, :map, required: true
-  attr :threads, :map, required: true
   attr :vm, :any, required: true
   attr :now, DateTime, required: true
 
@@ -205,7 +199,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
         project={@project}
         worktrees={@worktrees}
         ports={@ports}
-        threads={@threads}
         vm={@vm}
       />
     </section>
@@ -396,7 +389,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
     doc: "`Projects.slots/2`'s answer, or `:reading` (or nil) until it comes"
 
   attr :ports, :map, required: true
-  attr :threads, :map, required: true
   attr :vm, :any, required: true
 
   defp worktree_list(assigns) do
@@ -528,11 +520,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
                       <span :if={slot.state == :dirty} class="text-warn-strong">
                         · uncommitted work
                       </span>
-                      <.holder
-                        :if={slot.thread}
-                        id={"slot-holder-#{@project.name}-#{slot.name}"}
-                        thread={@threads[slot.thread]}
-                      />
                       <span
                         :if={not slot.free? and slot.in_zed? == false}
                         id={"slot-no-zed-#{@project.name}-#{slot.name}"}
@@ -1057,39 +1044,6 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   defp removable?(%{state: state}) when state in [:absent, :missing], do: true
   defp removable?(slot), do: slot.free?
 
-  attr :id, :string, required: true
-
-  attr :thread, :any,
-    required: true,
-    doc: "the holder's `AgentThread`, nil when MWT can't reach it"
-
-  # The thread holding a slot's task, as Agent threads see it.
-  defp holder(%{thread: nil} = assigns) do
-    ~H"""
-    <span
-      id={@id}
-      title="Its thread wasn't started with Claude (MWT) or Codex (MWT): MWT can't send it anything, such as a handoff you send back"
-    >
-      · its thread isn't one MWT can reach
-    </span>
-    """
-  end
-
-  defp holder(assigns) do
-    ~H"""
-    <span
-      id={@id}
-      class={[
-        @thread.working? && "text-ok-strong",
-        @thread.open? && not @thread.working? && "text-muted"
-      ]}
-      title={"#{AgentThread.agent_name(@thread)} thread #{@thread.id}"}
-    >
-      · {@thread.title || "its thread"}, {AgentThread.state_words(@thread)}
-    </span>
-    """
-  end
-
   defp remove_title(%{name: "slot-0"}), do: "slot-0 is the clone itself: it stays"
   defp remove_title(%{state: :dirty}), do: "It has uncommitted work"
   defp remove_title(%{state: :foreign}), do: "A folder that isn't a worktree is in the way"
@@ -1122,7 +1076,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
 
   defp handoff_label(handoff) do
     conflicts? =
-      (handoff.stats[:conflicts] || 0) > 0 and handoff.status in [:open, :sent_back, :withdrawn]
+      (handoff.stats[:conflicts] || 0) > 0 and handoff.status in [:open, :withdrawn]
 
     "handoff ##{handoff.id}, #{Slots.status_word(handoff.status)}" <>
       if(conflicts?, do: ", conflicts", else: "")

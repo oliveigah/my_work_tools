@@ -138,13 +138,13 @@ defmodule MWTClient.Sandbox.CatchUp do
 
   def explain(:merges),
     do:
-      "It has a merge commit, which MWT doesn't replay: ask its thread to catch up, or land it as one commit."
+      "It has a merge commit, which MWT doesn't replay: ask its thread, in Zed, to catch up, or land it as one commit."
 
   def explain({:conflicts, files}),
     do:
       "Its changes conflict with its branch in: " <>
         Enum.join(files, ", ") <>
-        ". Ask its thread to catch up: it resolves them and hands off again."
+        ". Ask its thread, in Zed, to catch up: it resolves them and hands off again."
 
   def explain(text) when is_binary(text), do: text
 end

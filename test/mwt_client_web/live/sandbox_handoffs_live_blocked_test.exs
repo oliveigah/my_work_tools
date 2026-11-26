@@ -1,7 +1,7 @@
 defmodule MWTClientWeb.SandboxHandoffsLiveBlockedTest do
   # The Handoffs page for handoffs that can't land as they are: taken back
-  # for more work, sent back, held by pending work, conflicting, or behind
-  # a branch that moved; and what the page offers then.
+  # for more work, held by pending work, conflicting, or behind a branch
+  # that moved; and what the page offers then, its thread in Zed included.
   use MWTClientWeb.ConnCase, async: true
 
   import Phoenix.LiveViewTest
@@ -50,7 +50,7 @@ defmodule MWTClientWeb.SandboxHandoffsLiveBlockedTest do
     assert has_element?(view, "#handoff-state", "Closed")
   end
 
-  test "a landed handoff can be sent back for more; what landed stays", %{
+  test "a landed one offers no more work: its slot may be another task's by then", %{
     conn: conn,
     username: username,
     repo: repo,
@@ -67,20 +67,13 @@ defmodule MWTClientWeb.SandboxHandoffsLiveBlockedTest do
     refute has_element?(view, "#handoff-close")
     refute has_element?(view, "#handoff-choose-close")
 
-    view
-    |> form("#handoff-send-back", send_back: %{note: "The **login** page still 500s."})
-    |> render_submit()
-
-    assert has_element?(view, "#handoff-state", "Sent back")
-    assert has_element?(view, "#handoff-timeline", "after landing it")
-    assert has_element?(view, "#handoff-timeline strong", "login")
+    refute has_element?(view, "#handoff-more-work")
+    refute has_element?(view, "#handoff-open-thread")
     assert git(repo, ["log", "-1", "--format=%s"]) == "work on fix\n"
 
-    # The thread hears of it.
-    {0, listed} =
-      Channel.answer("handoffs", %{"cwd" => Path.join(vm, "app.wt/slot-1")}, username)
-
-    assert listed =~ "The **login** page still 500s."
+    # Its thread stays named, with where it worked, to find it by hand.
+    assert has_element?(view, "#handoff-thread", "Fix the login thread")
+    assert has_element?(view, "#handoff-thread-folder", "app.wt/slot-1")
   end
 
   test "pending work on your branch stops it from landing", %{
@@ -118,12 +111,14 @@ defmodule MWTClientWeb.SandboxHandoffsLiveBlockedTest do
     refute has_element?(view, "#handoff-accept-button[disabled]")
   end
 
-  test "one that conflicts can't land by accident; it goes back to its thread", %{
+  test "one that conflicts can't land by accident; its thread opens in Zed", %{
     conn: conn,
     username: username,
     repo: repo,
     vm: vm
   } do
+    zed_opens(username)
+
     handoff =
       hand_off(username, vm, "fix", "Fix it", fn tree ->
         File.write!(Path.join(tree, "a.txt"), "one\ntwo, from the vm\nthree\n")
@@ -143,27 +138,17 @@ defmodule MWTClientWeb.SandboxHandoffsLiveBlockedTest do
     view |> form("#handoff-accept", accept: %{onto: "master"}) |> render_change()
     refute has_element?(view, "#handoff-accept-button[disabled]")
 
-    # Or it goes back, from the conflict's own words.
+    # Or its thread rebases, asked in Zed, from the conflict's own words.
     view |> form("#handoff-accept", accept: %{onto: "release"}) |> render_change()
-    view |> element("#handoff-conflicts button", "send it back") |> render_click()
-    assert has_element?(view, "#handoff-choose-send_back[aria-selected=true]")
-
-    view
-    |> form("#handoff-send-back", send_back: %{note: "Catch up with my branch."})
-    |> render_submit()
-
-    # Its thread can't be told here (no VM runs), so the agent reads the
-    # note in mwt handoffs; the word after it and the timeline say so.
-    assert has_element?(view, "#notices", "Sent back. The VM isn't running.")
-    assert has_element?(view, "#handoff-state", "Sent back")
-    assert has_element?(view, "#handoff-timeline", "Catch up with my branch.")
-    assert has_element?(view, "#handoff-timeline [id$='-delivery']", "mwt handoffs")
-    # Sent, the panel is back on Land, the decision still yours.
-    assert has_element?(view, "#handoff-decision-state", "Sent back")
-    assert has_element?(view, "#handoff-choose-land[aria-selected=true]")
+    view |> element("#handoff-conflicts-open-thread") |> render_click()
+    assert_received {:zed, address}
+    assert address =~ "app.wt/slot-1"
+    # Nothing changed: the decision is still yours.
+    assert has_element?(view, "#handoff-state", "Waiting to land")
+    assert has_element?(view, "#handoff-decision-state", "Waiting for you")
   end
 
-  test "its branch moved under it: caught up here, or its thread asked to catch up, in one click",
+  test "its branch moved under it: caught up here, or its thread opened in Zed to catch up",
        %{conn: conn, username: username, repo: repo, vm: vm} do
     handoff =
       hand_off(username, vm, "fix", "Fix it", fn tree ->
@@ -178,7 +163,7 @@ defmodule MWTClientWeb.SandboxHandoffsLiveBlockedTest do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/handoffs?id=#{handoff.id}")
     assert has_element?(view, "#handoff-untested", "master moved since its checks ran")
     assert has_element?(view, "#handoff-catch-up-here")
-    assert has_element?(view, "#handoff-ask-catch-up")
+    assert has_element?(view, "#handoff-catch-up-thread", "Open its thread in Zed")
     assert has_element?(view, "#handoff-one-commit")
 
     view |> element("#handoff-catch-up-here") |> render_click()
@@ -193,12 +178,14 @@ defmodule MWTClientWeb.SandboxHandoffsLiveBlockedTest do
     assert File.read!(Path.join(repo, "c.txt")) == "mine\n"
   end
 
-  test "where its changes conflict with its own branch, its thread is asked to catch up", %{
+  test "where its changes conflict with its own branch, its thread opens in Zed to catch up", %{
     conn: conn,
     username: username,
     repo: repo,
     vm: vm
   } do
+    zed_opens(username)
+
     handoff =
       hand_off(username, vm, "fix", "Fix it", fn tree ->
         File.write!(Path.join(tree, "a.txt"), "one\ntwo, from the vm\nthree\n")
@@ -209,14 +196,23 @@ defmodule MWTClientWeb.SandboxHandoffsLiveBlockedTest do
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/handoffs?id=#{handoff.id}")
     assert has_element?(view, "#handoff-conflicts", "a.txt")
-    # MWT can't resolve it: only its thread can, asked in one click.
+    # MWT can't resolve it: only its thread can, asked in Zed.
     refute has_element?(view, "#handoff-catch-up-here")
+    assert has_element?(view, "#handoff-conflicts", "open it in Zed and ask it to catch up")
 
-    view |> element("#handoff-ask-catch-up") |> render_click()
-    assert has_element?(view, "#notices", "Asked to catch up")
-    assert has_element?(view, "#handoff-timeline", "You asked its thread to catch up")
-    assert has_element?(view, "#handoff-timeline", "Catch up with master")
-    assert has_element?(view, "#handoff-timeline", "a.txt")
-    assert has_element?(view, "#handoff-decision-state", "Sent back")
+    view |> element("#handoff-catch-up-thread") |> render_click()
+    assert_received {:zed, address}
+    assert address =~ "app.wt/slot-1"
+    assert has_element?(view, "#handoff-decision-state", "Waiting for you")
+  end
+
+  # Zed opening, for this test's identity: the address comes back as a message.
+  defp zed_opens(username) do
+    test = self()
+
+    MWTClient.StandIns.on_zed(username, fn address ->
+      send(test, {:zed, address})
+      :ok
+    end)
   end
 end

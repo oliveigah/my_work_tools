@@ -1,6 +1,6 @@
 defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
   # A handoff's later revisions: folded into its commit, caught up with a
-  # base that moved, sent back and handed off again. Apart from
+  # base that moved and handed off again. Apart from
   # handoff_revisions_test.exs so the two run side by side.
   use MWTClient.HandoffsCase, async: true
 
@@ -37,7 +37,6 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
     File.write!(Path.join(tree, "a.txt"), "first\n")
     assert {_, 0} = run.(["handoff", "--title", "The fix"])
     [%{head: first}] = handoffs(username)
-    {:ok, _} = Handoffs.send_back(username, 1, "More")
 
     File.write!(Path.join(tree, "a.txt"), "second\n")
     assert {words, 0} = run.(["handoff"])
@@ -57,7 +56,7 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
     assert [%{revision: 3, stats: %{commits: 3}}] = handoffs(username)
   end
 
-  test "sent back after its branch moved under it, the caught-up revision lands as it is",
+  test "asked to catch up after its branch moved under it, the caught-up revision lands as it is",
        context do
     %{username: username, repo: repo} = context
     {_project, tree} = project_with_worktree(context)
@@ -67,7 +66,6 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
 
     # Another piece of work lands on master, changing the same lines.
     commit(repo, [{"a.txt", "host edit\n"}], "host work")
-    {:ok, _} = Handoffs.send_back(username, 1, "Resolve the conflict")
 
     # The thread catches up: mwt handoff's rebase stops at the conflict,
     # the thread resolves it, and runs it again.
@@ -141,28 +139,8 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
     assert {:error, {:catch_up, {:conflicts, ["a.txt"]}} = reason} =
              Handoffs.catch_up(username, 1)
 
-    assert Handoffs.explain(reason) =~ "Ask its thread to catch up"
+    assert Handoffs.explain(reason) =~ "Ask its thread, in Zed, to catch up"
     assert [^before] = handoffs(username)
-  end
-
-  test "asked to catch up, the thread hears which branch and files, and that it is the ask to hand off",
-       context do
-    %{username: username, repo: repo} = context
-    {_project, tree} = project_with_worktree(context)
-    commit(tree, [{"a.txt", "VM edit\n"}], "VM work")
-    assert {0, _} = Channel.answer("handoff", ask(tree), username)
-    commit(repo, [{"a.txt", "host edit\n"}], "host work")
-
-    assert {:ok, handoff} = Handoffs.ask_to_catch_up(username, 1)
-    assert handoff.status == :sent_back
-    sent = List.last(Enum.filter(handoff.timeline, &(&1.kind == :sent_back)))
-    assert sent.catch_up
-    assert sent.note =~ "Catch up with master"
-    assert sent.note =~ "a.txt"
-
-    {0, listed} = Channel.answer("handoffs", %{"cwd" => tree}, username)
-    assert listed =~ "Sent back to catch up: Catch up with master"
-    assert listed =~ "It is the user's ask to hand off again"
   end
 
   test "failed CLI checks leave the last submitted revision unchanged", context do
@@ -178,28 +156,5 @@ defmodule MWTClient.Sandbox.HandoffCatchingUpTest do
     assert {words, 1} = run.(["handoff", "--title", "Failing revision"])
     assert words =~ "checks failed"
     assert [^previous] = handoffs(username)
-  end
-
-  test "a sent-back revision after one landed as one commit brings only later work",
-       context do
-    %{username: username, repo: repo} = context
-    {_project, tree} = project_with_worktree(context)
-    commit(tree, [{"vm.txt", "first\n"}], "first")
-    {0, _} = Channel.answer("handoff", ask(tree), username)
-
-    {:ok, _} =
-      Handoffs.accept(username, 1, {:branch, "master", "feature"}, one_commit: true)
-
-    # Landing deleted its branch: the thread makes it again first.
-    {:ok, _} = Handoffs.send_back(username, 1, "More")
-    run = cli(context, tree)
-    assert {_, 0} = run.(["worktree", "resume", "fix"])
-    File.write!(Path.join(tree, "vm.txt"), "second\n")
-
-    assert {words, 0} = run.(["handoff"])
-    assert words =~ "after what landed on mwt/feature before"
-    assert [%{stats: %{commits: 1}}] = handoffs(username)
-    assert {:ok, _} = Handoffs.accept(username, 1)
-    assert git(repo, ["show", "mwt/feature:vm.txt"]) == "second\n"
   end
 end

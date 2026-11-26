@@ -101,12 +101,12 @@ defmodule MWTClientWeb.SandboxHandoffsListLiveTest do
         %{at: ~U[2026-11-20 10:00:00Z], kind: :opened, text: "claude handed it off"},
         %{
           at: ~U[2026-11-20 11:00:00Z],
-          kind: :sent_back,
-          text: "You sent it back",
+          kind: :withdrawn,
+          text: "claude took it back for more work",
           note: "Keep the login form as it is"
         }
       ],
-      status: :sent_back
+      status: :withdrawn
     )
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/handoffs")

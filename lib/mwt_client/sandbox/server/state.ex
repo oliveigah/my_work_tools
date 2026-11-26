@@ -205,7 +205,7 @@ defmodule MWTClient.Sandbox.Server.State do
 
   @doc """
   One notification per open handoff: made when it opens, made again when
-  the agent updates it, withdrawn once you accept, close or send it back.
+  the agent updates it, withdrawn once you accept or close it.
   With `quiet: true`, as when MWT starts, what is open is listed in MWT but
   not put on the desktop again.
   """
