@@ -671,7 +671,7 @@ defmodule MWTClient.Sandbox.Channel do
         place,
         targets,
         checks,
-        "The clone's branches are the VM's: MWT never moves or resets one, and deletes a task's branch only once its handoff landed with nothing done on it since. Use refs/heads/TASK to base work on another VM task, or a commit ID for a snapshot."
+        "The clone's branches are the VM's: MWT never moves or resets one, and deletes a task's branch only once nothing needs it and nothing of it would be lost (mwt worktree prune says what became of each). Use remote-origin/BRANCH to base work on what the user's team pushed to their remote, refs/heads/TASK on another VM task, or a commit ID for a snapshot. mwt worktree sync [host|remote] [BRANCH] brings a slot up to date."
       ] ++
         slot_lines(look, here) ++ [identity_words(HostGit.identity(project.path)) | @review_words],
       "\n"
@@ -747,18 +747,18 @@ defmodule MWTClient.Sandbox.Channel do
     Enum.join([what | go], "\n")
   end
 
-  defp freed_words(%{state: state} = slot) when state in [:absent, :missing],
+  defp freed_words(%{state: state} = slot, _branch) when state in [:absent, :missing],
     do: "#{slot.name} is free already: #{Slots.words(slot)}."
 
-  defp freed_words(%{task?: false, branch: branch} = slot) when is_binary(branch),
+  defp freed_words(%{task?: false, branch: branch} = slot, _branch) when is_binary(branch),
     do:
       "#{slot.name} is free already: it is on #{branch}, which no task started, and a task can start in it with mwt worktree new TASK --from BRANCH."
 
-  defp freed_words(%{branch: nil} = slot),
+  defp freed_words(%{branch: nil} = slot, _branch),
     do:
       "#{slot.name} is free already: a task can start in it with mwt worktree new TASK --from BRANCH."
 
-  defp freed_words(slot) do
+  defp freed_words(slot, branch) do
     after_words =
       case slot.handoff do
         %{status: status, id: id} when status in [:open, :withdrawn] ->
@@ -771,8 +771,46 @@ defmodule MWTClient.Sandbox.Channel do
           ""
       end
 
-    "Freed #{slot.name}, #{slot.path}: it is on no branch now, and a task can start in it with mwt worktree new TASK --from BRANCH. The branch #{slot.branch} stays, with its commits." <>
-      after_words
+    "Freed #{slot.name}, #{slot.path}: it is on no branch now, and a task can start in it with mwt worktree new TASK --from BRANCH. " <>
+      branch_words(slot.branch, branch) <> after_words
+  end
+
+  defp branch_words(branch, {:deleted, _slot}),
+    do:
+      "MWT deleted the branch #{branch}, as nothing needed it any more and nothing of it is lost."
+
+  defp branch_words(branch, {:kept, why}),
+    do: "The branch #{branch} stays: #{Slots.kept_words(why)}."
+
+  defp branch_words(branch, {:error, text}),
+    do: "The branch #{branch} stays: MWT couldn't prune it. #{text}"
+
+  defp branch_words(branch, _gone), do: "The branch #{branch} is gone."
+
+  # What `mwt worktree prune` did, a line for each task branch.
+  defp pruned_words(name, [], _dry_run?), do: "#{name} has no task branches."
+
+  defp pruned_words(name, pruned, dry_run?) do
+    {gone, kept} = Enum.split_with(pruned, fn {_branch, {how, _}} -> how != :kept end)
+
+    head =
+      case {length(gone), dry_run?} do
+        {0, _} -> "Nothing to delete in #{name}."
+        {1, true} -> "Would delete 1 task branch in #{name} (a dry run: nothing changed):"
+        {n, true} -> "Would delete #{n} task branches in #{name} (a dry run: nothing changed):"
+        {1, false} -> "Deleted 1 task branch in #{name}, as nothing needed it:"
+        {n, false} -> "Deleted #{n} task branches in #{name}, as nothing needed them:"
+      end
+
+    lines =
+      Enum.map(gone, fn {branch, {_how, slot}} ->
+        "  #{branch}" <> if(slot, do: "  (#{slot} is on no branch now)", else: "")
+      end) ++
+        Enum.map(kept, fn {branch, {:kept, why}} ->
+          "  #{branch} stays: #{Slots.kept_words(why)}"
+        end)
+
+    Enum.join([head | lines], "\n")
   end
 
   defp count(1, word), do: "1 #{word}"
@@ -924,10 +962,48 @@ defmodule MWTClient.Sandbox.Channel do
 
   # A worktree slot: taken for a new task (`new`, also an ask without an
   # action, as older mwt commands send), for a branch to continue
-  # (`resume`), or freed (`free`).
+  # (`resume`), or freed (`free`); or the project's task branches pruned
+  # (`prune`).
   defp reply("worktree", %{"action" => "free"} = ask, username) do
     case Projects.free_slot(username, ask["cwd"], ask["slot"], ask["thread_id"]) do
-      {:ok, _project, slot} -> {0, freed_words(slot)}
+      {:ok, _project, slot, branch} -> {0, freed_words(slot, branch)}
+      {:error, reason} -> {1, Projects.explain(reason)}
+    end
+  end
+
+  # What `mwt worktree sync` does in the slot the agent is in, for the
+  # command to carry out (`key=value` lines); then, after a fetch of
+  # remote-origin, how fresh it is.
+  defp reply("worktree", %{"action" => "sync", "stage" => "fresh"} = ask, username),
+    do: {0, Projects.remote_freshness(username, ask["cwd"])}
+
+  defp reply("worktree", %{"action" => "sync"} = ask, username) do
+    case Projects.sync_plan(username, ask["cwd"], ask["level"], ask["branch"], ask["thread_id"]) do
+      {:ok, plan} ->
+        {0,
+         key_lines(
+           mode: Atom.to_string(plan.mode),
+           slot: plan.slot,
+           branch: plan.branch || "",
+           ref: plan.ref,
+           label: plan.label,
+           upstream: plan.upstream || "",
+           record: if(plan.record?, do: "yes", else: "no"),
+           fetch: plan.fetch || ""
+         )}
+
+      {:error, reason} ->
+        {1, Projects.explain(reason)}
+    end
+  end
+
+  defp reply("worktree", %{"action" => "prune"} = ask, username) do
+    dry_run? = ask["dry_run"] == true
+
+    with {:ok, project, _where, _guest} <- Projects.locate(username, ask["cwd"]),
+         {:ok, pruned} <- Projects.prune_branches(username, project.name, dry_run: dry_run?) do
+      {0, pruned_words(project.name, pruned, dry_run?)}
+    else
       {:error, reason} -> {1, Projects.explain(reason)}
     end
   end
@@ -940,7 +1016,12 @@ defmodule MWTClient.Sandbox.Channel do
            thread: ask["thread_id"]
          ) do
       {:ok, _project, slot, outcome, onto, where} ->
-        {0, taken_words(slot, outcome, onto, where)}
+        fresh =
+          if TaskBase.remote_branch(onto),
+            do: "\n" <> Projects.remote_freshness(username, ask["cwd"]),
+            else: ""
+
+        {0, taken_words(slot, outcome, onto, where) <> fresh}
 
       {:error, reason} ->
         {1, Projects.explain(reason)}

@@ -22,6 +22,8 @@ defmodule MWTClient.Sandbox.Projects do
 
   import Kernel, except: [inspect: 2]
 
+  require Logger
+
   alias MWTClient.Sandbox.{
     Discovery,
     Guest,
@@ -619,7 +621,21 @@ defmodule MWTClient.Sandbox.Projects do
            |> with_zed(guest)
            |> with_branches(project) do
       used(username, project.name)
+      if outcome in [:started, :resumed], do: sweep(username, project, guest)
       {:ok, project, slot, outcome, base.branch || base.ref, where}
+    end
+  end
+
+  # Once a task took its slot, the task branches nothing needs go: one
+  # whose handoff ended while the VM was stopped, one whose slot moved on.
+  # The take stands whatever happens here.
+  defp sweep(username, project, guest) do
+    case locked(username, project.name, fn -> prune(username, project, guest, []) end) do
+      {:ok, _pruned} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning("#{project.name}: task branches not pruned: #{inspect(reason)}")
     end
   end
 
@@ -650,62 +666,308 @@ defmodule MWTClient.Sandbox.Projects do
   defp restore_base(%{base_branch: branch}) when is_binary(branch), do: TaskBase.ref(branch)
   defp restore_base(%{base_ref: ref}), do: ref
 
+  @typedoc """
+  What `mwt worktree sync` does in a slot, as `sync_plan/5` decides it:
+  `:rebase`, the slot's task onto `ref`, replaying only its own commits
+  (those not on `upstream`, its base until now), its base from then on
+  when `record?`; or `:checkout`, the slot on no branch at `ref`. `fetch`
+  is the remote to fetch first, nil for a ref of the VM's own.
+  """
+  @type sync_plan :: %{
+          mode: :rebase | :checkout,
+          slot: String.t(),
+          branch: String.t() | nil,
+          ref: String.t(),
+          label: String.t(),
+          upstream: String.t() | nil,
+          record?: boolean(),
+          fetch: String.t() | nil
+        }
+
+  @doc """
+  Plans `mwt worktree sync` in the slot the folder `cwd` of the VM is in,
+  run by the thread `thread`, or by you at a terminal (nil). The VM's
+  `mwt` fetches and runs git; this decides, and changes nothing.
+
+  `level` is `"host"` (your branches, `host-origin/BRANCH`), `"remote"`
+  (your repository's own remote, `remote-origin/BRANCH`) or nil, the
+  task's own base as it is recorded. `branch` names the branch at that
+  level; without one, the branch the task's base names, else your default
+  branch.
+
+  A slot on its task's branch is rebased onto it (`:rebase`), never one
+  another thread holds; a slot no task holds, or one whose handoff ended
+  and that its own thread didn't take back, goes on no branch at it
+  (`:checkout`). A task with an open handoff keeps that handoff's base:
+  its next revision would be compared with it again.
+  """
+  @spec sync_plan(
+          String.t(),
+          String.t() | nil,
+          String.t() | nil,
+          String.t() | nil,
+          String.t() | nil
+        ) :: {:ok, sync_plan()} | {:error, error()}
+  def sync_plan(username, cwd, level, branch, thread) do
+    level = blank(level)
+    branch = blank(branch)
+    thread = blank(thread)
+
+    with true <- level in [nil, "host", "remote"] or {:error, "Sync with host or remote."},
+         true <-
+           is_nil(branch) or branch_name?(branch) or
+             {:error, "#{Shown.text(branch)} isn't a branch name."},
+         {:ok, project, {:worktree, top}, guest} <- locate(username, cwd),
+         {:ok, look} <- Slots.look(project, guest, latest(username, project)),
+         %{} = slot <- Slots.slot_at(look, top) || {:error, not_a_slot_words(top)},
+         mode = sync_mode(slot, thread),
+         :ok <- sync_holder(slot, mode, thread),
+         recorded = if(mode == :rebase, do: recorded_base(guest, slot)),
+         {:ok, ref} <- sync_ref(project, guest, level, branch, recorded),
+         :ok <- keeps_handoff_base(slot, mode, ref, recorded) do
+      {:ok,
+       %{
+         mode: mode,
+         slot: slot.name,
+         branch: if(mode == :rebase, do: slot.branch),
+         ref: ref,
+         label: sync_label(ref),
+         upstream: recorded,
+         record?: mode == :rebase and recorded != ref,
+         fetch: remote_of(ref)
+       }}
+    end
+  end
+
+  # A task's branch is rebased; a slot no task holds is checked out. So is
+  # one whose handoff ended (free, its branch to prune), unless its own
+  # thread took it back (`mwt worktree resume`): that one carries on.
+  defp sync_mode(%{branch: nil}, _thread), do: :checkout
+  defp sync_mode(%{task?: false}, _thread), do: :checkout
+
+  defp sync_mode(%{free?: true, thread: holder}, thread) when holder == nil or holder != thread,
+    do: :checkout
+
+  defp sync_mode(_slot, _thread), do: :rebase
+
+  defp sync_holder(slot, :rebase, thread) do
+    if Slots.holder(slot, thread) == :another,
+      do:
+        {:error,
+         "#{slot.name} holds another thread's task, #{slot.branch}: only that thread syncs it. Tell the user; you only read there."},
+      else: :ok
+  end
+
+  defp sync_holder(_slot, :checkout, _thread), do: :ok
+
+  defp not_a_slot_words(top),
+    do: "#{Shown.text(top)} is no worktree slot: sync in your slot (mwt project lists them)."
+
+  # The task's base, as git config has it (`branch.NAME.mwt-base`).
+  defp recorded_base(guest, slot) do
+    case guest.exec.([
+           "git",
+           "-C",
+           slot.path,
+           "config",
+           "--get",
+           "branch.#{slot.branch}.mwt-base"
+         ]) do
+      {:ok, text} -> blank(String.trim(text))
+      {:error, _} -> nil
+    end
+  end
+
+  defp sync_ref(project, _guest, nil, nil, nil), do: {:ok, TaskBase.ref(project.mirrored_branch)}
+  defp sync_ref(_project, _guest, nil, nil, recorded), do: {:ok, recorded}
+
+  defp sync_ref(project, guest, "host", branch, recorded) do
+    name = branch || named_by(recorded) || project.mirrored_branch
+
+    case TaskBase.resolve(project, guest, name) do
+      {:ok, %{branch: branch}} when is_binary(branch) -> {:ok, TaskBase.ref(branch)}
+      _ -> {:error, "#{Shown.text(name)} is no branch of the user's: mwt project lists them."}
+    end
+  end
+
+  defp sync_ref(project, _guest, "remote", branch, recorded),
+    do: {:ok, TaskBase.remote_ref(branch || named_by(recorded) || project.mirrored_branch)}
+
+  defp sync_ref(project, guest, nil, branch, recorded),
+    do: sync_ref(project, guest, "host", branch, recorded)
+
+  # The branch a base names, at whichever level: `main` for
+  # `host-origin/main` and `remote-origin/main`; none for a VM task's
+  # branch or a commit.
+  defp named_by("refs/remotes/host-origin/" <> name), do: name
+  defp named_by("refs/remotes/remote-origin/" <> name), do: name
+  defp named_by(_ref), do: nil
+
+  defp keeps_handoff_base(%{handoff: %{status: status} = handoff} = slot, :rebase, ref, recorded)
+       when status in [:open, :withdrawn] and ref != recorded do
+    {:error,
+     "#{slot.branch}'s handoff ##{handoff.id} is based on #{sync_label(recorded)}, and its next revision would be compared with it again. " <>
+       "Sync with that base (mwt worktree sync), or, when the user asks for a revision on #{sync_label(ref)}, hand it off onto it: mwt handoff --onto #{sync_label(ref)}"}
+  end
+
+  defp keeps_handoff_base(_slot, _mode, _ref, _recorded), do: :ok
+
+  defp sync_label("refs/remotes/" <> name), do: name
+  defp sync_label(nil), do: "no base"
+  defp sync_label(ref), do: TaskBase.ref_label(ref)
+
+  defp remote_of("refs/remotes/host-origin/" <> _), do: "host-origin"
+  defp remote_of("refs/remotes/remote-origin/" <> _), do: "remote-origin"
+  defp remote_of(_ref), do: nil
+
+  defp branch_name?(name), do: name =~ ~r"\A[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\z"
+
+  @doc """
+  How fresh `remote-origin` is in the VM, in a line, after a fetch: as
+  the remote had it when this machine fetched it for the VM, within the
+  last two minutes (`MWTClient.Sandbox.GitTransport.fetch_remote/2`
+  fetches at most once a minute), else as your repository last fetched
+  its `origin`.
+  """
+  @spec remote_freshness(String.t(), String.t() | nil) :: String.t()
+  def remote_freshness(username, cwd) do
+    with {:ok, project, _where, _guest} <- locate(username, cwd) do
+      case MWTClient.Sandbox.GitTransport.remote_fetched_at(username, project) do
+        %DateTime{} = at ->
+          ago = DateTime.diff(now(), at)
+
+          if ago <= 120,
+            do:
+              "remote-origin is as the remote had it #{ago} s ago, when MWT fetched it on the user's machine (at most once a minute).",
+            else: stale_remote_words()
+
+        nil ->
+          stale_remote_words()
+      end
+    else
+      {:error, reason} -> explain(reason)
+    end
+  end
+
+  defp stale_remote_words,
+    do:
+      "remote-origin may be behind the remote: MWT didn't fetch it on the user's machine now, so it is the user's origin/* as they last fetched it. " <>
+        "The grant git-fetch-remote is off or was refused, or the fetch failed (mwt why --recent says which); ask for it with mwt request git-fetch-remote."
+
   @doc """
   Frees the worktree slot the folder `cwd` of the VM is in, for its own
   thread (`MWTClient.Sandbox.Slots.free/4`): `which`, when given (a name
   or number), must be that slot, and `thread`, the asking agent's id, the
-  one holding it when one is recorded. Returns the slot as it was.
+  one holding it when one is recorded. Then prunes the project's task
+  branches (`prune_branches/3`). Returns the slot as it was, and what
+  became of its branch (`t:branch_after/0`).
   """
   @spec free_slot(String.t(), String.t() | nil, String.t() | nil, String.t() | nil) ::
-          {:ok, Project.t(), Slots.slot()} | {:error, error()}
+          {:ok, Project.t(), Slots.slot(), branch_after()} | {:error, error()}
   def free_slot(username, cwd, which, thread \\ nil) do
-    with {:ok, project, where, guest} <- locate(username, cwd),
-         {:ok, slot} <-
-           Slots.free(project, guest, which,
-             here: here(where, project, guest),
-             latest: latest(username, project),
-             thread: thread
-           ) do
-      {:ok, project, slot}
+    with {:ok, project, where, guest} <- locate(username, cwd) do
+      locked(username, project.name, fn ->
+        with {:ok, slot} <-
+               Slots.free(project, guest, which,
+                 here: here(where, project, guest),
+                 latest: latest(username, project),
+                 thread: thread
+               ) do
+          {:ok, project, slot, branch_after(slot, prune(username, project, guest, []))}
+        end
+      end)
     end
   end
 
   @doc """
   Frees the worktree slot `slot` (`slot-2`) of the project, from MWT's
-  Projects page: off its branch, which stays with its commits, so the next
-  thread there can start a task. Refused with uncommitted work; the VM
-  must run.
+  Projects page: off its branch, so the next thread there can start a
+  task, then prunes the project's task branches (`prune_branches/3`).
+  Refused with uncommitted work; the VM must run. Returns the slot as it
+  was, and what became of its branch.
   """
   @spec release_slot(String.t(), String.t(), String.t()) ::
-          {:ok, Slots.slot()} | {:error, error()}
+          {:ok, Slots.slot(), branch_after()} | {:error, error()}
   def release_slot(username, name, slot) do
     with {:ok, _project, %{vm: vm}} <- find(username, name),
          {:ok, guest} <- guest(username, vm) do
       locked(username, name, fn ->
+        with {:ok, project, _found} <- find(username, name),
+             {:ok, slot} <- Slots.free(project, guest, slot, latest: latest(username, project)) do
+          {:ok, slot, branch_after(slot, prune(username, project, guest, []))}
+        end
+      end)
+    end
+  end
+
+  @typedoc """
+  What became of a freed slot's branch: nil when it was on no task's
+  branch, `:gone` when the branch wasn't there, the prune's outcome for it,
+  or why the prune couldn't run.
+  """
+  @type branch_after :: nil | :gone | Slots.pruned() | {:error, String.t()}
+
+  defp branch_after(%{task?: true, branch: branch}, {:ok, pruned}) when is_binary(branch),
+    do: outcome_of(pruned, branch)
+
+  defp branch_after(%{task?: true, branch: branch}, {:error, text}) when is_binary(branch),
+    do: {:error, text}
+
+  defp branch_after(_slot, _pruned), do: nil
+
+  defp outcome_of(pruned, branch) do
+    case List.keyfind(pruned, branch, 0) do
+      {^branch, outcome} -> outcome
+      nil -> :gone
+    end
+  end
+
+  @doc """
+  Prunes the project's task branches in the VM: deletes those nothing
+  needs any more, with nothing of them lost, and says what became of each
+  (`MWTClient.Sandbox.Slots.prune/4`, `priv/sandbox/prune-branches.sh`).
+  MWT runs it when a slot is freed or taken and when a handoff lands or is
+  closed; you, on the Projects page; anyone in the VM, with
+  `mwt worktree prune`. `dry_run: true` changes nothing. The VM must run.
+  """
+  @spec prune_branches(String.t(), String.t(), keyword()) ::
+          {:ok, [{String.t(), Slots.pruned()}]} | {:error, error()}
+  def prune_branches(username, name, opts \\ []) do
+    with {:ok, _project, %{vm: vm}} <- find(username, name),
+         {:ok, guest} <- guest(username, vm) do
+      locked(username, name, fn ->
         with {:ok, project, _found} <- find(username, name) do
-          Slots.free(project, guest, slot, latest: latest(username, project))
+          prune(username, project, guest, opts)
         end
       end)
     end
   end
 
   @doc """
-  Deletes the VM branch of a handoff that just landed, when nothing was
-  done on it since (`MWTClient.Sandbox.Slots.delete_landed/4`). The VM must
-  be running: a handoff landed while it is stopped keeps its branch.
+  Prunes the project's task branches once the handoff `handoff` landed or
+  was closed, with its branch as the one whose handoff ended: a slot still
+  on it at the handoff's commit, with nothing uncommitted, goes on no
+  branch, and the branch is deleted (`MWTClient.Sandbox.Slots.prune/4`).
+  Returns what became of that branch (`:gone` when it wasn't there). The
+  VM must be running: one stopped keeps the branch until the next prune.
   """
-  @spec delete_landed_branch(String.t(), MWTClient.Sandbox.Handoff.t()) ::
-          {:ok, Slots.landed_branch()} | {:error, error()}
-  def delete_landed_branch(username, handoff) do
+  @spec prune_ended(String.t(), MWTClient.Sandbox.Handoff.t()) ::
+          {:ok, :gone | Slots.pruned()} | {:error, error()}
+  def prune_ended(username, %{source: %{branch: branch}, head: head} = handoff) do
     with {:ok, _project, %{vm: vm}} <- find(username, handoff.project),
          {:ok, guest} <- guest(username, vm) do
       locked(username, handoff.project, fn ->
-        with {:ok, project, _context} <- find(username, handoff.project) do
-          Slots.delete_landed(project, guest, handoff.source, handoff.head)
+        with {:ok, project, _context} <- find(username, handoff.project),
+             {:ok, pruned} <- prune(username, project, guest, ended: {branch, head}) do
+          {:ok, outcome_of(pruned, branch)}
         end
       end)
     end
   end
+
+  # Under the project's lock.
+  defp prune(username, project, guest, opts),
+    do: Slots.prune(project, guest, latest(username, project), opts)
 
   defp here({:worktree, top}, _project, _guest), do: top
 

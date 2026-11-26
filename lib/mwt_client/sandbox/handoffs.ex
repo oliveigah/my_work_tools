@@ -651,9 +651,12 @@ defmodule MWTClient.Sandbox.Handoffs do
 
       names = MapSet.new(branches, & &1.branch)
 
+      # Based on your remote's branch, it lands on yours of the same name.
       onto =
-        Enum.find([handoff.base_branch, default], &MapSet.member?(names, &1)) ||
-          Enum.find_value(branches, & &1.branch)
+        Enum.find(
+          [handoff.base_branch, TaskBase.remote_branch(handoff.base_ref), default],
+          &MapSet.member?(names, &1)
+        ) || Enum.find_value(branches, & &1.branch)
 
       {:ok,
        %{
@@ -731,7 +734,7 @@ defmodule MWTClient.Sandbox.Handoffs do
                            [event(:accepted, "You landed " <> accepted_words(accepted))]
                    }
                  end) do
-            {:ok, delete_branch(username, landed)}
+            {:ok, prune_branch(username, landed, "landed")}
           end
 
         # Mirror following also runs in the background; make this landing visible now.
@@ -800,18 +803,19 @@ defmodule MWTClient.Sandbox.Handoffs do
     end)
   end
 
-  # Its task's branch in the VM, once it landed: deleted when nothing was
-  # done on it since (`Projects.delete_landed_branch/2`), so task branches
-  # don't pile up in the clone. Either way the timeline says what became of
-  # it, so a branch that stays says why. The landing stands whatever
+  # Its task's branch in the VM, once it landed or was closed: deleted
+  # when nothing needs it any more (`Projects.prune_ended/2`, which prunes
+  # the project's other task branches too), so task branches don't pile up
+  # in the clone. Either way the timeline says what became of it, so a
+  # branch that stays says why. The landing or closing stands whatever
   # happens here: a timeline that can't be written is logged, not returned.
-  defp delete_branch(username, handoff) do
-    case Projects.delete_landed_branch(username, handoff) do
+  defp prune_branch(username, handoff, done) do
+    case Projects.prune_ended(username, handoff) do
       {:ok, :gone} ->
         handoff
 
       outcome ->
-        {kind, text} = branch_event(handoff.source.branch, outcome)
+        {kind, text} = branch_event(handoff.source.branch, done, outcome)
 
         case update(username, handoff.id, "##{handoff.id} #{kind}", fn record ->
                %{record | timeline: record.timeline ++ [event(kind, text)]}
@@ -826,32 +830,26 @@ defmodule MWTClient.Sandbox.Handoffs do
     end
   end
 
-  defp branch_event(branch, {:ok, {:deleted, slot}}) do
+  defp branch_event(branch, _done, {:ok, {:deleted, slot}}) do
     where = if slot, do: "; #{slot} is on no branch now, free for the next task", else: ""
 
     {:branch_deleted,
-     "MWT deleted its branch #{branch} in the VM, as nothing was done on it since#{where}. " <>
-       "mwt worktree resume #{branch} makes it again."}
+     "MWT deleted its branch #{branch} in the VM, as nothing needed it any more and " <>
+       "nothing of it is lost#{where}. mwt worktree resume #{branch} makes it again."}
   end
 
-  defp branch_event(branch, {:ok, {:kept, why}}),
-    do: {:branch_kept, "Its branch #{branch} stays in the VM: #{kept_words(why)}."}
+  defp branch_event(branch, _done, {:ok, {:kept, why}}),
+    do: {:branch_kept, "Its branch #{branch} stays in the VM: #{Slots.kept_words(why)}."}
 
-  defp branch_event(branch, {:error, :vm_not_running}),
+  defp branch_event(branch, done, {:error, :vm_not_running}),
     do:
       {:branch_kept,
-       "Its branch #{branch} stays in the VM: the VM wasn't running when you landed it."}
+       "Its branch #{branch} stays in the VM: the VM wasn't running when you #{done} it."}
 
-  defp branch_event(branch, {:error, reason}),
+  defp branch_event(branch, _done, {:error, reason}),
     do:
       {:branch_kept,
        "Its branch #{branch} stays in the VM: MWT couldn't delete it. #{Projects.explain(reason)}"}
-
-  defp kept_words(:commits), do: "it has commits since this revision"
-  defp kept_words({:base_of, task}), do: "the task #{task} is based on it"
-  defp kept_words({:uncommitted, path}), do: "#{path} has uncommitted work on it"
-  defp kept_words({:other, path}), do: "#{path}, which isn't a slot, has it checked out"
-  defp kept_words({:missing, path}), do: "the worktree that has it, #{path}, is gone"
 
   defp caught_up({:ok, moved}), do: {:ok, moved}
   defp caught_up({:error, problem}), do: {:error, {:catch_up, problem}}
@@ -945,26 +943,33 @@ defmodule MWTClient.Sandbox.Handoffs do
     end
   end
 
-  @doc "What a thread does first to carry on a handoff whose branch MWT deleted when it landed."
+  @doc "What a thread does first to carry on a handoff whose branch MWT deleted when it landed or was closed."
   @spec resume_words(String.t()) :: String.t()
   def resume_words(branch),
     do:
-      "Its branch #{branch} was deleted in the VM when it landed. Run mwt worktree resume #{branch} " <>
+      "Its branch #{branch} was deleted in the VM, as nothing needed it. Run mwt worktree resume #{branch} " <>
         "in your slot before you change anything: it makes the branch again at the handoff's commit."
 
-  @doc "Closes an open handoff without landing it."
+  @doc """
+  Closes an open handoff without landing it. Its task's branch in the VM
+  is pruned as when one lands (`Projects.prune_ended/2`): `reopen/2` needs
+  no branch, and `mwt worktree resume BRANCH` makes it again.
+  """
   @spec close(String.t(), pos_integer()) :: {:ok, Handoff.t()} | {:error, error()}
   def close(username, id) do
     exclusive(username, fn ->
       with {:ok, %Handoff{status: status}, _store} <- find(username, id),
            true <- status in [:open, :withdrawn] or {:error, :not_open} do
-        update(username, id, "##{id} closed", fn handoff ->
-          %{
-            handoff
-            | status: :closed,
-              timeline: handoff.timeline ++ [event(:closed, "You closed it")]
-          }
-        end)
+        with {:ok, closed} <-
+               update(username, id, "##{id} closed", fn handoff ->
+                 %{
+                   handoff
+                   | status: :closed,
+                     timeline: handoff.timeline ++ [event(:closed, "You closed it")]
+                 }
+               end) do
+          {:ok, prune_branch(username, closed, "closed")}
+        end
       end
     end)
   end

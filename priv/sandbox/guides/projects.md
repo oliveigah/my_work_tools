@@ -13,8 +13,8 @@ machine (`git fetch host-origin` brings their committed branches as
 repository's own remote `origin` (GitHub, say), as their machine fetches
 it. There is no `origin`. A fetch moves nothing else. The clone's own
 branches, commits and files are yours to work with: MWT never moves or
-resets one, and deletes a task's branch only once its handoff landed with
-nothing done on it since (below). Only committed history travels from the
+resets one, and deletes a task's branch only once nothing needs it and
+nothing of it would be lost (below). Only committed history travels from the
 user's machine; their configuration, hooks, ignored files and uncommitted
 work don't. A push is refused: work goes back by `mwt handoff`.
 
@@ -27,8 +27,10 @@ worktrees of it, `/work/NAME.wt/slot-N` (`mwt project` lists them).
 `mwt worktree new TASK --from BASE` fetches host-origin, then starts a new
 branch TASK from BASE in the slot you are in, when it is free, and records
 your thread as the slot's holder. BASE is the user's branch the work is
-based on (`host-origin/BASE` here), `refs/heads/TASK` for another VM task, or a
-commit ID; the user's branch names resolve before local VM task names.
+based on (`host-origin/BASE` here), `remote-origin/BRANCH` for what their
+team pushed to their remote (fetched first), `refs/heads/TASK` for another
+VM task, or a commit ID; the user's branch names resolve before local VM
+task names.
 When the slot isn't free, nothing starts: it says why and lists the free
 slots. Ask the user to start a thread in one, or to add a slot on MWT's
 Projects page. What git ignores (`deps`, `_build`, `node_modules`) stays
@@ -53,22 +55,32 @@ start a thread in a free slot to continue it; that thread runs
 
 ## Freeing a slot
 
-Your slot is free again once its handoff lands or is closed. Landed with
-nothing done on it since, its branch is deleted and your slot is on no
-branch, at the same commit. If the user takes the landing back out and
-asks for more, run `mwt worktree resume BRANCH` in your slot before you
-change anything: it makes the branch again at the handoff's commit. Free it
-yourself (`mwt worktree free`; refused with uncommitted work, the branch
-stays) only when the user says its task is done or dropped with no
-handoff to come. Other slots are freed by their own threads, or by the
-user on the Projects page.
+Your slot is free again once its handoff lands or is closed. With nothing
+done on it since, its branch is deleted and your slot is on no branch, at
+the same commit. If the user asks for more after that, run
+`mwt worktree resume BRANCH` in your slot before you change anything: it
+makes the branch again at the handoff's commit. Free it yourself
+(`mwt worktree free`; refused with uncommitted work) only when the user
+says its task is done or dropped with no handoff to come. Other slots are
+freed by their own threads, or by the user on the Projects page.
 
-## Catching up with the user's branch
+A task branch in no worktree, with no task based on it, is deleted when
+each of its commits is on another branch or in its handoff: when a slot is
+freed or taken, a handoff lands or is closed, or anyone runs
+`mwt worktree prune` (`--dry-run` changes nothing). One with commits found
+nowhere else stays. Branches no task started are never touched.
 
-Each task records its base in Git configuration
-(`git config branch.TASK.mwt-base`). To bring the user's newer commits
-into your task: `git fetch host-origin`, then
-`git rebase host-origin/BASE`, with
-`git add` and `git rebase --continue` at each conflict. `mwt handoff` does
-so itself, and goes on with a rebase you resolved. Never merge their
-branch in: the history would carry the merge.
+## Catching up with the user's branch, or their remote's
+
+`mwt worktree sync` brings your slot up to date with its task's base
+(`git config branch.TASK.mwt-base`): it fetches, then rebases the task onto
+it, replaying only its own commits, uncommitted work carried along.
+`mwt worktree sync host [BRANCH]` does so with the user's branch,
+`mwt worktree sync remote [BRANCH]` with their remote's (what their team
+pushed): a new one becomes the task's base, unless its handoff is open.
+In a slot no task holds, it checks out the branch on no branch. At
+conflicts it stops: resolve them, `git add` each, and run it again;
+`git rebase --abort` gives up, base included. It says when
+`remote-origin` may be behind the remote. `mwt handoff` catches up with
+the base itself. Never merge their branch in: the history would carry the
+merge.

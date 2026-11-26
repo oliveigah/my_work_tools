@@ -84,7 +84,7 @@ defmodule MWTClient.Sandbox.HandoffsSlotsUpkeepTest do
       File.rm_rf!(one)
       assert [{"slot-1", "fix", true} | _] = states(username)
 
-      assert {:ok, %{state: :missing, branch: "fix"}} =
+      assert {:ok, %{state: :missing, branch: "fix"}, {:kept, {:missing, ^one}}} =
                Projects.release_slot(username, "app", "slot-1")
 
       {:ok, _} = Projects.mirror(username, "app")
@@ -184,7 +184,8 @@ defmodule MWTClient.Sandbox.HandoffsSlotsUpkeepTest do
       assert git(one, ["branch", "--show-current"]) == "fix\n"
 
       assert {0, freed} = worktree(username, two, "free")
-      assert freed =~ "Freed slot-2" and freed =~ "The branch cart stays, with its commits."
+      assert freed =~ "Freed slot-2"
+      assert freed =~ "The branch cart stays: 1 commit on it is on none of your branches."
       assert freed =~ "It has no handoff."
       assert git(two, ["branch", "--show-current"]) == ""
       assert {0, again} = worktree(username, two, "free")
@@ -199,10 +200,12 @@ defmodule MWTClient.Sandbox.HandoffsSlotsUpkeepTest do
       assert {0, clone} = worktree(username, mirror, "free")
       assert clone =~ "slot-0 is free already"
 
-      assert {:ok, %{name: "slot-1", branch: "fix"}} =
+      # Released with nothing of its own, its branch goes.
+      assert {:ok, %{name: "slot-1", branch: "fix"}, {:deleted, nil}} =
                Projects.release_slot(username, "app", "slot-1")
 
       assert git(one, ["branch", "--show-current"]) == ""
+      assert git(mirror, ["branch", "--list", "fix"]) == ""
     end
 
     test "a handoff whose slot went to another task resumes in a free slot", %{

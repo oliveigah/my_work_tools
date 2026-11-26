@@ -109,7 +109,7 @@ defmodule MWTClient.Sandbox.HandoffsSlotsTest do
       # handoff's commit.
       {:ok, _} = Handoffs.undo(username, 1)
       assert {0, listed} = Channel.answer("handoffs", %{"cwd" => slot(mirror, 3)}, username)
-      assert listed =~ "Its branch fix was deleted in the VM when it landed."
+      assert listed =~ "Its branch fix was deleted in the VM, as nothing needed it."
       assert listed =~ "Run mwt worktree resume fix in your slot before you change anything"
       assert {0, resumed} = worktree(username, slot(mirror, 3), "resume", %{"name" => "fix"})
       assert resumed =~ "Put the branch fix, as it was, in slot-3"

@@ -260,7 +260,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
         <.icon name="hero-arrows-right-left-micro" class="size-3.5" />
         {count(length(@branches), "branch")} on host-origin
         <.help id={"project-branches-help-#{@project.name}"} label="About your branches in the VM">
-          Every committed local branch of your repository, which the VM's clone fetches through MWT as host-origin/BRANCH: a task starts from one (mwt worktree new TASK --from BRANCH fetches first) and rebases onto it before its handoff. A fetch moves host-origin/* only: the clone's own branches and files stay as they are. Your repository's own remote's branches reach the VM apart, as remote-origin/BRANCH; a task starts from yours: check one out on your machine to start from it.
+          Every committed local branch of your repository, which the VM's clone fetches through MWT as host-origin/BRANCH: a task starts from one (mwt worktree new TASK --from BRANCH fetches first) and rebases onto it before its handoff. A fetch moves host-origin/* only: the clone's own branches and files stay as they are. Your repository's own remote's branches reach the VM apart, as remote-origin/BRANCH: a task can start from one (mwt worktree new TASK --from remote-origin/BRANCH), and mwt worktree sync remote brings a task onto its latest; it lands on your branch of the same name. With the grant Git: fetch from your remotes on, this machine fetches that remote for the VM first, at most once a minute.
         </.help>
       </span>
       <code
@@ -403,13 +403,22 @@ defmodule MWTClientWeb.SandboxLive.Projects do
         <p class="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-faint">
           Worktree slots
           <.help id={"project-slots-help-#{@project.name}"} label="About worktree slots">
-            Fixed folders, one task at a time each, on a branch of its own: slot-0 is the clone itself, the others worktrees of it. A thread takes the slot you opened it in as its first step, even for a question, from the branch you want the work based on (mwt worktree new TASK --from BRANCH), and works only there. The slot is held from then until its handoff has landed or is closed; another thread you open there only reads. Release one sooner when its task is done or dropped. What git ignores stays between tasks, so builds stay warm, and each slot costs a checkout plus its build. A slot a Zed window has open is marked: a thread may be working there. A held slot no Zed window has open may belong to a thread that is gone: release it if so. Add one when agents run out; remove a free one to get its space back. A new slot takes the lowest number missing, and folders never move.
+            Fixed folders, one task at a time each, on a branch of its own: slot-0 is the clone itself, the others worktrees of it. A thread takes the slot you opened it in as its first step, even for a question, from the branch you want the work based on (mwt worktree new TASK --from BRANCH), and works only there. The slot is held from then until its handoff has landed or is closed; another thread you open there only reads. Release one sooner when its task is done or dropped: its branch goes too, unless something of it would be lost. What git ignores stays between tasks, so builds stay warm, and each slot costs a checkout plus its build. A slot a Zed window has open is marked: a thread may be working there. A held slot no Zed window has open may belong to a thread that is gone: release it if so. Add one when agents run out; remove a free one to get its space back. A new slot takes the lowest number missing, and folders never move.
           </.help>
         </p>
         <p :if={@look} id={"project-slots-free-#{@project.name}"} class="text-[11px] text-faint">
           {Enum.count(@look.slots, & &1.free?)} of {length(@look.slots)} free
         </p>
         <div class="flex-1"></div>
+        <.button
+          id={"branches-prune-#{@project.name}"}
+          variant="ghost"
+          phx-click="prune_branches"
+          phx-value-name={@project.name}
+          title="Delete the task branches in the VM that nothing needs any more, with nothing of them lost: in no worktree, no task based on them, and each commit on one of your branches or in their handoff. MWT does this too when a slot is freed or taken and when a handoff lands or is closed; mwt worktree prune in the VM does the same."
+        >
+          <.icon name="hero-scissors-micro" class="size-3.5" /> Prune branches
+        </.button>
         <.button
           id={"slot-add-#{@project.name}"}
           variant="ghost"
@@ -546,7 +555,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
                       "Take #{slot.name} off #{slot.branch}, so a thread there can start another task"
                   )
                 }
-                data-confirm={"Release #{slot.name}? It goes off #{slot.branch}, which stays with its commits. A thread still working there finds itself on no branch."}
+                data-confirm={"Release #{slot.name}? It goes off #{slot.branch}, which is deleted unless it holds commits on none of your branches and in no handoff, or another task is based on it. A thread still working there finds itself on no branch."}
               >
                 Release
               </.button>

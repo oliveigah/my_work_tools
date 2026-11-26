@@ -34,7 +34,8 @@ defmodule MWTClientWeb.SandboxLive do
     Projects,
     RequestView,
     Resources,
-    Shares
+    Shares,
+    Slots
   }
 
   alias MWTClient.Places
@@ -2622,8 +2623,8 @@ defmodule MWTClientWeb.SandboxLive do
 
   def handle_event("free_slot", %{"name" => name, "slot" => slot}, socket) do
     case Projects.release_slot(socket.assigns.username, name, slot) do
-      {:ok, %{branch: branch}} ->
-        body = if branch, do: "#{branch} stays, with its commits."
+      {:ok, %{branch: branch}, after_free} ->
+        body = released_words(branch, after_free)
 
         {:noreply,
          socket
@@ -2636,6 +2637,43 @@ defmodule MWTClientWeb.SandboxLive do
          socket
          |> assign_overview()
          |> put_notice(:warning, "#{slot} stays as it is", body: Projects.explain(reason))}
+    end
+  end
+
+  def handle_event("prune_branches", %{"name" => name}, socket) do
+    case Projects.prune_branches(socket.assigns.username, name) do
+      {:ok, pruned} ->
+        {deleted, kept} = Enum.split_with(pruned, &match?({_, {:deleted, _}}, &1))
+
+        title =
+          case deleted do
+            [] -> "No task branch of #{name} to delete"
+            _ -> "Deleted #{task_branches(length(deleted))} of #{name}"
+          end
+
+        body =
+          [
+            deleted != [] && Enum.map_join(deleted, ", ", &elem(&1, 0)) <> ".",
+            kept != [] &&
+              "Kept: " <>
+                Enum.map_join(kept, "; ", fn {branch, {:kept, why}} ->
+                  "#{branch}, as #{Slots.kept_words(why)}"
+                end) <> "."
+          ]
+          |> Enum.filter(& &1)
+          |> Enum.join(" ")
+
+        {:noreply,
+         socket
+         |> refresh()
+         |> assign_overview()
+         |> put_notice(:success, title, body: if(body != "", do: body))}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign_overview()
+         |> put_notice(:warning, "No branch pruned", body: Projects.explain(reason))}
     end
   end
 
@@ -4035,6 +4073,19 @@ defmodule MWTClientWeb.SandboxLive do
       "start" => Atom.to_string(grant.start)
     }
   end
+
+  # What became of a released slot's branch, in a line.
+  defp released_words(_branch, nil), do: nil
+  defp released_words(branch, {:deleted, _slot}), do: "#{branch} was deleted: nothing needed it."
+  defp released_words(branch, {:kept, why}), do: "#{branch} stays: #{Slots.kept_words(why)}."
+
+  defp released_words(branch, {:error, text}),
+    do: "#{branch} stays: MWT couldn't prune it. #{text}"
+
+  defp released_words(_branch, _gone), do: nil
+
+  defp task_branches(1), do: "1 task branch"
+  defp task_branches(n), do: "#{n} task branches"
 
   defp stop_words(:not_listening), do: "Nothing listens on that port in the VM any more."
   defp stop_words(:vm_not_running), do: "The VM isn't running."

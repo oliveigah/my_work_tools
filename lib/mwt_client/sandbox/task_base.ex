@@ -3,7 +3,8 @@ defmodule MWTClient.Sandbox.TaskBase do
   Resolves a handoff's comparison branch or commit without changing the
   VM's history. The branch's tracked `host-origin` branch is preferred,
   then the project's default host branch. An explicit --onto overrides
-  that choice. For a branch you made yourself, `came_from/3` finds the
+  that choice. A base may also be a branch of your repository's own remote
+  (`remote-origin/BRANCH`), for work on top of what others pushed. For a branch you made yourself, `came_from/3` finds the
   base it came from, to make it a task. Bases recorded before the remotes were renamed
   (`refs/remotes/origin/*`, `refs/remotes/host/*`) stay readable: handoff
   records keep them, and so does a closed project's clone until it is
@@ -19,6 +20,42 @@ defmodule MWTClient.Sandbox.TaskBase do
   defp resolve_at(project, guest, top, value) do
     value = blank(value) || project.mirrored_branch
 
+    case remote_branch(value) do
+      nil -> resolve_named(project, guest, top, value)
+      name -> resolve_remote(guest, top, name)
+    end
+  end
+
+  # A branch of your repository's own remote, as the clone last fetched it
+  # (`remote-origin/NAME`): what a teammate pushed, before your branch has
+  # it. Like a VM ref, it is compared from the shared ancestor.
+  defp resolve_remote(guest, top, name) do
+    ref = remote_ref(name)
+
+    with true <- branch_name?(name),
+         {:ok, text} <- guest.exec.(["git", "-C", top, "merge-base", "HEAD", ref]),
+         commit = String.trim(text),
+         true <- commit?(commit) do
+      {:ok, %{ref: ref, branch: nil, commit: commit}}
+    else
+      _ -> {:error, {:no_base, Shown.text("remote-origin/" <> name)}}
+    end
+  end
+
+  @doc """
+  The branch of your repository's own remote a base names
+  (`remote-origin/main`, `refs/remotes/remote-origin/main`: `main`), or nil.
+  """
+  @spec remote_branch(String.t() | nil) :: String.t() | nil
+  def remote_branch("refs/remotes/remote-origin/" <> name) when name != "", do: name
+  def remote_branch("remote-origin/" <> name) when name != "", do: name
+  def remote_branch(_value), do: nil
+
+  @doc "The ref the branch `name` of your repository's own remote has in the VM's clone."
+  @spec remote_ref(String.t()) :: String.t()
+  def remote_ref(name), do: "refs/remotes/remote-origin/" <> name
+
+  defp resolve_named(project, guest, top, value) do
     branch =
       case value do
         "refs/remotes/host-origin/" <> name -> name
@@ -79,6 +116,7 @@ defmodule MWTClient.Sandbox.TaskBase do
   def ref_label("refs/remotes/host-origin/" <> branch), do: branch
   def ref_label("refs/remotes/origin/" <> branch), do: branch
   def ref_label("refs/remotes/host/" <> branch), do: branch
+  def ref_label("refs/remotes/remote-origin/" <> branch), do: "remote-origin/" <> branch
   def ref_label("refs/heads/" <> branch), do: branch
   def ref_label(ref), do: if(commit?(ref), do: binary_part(ref, 0, 12), else: ref)
 

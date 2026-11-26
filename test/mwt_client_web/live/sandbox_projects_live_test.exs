@@ -380,8 +380,55 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
 
     render_click(view, "free_slot", %{"name" => "app", "slot" => "slot-2"})
     assert has_element?(view, "#notices", "slot-2 of app released")
-    assert has_element?(view, "#notices", "fix stays, with its commits.")
+    # Nothing of its own: its branch goes with the release.
+    assert has_element?(view, "#notices", "fix was deleted: nothing needed it.")
     assert git(two, ["branch", "--show-current"]) == ""
+    assert git(Path.join(vm, "app"), ["branch", "--list", "fix"]) == ""
+  end
+
+  test "Prune branches deletes the task branches nothing needs, and says why the rest stay", %{
+    conn: conn,
+    username: username,
+    repo: repo,
+    shared: shared,
+    vm: vm
+  } do
+    {:ok, _} = Sandbox.add_share(username, shared)
+    {:ok, _} = Projects.open(username, repo)
+    clone = Path.join(vm, "app")
+
+    # Left behind by tasks before MWT pruned on free: one with nothing of
+    # its own, one with a commit found nowhere else; and a branch of the
+    # VM's own, which no task started.
+    for task <- ["explored", "spike"] do
+      git(clone, ["branch", "--no-track", task, "host-origin/master"])
+      git(clone, ["config", "branch.#{task}.mwt-base", "refs/remotes/host-origin/master"])
+    end
+
+    git(clone, ["branch", "--no-track", "mine", "host-origin/master"])
+    spike = Path.join(Path.dirname(vm), "spike")
+    git(clone, ["worktree", "add", "-q", spike, "spike"])
+    File.write!(Path.join(spike, "b.txt"), "spike\n")
+    git(spike, ["add", "--all"])
+    git(spike, ["commit", "-q", "-m", "spike"])
+    git(clone, ["worktree", "remove", spike])
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/projects")
+    view |> element("#branches-prune-app") |> render_click()
+
+    assert has_element?(view, "#notices", "Deleted 1 task branch of app")
+    assert has_element?(view, "#notices", "explored.")
+
+    assert has_element?(
+             view,
+             "#notices",
+             "Kept: spike, as 1 commit on it is on none of your branches."
+           )
+
+    assert git(clone, ["branch", "--list", "explored"]) == ""
+    refute git(clone, ["config", "--list", "--local"]) =~ "branch.explored."
+    assert git(clone, ["branch", "--list", "spike", "mine"]) =~ "spike"
+    assert git(clone, ["branch", "--list", "mine"]) =~ "mine"
   end
 
   test "a project left in the VM is listed with what would go with it, and removed", %{

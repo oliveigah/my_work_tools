@@ -243,7 +243,7 @@ defmodule MWTClient.Sandbox.GitTransport do
   """
   @spec fetch_remote(Path.t(), Path.t()) :: :ok | {:error, String.t()}
   def fetch_remote(store, repo) do
-    stamp = Path.join(store, "mwt-upstream-fetched")
+    stamp = fetched_stamp(store)
 
     fresh? =
       case File.stat(stamp, time: :posix) do
@@ -293,6 +293,23 @@ defmodule MWTClient.Sandbox.GitTransport do
         {:error, "Fetching your remote failed: " <> String.slice(output, 0, 300)}
     end
   end
+
+  @doc """
+  When this machine last fetched the project's own remote for the VM
+  (`fetch_remote/2`), or nil when it never did: then `remote-origin` is
+  your repository's `origin/*` as you last fetched it yourself.
+  """
+  @spec remote_fetched_at(String.t(), Project.t()) :: DateTime.t() | nil
+  def remote_fetched_at(username, project) do
+    %{dir: dir} = Server.call(username, :projects, 1_000)
+
+    case File.stat(fetched_stamp(HandoffStore.path(dir, project.path)), time: :posix) do
+      {:ok, %{mtime: at}} -> DateTime.from_unix!(at)
+      {:error, _} -> nil
+    end
+  end
+
+  defp fetched_stamp(store), do: Path.join(store, "mwt-upstream-fetched")
 
   defp ref_updates(refs) do
     for line <- String.split(refs, "\n", trim: true),

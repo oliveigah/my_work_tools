@@ -63,7 +63,8 @@ defmodule MWTClient.Sandbox.HandoffsRevisionPinnedTest do
 
     {:ok, record} = HandoffRecords.get(username, 1)
     assert %{status: :closed, revision: 2} = record
-    assert [:opened, :updated, :closed] = Enum.map(record.timeline, & &1.kind)
+    # Closed at that revision, its branch in the VM goes.
+    assert [:opened, :updated, :closed, :branch_deleted] = Enum.map(record.timeline, & &1.kind)
   end
 
   test "what changes on the record while a revision is received stays", context do

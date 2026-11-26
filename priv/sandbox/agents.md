@@ -39,8 +39,8 @@ A project is a git repository in a folder the user shared, cloned here at
 (GitHub, say), as their machine fetches it. There is no `origin`, and a
 push is refused. `mwt project` says where you are in one, its
 slots and branches, and its rules. `mwt help projects` covers the rest:
-catching up with their branch, carrying on another thread's task, freeing
-a slot.
+catching up with their branch or their remote's (`mwt worktree sync`),
+carrying on another thread's task, freeing a slot.
 
 - **Take your slot first, before anything else,** even when the ask may
   change no code (a question, a review, an investigation):

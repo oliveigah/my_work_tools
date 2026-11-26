@@ -67,9 +67,11 @@ defmodule MWTClient.Sandbox.Slots do
   `slot-0`, the clone, is never removed.
 
   The branches are the VM's: MWT never moves or resets one, and deletes a
-  task's branch only when its handoff lands with nothing done on it since
-  (`delete_landed/4`), so task branches don't pile up. Any other branch
-  stays until someone deletes it, in the VM, with git.
+  task's branch only once nothing needs it and nothing of it would be lost
+  (`prune/4`), so task branches don't pile up: when a slot is freed or
+  taken, when a handoff lands or is closed, and when you ask (the Projects
+  page, `mwt worktree prune`). Any other branch stays until someone deletes
+  it, in the VM, with git.
 
   Numbered slots are locked (`git worktree lock`): `git worktree remove`
   and `git worktree prune` leave them alone unless forced twice. Zed's
@@ -253,42 +255,17 @@ defmodule MWTClient.Sandbox.Slots do
   git -C "$p" switch -q --detach
   """
 
-  # Deletes the task branch $2 of the repository $1 (its git folder) when
-  # it is still at $3, the revision that landed, and nothing else needs it;
-  # the slots' folders follow. Says what it did on one line: `deleted
-  # [SLOT]`, or why it kept the branch. A slot on it goes on no branch, at
-  # the same commit.
-  @delete_landed ~S"""
-  set -e
-  m=$1 branch=$2 head=$3
-  shift 3
-  ref=refs/heads/$branch
-  tip=$(git -C "$m" rev-parse -q --verify "$ref" || true)
-  [ -n "$tip" ] || { echo gone; exit 0; }
-  [ "$tip" = "$head" ] || { echo commits; exit 0; }
-  git -C "$m" config --get-regexp '^branch[.].*[.]mwt-base$' 2>/dev/null |
-    while read -r key base; do
-      [ "$base" != "$ref" ] || { t=${key#branch.}; echo "base ${t%.mwt-base}"; }
-    done | head -n 1 | grep . && exit 0
-  tree=$(git -C "$m" worktree list --porcelain |
-    while IFS= read -r line; do
-      case $line in
-        "worktree "*) p=${line#worktree } ;;
-        "branch $ref") printf '%s\n' "$p"; break ;;
-      esac
-    done)
-  if [ -n "$tree" ]; then
-    slot=
-    for s in "$@"; do [ "$s" != "$tree" ] || slot=$s; done
-    [ -n "$slot" ] || { echo "other $tree"; exit 0; }
-    [ -d "$tree" ] || { echo "missing $tree"; exit 0; }
-    if [ -n "$(git -C "$tree" status --porcelain | head -n 1)" ]; then echo "uncommitted $tree"; exit 0; fi
-    git -C "$tree" switch -q --detach
-  fi
-  git -C "$m" update-ref -d "$ref" "$head"
-  git -C "$m" config --remove-section "branch.$branch" 2>/dev/null || true
-  echo "deleted $tree"
+  # The task branches of the clone $1, as git config has them
+  # (`branch.NAME.mwt-base REF`).
+  @tasks ~S"""
+  git -C "$1" config --get-regexp '^branch[.].*[.]mwt-base$' || true
   """
+
+  # Deletes the task branches nothing needs any more, and says what became
+  # of each (`prune/4`). One file, so you can read and run it as it is.
+  @prune_path Path.expand("../../../priv/sandbox/prune-branches.sh", __DIR__)
+  @external_resource @prune_path
+  @prune File.read!(@prune_path)
 
   @doc "The folder of the project's slot `name` (`slot-0`, the clone; `slot-1`, …) in the VM."
   @spec path(Project.t(), %{root: Path.t()}, String.t()) :: Path.t()
@@ -743,8 +720,8 @@ defmodule MWTClient.Sandbox.Slots do
   def slot_name(_other), do: ""
 
   @doc """
-  Frees a slot: takes it off its branch, which stays with all its commits,
-  so the next task can take it. Refused with uncommitted work. `which` is a
+  Frees a slot: takes it off its branch, at the same commit, so the next
+  task can take it. The branch is the caller's to prune (`prune/4`). Refused with uncommitted work. `which` is a
   slot's name or number, or nil for the slot `here` is. An agent's ask
   passes `:here`, the folder it is in, and frees only
   that slot, and only when no other thread holds it (`:thread`, its own
@@ -784,54 +761,148 @@ defmodule MWTClient.Sandbox.Slots do
   end
 
   @typedoc """
-  What landing did to a task's branch in the VM: deleted, with the slot
-  that was on it (nil when none was); or kept, and why.
+  What became of a task's branch in the VM when `prune/4` ran: deleted,
+  with the slot that was on it (nil when none was); deletable, for a dry
+  run; or kept, and why.
   """
-  @type landed_branch ::
+  @type pruned ::
           {:deleted, Path.t() | nil}
-          | :gone
-          | {:kept,
-             :commits | {:base_of, String.t()} | {:uncommitted | :other | :missing, Path.t()}}
+          | {:deletable, Path.t() | nil}
+          | {:kept, kept()}
+
+  @typedoc """
+  Why a task's branch stays: a slot has it checked out (`:slot`, the
+  slot's to keep, unless its handoff just ended there); the branch whose
+  handoff just ended has commits since (`:since`); its slot has
+  uncommitted work; a worktree that isn't a slot has it (`:other`); the
+  worktree that has it is gone (`:missing`); another task is based on it;
+  it has commits on nothing else (`:commits`, how many); or it moved while
+  being deleted.
+  """
+  @type kept ::
+          {:slot | :uncommitted | :other | :missing, Path.t()}
+          | :since
+          | {:base_of, String.t()}
+          | {:commits, pos_integer()}
+          | :moved
 
   @doc """
-  Deletes a task's branch once its handoff landed, when nothing was done on
-  it since: still at `head`, the revision that landed, and in no folder
-  with uncommitted work. A slot on it goes on no branch, at that same
-  commit, free as it was (`free?/1`); its files don't change. Kept, and
-  why, when it has commits since, when another task is based on it
-  (`--from refs/heads/BRANCH`), when a worktree that isn't a slot has it
-  (someone works there that MWT doesn't know), or when its worktree's
-  folder is gone. The deletion only happens while the branch is still at
-  `head` (`git update-ref -d`), so a commit made meanwhile keeps it.
+  Deletes the project's task branches that nothing needs any more, and
+  says what became of each one, in order of name
+  (`priv/sandbox/prune-branches.sh`, which says how it decides). A task
+  branch is deleted when nothing would be lost (its tip is its latest
+  handoff's commit, which `mwt worktree resume BRANCH` makes it again at,
+  or every commit on it is on another branch or a tag) and nothing needs
+  it: no worktree has it checked out and no other task is based on it.
+  Branches no task started are never touched.
 
-  Its commits stay in the VM's object store, out of `git branch`, until git
-  prunes them, weeks later: `mwt worktree resume BRANCH` makes the branch
-  again at its latest handoff's commit, such as when you send a landed
-  handoff back.
+  A slot on a branch keeps it, except the branch whose handoff just landed
+  or was closed, `:ended` (`{branch, head}`): a slot still at `head`, with
+  nothing uncommitted, goes on no branch, at that same commit, free as it
+  was (`free?/1`); its files don't change. So a sweep never takes a branch
+  from under a thread working on it, even one resumed a moment ago.
+
+  `latest` gives each branch's latest handoff (`t:latest/0`). With
+  `dry_run: true`, nothing changes: it says what it would delete
+  (`:deletable`).
   """
-  @spec delete_landed(Project.t(), map(), Handoff.source(), String.t()) ::
-          {:ok, landed_branch()} | {:error, String.t()}
-  def delete_landed(project, guest, %{folder: folder, branch: branch}, head) do
-    slots = Enum.map(names(project), &path(project, guest, &1))
+  @spec prune(Project.t(), map(), latest(), keyword()) ::
+          {:ok, [{String.t(), pruned()}]} | {:error, String.t()}
+  def prune(project, guest, latest, opts \\ []) do
+    mirror = Project.mirror_path(project, guest)
 
-    case guest.exec.(["sh", "-c", @delete_landed, "mwt-slot", folder, branch, head | slots]) do
-      {:ok, output} -> landed_outcome(String.trim(output))
+    with {:ok, output} <- guest.exec.(["sh", "-c", @tasks, "mwt-tasks", mirror]) do
+      handoffs =
+        for line <- String.split(output, "\n", trim: true),
+            [_, branch] <- [Regex.run(~r/\Abranch\.(.+)\.mwt-base \S+\z/, line)],
+            %Handoff{head: head} when is_binary(head) <- [latest.(branch)],
+            do: ["--handoff", branch, head]
+
+      ended =
+        case Keyword.get(opts, :ended) do
+          {branch, head} -> ["--ended", branch, head]
+          nil -> []
+        end
+
+      args =
+        if(Keyword.get(opts, :dry_run, false), do: ["--dry-run"], else: []) ++
+          Enum.flat_map(names(project), &["--slot", path(project, guest, &1)]) ++
+          List.flatten(handoffs) ++ ended ++ [mirror]
+
+      case guest.exec.(["sh", "-c", @prune, "mwt-prune-branches" | args]) do
+        {:ok, output} -> pruned(output)
+        {:error, text} -> {:error, Shown.text(text)}
+      end
+    else
       {:error, text} -> {:error, Shown.text(text)}
     end
   end
 
-  defp landed_outcome("deleted"), do: {:ok, {:deleted, nil}}
-  defp landed_outcome("deleted " <> slot), do: {:ok, {:deleted, Shown.text(slot)}}
-  defp landed_outcome("gone"), do: {:ok, :gone}
-  defp landed_outcome("commits"), do: {:ok, {:kept, :commits}}
-  defp landed_outcome("base " <> task), do: {:ok, {:kept, {:base_of, Shown.text(task)}}}
-  defp landed_outcome("other " <> path), do: {:ok, {:kept, {:other, Shown.text(path)}}}
-  defp landed_outcome("missing " <> path), do: {:ok, {:kept, {:missing, Shown.text(path)}}}
+  @kept_in %{
+    "slot" => :slot,
+    "uncommitted" => :uncommitted,
+    "other" => :other,
+    "missing" => :missing
+  }
 
-  defp landed_outcome("uncommitted " <> path),
-    do: {:ok, {:kept, {:uncommitted, Shown.text(path)}}}
+  defp pruned(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.reduce_while({:ok, []}, fn line, {:ok, acc} ->
+      case pruned_line(String.split(line, " ", parts: 4)) do
+        {:ok, branch, outcome} -> {:cont, {:ok, [{Shown.text(branch), outcome} | acc]}}
+        :error -> {:halt, {:error, "Unexpected answer: " <> Shown.text(line)}}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      error -> error
+    end
+  end
 
-  defp landed_outcome(other), do: {:error, "Unexpected answer: " <> Shown.text(other)}
+  defp pruned_line(["deleted", branch]), do: {:ok, branch, {:deleted, nil}}
+  defp pruned_line(["deleted", branch, slot]), do: {:ok, branch, {:deleted, Shown.text(slot)}}
+  defp pruned_line(["deletable", branch]), do: {:ok, branch, {:deletable, nil}}
+
+  defp pruned_line(["deletable", branch, slot]),
+    do: {:ok, branch, {:deletable, Shown.text(slot)}}
+
+  defp pruned_line(["kept", branch, "since"]), do: {:ok, branch, {:kept, :since}}
+  defp pruned_line(["kept", branch, "moved"]), do: {:ok, branch, {:kept, :moved}}
+
+  defp pruned_line(["kept", branch, "base", task]),
+    do: {:ok, branch, {:kept, {:base_of, Shown.text(task)}}}
+
+  defp pruned_line(["kept", branch, "commits", n]) do
+    case Integer.parse(n) do
+      {n, ""} when n > 0 -> {:ok, branch, {:kept, {:commits, n}}}
+      _other -> :error
+    end
+  end
+
+  defp pruned_line(["kept", branch, why, path]) do
+    case Map.fetch(@kept_in, why) do
+      {:ok, why} -> {:ok, branch, {:kept, {why, Shown.text(path)}}}
+      :error -> :error
+    end
+  end
+
+  defp pruned_line(_other), do: :error
+
+  @doc "Why `prune/4` kept a branch, in words: `slot-1 has it checked out`, …"
+  @spec kept_words(kept()) :: String.t()
+  def kept_words({:slot, path}), do: "#{path} has it checked out"
+  def kept_words(:since), do: "it has commits since this revision"
+  def kept_words({:uncommitted, path}), do: "#{path} has uncommitted work on it"
+  def kept_words({:other, path}), do: "#{path}, which isn't a slot, has it checked out"
+  def kept_words({:missing, path}), do: "the worktree that has it, #{path}, is gone"
+  def kept_words({:base_of, task}), do: "the task #{task} is based on it"
+
+  def kept_words({:commits, n}),
+    do:
+      "#{n} #{if n == 1, do: "commit", else: "commits"} on it #{if n == 1, do: "is", else: "are"} on none of your branches"
+
+  def kept_words(:moved), do: "it moved while MWT was deleting it"
 
   defp yours(slot, slots, opts) do
     case Keyword.fetch(opts, :here) do

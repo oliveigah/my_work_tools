@@ -1218,7 +1218,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
     ~H"""
     <div id="handoff-close-panel" class="space-y-3 px-4 py-3">
       <p class="text-[12px] leading-5 text-muted">
-        Drop it without landing: nothing reaches your repository. Its branch stays in the VM, and its slot is free for the next task. If it only came too soon, say so in its thread: it undoes its commits and keeps the work.
+        Drop it without landing: nothing reaches your repository. Its branch in the VM is deleted when nothing of it would be lost, and its slot is free for the next task. If it only came too soon, say so in its thread: it undoes its commits and keeps the work.
       </p>
       <.button
         id="handoff-close"

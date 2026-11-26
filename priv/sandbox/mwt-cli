@@ -242,7 +242,8 @@ mwt - ask MWT, the user's control panel, for access
       anything else, even for a question. It fetches host-origin, then starts
       a new branch TASK from BASE: the user's branch the work is based on
       (host-origin/BASE here; ask them which when they named none, mwt project
-      lists them), refs/heads/TASK for another VM task, or a commit ID.
+      lists them), remote-origin/BRANCH for their remote's (fetched first),
+      refs/heads/TASK for another VM task, or a commit ID.
       Without --from nothing starts, and the answer lists their branches.
       The task is named for what the user asked (fix-login-timeout, not
       task or wip), and holds the slot for your thread until its handoff
@@ -260,12 +261,31 @@ mwt - ask MWT, the user's control panel, for access
       moves the hold to yours: only when the user asks you to carry on
       that task.
 
+  mwt worktree sync [host|remote] [BRANCH]
+      Bring the slot you are in up to date: fetch, then rebase its task
+      onto the latest BRANCH of the user's (host, host-origin/BRANCH) or
+      of their remote (remote, remote-origin/BRANCH), replaying only the
+      task's own commits and carrying uncommitted work along; in a slot no
+      task holds, check it out on no branch. Without host or remote, the
+      task's own base; without BRANCH, the branch its base names, else
+      the user's default. A new level or branch becomes the task's base,
+      unless its handoff is open. At conflicts it stops: resolve, git add
+      each, and run it again.
+
   mwt worktree free
       Free the slot you are in, only when the user says its task is done
-      or dropped: it goes off its branch, which stays with its commits.
+      or dropped: it goes off its branch, which is then deleted unless it
+      holds commits on none of the user's branches and in no handoff.
       Refused with uncommitted work. A slot whose handoff has landed or is
       closed is free already. Other slots are their own threads' to free,
       or the user's.
+
+  mwt worktree prune [--dry-run]
+      Delete the project's task branches that nothing needs any more: in
+      no worktree, no task based on them, and each commit on another
+      branch or in their handoff. Says what became of each; --dry-run
+      changes nothing. MWT does it too when a slot is freed or taken and
+      when a handoff lands or is closed. Other branches are never touched.
 
   mwt handoff --title "what this is" [--body FILE] [--onto BASE] [--no-checks]
       Only once the user asks for it (/handoff), after they reviewed your
@@ -657,10 +677,12 @@ handoff_steps() {
 
   # 0. The user's branches as they are now: the catch-up rebases onto them.
   case $base_ref in
-    refs/remotes/host-origin/*)
-      if ! git fetch -q host-origin 2>"$gitdir/mwt-fetch.log"; then
+    refs/remotes/host-origin/* | refs/remotes/remote-origin/*)
+      remote=${base_ref#refs/remotes/}
+      remote=${remote%%/*}
+      if ! git fetch -q "$remote" 2>"$gitdir/mwt-fetch.log"; then
         cat "$gitdir/mwt-fetch.log" >&2
-        echo "mwt: fetching host-origin failed (git's words are above), so the task couldn't catch up with $base_name. Nothing was handed off." >&2
+        echo "mwt: fetching $remote failed (git's words are above), so the task couldn't catch up with $base_name. Nothing was handed off." >&2
         exit 1
       fi
       ;;
@@ -770,6 +792,164 @@ handoff_steps() {
     echo "mwt: the branch changed while the checks ran. Run mwt handoff again, to check that commit. Nothing was handed off." >&2
     exit 1
   fi
+}
+
+# mwt worktree sync [host|remote] [BRANCH]: the slot you are in, brought
+# up to date with a branch of the user's (host) or of their remote
+# (remote), else with its task's own base. MWT decides (the plan); git does
+# it here: a fetch, then the task rebased onto it, only its own commits
+# replayed and uncommitted work carried along (--autostash), or, in a slot
+# no task holds, a checkout on no branch at it. A new base is recorded
+# before the rebase, and $gitdir/mwt-sync remembers the one before until
+# the rebase is done: a rebase given up (git rebase --abort) puts it back.
+worktree_sync() {
+  local level=$1 want=$2 top reply status plan mode slot branch ref label upstream record fetch conflicts note own
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "mwt: this folder is in no git repository. Sync in your slot." >&2
+    exit 1
+  }
+  gitdir=$(git -C "$top" rev-parse --absolute-git-dir) || exit 1
+  cd "$top" || exit 1
+  note=$gitdir/mwt-sync
+
+  # A sync's rebase stopped at conflicts: it goes on once they are resolved.
+  if [ -d "$gitdir/rebase-merge" ] || [ -d "$gitdir/rebase-apply" ]; then
+    base_name=$(sed -n 1p "$note" 2>/dev/null)
+    base_name=${base_name#refs/remotes/}
+    base_name=${base_name:-its base}
+    conflicts=$(git diff --name-only --diff-filter=U)
+    if [ -n "$conflicts" ]; then
+      printf 'mwt: the rebase onto %s still has conflicts in:\n%s\nResolve them, git add each, and run mwt worktree sync again (git rebase --abort puts the branch back as it was).\n' \
+        "$base_name" "$(printf '%s\n' "$conflicts" | sed 's/^/  /')" >&2
+      exit 1
+    fi
+    git add --update || exit 1
+    if GIT_EDITOR=true git rebase --continue >"$gitdir/mwt-rebase.log" 2>&1; then
+      rm -f "$note"
+      sync_settled
+      echo "Continued the rebase you resolved: $(git branch --show-current) is on $base_name now, at $(git log -1 --format='%h %s' HEAD)."
+      exit 0
+    fi
+    sync_stopped
+  fi
+
+  # The last sync's rebase, given up or finished some other way.
+  if [ -f "$note" ]; then
+    ref=$(sed -n 1p "$note") upstream=$(sed -n 2p "$note") branch=$(sed -n 3p "$note")
+    if [ "$(git branch --show-current)" = "$branch" ] && ! git merge-base --is-ancestor "$ref" HEAD 2>/dev/null; then
+      if [ -n "$upstream" ]; then
+        git config "branch.$branch.mwt-base" "$upstream"
+        echo "The last sync's rebase onto ${ref#refs/remotes/} was given up: $branch is based on ${upstream#refs/remotes/} again."
+      fi
+    fi
+    rm -f "$note"
+  fi
+
+  exchange "{\"command\":\"worktree\",\"action\":\"sync\",\"stage\":\"plan\",\"cwd\":$(json "$(pwd -P)"),\"level\":$(json "$level"),\"branch\":$(json "$want"),$(identity)}" 4
+  status=$(first_line "$reply")
+  plan=$(after_first "$reply")
+  if [ "$status" != 0 ]; then
+    printf '%s\n' "$plan"
+    case $status in 1 | 2 | 3 | 4) exit "$status" ;; *) exit 1 ;; esac
+  fi
+  mode=$(plan_value mode "$plan")
+  slot=$(plan_value slot "$plan")
+  branch=$(plan_value branch "$plan")
+  ref=$(plan_value ref "$plan")
+  label=$(plan_value label "$plan")
+  upstream=$(plan_value upstream "$plan")
+  record=$(plan_value record "$plan")
+  fetch=$(plan_value fetch "$plan")
+  base_name=$label
+
+  if [ -n "$fetch" ] && ! git fetch -q "$fetch" 2>"$gitdir/mwt-fetch.log"; then
+    cat "$gitdir/mwt-fetch.log" >&2
+    echo "mwt: fetching $fetch failed (git's words are above). Nothing changed." >&2
+    exit 1
+  fi
+  if ! git rev-parse -q --verify "$ref^{commit}" >/dev/null; then
+    echo "mwt: $label isn't there${fetch:+, even after fetching $fetch}: mwt project lists the user's branches. Nothing changed." >&2
+    exit 1
+  fi
+
+  case $mode in
+    checkout)
+      if [ -z "$(git branch --show-current)" ] && [ "$(git rev-parse HEAD)" = "$(git rev-parse "$ref^{commit}")" ]; then
+        echo "$slot is at $label already: $(git log -1 --format='%h %s' HEAD)."
+      elif git switch -q --detach "$ref"; then
+        echo "$slot is on no branch now, at $label: $(git log -1 --format='%h %s' HEAD). A task starts from it with mwt worktree new TASK --from BASE."
+      else
+        echo "mwt: $slot stays where it was (git's words are above)." >&2
+        exit 1
+      fi
+      ;;
+    rebase)
+      # Line 2, the base to put back if the rebase is given up: only when
+      # this sync changes it.
+      if [ "$record" = yes ]; then
+        printf '%s\n%s\n%s\n' "$ref" "$upstream" "$branch" >"$note"
+        git config "branch.$branch.mwt-base" "$ref" || exit 1
+      else
+        printf '%s\n\n%s\n' "$ref" "$branch" >"$note"
+      fi
+      if git merge-base --is-ancestor "$ref" HEAD; then
+        echo "$branch has everything $label has already: $(git log -1 --format='%h %s' "$ref")."
+      else
+        if [ -n "$upstream" ] && [ "$upstream" != "$ref" ] && git rev-parse -q --verify "$upstream^{commit}" >/dev/null; then
+          git rebase -q --autostash --onto "$ref" "$upstream" >"$gitdir/mwt-rebase.log" 2>&1 || sync_stopped
+        else
+          git rebase -q --autostash "$ref" >"$gitdir/mwt-rebase.log" 2>&1 || sync_stopped
+        fi
+        own=$(git rev-list --count "$ref..HEAD")
+        if [ "$own" = 0 ]; then
+          echo "$branch is at $label now, $(git log -1 --format='%h %s' "$ref"), with no commits of its own yet."
+        else
+          echo "Rebased $branch onto $label, at $(git log -1 --format='%h %s' "$ref"): its own commits on top, $own."
+        fi
+      fi
+      rm -f "$note"
+      [ "$record" = yes ] && echo "$branch is based on $label from now on: its handoff catches up with it and is compared with it."
+      sync_settled
+      ;;
+    *)
+      echo "mwt: MWT answered no plan. Nothing changed." >&2
+      exit 1
+      ;;
+  esac
+
+  if [ "$fetch" = remote-origin ]; then
+    exchange "{\"command\":\"worktree\",\"action\":\"sync\",\"stage\":\"fresh\",\"cwd\":$(json "$(pwd -P)")}" 4
+    after_first "$reply"
+    echo
+  fi
+  exit 0
+}
+
+# The uncommitted work a sync set aside, put back: conflicts there are the
+# agent's to resolve; git keeps a copy in the stash list meanwhile.
+sync_settled() {
+  local conflicts
+  conflicts=$(git diff --name-only --diff-filter=U)
+  [ -n "$conflicts" ] || return 0
+  printf 'mwt: putting the uncommitted work back on top hit conflicts in:\n%s\nResolve them in those files (git checkout --theirs or --ours takes one side), then git restore --staged on each. Git kept a copy of that work in the stash list, as autostash: drop it once resolved (git stash list, git stash drop stash@{N}).\n' \
+    "$(printf '%s\n' "$conflicts" | sed 's/^/  /')" >&2
+  exit 1
+}
+
+# A sync's rebase that didn't go through: at conflicts, for the agent to
+# resolve (the next mwt worktree sync goes on with it), or for a reason
+# git gives.
+sync_stopped() {
+  local conflicts
+  conflicts=$(git diff --name-only --diff-filter=U)
+  if [ -n "$conflicts" ]; then
+    printf 'mwt: rebasing onto %s stopped at conflicts in:\n%s\nResolve them, git add each, and run mwt worktree sync again: it goes on with the rebase (git rebase --abort puts the branch back as it was, uncommitted work included).\n' \
+      "$base_name" "$(printf '%s\n' "$conflicts" | sed 's/^/  /')" >&2
+  else
+    cat "$gitdir/mwt-rebase.log" >&2
+    echo "mwt: rebasing onto $base_name stopped (git's words are above)." >&2
+  fi
+  exit 1
 }
 
 # A rebase that didn't go through: at conflicts, for the agent to resolve
@@ -970,7 +1150,7 @@ wrong=1
 [ "$command" = run ] && wrong=122
 [ "$command" = call ] && wrong=122
 
-grant="" need="" reason="" minutes=60 wait=60 id="" dir="" timeout=120 timeout_given="" title="" body="" onto="" from="" suggest_save="" save_for="" no_checks="" name="" purpose="" method="" url="" data="" watch=0 with_credential="" recent=""
+grant="" need="" reason="" minutes=60 wait=60 id="" dir="" timeout=120 timeout_given="" title="" body="" onto="" from="" suggest_save="" save_for="" no_checks="" name="" purpose="" method="" url="" data="" watch=0 with_credential="" recent="" dry_run=false
 preset="" mint="" keep_minutes="" metadata_project="" metadata_account="" resolver="" via="" git=false login_file=false id_token_header="" over=""
 headers=()
 sets=()
@@ -1066,6 +1246,7 @@ while [ $# -gt 0 ]; do
     --with) with_credential=${2-}; shift 2 || shift ;;
     --with=*) with_credential=${1#*=}; shift ;;
     --recent) recent=1; shift ;;
+    --dry-run) dry_run=true; shift ;;
     -h | --help) usage; exit 0 ;;
     --)
       shift
@@ -1288,11 +1469,35 @@ case $command in
           exit 1
         fi
         name=${positional[1]}
-        # A task starts from host-origin/BASE as the user has it now.
+        # A task starts from host-origin/BASE as the user has it now, or
+        # from remote-origin/BASE as their remote has it.
         if git rev-parse --git-dir >/dev/null 2>&1 && ! git fetch -q host-origin; then
           echo "mwt: fetching host-origin failed (git's words are above), so the user's branches here may be old. Nothing was started." >&2
           exit 1
         fi
+        case ${from:-$onto} in
+          remote-origin/* | refs/remotes/remote-origin/*)
+            if ! git fetch -q remote-origin; then
+              echo "mwt: fetching remote-origin failed (git's words are above), so its branches here may be old. Nothing was started." >&2
+              exit 1
+            fi
+            ;;
+        esac
+        ;;
+      sync)
+        case ${positional[1]:-} in
+          "" | host | remote) ;;
+          *)
+            echo "mwt: mwt worktree sync [host|remote] [BRANCH]: host for the user's branches, remote for their remote's" >&2
+            exit 1
+            ;;
+        esac
+        if [ -n "${positional[3]:-}" ]; then
+          echo "mwt: mwt worktree sync [host|remote] [BRANCH]" >&2
+          exit 1
+        fi
+        identify
+        worktree_sync "${positional[1]:-}" "${positional[2]:-}"
         ;;
       free)
         if [ -n "${positional[1]:-}" ]; then
@@ -1301,8 +1506,11 @@ case $command in
         fi
         name=""
         ;;
+      prune)
+        send "{\"command\":\"worktree\",\"action\":\"prune\",\"cwd\":$(json "$(pwd -P)"),\"dry_run\":$dry_run}"
+        ;;
       *)
-        echo "mwt: mwt worktree new TASK --from BASE, mwt worktree resume BRANCH, or mwt worktree free" >&2
+        echo "mwt: mwt worktree new TASK --from BASE, mwt worktree resume BRANCH, mwt worktree sync [host|remote] [BRANCH], mwt worktree free, or mwt worktree prune" >&2
         exit 1
         ;;
     esac

@@ -114,6 +114,31 @@ defmodule MWTClient.HandoffsCase do
     :ok
   end
 
+  @doc """
+  Your repository's own remote `origin`, a Git server standing in for
+  GitHub, cloned from your repository as it is; returns a teammate's clone
+  of it, for `push_to_remote/3`.
+  """
+  def with_remote(%{base: base, repo: repo}) do
+    server = Path.join(base, "server.git")
+    git(base, ["clone", "-q", "--bare", repo, server])
+    git(repo, ["remote", "add", "origin", server])
+    team = Path.join(base, "teammate")
+    git(base, ["clone", "-q", server, team])
+    team
+  end
+
+  @doc "A teammate's commit in `team`, pushed to the remote's master; its ID."
+  def push_to_remote(team, files, message) do
+    commit(team, files, message)
+    git(team, ["push", "-q", "origin", "HEAD:master"])
+    sha(team, "HEAD")
+  end
+
+  @doc "The base a task's branch records (`branch.NAME.mwt-base`)."
+  def task_base(dir, branch),
+    do: dir |> git(["config", "branch.#{branch}.mwt-base"]) |> String.trim()
+
   @doc "The folder of slot `n` of the clone `mirror`."
   def slot(mirror, n), do: Path.join(mirror <> ".wt", "slot-#{n}")
 

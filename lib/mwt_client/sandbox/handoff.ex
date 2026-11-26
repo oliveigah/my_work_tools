@@ -309,6 +309,7 @@ defmodule MWTClient.Sandbox.Handoff do
     handoff.base_branch ||
       case handoff.base_ref do
         "refs/heads/" <> branch -> branch
+        "refs/remotes/remote-origin/" <> branch -> "remote-origin/" <> branch
         nil -> handoff.mirrored_branch || handoff.onto
         ref -> ref
       end
@@ -460,9 +461,9 @@ defmodule MWTClient.Sandbox.Handoff do
   end
 
   @doc """
-  Whether MWT deleted the handoff's branch in the VM when it landed, and no
-  revision came from it since: a thread carrying it on, once it is sent
-  back, makes it again first (`mwt worktree resume`).
+  Whether MWT deleted the handoff's branch in the VM when it landed or was
+  closed, and no revision came from it since: a thread carrying it on
+  makes it again first (`mwt worktree resume`).
   """
   @spec branch_deleted?(t()) :: boolean()
   def branch_deleted?(%{timeline: timeline}) do
