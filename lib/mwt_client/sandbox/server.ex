@@ -1866,12 +1866,19 @@ defmodule MWTClient.Sandbox.Server do
     case elem(decision, 1) do
       %Grant{kind: :token} = grant ->
         # Signing as an account any grant over the credential that is on
-        # names, for an audience any of them lists.
-        view = credential_view(state, grant)
+        # names, for an audience any of them lists; what is signed belongs
+        # to the one grant that does both.
+        over = on_over(state, grant)
+        view = credential_view(grant, over)
 
         case CredentialEndpoint.recognize(view, request) do
-          nil -> nil
-          found -> CredentialEndpoint.check(view, request, found)
+          nil ->
+            nil
+
+          found ->
+            with {:ok, %{kind: :sign_jwt} = ask} <- CredentialEndpoint.check(view, request, found) do
+              CredentialEndpoint.signer([grant | over], ask)
+            end
         end
 
       # A network grant's answer carries no value: there is no credential
@@ -2020,18 +2027,20 @@ defmodule MWTClient.Sandbox.Server do
     end
   end
 
-  # A token grant as its credential's endpoints see it: the accounts and
-  # hosts of every grant over the credential that is on, together.
-  defp credential_view(state, %Grant{} = grant) do
+  # The token grants over `grant`'s credential that are on.
+  defp on_over(state, %Grant{} = grant) do
     id = Grant.credential_id(grant)
     now = State.now()
 
-    over =
-      Enum.filter(
-        state.grants,
-        &(&1.kind == :token and Grant.credential_id(&1) == id and Grant.on?(&1, now))
-      )
+    Enum.filter(
+      state.grants,
+      &(&1.kind == :token and Grant.credential_id(&1) == id and Grant.on?(&1, now))
+    )
+  end
 
+  # A token grant as its credential's endpoints see it: the accounts and
+  # hosts of every grant over the credential that is on (`over`), together.
+  defp credential_view(%Grant{} = grant, over) do
     %{
       grant
       | signs_as:

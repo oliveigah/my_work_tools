@@ -80,9 +80,18 @@ defmodule MWTClient.Sandbox.CredentialEndpoint do
   @longest_seconds 12 * 3_600
   @default_seconds 3_600
 
-  @typedoc "A request MWT answers: what was asked, checked (`check/3`)."
+  @typedoc """
+  A request MWT answers: what was asked, checked (`check/3`); a JWT to sign
+  with the grant it will belong to once `signer/2` found it.
+  """
   @type ask ::
-          %{kind: :sign_jwt, account: String.t(), payload: String.t(), aud_host: String.t()}
+          %{
+            required(:kind) => :sign_jwt,
+            required(:account) => String.t(),
+            required(:payload) => String.t(),
+            required(:aud_host) => String.t(),
+            optional(:grant_id) => String.t()
+          }
           | %{kind: :refresh}
 
   @doc "The host that signs JWTs for service accounts."
@@ -166,6 +175,34 @@ defmodule MWTClient.Sandbox.CredentialEndpoint do
          {:ok, payload} <- payload(body),
          {:ok, host} <- audience(grant, payload) do
       {:ok, %{kind: :sign_jwt, account: account, payload: payload, aud_host: host}}
+    end
+  end
+
+  @doc """
+  The grant a JWT signed for `ask` belongs to: the first of `grants` (those
+  over its credential that are on, the one that let the request through
+  first) that signs as its account and lists its audience's host itself,
+  so that MWT holds what it made (`MWTClient.Sandbox.Made.covered?/3`) for
+  as long as that grant is on and unchanged. `{:ok, ask}` with its
+  `grant_id`, or `{:error, code, message}` when no one grant does both,
+  though between them they do.
+
+      iex> pm = %MWTClient.Sandbox.Grant{id: "pm", name: "PM", kind: :token, hosts: ["*.googleapis.com"], signs_as: ["pm@p.iam.gserviceaccount.com"]}
+      iex> box = %MWTClient.Sandbox.Grant{id: "box", name: "Box", kind: :token, hosts: ["box.example.com"], signs_as: ["box@p.iam.gserviceaccount.com"]}
+      iex> ask = %{kind: :sign_jwt, account: "box@p.iam.gserviceaccount.com", payload: "{}", aud_host: "box.example.com"}
+      iex> {:ok, %{grant_id: "box"}} = MWTClient.Sandbox.CredentialEndpoint.signer([pm, box], ask)
+      iex> {:error, "mwt_not_a_signer", _} = MWTClient.Sandbox.CredentialEndpoint.signer([pm, box], %{ask | aud_host: "pm.example.com"})
+  """
+  @spec signer([Grant.t()], ask()) :: {:ok, ask()} | {:error, String.t(), String.t()}
+  def signer(grants, %{kind: :sign_jwt, account: account, aud_host: host} = ask) do
+    case Enum.find(grants, &(account in &1.signs_as and Policy.host_listed?(host, &1.hosts))) do
+      %Grant{id: id} ->
+        {:ok, Map.put(ask, :grant_id, id)}
+
+      nil ->
+        {:error, "mwt_not_a_signer",
+         "No one grant over the credential both signs as #{account} and lists #{host}, so " <>
+           "MWT would hold the JWT for none. Ask the user to add both to one grant."}
     end
   end
 

@@ -183,9 +183,12 @@ defmodule MWTClient.Sandbox.Server.Values do
       with_live(state, grant, request, from, result, fn state, grant, value ->
         call = CredentialEndpoint.call(ask)
 
+        # What is signed belongs to the grant that signs as its account
+        # for its host (`CredentialEndpoint.signer/2`), whichever grant
+        # over the credential let the request through.
         state
         |> State.used(grant.id)
-        |> State.task({:endpoint, from, grant.id, request}, fn ->
+        |> State.task({:endpoint, from, Map.get(ask, :grant_id, grant.id), request}, fn ->
           SavedRequest.send(call, value, grant.name, @endpoint_timeout)
         end)
       end)

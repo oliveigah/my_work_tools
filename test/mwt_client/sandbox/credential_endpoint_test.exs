@@ -409,6 +409,59 @@ defmodule MWTClient.Sandbox.CredentialEndpointTest do
       assert json =~ "mwt_placeholder_expired"
     end
 
+    test "what is signed belongs to the grant over the credential that signs as its account for its host",
+         %{username: username, grant: grant} do
+      box = "box@p.iam.gserviceaccount.com"
+
+      # A second grant over the same credential, for another service: only
+      # the first lists Google's hosts, so it lets the request to sign go.
+      {:ok, second} =
+        Sandbox.create_grant(username, %{
+          "kind" => "token",
+          "name" => "Box",
+          "purpose" => "The box behind IAP",
+          "hosts" => "box.example.com",
+          "signs_as" => box,
+          "credential" => grant.credential
+        })
+
+      {:ok, _} = Sandbox.turn_on(username, second.id, 60, :all)
+
+      claims = %{claims() | "iss" => box, "sub" => box, "aud" => "https://box.example.com/*"}
+      jwt = signed(claims)
+      test = self()
+
+      Req.Test.stub(SavedRequest, fn conn ->
+        send(test, :called)
+        Req.Test.json(conn, %{keyId: "k1", signedJwt: jwt})
+      end)
+
+      as_box = "/v1/projects/-/serviceAccounts/#{URI.encode_www_form(box)}:signJwt"
+
+      assert {:answer, 200, json} =
+               authorize(username, sign_request(grant.placeholder, claims, %{path: as_box}))
+
+      assert_receive :called
+      placeholder = Jason.decode!(json)["signedJwt"]
+
+      # Held for the second grant, it goes to its host as the real JWT.
+      request = to_service(placeholder, "box.example.com")
+      assert {:forward, replace, _scan} = Gate.authorize(username, request)
+
+      assert {"authorization", "Bearer " <> jwt} in Http1.replace(
+               request.headers,
+               replace.request
+             )
+
+      # An account one grant names, for a host only the other lists: MWT
+      # would hold what it signs for neither, so nothing goes to Google.
+      mixed = %{claims() | "aud" => "https://box.example.com/*"}
+
+      assert {:deny, 403, refused} = authorize(username, sign_request(grant.placeholder, mixed))
+      assert refused =~ "mwt_not_a_signer"
+      refute_received :called
+    end
+
     test "what can't be signed is refused before anything goes out, and Google's refusal comes back",
          %{username: username, grant: grant} do
       # Once: each call reads the clock, and two may fall in different seconds.

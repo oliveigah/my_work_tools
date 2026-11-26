@@ -84,6 +84,29 @@ defmodule MWTClient.Sandbox.PresetsFilesTest do
              |> elem(1)
   end
 
+  test "every shipped preset names an icon app.css has" do
+    for path <- Path.wildcard(Path.join(Presets.own_dir(), "*.json")) do
+      icon = path |> File.read!() |> Jason.decode!() |> Map.get("icon")
+      assert icon in Presets.icons(), "#{Path.basename(path)}: add #{icon} to Presets' icons"
+    end
+  end
+
+  @tag :tmp_dir
+  test "an icon app.css lacks gives way to the type's, in a preset and on a grant",
+       %{tmp_dir: dir} do
+    File.write!(
+      Path.join(dir, "acme.json"),
+      ~s({"id": "acme", "makes": "credential", "name": "Acme", "icon": "hero-face-smile"})
+    )
+
+    assert {[%{id: "acme", icon: "hero-key"}], []} = Presets.load(dir)
+
+    # One a grant was given before: an empty tile otherwise.
+    grant = %Grant{id: "acme", name: "Acme", kind: :token}
+    assert Presets.icon(%{grant | icon: "hero-face-smile"}) == "hero-key"
+    assert Presets.icon(%{grant | icon: "hero-identification"}) == "hero-identification"
+  end
+
   @tag :tmp_dir
   test "a bad file is refused with its path and the reason", %{tmp_dir: dir} do
     File.write!(

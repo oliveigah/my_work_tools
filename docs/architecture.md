@@ -322,7 +322,10 @@ machine by itself, so there is no path to stand in: the agent asks
    names.
 2. **Computed with:** the value signs and never leaves MWT. A result that
    is itself authority (a GitHub App's installation token, a JWT Google
-   signed) is kept as a made value, with a placeholder of its own.
+   signed) is kept as a made value, with a placeholder of its own. It
+   belongs to the one grant over the credential that covers where it may
+   go (for a JWT, its account and its audience's host), whichever grant
+   let the request that made it through.
    Signing something to publish (a commit, a release) waits for a view
    that shows exactly what is signed.
 3. **Handed over:** a saved command's script gets the value in a

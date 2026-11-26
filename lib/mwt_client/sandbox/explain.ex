@@ -36,6 +36,7 @@ defmodule MWTClient.Sandbox.Explain do
     Destinations,
     Event,
     Grant,
+    Made,
     Policy,
     Shown
   }
@@ -146,7 +147,7 @@ defmodule MWTClient.Sandbox.Explain do
       text ->
         {:ok,
          "#{event.id}: #{outcome_words(event.outcome)} at #{time(event.at)}. As decided then:\n" <>
-           text}
+           without_placeholders(text, world)}
     end
   end
 
@@ -186,6 +187,21 @@ defmodule MWTClient.Sandbox.Explain do
   end
 
   defp recorded(_event), do: nil
+
+  # A decision an older MWT kept may hold a placeholder, written into a
+  # refusal it had no words for: each JWT placeholder in it, and each of
+  # the grants' own, taken out before the agent sees it.
+  defp without_placeholders(text, world) do
+    grants =
+      for %Grant{kind: :token} = grant <- world.snapshot.grants,
+          placeholder <- [Grant.login_placeholder(grant) | Grant.placeholders(grant)],
+          is_binary(placeholder) and placeholder != "",
+          do: placeholder
+
+    (Made.jwt_placeholders_in(text) ++ grants)
+    |> Enum.uniq()
+    |> Enum.reduce(text, &String.replace(&2, &1, "(a placeholder)"))
+  end
 
   # An event kept without its decision (one from before decisions were
   # kept): decided again now, from the grants as they are, as a dry run
@@ -452,7 +468,41 @@ defmodule MWTClient.Sandbox.Explain do
     do: "no grant over the network #{network} covers that host"
 
   def refusal_words(:multiple_grants), do: "it carries two credentials' placeholders"
-  def refusal_words(other), do: other |> inspect() |> Shown.text()
+
+  def refusal_words(:reserved),
+    do: "this machine or a reserved address opens only to a grant naming that exact address"
+
+  def refusal_words(:private), do: "no grant that is on opens this private address"
+  def refusal_words({:network_down, grant}), do: "#{grant.name}'s network route is down"
+
+  # A value MWT made by its name and hosts, never its placeholder.
+  def refusal_words({:made_elsewhere, made}),
+    do: "#{made.name} may go only to #{Enum.join(made.hosts, ", ")}"
+
+  def refusal_words({:made_stale, nil}),
+    do: "it carries a JWT placeholder MWT no longer holds: sign again"
+
+  def refusal_words({:made_stale, made}),
+    do:
+      "#{made.name} is one MWT no longer holds: it expired, its grant no longer signs as its " <>
+        "account or lists its host, or MWT restarted since it was made; sign again"
+
+  def refusal_words({:name_a_grant, _ids}), do: "it names no fixed call"
+  def refusal_words({:no_such_grant, _ids}), do: "no fixed call has that id"
+  def refusal_words({:fixed_script, _grant}), do: "a saved command takes no command text"
+  def refusal_words(:no_mwt_grant), do: "no grant over MWT's tools covers it"
+
+  # One with no words of its own yet: its kind alone. The term may hold a
+  # placeholder, which the agent must never be shown.
+  def refusal_words(other), do: "a refusal MWT has no words for (#{refusal_kind(other)})"
+
+  defp refusal_kind(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp refusal_kind(reason)
+       when is_tuple(reason) and tuple_size(reason) > 0 and is_atom(elem(reason, 0)),
+       do: Atom.to_string(elem(reason, 0))
+
+  defp refusal_kind(_reason), do: "unknown"
 
   # What would change the result, as things the agent can do or ask for.
   defp changes({:refuse, {:locked, _resource, _grant}}, _says, _over, _world),

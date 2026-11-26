@@ -19,7 +19,8 @@ defmodule MWTClient.Sandbox.Presets do
     * `network` - a network's form; `command` - a saved command's.
 
   Its `fields` are the form's (`MWTClient.Sandbox.FormFields`), with fields
-  of yours to fill first (`fill`, each `{name}` in them). Everything it
+  of yours to fill first (`fill`, each `{name}` in them). Its `icon` is one
+  of `icons/0`, the icons app.css has; another gives way to its type's. Everything it
   gives is copied onto what it makes: nothing in MWT looks at which preset
   made it again, but the grant presets offered over a credential, by the
   preset it came from.
@@ -51,6 +52,39 @@ defmodule MWTClient.Sandbox.Presets do
           required(:guide) => [String.t()],
           required(:fields) => %{String.t() => String.t()}
         }
+
+  # The icons a preset may name, each written out here, in a file Tailwind
+  # reads (`@source` in app.css), so that app.css has its class: one only a
+  # preset file names would show as an empty tile. Another stands back for
+  # its type's.
+  @icons ~w(
+    git-branch
+    hero-bolt
+    hero-bookmark-square
+    hero-building-library
+    hero-chart-bar
+    hero-chat-bubble-left-right
+    hero-circle-stack
+    hero-cloud
+    hero-command-line
+    hero-cpu-chip
+    hero-credit-card
+    hero-cube
+    hero-document-text
+    hero-envelope
+    hero-folder
+    hero-globe-alt
+    hero-identification
+    hero-key
+    hero-lock-closed
+    hero-paper-airplane
+    hero-server
+    hero-server-stack
+    hero-shield-check
+    hero-signal
+    hero-squares-2x2
+    hero-wrench-screwdriver
+  )
 
   @types [
     %{
@@ -341,7 +375,7 @@ defmodule MWTClient.Sandbox.Presets do
       makes: makes,
       kind: kind,
       name: String.trim(json["name"]),
-      icon: text(json["icon"]) || type(kind).icon,
+      icon: known_icon(json["icon"]) || type(kind).icon,
       blurb: text(json["blurb"]) || "",
       guide: Enum.filter(List.wrap(json["guide"]), &is_binary/1),
       fields: fields,
@@ -478,6 +512,9 @@ defmodule MWTClient.Sandbox.Presets do
   defp text(value) when is_binary(value), do: value
   defp text(_other), do: nil
 
+  defp known_icon(icon) when icon in @icons, do: icon
+  defp known_icon(_icon), do: nil
+
   defp field(value) when is_binary(value), do: value
   defp field(value) when is_boolean(value) or is_number(value), do: to_string(value)
   defp field(value) when is_list(value), do: Enum.map_join(value, ", ", &to_string/1)
@@ -572,11 +609,18 @@ defmodule MWTClient.Sandbox.Presets do
   @spec type_or_preset(MWTClient.Sandbox.Grant.t()) :: t()
   def type_or_preset(grant), do: type_of(grant)
 
-  @doc "The icon of a grant: its own, copied from the preset that made it, or its type's."
+  @doc """
+  The icon of a grant: its own, copied from the preset that made it, or its
+  type's, as well when its own isn't one app.css has (`icons/0`).
+  """
   @spec icon(MWTClient.Sandbox.Grant.t() | nil) :: String.t()
   def icon(nil), do: "hero-key"
-  def icon(%{icon: icon}) when is_binary(icon), do: icon
+  def icon(%{icon: icon}) when icon in @icons, do: icon
   def icon(grant), do: type_of(grant).icon
+
+  @doc "The icons a preset may name: those app.css has a class for."
+  @spec icons() :: [String.t()]
+  def icons, do: @icons
 
   @doc "What a grant's type is called."
   @spec kind_name(MWTClient.Sandbox.Grant.kind()) :: String.t()

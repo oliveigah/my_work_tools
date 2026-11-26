@@ -8,7 +8,7 @@ defmodule MWTClient.Sandbox.ExplainTest do
   use MWTClient.PolicyCase, async: true
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.{Approval, Channel, Credential, Event, Explain}
+  alias MWTClient.Sandbox.{Approval, Channel, Credential, Event, Explain, Made}
 
   doctest MWTClient.Sandbox.Overlaps
 
@@ -237,6 +237,138 @@ defmodule MWTClient.Sandbox.ExplainTest do
 
     test "says when there is nothing" do
       assert Explain.recent([], [], []) =~ "Nothing refused"
+    end
+  end
+
+  describe "a refusal, in words" do
+    # A JWT placeholder as MWT writes one, for a signed JWT.
+    defp jwt_placeholder do
+      [%{"alg" => "RS256"}, %{"aud" => "https://box.example.com/*"}]
+      |> Enum.map(&Base.url_encode64(Jason.encode!(&1), padding: false))
+      |> Enum.concat(["c2ln"])
+      |> Enum.join(".")
+      |> Made.jwt_placeholder()
+    end
+
+    defp made(placeholder, until) do
+      %Made{
+        placeholder: placeholder,
+        grant_id: "box",
+        name: "Box's JWT signed as box@p.iam.gserviceaccount.com for box.example.com",
+        account: "box@p.iam.gserviceaccount.com",
+        hosts: ["box.example.com"],
+        carriers: ["authorization"],
+        until: until,
+        source: :fixed
+      }
+    end
+
+    # The kinds of `Policy.refusal()`, as its type lists them.
+    defp refusal_kinds do
+      {:ok, types} = Code.Typespec.fetch_types(Policy)
+
+      [alternatives] =
+        for {:type, {:refusal, {:type, _, :union, alternatives}, []}} <- types,
+            do: alternatives
+
+      for alternative <- alternatives, uniq: true do
+        case alternative do
+          {:atom, _, kind} -> kind
+          {:type, _, :tuple, [{:atom, _, kind} | _]} -> kind
+        end
+      end
+    end
+
+    test "every refusal the policy makes has words of its own, and none shows a placeholder" do
+      grant = google("box", ["box.example.com"], :auto)
+      made = made(jwt_placeholder(), @later)
+
+      refusals = [
+        :reserved,
+        :private,
+        :internet_off,
+        :multiple_grants,
+        {:wrong_host, grant},
+        {:made_elsewhere, made},
+        {:made_stale, made},
+        {:made_stale, nil},
+        {:not_a_carrier, grant, ["x-other"], ["authorization"]},
+        {:grant_off, grant},
+        {:network_down, grant},
+        {:host_blocked, "lan", :default},
+        {:host_blocked, "lan", "x.example"},
+        {:outside, grant},
+        {:outside, "lan"},
+        {:excepted, grant, "x.example"},
+        {:plain_http, grant},
+        {:ambiguous_path, grant},
+        {:name_a_grant, ["a"]},
+        {:no_such_grant, ["a"]},
+        {:fixed_script, grant},
+        :no_mwt_grant,
+        {:locked, {:credential, "box"}, grant},
+        {:uncovered, grant}
+      ]
+
+      # A refusal added to the policy needs words here first.
+      kinds = Enum.map(refusals, &if(is_tuple(&1), do: elem(&1, 0), else: &1))
+      assert Enum.sort(Enum.uniq(kinds)) == Enum.sort(refusal_kinds())
+
+      for {refusal, kind} <- Enum.zip(refusals, kinds) do
+        words = Explain.refusal_words(refusal)
+        refute words =~ "no words for", "#{kind} has no words of its own"
+        refute words =~ made.placeholder
+        refute words =~ grant.placeholder
+      end
+
+      # One with no words yet says only its kind.
+      assert Explain.refusal_words({:new_kind, made}) ==
+               "a refusal MWT has no words for (new_kind)"
+    end
+
+    test "a request carrying a value MWT no longer holds is explained without its placeholder" do
+      placeholder = jwt_placeholder()
+      world = world([google("box", ["box.example.com"], :auto), internet()])
+      world = put_in(world.snapshot[:made], [made(placeholder, @earlier)])
+
+      request = %{
+        scheme: "https",
+        host: "box.example.com",
+        method: "GET",
+        path: "/health",
+        headers: [{"authorization", "Bearer " <> placeholder}],
+        body: ""
+      }
+
+      text = Explain.record(request, world)
+      assert text =~ "Decision: refused: Box's JWT signed as box@p.iam.gserviceaccount.com"
+      assert text =~ "no longer holds"
+      refute text =~ placeholder
+    end
+
+    test "a decision an older MWT kept with a placeholder in it is shown without it" do
+      grant = google("box", ["box.example.com"], :auto)
+      placeholder = jwt_placeholder()
+
+      kept =
+        "GET https://box.example.com/health, carrying no credential\n" <>
+          ~s(Decision: refused: {:made_stale, %Made{placeholder: "#{placeholder}"}} ) <>
+          ~s(and #{grant.placeholder}.)
+
+      event = %Event{
+        id: "event-1",
+        at: @now,
+        outcome: :refused,
+        host: "box.example.com",
+        details: [Explain.record_section(kept)],
+        summary: "x"
+      }
+
+      assert {:ok, text} = Explain.decision(event, world([grant]))
+      assert text =~ "As decided then"
+      assert text =~ "(a placeholder)"
+      refute text =~ placeholder
+      refute text =~ grant.placeholder
     end
   end
 
