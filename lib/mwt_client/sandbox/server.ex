@@ -116,6 +116,7 @@ defmodule MWTClient.Sandbox.Server do
     HostRuns,
     Kept,
     Machine,
+    Running,
     ShareSync,
     State,
     Tools,
@@ -137,6 +138,10 @@ defmodule MWTClient.Sandbox.Server do
   @kill_after_ms 5_000
   # What a real value in a kept exchange reads as.
   @withheld "[real credential withheld by MWT]"
+
+  # Why a request whose call ended first has only its request kept.
+  @call_ended "MWT's connection for it ended before the request did: only the request is " <>
+                "kept, as MWT read it before deciding."
 
   @doc "Starts the sandbox for one unlocked identity."
   def start_link(opts) do
@@ -607,6 +612,13 @@ defmodule MWTClient.Sandbox.Server do
   end
 
   defp answer(:waiting_count, _from, state), do: {:reply, State.waiting_count(state), state}
+
+  defp answer(:requests_running, _from, state), do: {:reply, Running.all(state), state}
+
+  defp answer({:request_running, id}, _from, state) do
+    unfinished = Running.unfinished(state, id)
+    {:reply, unfinished && redacted(state, unfinished), state}
+  end
 
   # Once what was sent before is handled, every event it logged is with
   # the journal (`MWTClient.Sandbox.Activity`).
@@ -2068,13 +2080,17 @@ defmodule MWTClient.Sandbox.Server do
       else: {:noreply, Firewall.isolate(state, finding)}
   end
 
+  # A request MWT read began: it runs until its call hands over what it
+  # carried, or the call's process ends (`Running`).
+  defp cast_in({:began, id, pid, unfinished}, state) when is_binary(id) and is_pid(pid),
+    do: {:noreply, Running.began(state, id, pid, unfinished)}
+
   # What a request MWT read carried and what came back, kept with its
-  # events; a real value in it, though none should be, is hidden first.
+  # events once the request ended, and how long it took.
   defp cast_in({:exchange, id, exchange}, state) do
-    secrets = Values.secrets(state)
-    exchange = Exchange.redact(exchange, &Secrets.replace(secrets, &1, @withheld))
-    Journal.record_exchange(state.username, id, exchange)
-    {:noreply, state}
+    keep_exchange(state, id, exchange)
+    {ms, state} = Running.ended(state, id)
+    {:noreply, request_ended(state, id, ms)}
   end
 
   # The VM's busiest processes, from the monitor.
@@ -2090,6 +2106,24 @@ defmodule MWTClient.Sandbox.Server do
 
   defp cast_in({:proxy, status}, state) do
     {:noreply, State.change(state, :proxy, fn _ -> status end)}
+  end
+
+  defp keep_exchange(state, id, exchange),
+    do: Journal.record_exchange(state.username, id, redacted(state, exchange))
+
+  # A real value in what a request carried, though none should be, is
+  # hidden before it is kept or shown.
+  defp redacted(state, exchange) do
+    secrets = Values.secrets(state)
+    Exchange.redact(exchange, &Secrets.replace(secrets, &1, @withheld))
+  end
+
+  # A request ended: its lines say how long it took, and the pages hear of
+  # it, to stop marking it running and read what it carried, if kept.
+  defp request_ended(state, id, ms) do
+    if ms, do: Journal.record_took(state.username, id, ms)
+    State.broadcast(state, {:sandbox_exchange, id, ms})
+    state
   end
 
   # While the VM runs, each mirror follows your branches: the task looks at
@@ -2281,6 +2315,18 @@ defmodule MWTClient.Sandbox.Server do
     {:noreply, Copying.release_idle(state)}
   end
 
+  # The call a running request was on ended before the request did: it
+  # ends with it, keeping the request as MWT read it, if its driver said.
+  defp info({:DOWN, ref, :process, _pid, _reason}, state)
+       when is_map_key(state.request_monitors, ref) do
+    {{id, ms, unfinished}, state} = Running.down(state, ref)
+
+    if unfinished,
+      do: keep_exchange(state, id, Map.put(unfinished, :note, @call_ended))
+
+    {:noreply, request_ended(state, id, ms)}
+  end
+
   defp info({:ports, pid, snapshot}, %{forwarder: pid} = state),
     do: {:noreply, Forwarding.forwarded(state, snapshot)}
 
@@ -2313,6 +2359,8 @@ defmodule MWTClient.Sandbox.Server do
         # What the network path's view was made from: values and the CA.
         |> Map.replace(:gate, :redacted)
         |> Map.replace(:waiters, :redacted)
+        # What running requests carried, kept should their calls end first.
+        |> Map.replace(:requests_running, :redacted)
         |> Map.replace(:approvals, Enum.map(Map.get(state, :approvals, []), &redact_output/1))
 
       other ->

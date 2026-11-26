@@ -10,9 +10,11 @@ defmodule MWTClient.Sandbox do
 
   Every function takes the username it belongs to. Changes are broadcast to
   `subscribe/1`rs as `{:sandbox_changed, area}`, new activity as
-  `{:sandbox_event, event}` and image build output as
-  `{:sandbox_build_line, line}`. `subscribe_waiting/1` delivers only
-  `{:sandbox_waiting, count}`, for the title bar of every page.
+  `{:sandbox_event, event}`, a request that ended, after `ms`, as
+  `{:sandbox_exchange, exchange_id, ms}` (`event/2` reads what it carried,
+  if kept), and image build output as `{:sandbox_build_line, line}`.
+  `subscribe_waiting/1` delivers only `{:sandbox_waiting, count}`, for the
+  title bar of every page.
 
   Approvals are of three types, in one queue: agents asking for a grant to
   be turned on (activations) or to run a command on the host (commands),
@@ -123,6 +125,23 @@ defmodule MWTClient.Sandbox do
   """
   @spec event(username(), String.t()) :: Event.t() | nil
   def event(username, id), do: Activity.opened(username, id)
+
+  @doc """
+  The requests MWT read that are still running, by the id their events
+  name as `exchange_id`, with when each began.
+  """
+  @spec requests_running(username()) :: %{String.t() => DateTime.t()}
+  def requests_running(username), do: Server.call(username, :requests_running)
+
+  @doc """
+  What MWT read of a request still running, by its `exchange_id`: its
+  exchange (`MWTClient.Sandbox.Exchange`) with no response yet, which
+  comes once it ends (`event/2`). Nil once it ended, or when MWT keeps
+  nothing of it until then.
+  """
+  @spec request_running(username(), String.t()) :: MWTClient.Sandbox.Exchange.t() | nil
+  def request_running(username, exchange_id),
+    do: Server.call(username, {:request_running, exchange_id})
 
   @doc """
   A card an action's decision names (`MWTClient.Sandbox.Decision`), as it

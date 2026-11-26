@@ -143,6 +143,19 @@ defmodule MWTClient.Sandbox.ExchangeTest do
     assert json["response"] == nil
   end
 
+  test "with nothing back, a note says why, kept through redact and in the JSON" do
+    assert Exchange.new(request(), nil, nil) == %{request: request(), response: nil}
+
+    exchange = Exchange.new(request(), nil, "Closed by MWT: nothing came for 300 s.")
+    redacted = Exchange.redact(exchange, & &1)
+    assert redacted.note == "Closed by MWT: nothing came for 300 s."
+    assert Exchange.to_json(redacted)["note"] == "Closed by MWT: nothing came for 300 s."
+
+    # A response says its own.
+    answer = Exchange.mwt_answer(502, "{}")
+    assert Exchange.new(request(), answer, "unused") == %{request: request(), response: answer}
+  end
+
   defp request do
     Exchange.request(%{
       method: "GET",

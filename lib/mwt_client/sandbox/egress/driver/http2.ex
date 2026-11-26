@@ -181,6 +181,10 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
   @impl true
   def describe(request), do: Describe.request(message(request))
 
+  @impl true
+  def unfinished(request, limit),
+    do: Exchange.new(Exchange.request(message(request), limit), nil, nil)
+
   ## The VM's bytes
 
   @impl true
@@ -1401,7 +1405,7 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
 
     done =
       if stream.request,
-        do: [{:done, stream.request, exchange(stream, response, h2.ctx.limit)}],
+        do: [{:done, stream.request, exchange(stream, response, h2.ctx.limit, note)}],
         else: []
 
     # What it took of the windows and never passed on goes back to them:
@@ -1579,10 +1583,11 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http2 do
 
   ## The log
 
-  defp exchange(stream, response, limit) do
+  # `note` says why it ended, kept when nothing came back.
+  defp exchange(stream, response, limit, note \\ nil) do
     vm = stream.record.sent_up
     request = %{vm | body: IO.iodata_to_binary([vm.body | stream.record.more])}
-    %{request: Exchange.request(request, limit), response: response}
+    Exchange.new(Exchange.request(request, limit), response, note)
   end
 
   # The body the VM sends after what MWT read before deciding, kept for the

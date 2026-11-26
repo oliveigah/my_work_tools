@@ -104,6 +104,19 @@ defmodule MWTClient.Storage.Journal do
   end
 
   @doc """
+  Keeps how long a request took, in milliseconds, to be written with the
+  next batch as the `ms` of every event that names `exchange_id` and says
+  none yet.
+  """
+  @spec record_took(String.t(), String.t(), non_neg_integer()) :: :ok
+  def record_took(username, exchange_id, ms) do
+    case Store.whereis(__MODULE__, username) do
+      nil -> :ok
+      pid -> GenServer.cast(pid, {:took, exchange_id, ms})
+    end
+  end
+
+  @doc """
   Keeps an event's details (`MWTClient.Sandbox.EventDetails`) to be
   written with the next batch, after the event itself, which is recorded
   first.
@@ -273,6 +286,8 @@ defmodule MWTClient.Storage.Journal do
        rows: [],
        exchanges: [],
        details: [],
+       # How long requests took, `{exchange_id, ms}`.
+       took: [],
        # Cards to keep, `{:card, id, at, blob}`.
        kept: [],
        count: 0,
@@ -300,6 +315,9 @@ defmodule MWTClient.Storage.Journal do
         bytes: state.bytes + byte_size(blob)
     })
   end
+
+  def handle_cast({:took, exchange_id, ms}, state),
+    do: waiting(%{state | took: [{exchange_id, ms} | state.took], count: state.count + 1})
 
   def handle_cast({:kept, record}, state) do
     blob = elem(record, tuple_size(record) - 1) |> elem(1)
@@ -358,7 +376,7 @@ defmodule MWTClient.Storage.Journal do
     :ok
   end
 
-  defp write(%{rows: [], exchanges: [], details: [], kept: [], lost: nil} = state),
+  defp write(%{rows: [], exchanges: [], details: [], took: [], kept: [], lost: nil} = state),
     do: cancel(state)
 
   defp write(state) do
@@ -366,6 +384,7 @@ defmodule MWTClient.Storage.Journal do
     rows = Enum.reverse(state.rows)
     exchanges = Enum.reverse(state.exchanges)
     details = Enum.reverse(state.details)
+    took = Enum.reverse(state.took)
     kept = Enum.reverse(state.kept)
 
     try do
@@ -374,6 +393,7 @@ defmodule MWTClient.Storage.Journal do
         for chunk <- Enum.chunk_every(rows, 40), do: insert(repo, chunk)
         for {exchange_id, blob} <- exchanges, do: insert_exchange(repo, exchange_id, blob)
         for {event_id, blob} <- details, do: insert_details(repo, event_id, blob)
+        for {exchange_id, ms} <- took, do: update_took(repo, exchange_id, ms)
         for record <- kept, do: insert_kept(repo, record)
       end)
 
@@ -389,6 +409,7 @@ defmodule MWTClient.Storage.Journal do
         | rows: [],
           exchanges: [],
           details: [],
+          took: [],
           kept: [],
           count: 0,
           bytes: 0,
@@ -442,6 +463,7 @@ defmodule MWTClient.Storage.Journal do
       | rows: [],
         exchanges: [],
         details: [],
+        took: [],
         kept: [],
         count: 0,
         bytes: 0,
@@ -531,6 +553,14 @@ defmodule MWTClient.Storage.Journal do
       ON CONFLICT (event_id) DO NOTHING
       """,
       [{:blob, blob}, exchange_id]
+    )
+  end
+
+  # Written after the events, in the same batch as theirs or a later one.
+  defp update_took(repo, exchange_id, ms) do
+    repo.query!(
+      "UPDATE events SET ms = ? WHERE exchange_id = ? AND ms IS NULL",
+      [ms, exchange_id]
     )
   end
 

@@ -379,9 +379,23 @@ defmodule MWTClientWeb.SandboxLive.Activity do
                   {bytes(event.up)} / {bytes(event.down)}
                 <% end %>
               </span>
-              <span class="hidden whitespace-nowrap text-right font-mono text-[10px] tabular-nums text-faint sm:block">
-                {took(event.ms)}
-              </span>
+              <%= if event.running do %>
+                <span
+                  id={"event-running-#{event.id}"}
+                  phx-hook=".Elapsed"
+                  phx-update="ignore"
+                  data-since={DateTime.to_unix(event.running, :millisecond)}
+                  title={"Still running, since #{Calendar.strftime(event.running, "%H:%M:%S")}"}
+                  class="hidden items-center justify-end gap-1 whitespace-nowrap font-mono text-[10px] tabular-nums text-accent sm:flex"
+                >
+                  <.icon name="hero-arrow-path-micro" class="size-3 shrink-0 animate-spin" />
+                  <span data-elapsed>running</span>
+                </span>
+              <% else %>
+                <span class="hidden whitespace-nowrap text-right font-mono text-[10px] tabular-nums text-faint sm:block">
+                  {took(event.ms)}
+                </span>
+              <% end %>
             </summary>
             <.details
               event={event}
@@ -448,6 +462,27 @@ defmodule MWTClientWeb.SandboxLive.Activity do
         },
         destroyed() {
           this.el.removeEventListener("toggle", this.onToggle)
+        },
+      }
+    </script>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".Elapsed">
+      // A request still running: how long so far, as the Took column says
+      // it once the request ends.
+      const took = (ms) => {
+        if (ms < 1000) return `${ms} ms`
+        if (ms < 60000) return `${(Math.round(ms / 100) / 10).toFixed(1)} s`
+        return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
+      }
+      export default {
+        mounted() {
+          const since = Number(this.el.dataset.since)
+          const label = this.el.querySelector("[data-elapsed]")
+          const tick = () => { label.textContent = took(Math.max(Date.now() - since, 0)) }
+          tick()
+          this.timer = setInterval(tick, 1000)
+        },
+        destroyed() {
+          clearInterval(this.timer)
         },
       }
     </script>
@@ -1054,7 +1089,9 @@ defmodule MWTClientWeb.SandboxLive.Activity do
               <span :if={@event.up || @event.down}>
                 ↑ {exact(@event.up)} · ↓ {exact(@event.down)} bytes
               </span>
-              <span :if={@event.ms}>· open {took(@event.ms)}</span>
+              <span :if={@event.ms}>
+                · {if @event.outcome == :tunnel, do: "open", else: "took"} {took(@event.ms)}
+              </span>
             </dd>
           <% end %>
           <%= if @event.agent || @event.thread_id do %>
@@ -1166,15 +1203,24 @@ defmodule MWTClientWeb.SandboxLive.Activity do
         <% is_map(@event.exchange) -> %>
           <div id={"event-exchange-#{@event.id}"} class="mt-3 grid gap-3 xl:grid-cols-2">
             <.request_panel event={@event} request={@event.exchange.request} />
-            <.response_panel event={@event} response={@event.exchange.response} />
+            <.response_panel
+              event={@event}
+              response={@event.exchange.response}
+              note={Map.get(@event.exchange, :note)}
+            />
           </div>
         <% @event.exchange == :none -> %>
           <p
             id={"event-exchange-#{@event.id}"}
             class="mt-3 flex items-center gap-1.5 text-[11px] text-faint"
           >
-            <.icon name="hero-information-circle-micro" class="size-3.5" />
-            Nothing of what it carried was kept: its connection hadn't ended yet, or it ended before anything came back.
+            <%= if @event.running do %>
+              <.icon name="hero-arrow-path-micro" class="size-3.5 animate-spin" />
+              Still running: what it carried shows here once it ends.
+            <% else %>
+              <.icon name="hero-information-circle-micro" class="size-3.5" />
+              Nothing of what it carried was kept: its request ended before MWT could keep it.
+            <% end %>
           </p>
         <% @event.exchange_id -> %>
           <p
@@ -1226,6 +1272,7 @@ defmodule MWTClientWeb.SandboxLive.Activity do
 
   attr :event, :any, required: true
   attr :response, :map, default: nil
+  attr :note, :string, default: nil, doc: "why nothing came back, when the log knows"
 
   defp response_panel(assigns) do
     ~H"""
@@ -1269,7 +1316,23 @@ defmodule MWTClientWeb.SandboxLive.Activity do
           headers={@response.headers}
         />
       <% else %>
-        <p class="px-3 py-3 text-[11px] text-faint">
+        <p
+          :if={@event.running}
+          id={"event-response-running-#{@event.id}"}
+          class="flex items-center gap-1.5 px-3 py-3 text-[11px] text-accent"
+        >
+          <.icon name="hero-arrow-path-micro" class="size-3.5 shrink-0 animate-spin" />
+          Still running: its response shows here once it ends.
+        </p>
+        <p
+          :if={is_nil(@event.running) and @note}
+          id={"event-response-note-#{@event.id}"}
+          class="flex items-start gap-1.5 px-3 py-3 text-[11px] text-warn-strong"
+        >
+          <.icon name="hero-information-circle-micro" class="mt-px size-3.5 shrink-0" />
+          Nothing came back. {@note}
+        </p>
+        <p :if={is_nil(@event.running) and is_nil(@note)} class="px-3 py-3 text-[11px] text-faint">
           Nothing came back: the connection ended before an answer.
         </p>
       <% end %>

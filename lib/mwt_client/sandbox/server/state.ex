@@ -19,6 +19,8 @@ defmodule MWTClient.Sandbox.Server.State do
   alias MWTClient.Storage.Documents
   alias MWTClient.Storage.Journal
 
+  alias MWTClient.Sandbox.Server.Running
+
   alias MWTClient.Sandbox.{
     Allowance,
     Approval,
@@ -262,6 +264,7 @@ defmodule MWTClient.Sandbox.Server.State do
       |> struct!(Map.merge(%{id: Event.new_id(), at: now(), decision: decision}, attrs))
       |> then(&%{&1 | details: EventDetails.new(details)})
       |> then(&%{&1 | detailed?: Event.details(&1) != nil})
+      |> then(&%{&1 | running: Running.since(state, &1.exchange_id)})
 
     Journal.record(state.username, Event.row(event))
 
@@ -576,6 +579,10 @@ defmodule MWTClient.Sandbox.Server.State do
       # ref => the process running it (`task/3`).
       task_pids: %{},
       running: %{},
+      # The requests MWT read that are still running, and their calls'
+      # monitors (`MWTClient.Sandbox.Server.Running`).
+      requests_running: %{},
+      request_monitors: %{},
       # What agents in the VM added with MWT's tools in the last hour, as
       # {monotonic ms, bytes} (`MWTClient.Sandbox.Server.Tools`).
       tool_creates: [],

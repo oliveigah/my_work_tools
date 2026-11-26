@@ -75,8 +75,9 @@ defmodule MWTClient.Sandbox.Egress.Driver do
       and `Tcp` reads a token grant's host with `Driver.Http1`, whatever
       its first bytes. A placeholder in another driver's request is a
       string out of place, which the core's look stops.
-    * **What the log keeps** of a request (`{:done, _, exchange}`) is an
-      HTTP exchange or nothing (`MWTClient.Sandbox.Exchange`).
+    * **What the log keeps** of a request (`{:done, _, exchange}`, and
+      `unfinished/2` for one its call never finished) is an HTTP exchange
+      or nothing (`MWTClient.Sandbox.Exchange`).
     * **Datagrams**: each action says what it would mean on UDP, but no
       core has carried one yet.
 
@@ -543,6 +544,19 @@ defmodule MWTClient.Sandbox.Egress.Driver do
   must describe what it can't make sense of rather than raise.
   """
   @callback describe(Request.t()) :: MWTClient.Sandbox.Describe.t()
+
+  @doc """
+  What the log keeps of `request` should its call end before the driver
+  says `{:done, request, exchange}` (a crash, a kill): the request as read
+  before its verdict, with no answer (`MWTClient.Sandbox.Exchange`), or
+  nil to keep nothing. The core asks as it judges the request, and the
+  sandbox holds it until the request ends. A driver without it keeps
+  nothing then.
+  """
+  @callback unfinished(Request.t(), limit :: non_neg_integer()) ::
+              MWTClient.Sandbox.Exchange.t() | nil
+
+  @optional_callbacks unfinished: 2
 
   @doc "The drivers MWT reads with, in the order they are asked."
   @spec all() :: [module()]

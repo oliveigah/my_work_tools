@@ -174,6 +174,10 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   @impl true
   def describe(request), do: Describe.request(message(request))
 
+  @impl true
+  def unfinished(request, limit),
+    do: Exchange.new(Exchange.request(message(request), limit), nil, nil)
+
   @doc """
   `headers` with each value the core said put in (an allowing verdict's
   `request` replacements) where its placeholder is, inside the headers it
@@ -1201,26 +1205,30 @@ defmodule MWTClient.Sandbox.Egress.Driver.Http1 do
   defp close(%{request: nil} = http, _note), do: {[:close], http}
 
   defp close(http, note) do
-    {[{:done, http.request, exchange(http, Exchange.response(http.record.sent, note))}, :close],
-     http}
+    response = Exchange.response(http.record.sent, note)
+    {[{:done, http.request, exchange(http, response, note)}, :close], http}
   end
 
   ## The log
 
   # A WebSocket's: its handshake, and each side's messages as its body.
-  defp exchange(%{ws: %{switched?: true} = ws} = http, response) do
-    %{request: request, response: response} = exchange(%{http | ws: nil}, response)
+  # `note` says why it ended, kept when nothing came back.
+  defp exchange(http, response, note \\ nil)
+
+  defp exchange(%{ws: %{switched?: true} = ws} = http, response, note) do
+    %{request: request} = exchange = exchange(%{http | ws: nil}, response, note)
 
     %{
-      request: %{request | body: WebSocket.log(ws.vm)},
-      response: response && %{response | body: WebSocket.log(ws.host)}
+      exchange
+      | request: %{request | body: WebSocket.log(ws.vm)},
+        response: response && %{response | body: WebSocket.log(ws.host)}
     }
   end
 
-  defp exchange(http, response) do
+  defp exchange(http, response, note) do
     vm = http.record.sent_up
     request = %{vm | body: IO.iodata_to_binary([vm.body | http.record.more])}
-    %{request: Exchange.request(request, http.ctx.limit), response: response}
+    Exchange.new(Exchange.request(request, http.ctx.limit), response, note)
   end
 
   # The body the VM sends after what MWT read before deciding, kept for the

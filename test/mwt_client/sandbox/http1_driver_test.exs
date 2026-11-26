@@ -309,4 +309,23 @@ defmodule MWTClient.Sandbox.Http1DriverTest do
     {actions, _http} = Http1.handle_data(:vm, :binary.copy("b", 70_000), http)
     assert actions == []
   end
+
+  test "a request whose host never answers keeps the request, and why nothing came back" do
+    head = "POST /v1/messages HTTP/1.1\r\nHost: api.example.com\r\ncontent-length: 2\r\n\r\n{}"
+    {[{:judge, request}, {:read, :vm, :infinity}], http} = Http1.handle_data(:vm, head, start())
+
+    # Should its call end before it does, the request as read is what stays.
+    assert %{request: %{method: "POST", path: "/v1/messages", body: %{data: "{}"}}, response: nil} =
+             Http1.unfinished(request, 65_536)
+
+    {_actions, http} =
+      Http1.handle_verdict(request.id, {:allow, %{request: [], answer: []}}, http)
+
+    {actions, _http} = Http1.handle_timeout(:host, http)
+
+    assert {:done, ^request, %{request: %{path: "/v1/messages"}, response: nil, note: note}} =
+             Enum.find(actions, &match?({:done, _, _}, &1))
+
+    assert note =~ "nothing came for"
+  end
 end

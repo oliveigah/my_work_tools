@@ -959,11 +959,16 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
     end
   end
 
+  # The request runs from here until its `{:done, _, _}` or this call's end
+  # (`MWTClient.Sandbox.Server.Running`): told first, so the sandbox knows
+  # it before any line the verdict logs, with what the log keeps of it
+  # should this call end first (`Driver.unfinished/2`).
   defp act(core, {:judge, request}) do
     parent = self()
     ref = make_ref()
     username = core.username
     fixed = Keyword.get(core.options, :fixed)
+    Server.cast(username, {:began, request.id, parent, unfinished(request, core.ctx.limit)})
 
     pid =
       spawn_link(fn ->
@@ -1027,6 +1032,12 @@ defmodule MWTClient.Sandbox.Egress.Tcp do
   end
 
   defp act(core, :close), do: {:stop, core}
+
+  # What the log keeps of a request its call never finished, if its driver
+  # says (`Driver.unfinished/2`).
+  defp unfinished(%{driver: driver} = request, limit) do
+    if function_exported?(driver, :unfinished, 2), do: driver.unfinished(request, limit)
+  end
 
   # What the driver passes up, counted, and stopped when the firewall says
   # so: the chunk that crosses a report waits for the answer.

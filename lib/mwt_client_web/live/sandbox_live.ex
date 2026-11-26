@@ -134,7 +134,14 @@ defmodule MWTClientWeb.SandboxLive do
        window: "day"
      })
      |> assign(:activity_threads, [])
-     |> assign(:activity, %{cursors: [], older?: false, shown: 0, oldest: nil, fresh: 0})
+     |> assign(:activity, %{
+       cursors: [],
+       older?: false,
+       shown: 0,
+       oldest: nil,
+       fresh: 0,
+       running: %{}
+     })
      |> assign(:activity_stats, nil)
      |> assign(:stats_timer, nil)
      |> assign(:settings_tab, "runtime")
@@ -2282,12 +2289,20 @@ defmodule MWTClientWeb.SandboxLive do
   end
 
   # An event opened in the log: what its request carried and got back, and
-  # its details, are read now, and the line drawn again with them.
+  # its details, are read now, and the line drawn again with them. A
+  # request still running shows what MWT read of it so far: its line stays
+  # marked running, and reads the rest once the request ends.
   def handle_event("open_event", %{"id" => id}, socket) when is_binary(id) do
     case Sandbox.event(socket.assigns.username, id) do
-      %Event{exchange: nil, details: [], decision: nil} -> {:noreply, socket}
-      %Event{} = event -> {:noreply, stream_insert(socket, :events, event)}
-      nil -> {:noreply, socket}
+      %Event{exchange: nil, details: [], decision: nil} ->
+        {:noreply, socket}
+
+      %Event{} = event ->
+        {event, socket} = still_running(socket, event)
+        {:noreply, stream_insert(socket, :events, event)}
+
+      nil ->
+        {:noreply, socket}
     end
   end
 
@@ -3037,6 +3052,19 @@ defmodule MWTClientWeb.SandboxLive do
     {:noreply, schedule_refresh(socket)}
   end
 
+  # A request ended: its lines stop being marked running and say how long
+  # it took; one opened while it ran reads what it carried now.
+  def handle_info({:sandbox_exchange, exchange_id, ms}, socket) do
+    case Map.pop(socket.assigns.activity.running, exchange_id) do
+      {nil, _running} ->
+        {:noreply, socket}
+
+      {events, running} ->
+        socket = update(socket, :activity, &%{&1 | running: running})
+        {:noreply, Enum.reduce(events, socket, &ended(&2, &1, ms))}
+    end
+  end
+
   def handle_info(:activity_stats, socket) do
     socket = assign(socket, :stats_timer, nil)
     {:noreply, if(socket.assigns.page == :activity, do: load_stats(socket), else: socket)}
@@ -3120,12 +3148,70 @@ defmodule MWTClientWeb.SandboxLive do
     |> assign(:activity, %{
       activity
       | shown: min(activity.shown + 1, @page_size),
-        older?: activity.older? or activity.shown >= @page_size
+        older?: activity.older? or activity.shown >= @page_size,
+        running: watch_running(activity.running, [event])
     })
   end
 
   defp take_event(socket, _event),
     do: update(socket, :activity, &%{&1 | fresh: &1.fresh + 1})
+
+  # The lines shown whose request still runs, by its exchange, each as
+  # drawn: until it ends, or the page loads its lines again.
+  defp watch_running(running, events) do
+    for %Event{running: %DateTime{}} = event <- events, reduce: running do
+      running -> Map.update(running, event.exchange_id, [event], &[event | &1])
+    end
+  end
+
+  # An opened line read again from the journal, which doesn't know its
+  # request runs: while nothing is kept, marked as the page shows it, with
+  # what MWT read of the request so far; kept opened, so its request's end
+  # draws it as it is then.
+  defp still_running(socket, event) do
+    running = socket.assigns.activity.running
+    shown = Map.get(running, event.exchange_id, [])
+
+    case Enum.find(shown, &(&1.id == event.id)) do
+      nil ->
+        {event, socket}
+
+      before ->
+        event = so_far(socket, %{event | running: before.running})
+        others = Enum.reject(shown, &(&1.id == event.id))
+        running = Map.put(running, event.exchange_id, [event | others])
+        {event, update(socket, :activity, &%{&1 | running: running})}
+    end
+  end
+
+  defp so_far(socket, %Event{exchange: :none} = event) do
+    case Sandbox.request_running(socket.assigns.username, event.exchange_id) do
+      %{} = exchange -> %{event | exchange: exchange}
+      nil -> event
+    end
+  end
+
+  # Its exchange is kept: the request ended.
+  defp so_far(_socket, event), do: %{event | running: nil}
+
+  # Only a line the page still shows is drawn again: one gone with a newer
+  # page, or a page left, isn't brought back. An opened one reads what its
+  # request carried, if it was kept.
+  defp ended(socket, %Event{exchange: exchange} = event, ms) when not is_nil(exchange) do
+    event =
+      case Sandbox.event(socket.assigns.username, event.id) do
+        %Event{} = read -> read
+        nil -> event
+      end
+
+    stream_insert(socket, :events, %{event | running: nil, ms: ms || event.ms}, update_only: true)
+  end
+
+  defp ended(socket, event, ms),
+    do:
+      stream_insert(socket, :events, %{event | running: nil, ms: ms || event.ms},
+        update_only: true
+      )
 
   defp schedule_refresh(%{assigns: %{refresh_timer: nil}} = socket) do
     assign(socket, :refresh_timer, Process.send_after(self(), :refresh, @refresh_every))
@@ -3670,8 +3756,12 @@ defmodule MWTClientWeb.SandboxLive do
   defp paged(socket), do: push_event(socket, "activity_paged", %{})
 
   # `cursors` are the ids each older page starts after, the current page's
-  # first; none is the newest page.
+  # first; none is the newest page. The requests running are asked before
+  # the lines are read: one that ends between has its line say how long it
+  # took, or hears of its end after.
   defp load_events(socket, cursors) do
+    running = Sandbox.requests_running(socket.assigns.username)
+
     filters =
       socket
       |> query_filters()
@@ -3684,6 +3774,7 @@ defmodule MWTClientWeb.SandboxLive do
       end)
 
     {page, rest} = socket.assigns.username |> Sandbox.events(filters) |> Enum.split(@page_size)
+    page = Enum.map(page, &mark_running(&1, running))
 
     socket
     |> assign(:activity, %{
@@ -3691,10 +3782,16 @@ defmodule MWTClientWeb.SandboxLive do
       older?: rest != [],
       shown: length(page),
       oldest: page |> List.last() |> then(&(&1 && &1.id)),
-      fresh: 0
+      fresh: 0,
+      running: watch_running(%{}, page)
     })
     |> stream(:events, page, reset: true)
   end
+
+  defp mark_running(%Event{exchange_id: id, ms: nil} = event, running) when is_binary(id),
+    do: %{event | running: Map.get(running, id)}
+
+  defp mark_running(event, _running), do: event
 
   defp assign_vm_form(socket) do
     settings = socket.assigns.settings

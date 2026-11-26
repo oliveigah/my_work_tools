@@ -18,6 +18,10 @@ defmodule MWTClient.Sandbox.Exchange do
       and the body, chunked framing and gzip or deflate undone, at most
       the limit of it. When MWT answered itself (a refusal, a denial, an
       answer it could not read), the response is that answer.
+    * **The note**, when nothing came back, says why the request ended
+      without an answer (`new/3`): MWT gave up waiting, the connection
+      closed or failed, or MWT's connection for it ended first, which keeps
+      the request only as MWT read it before deciding.
 
   The limit is how much of each body the log keeps, your setting
   (`MWTClient.Sandbox.Settings`, `log_body_kib`): `body_limit/0` (64 KiB)
@@ -58,7 +62,11 @@ defmodule MWTClient.Sandbox.Exchange do
           note: String.t() | nil
         }
 
-  @type t :: %{request: request(), response: response() | nil}
+  @type t :: %{
+          required(:request) => request(),
+          required(:response) => response() | nil,
+          optional(:note) => String.t()
+        }
 
   @typedoc "The bytes sent to the VM so far, the first of them kept, at most `limit` of a body."
   @opaque capture :: %{
@@ -71,6 +79,16 @@ defmodule MWTClient.Sandbox.Exchange do
   @doc "The most of a body kept, in bytes, unless you set another limit."
   @spec body_limit() :: pos_integer()
   def body_limit, do: @body_limit
+
+  @doc """
+  An exchange: `request`, and `response` or nil when nothing came back,
+  then with `note` saying why it ended so. A response says its own note.
+  """
+  @spec new(request(), response() | nil, String.t() | nil) :: t()
+  def new(request, nil, note) when is_binary(note),
+    do: %{request: request, response: nil, note: note}
+
+  def new(request, response, _note), do: %{request: request, response: response}
 
   @doc "A fresh id, which ties an exchange to the events of its request."
   @spec new_id() :: String.t()
@@ -221,21 +239,22 @@ defmodule MWTClient.Sandbox.Exchange do
   through `fun`: how the server hides real values before it is kept.
   """
   @spec redact(t(), (binary() -> binary())) :: t()
-  def redact(%{request: request, response: response}, fun) do
+  def redact(%{request: request, response: response} = exchange, fun) do
     %{
-      request: %{
-        request
-        | path: fun.(request.path),
-          headers: redact_headers(request.headers, fun),
-          body: redact_body(request.body, fun)
-      },
-      response:
-        response &&
-          %{
-            response
-            | headers: redact_headers(response.headers, fun),
-              body: redact_body(response.body, fun)
-          }
+      exchange
+      | request: %{
+          request
+          | path: fun.(request.path),
+            headers: redact_headers(request.headers, fun),
+            body: redact_body(request.body, fun)
+        },
+        response:
+          response &&
+            %{
+              response
+              | headers: redact_headers(response.headers, fun),
+                body: redact_body(response.body, fun)
+            }
     }
   end
 
@@ -252,8 +271,8 @@ defmodule MWTClient.Sandbox.Exchange do
   bytes as base64.
   """
   @spec to_json(t()) :: map()
-  def to_json(%{request: request, response: response}) do
-    %{
+  def to_json(%{request: request, response: response} = exchange) do
+    json = %{
       "request" =>
         %{
           "method" => request.method,
@@ -275,6 +294,11 @@ defmodule MWTClient.Sandbox.Exchange do
           |> Map.merge(body_json(response.body, response.headers))
           |> Map.reject(fn {_key, value} -> is_nil(value) end)
     }
+
+    case exchange do
+      %{note: note} when is_binary(note) -> Map.put(json, "note", note)
+      _none -> json
+    end
   end
 
   defp headers_json(headers) do

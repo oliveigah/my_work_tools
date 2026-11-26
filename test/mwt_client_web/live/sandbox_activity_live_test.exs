@@ -326,6 +326,134 @@ defmodule MWTClientWeb.SandboxActivityLiveTest do
     assert has_element?(view, "#event-exchange-event-a2", "Passed through as bytes")
   end
 
+  # The sandbox handles what was sent to it before, and the page what the
+  # sandbox told it since.
+  defp settled(username, view) do
+    _ = :sys.get_state(GenServer.whereis(MWTClient.Vault.Store.via(Server, username)))
+    render(view)
+  end
+
+  # A request's call, as the proxy runs one: alive until it is told to end.
+  defp call_process do
+    pid = spawn(fn -> receive do: (:stop -> :ok) end)
+    on_exit(fn -> Process.exit(pid, :kill) end)
+    pid
+  end
+
+  test "a running request's line is marked and shows its request; once it ends, the response and how long it took",
+       %{conn: conn, username: username} do
+    alias MWTClient.Sandbox.Exchange
+
+    request =
+      Exchange.request(%{
+        method: "POST",
+        host: "api.anthropic.com",
+        path: "/v1/messages",
+        headers: [{"content-type", "application/json"}],
+        body: ~s({"stream":true})
+      })
+
+    Server.cast(
+      username,
+      {:began, "exchange-running", call_process(), Exchange.new(request, nil, nil)}
+    )
+
+    put_events(username, [
+      event(1, :read, "api.anthropic.com", %{
+        method: "POST",
+        path: "/v1/messages",
+        exchange_id: "exchange-running"
+      })
+    ])
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+    assert has_element?(view, "#event-running-event-a1[data-since]")
+
+    # Opened while it runs: the request as MWT read it, the response to come.
+    render_hook(view, "open_event", %{"id" => "event-a1"})
+    assert has_element?(view, "#event-running-event-a1")
+    assert has_element?(view, "#event-request-event-a1", ~s("stream"))
+    assert has_element?(view, "#event-response-running-event-a1", "Still running")
+
+    response =
+      Exchange.capture()
+      |> Exchange.capture("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n")
+      |> Exchange.capture("event: message_stop\n\n")
+      |> Exchange.response(nil)
+
+    # The request ends: the sandbox keeps it, and the open line reads it.
+    Server.cast(
+      username,
+      {:exchange, "exchange-running", %{request: request, response: response}}
+    )
+
+    settled(username, view)
+
+    refute has_element?(view, "#event-running-event-a1")
+    assert has_element?(view, "#event-response-status-event-a1", "200 OK")
+    assert has_element?(view, "#event-event-a1 summary", ~r/\d+(\.\d)? m?s\b/)
+
+    # The journal keeps how long it took.
+    :ok = MWTClient.Storage.Journal.flush(username)
+    assert [%Event{ms: ms}] = MWTClient.Sandbox.events(username, %{q: "api.anthropic.com"})
+    assert is_integer(ms)
+  end
+
+  test "a request whose call ends first stops running, and keeps the request as MWT read it", %{
+    conn: conn,
+    username: username
+  } do
+    alias MWTClient.Sandbox.Exchange
+
+    call = call_process()
+
+    unfinished =
+      Exchange.new(
+        Exchange.request(%{
+          method: "POST",
+          host: "api.anthropic.com",
+          path: "/v1/messages",
+          headers: [{"content-type", "application/json"}],
+          body: ~s({"model":"m"})
+        }),
+        nil,
+        nil
+      )
+
+    Server.cast(username, {:began, "exchange-cut", call, unfinished})
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/activity")
+
+    # Its line comes while the page is open, marked running.
+    Server.cast(
+      username,
+      {:log,
+       %{
+         outcome: :read,
+         summary: "POST api.anthropic.com/v1/messages",
+         host: "api.anthropic.com",
+         method: "POST",
+         path: "/v1/messages",
+         exchange_id: "exchange-cut"
+       }}
+    )
+
+    settled(username, view)
+    [event] = MWTClient.Sandbox.events(username, %{q: "api.anthropic.com"})
+    assert has_element?(view, "#event-running-#{event.id}")
+    render_hook(view, "open_event", %{"id" => event.id})
+    assert has_element?(view, "#event-response-running-#{event.id}")
+
+    ref = Process.monitor(call)
+    send(call, :stop)
+    assert_receive {:DOWN, ^ref, :process, ^call, _reason}
+    settled(username, view)
+
+    refute has_element?(view, "#event-running-#{event.id}")
+    assert has_element?(view, "#event-request-#{event.id}", ~s("model"))
+    assert has_element?(view, "#event-response-note-#{event.id}", "only the request is kept")
+  end
+
   test "a line opens to its details: an edited grant says what changed, and what it is", %{
     conn: conn,
     username: username

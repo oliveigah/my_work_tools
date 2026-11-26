@@ -41,7 +41,9 @@ defmodule MWTClient.Sandbox.Event do
   `exchange_id` ties the events of a request MWT read to what it carried
   and what came back (`MWTClient.Sandbox.Exchange`), kept apart in the
   journal; `exchange` holds it once a page has read it, and is never
-  written with the event.
+  written with the event. While that request runs, `running` says since
+  when (`MWTClient.Sandbox.Server.Running`), also never written; once it
+  ends, `ms` says how long it took.
 
   `details` is what the event says when its line opens
   (`MWTClient.Sandbox.EventDetails`): given when it is logged, kept apart
@@ -76,6 +78,7 @@ defmodule MWTClient.Sandbox.Event do
     :thread,
     :exchange_id,
     :exchange,
+    :running,
     :details,
     :decision,
     detailed?: false
@@ -121,6 +124,7 @@ defmodule MWTClient.Sandbox.Event do
           thread: String.t() | nil,
           exchange_id: String.t() | nil,
           exchange: MWTClient.Sandbox.Exchange.t() | :none | nil,
+          running: DateTime.t() | nil,
           decision: MWTClient.Sandbox.Decision.t() | nil,
           details: MWTClient.Sandbox.EventDetails.t() | nil,
           detailed?: boolean()
