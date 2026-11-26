@@ -36,9 +36,9 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
       resource: %{
         name: "GitHub personal",
         purpose: "gh, as me",
-        value: "ghp_real-value",
         env: "GH_TOKEN"
-      }
+      },
+      credential_password: "ghp_real-value"
     )
     |> render_submit()
 
@@ -229,7 +229,7 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
     assert has_element?(view, "#grant-filters-clear")
   end
 
-  test "a resource an agent proposed is reviewed from its card, on its page", %{
+  test "a proposed stored credential can be accepted and given a value in Settings", %{
     conn: conn,
     username: username
   } do
@@ -255,6 +255,80 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
     view |> element("#review-ask-#{ask.id}") |> render_click()
     assert_patch(view, ~p"/tools/sandbox/resources/credential/stripe-test")
     assert has_element?(view, "#resource-review", "claude proposed this credential")
+
+    view |> element("#resource-accept") |> render_click()
+    assert has_element?(view, "#credential-source", "No value yet")
+
+    assert has_element?(
+             view,
+             "#resource-settings-form #resource-settings-password[type=password]"
+           )
+
+    assert has_element?(
+             view,
+             ~s(#resource-settings-password-field[phx-hook="MWTClientWeb.SandboxLive.ResourcePages.ResourcePassword"])
+           )
+
+    settings = "#resource-settings-form"
+    value = "sk_test_pasted-value"
+
+    html = view |> form(settings, credential_password: value) |> render_change()
+    refute html =~ value
+    assert has_element?(view, "#resource-settings-save:not([disabled])")
+
+    html =
+      view
+      |> form(settings, resource: %{name: ""}, credential_password: value)
+      |> render_submit()
+
+    assert has_element?(view, "#resource-error-name")
+    refute html =~ value
+    refute Sandbox.snapshot(username).credential_values["stripe-test"]
+
+    html =
+      view
+      |> form(settings, resource: %{name: "Stripe test"}, credential_password: value)
+      |> render_submit()
+
+    assert_push_event(view, "clear-resource-password", %{})
+    assert has_element?(view, "#credential-source", "Stored in your vault")
+    assert has_element?(view, "#resource-settings-form", "Leave blank to keep the saved value.")
+    assert Sandbox.snapshot(username).credential_values["stripe-test"]
+    refute html =~ value
+
+    view |> form(settings, credential_password: "sk_test_canceled") |> render_change()
+    view |> element("#resource-settings-cancel") |> render_click()
+    assert_push_event(view, "clear-resource-password", %{})
+
+    view |> form(settings, resource: %{name: "Stripe renamed"}) |> render_submit()
+    assert has_element?(view, "#resource-name", "Stripe renamed")
+    assert Sandbox.snapshot(username).credential_values["stripe-test"]
+  end
+
+  test "switching to a stored credential accepts a value in the same save", %{
+    conn: conn,
+    username: username
+  } do
+    assert {:ok, credential} =
+             Sandbox.create_resource(username, :credential, %{
+               "name" => "Minted",
+               "purpose" => "Switch to a pasted value",
+               "source" => "minted",
+               "mint" => "echo example"
+             })
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/resources/credential/#{credential.id}")
+    refute has_element?(view, "#resource-settings-password")
+
+    view |> form("#resource-settings-form", resource: %{source: "stored"}) |> render_change()
+    assert has_element?(view, "#resource-settings-password[type=password]")
+
+    view
+    |> form("#resource-settings-form", resource: %{source: "stored"}, credential_password: "demo")
+    |> render_submit()
+
+    assert [%{id: "minted", source: :stored}] = Sandbox.snapshot(username).credentials
+    assert Sandbox.snapshot(username).credential_values[credential.id]
   end
 
   test "the Resources tab is one list: each with its grants, how many are on and its last use, found by kind, state and words",

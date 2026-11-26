@@ -611,6 +611,8 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
                   form={@settings.form}
                   errors={@settings.errors}
                   editing={@found.id}
+                  settings?={true}
+                  has_value={has_value?(@found, @credential_values)}
                 />
               <% else %>
                 <.network_fields form={@settings.form} errors={@settings.errors} />
@@ -1155,10 +1157,21 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
   attr :form, :any, required: true
   attr :errors, :map, required: true
   attr :editing, :any, required: true
+  attr :settings?, :boolean, default: false
+  attr :has_value, :boolean, default: false
 
   defp credential_fields(assigns) do
+    # A top-level password key is filtered from both decoded and form-encoded logs.
+    password = %{
+      assigns.form[:password]
+      | id: if(assigns.settings?, do: "resource-settings-password", else: "resource-password"),
+        name: "credential_password",
+        value: nil
+    }
+
     assigns =
       assign(assigns,
+        password: password,
         minted?: assigns.form[:source].value == "minted",
         adapter: to_string(assigns.form[:adapter].value || "bearer"),
         adapters: MWTClient.Sandbox.Adapter.all()
@@ -1175,19 +1188,32 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
       ]}
       value={if(@minted?, do: "minted", else: "stored")}
     />
-    <div :if={not @minted? and is_nil(@editing)}>
+    <div :if={not @minted?} id={"#{@password.id}-field"} phx-hook=".ResourcePassword">
       <.text_field
-        field={@form[:value]}
+        field={@password}
         type="password"
         label="Value (optional now)"
-        autocomplete="off"
-        placeholder="Until you paste it, every use is refused"
+        autocomplete="new-password"
+        placeholder="Paste the value"
+        hint={
+          if(@has_value,
+            do: "Leave blank to keep the saved value.",
+            else: "Until you paste a value, every use is refused."
+          )
+        }
+        phx-update="ignore"
       />
       <.field_error errors={@errors} field={:value} />
     </div>
-    <p :if={not @minted? and @editing} class="text-[11px] text-muted">
-      Replace the value under Its value.
-    </p>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".ResourcePassword">
+      export default {
+        mounted() {
+          this.handleEvent("clear-resource-password", () => {
+            this.el.querySelector("input").value = ""
+          })
+        }
+      }
+    </script>
     <div :if={@minted?}>
       <.text_field
         field={@form[:mint]}

@@ -180,8 +180,16 @@ defmodule MWTClient.Sandbox.Server do
   defp sealed({:create_grant, %{"value" => value} = attrs}) when is_binary(value),
     do: {:create_grant, %{attrs | "value" => fn -> value end}}
 
-  defp sealed({:set_value, id, value}) when is_binary(value),
-    do: {:set_value, id, fn -> value end}
+  defp sealed({:create_resource, :credential, %{"value" => value} = attrs}) when is_binary(value),
+    do: {:create_resource, :credential, %{attrs | "value" => fn -> value end}}
+
+  defp sealed({:update_resource, {:credential, _id} = resource, %{"value" => value} = attrs})
+       when is_binary(value),
+       do: {:update_resource, resource, %{attrs | "value" => fn -> value end}}
+
+  defp sealed({operation, id, value})
+       when operation in [:set_value, :set_credential_value] and is_binary(value),
+       do: {operation, id, fn -> value end}
 
   defp sealed(message), do: message
 

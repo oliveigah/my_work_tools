@@ -1316,17 +1316,18 @@ defmodule MWTClientWeb.SandboxLive do
   def handle_event("close_resource_form", _params, socket),
     do: {:noreply, assign(socket, :resource_form, nil)}
 
-  def handle_event("save_resource", %{"resource" => params}, socket) do
+  def handle_event("save_resource", %{"resource" => params} = event, socket) do
     %{kind: kind, editing: editing} = socket.assigns.resource_form
     username = socket.assigns.username
+    attrs = Map.put(params, "value", event["credential_password"])
 
     socket =
       assign(socket, :resource_form_then, Map.get(socket.assigns.resource_form, :then_grant))
 
     result =
       if editing,
-        do: Sandbox.update_resource(username, {kind, editing}, params),
-        else: Sandbox.create_resource(username, kind, params)
+        do: Sandbox.update_resource(username, {kind, editing}, attrs),
+        else: Sandbox.create_resource(username, kind, attrs)
 
     case result do
       {:ok, resource} ->
@@ -1377,16 +1378,24 @@ defmodule MWTClientWeb.SandboxLive do
   end
 
   def handle_event("resource_settings_cancel", _params, socket),
-    do: {:noreply, socket |> assign(:resource_settings, nil) |> resource_settings()}
+    do:
+      {:noreply,
+       socket
+       |> assign(:resource_settings, nil)
+       |> resource_settings()
+       |> push_event("clear-resource-password", %{})}
 
-  def handle_event("resource_settings_save", %{"resource" => params}, socket) do
-    case Sandbox.update_resource(socket.assigns.username, socket.assigns.resource, params) do
+  def handle_event("resource_settings_save", %{"resource" => params} = event, socket) do
+    attrs = Map.put(params, "value", event["credential_password"])
+
+    case Sandbox.update_resource(socket.assigns.username, socket.assigns.resource, attrs) do
       {:ok, resource} ->
         {:noreply,
          socket
          |> put_notice(:success, "#{resource.name} saved")
          |> assign(:resource_settings, nil)
-         |> refresh()}
+         |> refresh()
+         |> push_event("clear-resource-password", %{})}
 
       {:error, %{} = errors} ->
         {:noreply,

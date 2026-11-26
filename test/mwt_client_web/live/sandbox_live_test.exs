@@ -349,9 +349,9 @@ defmodule MWTClientWeb.SandboxLiveTest do
           name: "Stripe",
           purpose: "A Stripe test key",
           env: "STRIPE_API_KEY",
-          prefix: "sk_test_",
-          value: "sk_test_real-value"
-        }
+          prefix: "sk_test_"
+        },
+        credential_password: "sk_test_real-value"
       )
       |> render_submit()
 

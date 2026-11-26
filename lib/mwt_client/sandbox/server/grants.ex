@@ -969,9 +969,8 @@ defmodule MWTClient.Sandbox.Server.Grants do
               else: grant
 
           {:ok, started(grant),
-           if(minted? or valueless? or kind in [:network, :command, :request],
-             do: nil,
-             else: blank_to_nil(State.opened(attrs["value"]))
+           if(kind == :token and not minted?,
+             do: blank_to_nil(State.opened(attrs["value"]))
            )}
 
         errors ->
