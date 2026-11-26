@@ -147,7 +147,7 @@ defmodule MWTClient.Transfer.Archive do
 
   # Plain `binary_to_term/1` for the reason given in `MWTClient.Vault.open/2`.
   # Unlike a vault file an export can come from elsewhere, but only from
-  # someone who held its key; `docs/transfer.md` covers what that trusts.
+  # someone who held its key; `docs/architecture.md` covers what that trusts.
   defp decompress(compressed) when is_binary(compressed) do
     {:ok, :erlang.binary_to_term(compressed)}
   rescue

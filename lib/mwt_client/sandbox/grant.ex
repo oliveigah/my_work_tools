@@ -136,7 +136,7 @@ defmodule MWTClient.Sandbox.Grant do
   that would refuse or ask about it; off, it doesn't match, and the other
   grants decide.
 
-  See `docs/agent_sandbox.md` for the whole model.
+  `docs/architecture.md` has the whole model.
   """
 
   alias MWTClient.Sandbox.{Allowance, EventDetails, Param}

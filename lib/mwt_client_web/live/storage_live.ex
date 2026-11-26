@@ -1,7 +1,7 @@
 defmodule MWTClientWeb.StorageLive do
   @moduledoc """
   Storage: what MWT keeps for the signed-in identity, what it takes on
-  this machine, and for how long (docs/storage.md).
+  this machine, and for how long.
 
     * **What you made** - notes, diagrams, flash cards and the small state
       the apps keep whole: counted and measured, never removed by a rule.

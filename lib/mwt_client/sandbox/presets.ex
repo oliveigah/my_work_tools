@@ -32,7 +32,7 @@ defmodule MWTClient.Sandbox.Presets do
   The VM-side details come from the checks of 2026-11-11: `gh` sends
   `Authorization: token`, git sends the token as the Basic password after a
   401, Hex sends the whole header value, gcloud reads a bearer token from the
-  file `CLOUDSDK_AUTH_ACCESS_TOKEN_FILE` names. See `docs/agent_sandbox.md`.
+  file `CLOUDSDK_AUTH_ACCESS_TOKEN_FILE` names.
   """
   @typedoc """
   A type or a preset. `fields` are the form's params it starts from

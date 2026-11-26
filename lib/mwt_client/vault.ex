@@ -11,7 +11,7 @@ defmodule MWTClient.Vault do
   needs the data key sealed again; the databases stay as they are.
 
   Every primitive here comes from `:crypto`; nothing is hand rolled. The
-  databases' own encryption is SQLite3 Multiple Ciphers' (docs/storage.md).
+  databases' own encryption is SQLite3 Multiple Ciphers' (docs/architecture.md).
   """
 
   @version 1

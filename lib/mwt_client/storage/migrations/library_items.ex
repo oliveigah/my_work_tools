@@ -1,7 +1,7 @@
 defmodule MWTClient.Storage.Migrations.LibraryItems do
   @moduledoc """
   `library.db`, version 1: notes, diagrams, flash cards, their versions,
-  and the small documents kept whole (docs/storage.md).
+  and the small documents kept whole.
 
   Every item has an `id`, the one MWT has always given it, and a `seq`,
   the row's own number, which the search index points at. Times are

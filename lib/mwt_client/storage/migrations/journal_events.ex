@@ -1,7 +1,7 @@
 defmodule MWTClient.Storage.Migrations.JournalEvents do
   @moduledoc """
-  `journal.db`, version 2: agent activity, one row per event
-  (docs/storage.md), as `MWTClient.Storage.Journal` writes them.
+  `journal.db`, version 2: agent activity, one row per event, as
+  `MWTClient.Storage.Journal` writes them.
 
   `seq` is the order they were recorded in, which the activity log reads
   them by; `id` is the event's own, which a page holds to ask for what

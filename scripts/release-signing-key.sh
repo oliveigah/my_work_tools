@@ -6,7 +6,7 @@ if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
   printf 'Make the Ed25519 key that signs releases: the public half goes to\n'
   printf 'priv/release_signing_key.pub, the private half to PRIVATE_KEY_FILE\n'
   printf '(default ~/.config/mwt/release-signing-key.pem), never overwritten.\n'
-  printf 'Run it on your own machine. See docs/releases.md.\n'
+  printf 'Run it on your own machine. See Releases in README.md.\n'
   exit 0
 fi
 [[ $# -le 1 ]] || { printf 'At most one argument. Use --help for usage.\n' >&2; exit 1; }

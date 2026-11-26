@@ -3,7 +3,7 @@ defmodule MWTClient.Storage.ImportCheck do
   Compares what an identity kept before its databases (its `.bin` files
   and `versions/`, beside the databases or under `legacy/`) with what the
   apps read from the databases now: to check the import on a copy of real
-  data (`scripts/check-storage-import.exs`, docs/storage.md).
+  data (`scripts/check-storage-import.exs`).
 
   It reports counts, ids and the names of fields that differ, never what
   an item says, so its report can be pasted into a thread. Times are

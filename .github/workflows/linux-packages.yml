@@ -104,7 +104,7 @@ jobs:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
         run: |
           if [[ -z "$RELEASE_SIGNING_KEY" ]]; then
-            printf 'The RELEASE_SIGNING_KEY secret is not set. See docs/releases.md.\n' >&2
+            printf 'The RELEASE_SIGNING_KEY secret is not set. See Releases in README.md.\n' >&2
             exit 1
           fi
           umask 077

@@ -1,6 +1,6 @@
 defmodule MWTClient.Storage do
   @moduledoc """
-  An unlocked identity's databases, encrypted page by page (docs/storage.md):
+  An unlocked identity's databases, encrypted page by page (docs/architecture.md):
 
     * `:library` (`library.db`) - what you make;
     * `:journal` (`journal.db`) - what happens, agent activity written

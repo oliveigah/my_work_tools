@@ -2,7 +2,7 @@ defmodule MWTClient.Storage.Migrations.JournalEventExchanges do
   @moduledoc """
   `journal.db`, version 3: what a request MWT read carried, and what came
   back to the VM (`MWTClient.Sandbox.Exchange`), kept with the request's
-  events (docs/storage.md).
+  events.
 
   An event of such a request names its exchange (`events.exchange_id`);
   `events_exchanges` holds the exchange once per event that names it, as a

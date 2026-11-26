@@ -12,9 +12,10 @@ This is a web application written using the Phoenix web framework.
 - To see the app running, use the run-mwt skill: it gives the dev server a
   port and a data folder of its own. Never run one against `~/.mwt_client`,
   and don't run `msb` yourself: both belong to the MWT the user runs.
-- A document that matters only at one point in time, and afterwards only as
-  history (a review, an audit), goes in `docs/dated/`, named
-  `YYYYMMDD-name.md`.
+- `docs/architecture.md` is the one document: the mental models and the
+  decisions behind them. Change it when a model changes; what code and
+  tests say stays there. Reviews, audits and plans aren't kept in the
+  repository.
 - What agents read has byte budgets (`instructions_test.exs`): this file,
   `priv/sandbox/agents.md`, its guides and the way-of-working example.
   Make room before adding; raising a budget is the user's call.

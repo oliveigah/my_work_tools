@@ -1,8 +1,7 @@
 defmodule MWTClient.Sandbox.Pins do
   @moduledoc """
   The files a command on your machine runs, pinned: what you approve is
-  each file as it was when you looked, not whatever it holds when it runs
-  (docs/grant_mental_model.md, Q10).
+  each file as it was when you looked, not whatever it holds when it runs.
 
   A command's text shows what it runs, but not what a file it runs holds
   (`./deploy.sh`), and that file may change between your look and the run:

@@ -368,7 +368,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert {:ok, "placeholder\n"} = exec.("echo $MWT_TEST")
     assert {:ok, "legacy\n"} = exec.("test -n \"$GITHUB_TOKEN\" && echo legacy")
 
-    ## Guarantee 11: the process running the VM
+    ## The process running the VM
 
     pid = machine_pid(name)
     assert pid, "no msb machine process for #{name}"
@@ -396,7 +396,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
     assert status =~ ~r/^CapEff:\s+0+$/m
     assert status =~ ~r/^CapBnd:\s+0+$/m
 
-    ## Guarantees 6 and 12: out only through MWT, DNS included
+    ## Out only through MWT, DNS included
 
     assert {:ok, "<!doctype html>"} = exec.("wget -q -T 30 -O - http://example.com/ | head -c 15")
     assert [%{port: 80} | _] = events(username, :tunnel)
@@ -707,7 +707,7 @@ defmodule MWTClient.Sandbox.VMLiveTest do
                "cat /work/marker /root/marker; test -e /var/marker || echo the root disk is new"
              )
 
-    ## Guarantee 6: a locked MWT leaves the VM without internet
+    ## A locked MWT leaves the VM without internet
 
     :ok = Store.close(username)
     assert Bubble.status(username) == :running

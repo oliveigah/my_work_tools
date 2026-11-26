@@ -76,7 +76,8 @@ makes it easy to work with.
   tools), described in my own words and on only for as long as a task
   needs it. The VM only ever sees a placeholder, which MWT swaps for the
   real value on the way out, and only towards the hosts a grant lists.
-  How grants work is in [docs/grants.md](docs/grants.md).
+  How grants work is in
+  [docs/architecture.md](docs/architecture.md#grants-the-mental-model).
 - **I approve what matters.** Requests that use a credential, and commands
   an agent wants to run on my machine, wait for my yes on a card that shows
   exactly what will happen.
@@ -94,14 +95,13 @@ makes it easy to work with.
   my repositories are cloned in with my machine as `host-origin`, `git fetch`
   brings my branches, and a push is refused. Agents work on their own
   branch in a _worktree slot_, where builds start warm, and leave their
-  changes uncommitted. I review them in Zed and ask for more; when it's
-  right they hand it off, and in MWT I land it, send it back with a note,
-  or close it, much like a pull request.
+  changes uncommitted. I review them in Zed and ask for more there; when
+  it's right they hand it off, and in MWT I land it or close it, much like
+  a pull request.
 - **Zed does the heavy lifting.** With Zed's remote development, the editor
   runs on my machine while the files, terminals, language servers and
   agents run in the VM, so it feels local. MWT only sets up SSH and opens
-  projects in Zed; its **Claude (MWT)** and **Codex (MWT)** entries just let
-  it talk back to a thread.
+  projects in Zed.
 - **My machine and the VM, a step apart.** What needs to cross does so
   easily, always through MWT. Servers an agent starts on ports 4100 to 4199
   open on my machine by themselves. Folders I share show up in the VM at
@@ -148,8 +148,8 @@ One place for all of it:
 It keeps agents from acting as me beyond what I allow, and keeps what they
 run off my machine. It doesn't stop an agent from uploading what I gave the
 VM (the firewall only catches the obvious), and code from a handoff I land
-runs when I build it: reviewing it is my part. The full threat model is in
-[docs/agent_sandbox.md](docs/agent_sandbox.md#threat-model).
+runs when I build it: reviewing it is my part. The threat model is in
+[docs/architecture.md](docs/architecture.md#what-it-defends-against).
 
 All of this is what it is designed to do. Until that thorough review, read
 its guarantees as intentions rather than promises.
@@ -161,8 +161,8 @@ user namespaces, `podman` to build the VM's image, and e2fsprogs for its
 disks. The **Setup** page checks each one and says what is missing. To work
 in the VM, [Zed](https://zed.dev).
 
-The whole design, part by part, is in
-[docs/agent_sandbox.md](docs/agent_sandbox.md).
+How it works, and why it is built this way, is in
+[docs/architecture.md](docs/architecture.md).
 
 ## The other tools
 
@@ -222,8 +222,8 @@ MWT, and read what is there:
   **Disable access** revokes it at once.
 
 Then I can ask things like _"make a diagram of our checkout flow in MWT"_ or
-_"add flash cards with the key decisions of this thread"_. The tools and
-their details are in [docs/mcp.md](docs/mcp.md).
+_"add flash cards with the key decisions of this thread"_. The tools
+describe themselves to the agent.
 
 ## My data
 
@@ -231,8 +231,8 @@ Each identity's data (requests, diagrams, notes, cards, the sandbox's
 activity) is encrypted under its password in `~/.mwt_client/`, and Git
 repositories stay in their own folders. **Export and import**, in the
 settings menu, packs an identity into one encrypted `.mwtexport` file to
-move it to another machine. How it is stored is in
-[docs/storage.md](docs/storage.md).
+move it to another machine. How it is stored and encrypted is in
+[docs/architecture.md](docs/architecture.md#storage).
 
 ## Install and updates
 
@@ -249,8 +249,7 @@ MWT then keeps itself up to date: it checks for a new release a minute after
 it starts, once a day, and when I choose **Check for updates** in the
 settings menu. It installs one only when its signature checks out against
 the release key the app was built with. **Install from a file…** on the
-sign-in screen installs a package downloaded by hand. The details are in
-[docs/releases.md](docs/releases.md).
+sign-in screen installs a package downloaded by hand.
 
 ## Development
 
@@ -299,7 +298,27 @@ Compose; `PACKAGE_PLATFORM=linux/arm64` for ARM):
 
 ## Releases
 
-Publishing a GitHub release with a version tag builds the `.deb`and `.rpm`,
-signs their checksums with the release key, and attaches them.
-Installed apps offer it at their next check. Setting up the signing key and
-cutting a release, step by step, are in [docs/releases.md](docs/releases.md).
+Publishing a GitHub release whose tag is a version (`v1.2.3`) runs
+`.github/workflows/linux-packages.yml`: it builds the `.deb` and `.rpm`,
+signs their `SHA256SUMS` with the release key (`SHA256SUMS.sig`, Ed25519)
+and attaches them. It refuses to publish when the `RELEASE_SIGNING_KEY`
+secret is missing, or when its signature doesn't verify with the public key
+committed at the tag (`priv/release_signing_key.pub`). Installed apps offer
+the release at their next check.
+
+To cut one: make sure `main` holds what goes out and `mix precommit`
+passes, publish a release with a version tag newer than the last one (MWT
+installs only a version newer than the one it runs), and wait for
+*Release Linux packages* to attach the files.
+
+The signing key is made once, on my own machine:
+
+```bash
+./scripts/release-signing-key.sh   # private key to ~/.config/mwt/release-signing-key.pem, public to priv/
+gh secret set RELEASE_SIGNING_KEY --repo oliveigah/my_work_tools < ~/.config/mwt/release-signing-key.pem
+```
+
+Then commit the public key and keep the private one offline. To replace
+it, run the script with a new path, commit the new public key and set the
+secret again: installs from before only trust the old key, so their next
+update comes from a file or is signed by the old key.

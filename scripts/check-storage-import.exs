@@ -1,5 +1,5 @@
 # Checks the import of an identity's data into its databases, on a COPY of
-# an MWT data folder (docs/storage.md, "Checking the import on real data").
+# an MWT data folder.
 #
 #     mix run --no-start scripts/check-storage-import.exs DATA_FOLDER USERNAME
 #

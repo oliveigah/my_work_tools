@@ -1,8 +1,7 @@
 defmodule MWTClient.Sandbox.Openness do
   @moduledoc """
   How open a fixed call is: what the values an agent gives can make it
-  do, read from its template and its parameters' schemas
-  (docs/grant_mental_model.md, "How open a fixed call is"). A fixed call
+  do, read from its template and its parameters' schemas. A fixed call
   is only as narrow as its template is for every value its schema
   allows, and one can be open use in disguise while it still looks
   fixed: its page, the cards it raises and `mwt grants` say its grade.

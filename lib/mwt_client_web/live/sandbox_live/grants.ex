@@ -1636,7 +1636,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     """
   end
 
-  # What a fixed call covers (docs/grant_mental_model.md, Q5): its
+  # What a fixed call covers: its
   # credential, or host commands and the credentials a saved command runs
   # with; a request's network is the network grants', as for the agent's.
   defp covers_words(%Grant{kind: :request} = grant),

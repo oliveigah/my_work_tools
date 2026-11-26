@@ -1,7 +1,7 @@
 defmodule MWTClient.Storage.Legacy do
   @moduledoc """
   The files an identity's data was kept in before its databases:
-  `notes.bin` and the other sealed stores, and `versions/` (docs/storage.md).
+  `notes.bin` and the other sealed stores, and `versions/`.
 
   Each app imports its own the first time it starts with a build that keeps
   its data in a database: it reads the file with `read/4`, writes what it

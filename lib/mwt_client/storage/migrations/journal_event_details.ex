@@ -1,7 +1,7 @@
 defmodule MWTClient.Storage.Migrations.JournalEventDetails do
   @moduledoc """
   `journal.db`, version 4: what an event says when its line opens
-  (`MWTClient.Sandbox.EventDetails`), kept with it (docs/storage.md).
+  (`MWTClient.Sandbox.EventDetails`), kept with it.
 
   `events.detailed` is 1 for an event that has details, so a page knows to
   read them when the line opens; events from before have none, and 0.

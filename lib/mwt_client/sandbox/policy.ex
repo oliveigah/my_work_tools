@@ -264,7 +264,7 @@ defmodule MWTClient.Sandbox.Policy do
     # and the fixed calls over it (`Credential.attach/2`). Only open use
     # lists hosts its value goes to in the agent's own requests: a fixed
     # call covers its credential in the request MWT builds, never in one
-    # the agent sends (docs/grant_mental_model.md, Q5). So the placeholder
+    # the agent sends. So the placeholder
     # of a credential only fixed calls are over goes nowhere: carried
     # anywhere, it is moved where its credential doesn't go, refused and
     # the firewall told, as any other.
@@ -727,7 +727,7 @@ defmodule MWTClient.Sandbox.Policy do
   grants that cover the host, the most permissive (`network_say/4`). A
   fixed call's request goes out this way too: the action covers its
   credential in it, the network's grants decide where it goes, as they
-  do for the agent's own requests (docs/grant_mental_model.md, Q5).
+  do for the agent's own requests.
   """
   @spec reach(snapshot(), String.t() | nil, DateTime.t()) :: answer()
   def reach(snapshot, host, now) do

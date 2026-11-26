@@ -1,8 +1,7 @@
 defmodule MWTClient.Sandbox.Param do
   @moduledoc """
   One parameter of a fixed call: what an agent fills in when it calls it
-  by id (`mwt call ID NAME=value`). See "Parameters" in
-  `docs/agent_sandbox.md`.
+  by id (`mwt call ID NAME=value`).
 
   A parameter has a `name`, in capitals; `about`, a line saying what it
   is, for you and for agents; and a `schema`, the JSON Schema its values

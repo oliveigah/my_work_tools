@@ -17,7 +17,7 @@ defmodule MWTClient.Storage.Values do
       as with `MWTClient.Vault.open/2`. What the tag can't tell is an old
       copy of a page put back by someone who can write the files; a term
       over several pages could then mix two of MWT's own writes, never
-      bytes of someone else's (docs/storage.md, "Not covered").
+      bytes of someone else's (docs/architecture.md, "Storage").
   """
 
   @doc "A time as a column holds it: microseconds since 1970, or nil."

@@ -1,6 +1,6 @@
 defmodule MWTClient.Sandbox.GuaranteesTest do
   @moduledoc """
-  What docs/agent_sandbox.md says the sandbox does, one test per sentence.
+  The sandbox's guarantees, one test per sentence: this file is their list.
   Written during the 2026-11-13 review, when all of them failed; each names
   the gap it closed. They go through the proxy as microsandbox reaches it,
   with an upstream that keeps the request it received, which the harness
@@ -202,7 +202,7 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
 
   ## 1. Expiry
 
-  describe "expiry (guarantee 5)" do
+  describe "expiry" do
     test "an allowance past its `until` covers nothing" do
       past = DateTime.add(DateTime.utc_now(), -3600, :second)
       allowance = %Allowance{id: "a", pattern: :all, until: past}
@@ -451,7 +451,7 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
 
   ## 5. Host commands run where the card says
 
-  describe "host commands (guarantee 9)" do
+  describe "host commands" do
     test "the command runs in the folder the card showed" do
       base = Path.join(System.tmp_dir!(), "mwt-review-#{System.unique_integer([:positive])}")
       share = Path.join(base, "share")
@@ -493,9 +493,9 @@ defmodule MWTClient.Sandbox.GuaranteesTest do
     end
   end
 
-  ## 6. No real value in logs (guarantee 1)
+  ## 6. No real value in logs
 
-  describe "logs (guarantee 1)" do
+  describe "logs" do
     test "a crash while a value is being stored does not log it", %{username: username} do
       pid = Store.whereis(Server, username)
       ref = Process.monitor(pid)

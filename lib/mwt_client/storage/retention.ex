@@ -1,7 +1,7 @@
 defmodule MWTClient.Storage.Retention do
   @moduledoc """
   What MWT keeps of each kind of thing, and for how long: one rule per
-  kind, none shared between kinds (docs/storage.md). Each starts at its
+  kind, none shared between kinds. Each starts at its
   default; a rule changed is kept for the identity as the
   `storage.rules` document (`MWTClient.Storage.Documents`), and putting a
   kind back to its default forgets the change.

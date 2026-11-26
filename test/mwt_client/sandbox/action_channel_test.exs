@@ -443,8 +443,8 @@ defmodule MWTClient.Sandbox.ActionChannelTest do
       :ok = Req.Test.allow(SavedRequest, self(), Store.whereis(Server, context.username))
 
       # The call carried GitHub's value, not Hex's: every answer is looked
-      # through for every value MWT holds (docs/grant_mental_model.md,
-      # "Scanning"), and one coming back cuts it and isolates the VM.
+      # through for every value MWT holds, and one coming back cuts it
+      # and isolates the VM.
       assert {output, code} =
                mwt(context, ["call", "pr-view", "REPO=o/r", "PR=1", "--reason", "r"])
 

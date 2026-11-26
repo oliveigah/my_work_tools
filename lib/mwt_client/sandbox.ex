@@ -6,7 +6,7 @@ defmodule MWTClient.Sandbox do
   This module is the only way in for the control panel. Behind it,
   `MWTClient.Sandbox.Server` keeps one identity's sandbox and
   `MWTClient.Sandbox.Egress` is the proxy all of the VM's traffic goes
-  through. `docs/agent_sandbox.md` has the design.
+  through. `docs/architecture.md` has its mental model.
 
   Every function takes the username it belongs to. Changes are broadcast to
   `subscribe/1`rs as `{:sandbox_changed, area}`, new activity as

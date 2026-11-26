@@ -25,7 +25,7 @@ defmodule MWTClient.Storage.Database do
       and compacting (`VACUUM`) gives the space back to the disk. With a
       cipher that reserves bytes in each page, as every authenticated one
       does, SQLite3 Multiple Ciphers 2.7.1 reported the file malformed
-      while creating FTS5 tables under `auto_vacuum` (docs/storage.md);
+      while creating FTS5 tables under `auto_vacuum` (docs/architecture.md);
     * an 8 MiB page cache, which is what bounds the memory a database
       takes, whatever its size;
     * transactions that take the write lock when they start, so two

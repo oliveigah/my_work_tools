@@ -34,7 +34,7 @@ the platform's `git/`.
 | `notifications.ex`, `notifications/` | what waits for you, from any app: listed in MWT (the bell, `/notifications`) and put on the desktop as your settings say (`MWTClient.Notifications`) |
 | `dbus/`                           | the session bus client the desktop notifications go through                          |
 | `accounts.ex`, `vault.ex`, `vault/` | identities, the key their password makes, and the stores an unlocked one runs        |
-| `storage.ex`, `storage/`          | each identity's encrypted databases, `library.db` and `journal.db`, the journal of agent activity, the retention rules and what applies them, backups (`docs/storage.md`); the Storage page is `StorageLive` |
+| `storage.ex`, `storage/`          | each identity's encrypted databases, `library.db` and `journal.db`, the journal of agent activity, the retention rules and what applies them, backups (`docs/architecture.md`); the Storage page is `StorageLive` |
 | `preferences.ex`                  | app-wide settings readable before sign-in (theme, last username)                     |
 | `transfer.ex`, `transfer/`        | export and import of everything an identity keeps; apps take part as participants    |
 | `search.ex`                       | the word search of the apps that keep text, in memory and as SQL over their indexes  |

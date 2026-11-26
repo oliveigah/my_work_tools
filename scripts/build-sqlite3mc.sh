@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds SQLite3 Multiple Ciphers, SQLite with page-level encryption, as the
-# static library exqlite links in place of its own SQLite (docs/storage.md):
+# static library exqlite links in place of its own SQLite (docs/architecture.md):
 #
 #   OUTPUT_DIR/libsqlite3mc.a
 #   OUTPUT_DIR/include/sqlite3.h, sqlite3ext.h, sqlite3mc_amalgamation.h

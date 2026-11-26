@@ -13,7 +13,7 @@ defmodule MWTClient.Transfer do
   refused before any data changes. `import/3` then hands each section to its
   participant in turn, to merge with what is there or to replace it; should
   one fail, the ones already written are put back as they were.
-  `docs/transfer.md` covers the design.
+  `docs/architecture.md` says what an import trusts.
   """
 
   require Logger

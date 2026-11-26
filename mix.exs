@@ -1,6 +1,6 @@
 # exqlite, the driver under Ecto's SQLite adapter, is built from source
 # against SQLite3 Multiple Ciphers instead of its own SQLite, so MWT's
-# databases are encrypted page by page (docs/storage.md). The flags must be
+# databases are encrypted page by page (docs/architecture.md). The flags must be
 # set here, before any dependency compiles: exqlite reads them when its own
 # mix.exs loads, and without them it downloads its stock, unencrypted NIF.
 #

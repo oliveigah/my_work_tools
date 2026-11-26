@@ -5,8 +5,7 @@ defmodule MWTClient.Sandbox.ImageCheck do
   microsandbox turns a build into a read-only EROFS disk, the VM's
   `/dev/vda`, under the overlay that is its root. Once, on 2026-11-23, a
   file there read as zeros past its first 24 MiB though the build was
-  intact (`docs/issues/vm-image-file-zeroed-after-load.md`): nothing
-  noticed, and every tool behind that file crashed at its entry point.
+  intact: nothing noticed, and every tool behind that file crashed at its entry point.
 
   MWT's final layer lists the checksum of every file in the image
   (`/etc/mwt/image.sha256`, `MWTClient.Sandbox.Image`). After a VM's first

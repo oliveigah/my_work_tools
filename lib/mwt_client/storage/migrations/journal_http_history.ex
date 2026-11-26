@@ -1,6 +1,6 @@
 defmodule MWTClient.Storage.Migrations.JournalHttpHistory do
   @moduledoc """
-  `journal.db`, version 1: the HTTP client's history (docs/storage.md).
+  `journal.db`, version 1: the HTTP client's history.
 
   Each entry is a row of each of three tables, sharing its `id`, the
   history id the client has always shown, given in order and never given
