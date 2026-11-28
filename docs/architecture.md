@@ -419,6 +419,16 @@ the VM                           your machine                  a Git server
   fetch from your remotes, and `remote-origin` serves it. That is all:
   it is no task, so the slot is taken while those changes are there and
   free once you discard them.
+- **A slot timeline follows the branch.** Git configuration in the VM
+  holds the task ID. The encrypted library holds entries for that task:
+  agent updates and contextualized user prompts, each with a title and
+  optional detail. Projects opens on the latest four, with earlier entries
+  a scroll away. Each handoff saves its own snapshot on submission and
+  refreshes it on revision. A later handoff starts a new timeline even if
+  it reuses the branch. Older single-line entries appear as agent updates.
+  Recording is a live Features preference, off by default, with overrides
+  by agent thread ID. Project commands teach the workflow when enabled.
+  Turning it off stops new entries and keeps existing timelines readable.
 - **A handoff is a task's exact commit,** with a title and notes, sent
   only when you ask. `mwt handoff` does every step that needs no
   judgment: fetch, commit, rebase onto the base, run the project's

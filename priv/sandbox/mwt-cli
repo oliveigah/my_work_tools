@@ -373,6 +373,7 @@ guide_topics() {
   for file in "$dir"/*.md; do
     [ -e "$file" ] || continue
     file=${file##*/}
+    [ "$file" = timeline.md ] && continue
     topics="$topics ${file%.md}"
   done
   printf '%s' "${topics# }"
@@ -1160,6 +1161,35 @@ mcp_id() {
 if [ "$command" = mcp ]; then
   mcp_server
   exit 0
+fi
+
+if [ "$command" = summary ]; then
+  case ${1:-} in
+    -h | --help)
+      cat <<'SUMMARY'
+  mwt summary "short progress update" [--details FILE]
+  mwt summary --prompt "short title for the user's prompt" --details FILE
+      Add an update or a user prompt to the current slot's timeline.
+      Post updates sparingly. Record each user prompt with its request and
+      enough context to make sense on its own. Aim for a title of 160
+      characters or fewer. Write the details file in Markdown.
+SUMMARY
+      exit 0
+      ;;
+  esac
+  summary_kind=status summary_detail=""
+  if [ "${1:-}" = --prompt ]; then
+    summary_kind=prompt
+    shift
+  fi
+  if [ "$#" -eq 3 ] && [ "$2" = --details ]; then
+    summary_detail=$3
+  elif [ "$#" -ne 1 ] || [ "$summary_kind" = prompt ]; then
+    echo 'mwt: use mwt summary "update" [--details FILE] or mwt summary --prompt "title" --details FILE' >&2
+    exit 1
+  fi
+  identify
+  send "{\"command\":\"summary\",\"cwd\":$(json "$(pwd -P)"),\"kind\":$(json "$summary_kind"),\"text\":$(json "$1"),\"details\":$(json "$summary_detail"),$(identity)}"
 fi
 
 # This is local execution, with exact arguments, not a host-command ask.

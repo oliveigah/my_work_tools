@@ -16,7 +16,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
 
   import MWTClientWeb.SandboxLive.Components
 
-  alias MWTClient.Sandbox.{Slots, Zed}
+  alias MWTClient.Sandbox.{Settings, SlotSummaries, Slots, Zed}
   alias MWTClientWeb.SandboxLive.Servers
 
   attr :overview, :map, required: true, doc: "from `MWTClient.Sandbox.Projects.overview/1`"
@@ -44,6 +44,8 @@ defmodule MWTClientWeb.SandboxLive.Projects do
 
   attr :vm, :any, required: true
   attr :now, DateTime, required: true
+
+  attr :settings, :map, default: %{}
 
   def page(assigns) do
     ~H"""
@@ -96,6 +98,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
         editing={@editing && @editing.name == project.name && @editing}
         worktrees={@worktrees[project.name]}
         ports={@ports}
+        settings={@settings}
         vm={@vm}
         now={@now}
       />
@@ -118,6 +121,8 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   attr :ports, :map, required: true
   attr :vm, :any, required: true
   attr :now, DateTime, required: true
+
+  attr :settings, :map, required: true
 
   defp project_card(assigns) do
     assigns = assign(assigns, waiting: length(assigns.waiting_handoffs))
@@ -199,6 +204,7 @@ defmodule MWTClientWeb.SandboxLive.Projects do
         project={@project}
         worktrees={@worktrees}
         ports={@ports}
+        settings={@settings}
         vm={@vm}
       />
     </section>
@@ -391,6 +397,8 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   attr :ports, :map, required: true
   attr :vm, :any, required: true
 
+  attr :settings, :map, required: true
+
   defp worktree_list(assigns) do
     assigns =
       assign(assigns,
@@ -459,130 +467,143 @@ defmodule MWTClientWeb.SandboxLive.Projects do
             <li
               :for={slot <- @look.slots}
               id={"slot-#{@project.name}-#{slot.name}"}
-              class="group flex items-center gap-3 px-4 py-2 transition-colors hover:bg-deep/40"
+              class="group transition-colors hover:bg-deep/40"
             >
-              <span class={["size-2 shrink-0 rounded-full", slot_dot(slot)]}></span>
-              <div class="min-w-0 flex-1">
-                <p class="flex items-center gap-2 text-[12px]" title={slot.path}>
-                  <span class="font-mono text-ink">{slot.name}</span>
-                  <span
-                    :if={slot.name == "slot-0"}
-                    class="text-[11px] text-faint"
-                    title="The clone itself, /work/#{@project.name}"
-                  >
-                    the clone
-                  </span>
-                  <span
-                    id={"slot-state-#{@project.name}-#{slot.name}"}
-                    class={[
-                      "rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide",
-                      slot_badge_class(slot)
-                    ]}
-                  >
-                    {slot_badge(slot)}
-                  </span>
-                  <span
-                    :if={slot.in_zed?}
-                    id={"slot-in-zed-#{@project.name}-#{slot.name}"}
-                    class="flex items-center gap-1 text-[10px] text-muted"
-                    title="A Zed window has this folder open now: a thread may be working there"
-                  >
-                    <.icon name="hero-window-micro" class="size-3" /> open in Zed
-                  </span>
-                </p>
-                <p class="truncate text-[11px] text-faint">
-                  <%= cond do %>
-                    <% slot.state == :absent -> %>
-                      not made yet: made when the project is opened, or by the first task to take it
-                    <% slot.state == :missing -> %>
-                      its folder is gone; made again when taken
-                      <span :if={slot.branch}>
-                        · the branch <span class="font-mono">{slot.branch}</span> stays
-                      </span>
-                    <% slot.state == :foreign -> %>
-                      <span class="text-bad">
-                        a folder that isn't a worktree of the project is in the way
-                      </span>
-                    <% is_nil(slot.branch) -> %>
-                      ready for the next task
-                    <% true -> %>
-                      <span class="font-mono text-muted">{slot.branch}</span>
-                      <span
-                        :if={slot[:base]}
-                        id={"slot-base-#{@project.name}-#{slot.name}"}
-                        title="The branch this task started from and catches up with"
-                      >
-                        from <span class="font-mono text-muted">{slot.base}</span>
-                      </span>
-                      ·
-                      <%= case slot.handoff do %>
-                        <% nil -> %>
-                          no handoff yet
-                        <% handoff -> %>
-                          <.link
-                            patch={~p"/tools/sandbox/handoffs?id=#{handoff.id}"}
-                            class="text-accent hover:underline"
-                          >
-                            {handoff_label(handoff)}
-                          </.link>
-                      <% end %>
-                      <span :if={slot.state == :dirty} class="text-warn-strong">
-                        · uncommitted work
-                      </span>
-                      <span
-                        :if={not slot.free? and slot.in_zed? == false}
-                        id={"slot-no-zed-#{@project.name}-#{slot.name}"}
-                        title="No Zed window has this folder open now: its thread may be gone. Release it if its task is done or dropped."
-                      >
-                        · no Zed window open
-                      </span>
-                  <% end %>
-                </p>
-                <Servers.slot_list ports={@ports} project={@project.name} slot={slot.name} />
+              <div class="flex items-center gap-3 px-4 py-2">
+                <span class={["size-2 shrink-0 rounded-full", slot_dot(slot)]}></span>
+                <div class="min-w-0 flex-1">
+                  <p class="flex items-center gap-2 text-[12px]" title={slot.path}>
+                    <span class="font-mono text-ink">{slot.name}</span>
+                    <span
+                      :if={slot.name == "slot-0"}
+                      class="text-[11px] text-faint"
+                      title="The clone itself, /work/#{@project.name}"
+                    >
+                      the clone
+                    </span>
+                    <span
+                      id={"slot-state-#{@project.name}-#{slot.name}"}
+                      class={[
+                        "rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide",
+                        slot_badge_class(slot)
+                      ]}
+                    >
+                      {slot_badge(slot)}
+                    </span>
+                    <span
+                      :if={slot.in_zed?}
+                      id={"slot-in-zed-#{@project.name}-#{slot.name}"}
+                      class="flex items-center gap-1 text-[10px] text-muted"
+                      title="A Zed window has this folder open now: a thread may be working there"
+                    >
+                      <.icon name="hero-window-micro" class="size-3" /> open in Zed
+                    </span>
+                  </p>
+                  <p class="truncate text-[11px] text-faint">
+                    <%= cond do %>
+                      <% slot.state == :absent -> %>
+                        not made yet: made when the project is opened, or by the first task to take it
+                      <% slot.state == :missing -> %>
+                        its folder is gone; made again when taken
+                        <span :if={slot.branch}>
+                          · the branch <span class="font-mono">{slot.branch}</span> stays
+                        </span>
+                      <% slot.state == :foreign -> %>
+                        <span class="text-bad">
+                          a folder that isn't a worktree of the project is in the way
+                        </span>
+                      <% is_nil(slot.branch) -> %>
+                        ready for the next task
+                      <% true -> %>
+                        <span class="font-mono text-muted">{slot.branch}</span>
+                        <span
+                          :if={slot[:base]}
+                          id={"slot-base-#{@project.name}-#{slot.name}"}
+                          title="The branch this task started from and catches up with"
+                        >
+                          from <span class="font-mono text-muted">{slot.base}</span>
+                        </span>
+                        ·
+                        <%= case slot.handoff do %>
+                          <% nil -> %>
+                            no handoff yet
+                          <% handoff -> %>
+                            <.link
+                              patch={~p"/tools/sandbox/handoffs?id=#{handoff.id}"}
+                              class="text-accent hover:underline"
+                            >
+                              {handoff_label(handoff)}
+                            </.link>
+                        <% end %>
+                        <span :if={slot.state == :dirty} class="text-warn-strong">
+                          · uncommitted work
+                        </span>
+                        <span
+                          :if={not slot.free? and slot.in_zed? == false}
+                          id={"slot-no-zed-#{@project.name}-#{slot.name}"}
+                          title="No Zed window has this folder open now: its thread may be gone. Release it if its task is done or dropped."
+                        >
+                          · no Zed window open
+                        </span>
+                    <% end %>
+                  </p>
+                  <Servers.slot_list ports={@ports} project={@project.name} slot={slot.name} />
+                </div>
+                <.thread_timeline
+                  :if={!slot.free? and SlotSummaries.thread(slot)}
+                  id={"slot-timeline-#{@project.name}-#{slot.name}"}
+                  thread={SlotSummaries.thread(slot)}
+                  settings={@settings}
+                />
+                <.button
+                  :if={freeable?(slot)}
+                  id={"slot-free-#{@project.name}-#{slot.name}"}
+                  variant="ghost"
+                  phx-click="free_slot"
+                  phx-value-name={@project.name}
+                  phx-value-slot={slot.name}
+                  disabled={slot.state == :dirty}
+                  title={
+                    if(slot.state == :dirty,
+                      do: "It has uncommitted work: commit or discard it first",
+                      else:
+                        "Take #{slot.name} off #{slot.branch}, so a thread there can start another task"
+                    )
+                  }
+                  data-confirm={"Release #{slot.name}? It goes off #{slot.branch}, which is deleted unless it holds commits on none of your branches and in no handoff, or another task is based on it. A thread still working there finds itself on no branch."}
+                >
+                  Release
+                </.button>
+                <.button
+                  id={"slot-zed-#{@project.name}-#{slot.name}"}
+                  variant="ghost"
+                  phx-click="open_project"
+                  phx-value-path={@project.name}
+                  phx-value-folder={slot.path}
+                  disabled={slot.state in [:absent, :missing, :foreign]}
+                  title={Zed.command(slot.path)}
+                >
+                  <.icon name="hero-arrow-top-right-on-square-micro" class="size-3.5" /> Zed
+                </.button>
+                <.button
+                  id={"slot-remove-#{@project.name}-#{slot.name}"}
+                  variant="ghost"
+                  phx-click="remove_slot"
+                  phx-value-name={@project.name}
+                  phx-value-slot={slot.name}
+                  disabled={not removable?(slot)}
+                  title={remove_title(slot)}
+                  data-confirm={"Remove #{slot.name}? Its folder and build go; its branch stays while it holds commits not on your branches."}
+                  class="opacity-60 transition-opacity group-hover:opacity-100"
+                >
+                  <.icon name="hero-trash-micro" class="size-3.5" />
+                </.button>
               </div>
-              <.button
-                :if={freeable?(slot)}
-                id={"slot-free-#{@project.name}-#{slot.name}"}
-                variant="ghost"
-                phx-click="free_slot"
-                phx-value-name={@project.name}
-                phx-value-slot={slot.name}
-                disabled={slot.state == :dirty}
-                title={
-                  if(slot.state == :dirty,
-                    do: "It has uncommitted work: commit or discard it first",
-                    else:
-                      "Take #{slot.name} off #{slot.branch}, so a thread there can start another task"
-                  )
-                }
-                data-confirm={"Release #{slot.name}? It goes off #{slot.branch}, which is deleted unless it holds commits on none of your branches and in no handoff, or another task is based on it. A thread still working there finds itself on no branch."}
-              >
-                Release
-              </.button>
-              <.button
-                id={"slot-zed-#{@project.name}-#{slot.name}"}
-                variant="ghost"
-                phx-click="open_project"
-                phx-value-path={@project.name}
-                phx-value-folder={slot.path}
-                disabled={slot.state in [:absent, :missing, :foreign]}
-                title={Zed.command(slot.path)}
-              >
-                <.icon name="hero-arrow-top-right-on-square-micro" class="size-3.5" /> Zed
-              </.button>
-              <.button
-                id={"slot-remove-#{@project.name}-#{slot.name}"}
-                variant="ghost"
-                phx-click="remove_slot"
-                phx-value-name={@project.name}
-                phx-value-slot={slot.name}
-                disabled={not removable?(slot)}
-                title={remove_title(slot)}
-                data-confirm={"Remove #{slot.name}? Its folder and build go; its branch stays while it holds commits not on your branches."}
-                class="opacity-60 transition-opacity group-hover:opacity-100"
-              >
-                <.icon name="hero-trash-micro" class="size-3.5" />
-              </.button>
+              <.slot_summary
+                :if={slot[:summary] not in [nil, []]}
+                id={"slot-summary-#{@project.name}-#{slot.name}"}
+                entries={slot.summary}
+              />
             </li>
           </ul>
           <div :if={@look.others != []}>
@@ -1038,6 +1059,104 @@ defmodule MWTClientWeb.SandboxLive.Projects do
   end
 
   ## Small parts
+
+  attr :id, :string, required: true
+  attr :thread, :string, required: true
+  attr :settings, :map, required: true
+
+  defp thread_timeline(assigns) do
+    choice =
+      case Settings.timeline_override(assigns.settings, assigns.thread) do
+        true -> "on"
+        false -> "off"
+        :default -> "default"
+      end
+
+    default = if SlotSummaries.default_enabled?(assigns.settings), do: "on", else: "off"
+    assigns = assign(assigns, choice: choice, default: default)
+
+    ~H"""
+    <form id={"#{@id}-form"} phx-change="set_thread_timeline" class="shrink-0">
+      <input type="hidden" name="thread" value={@thread} />
+      <select
+        id={@id}
+        name="mode"
+        aria-label="Timeline recording for this thread"
+        class="max-w-36 rounded-md border border-line bg-deep px-1.5 py-1 text-[11px] text-muted focus:border-accent focus:outline-none"
+      >
+        {Phoenix.HTML.Form.options_for_select(
+          [
+            {"Timeline · Default (#{@default})", "default"},
+            {"Timeline · On", "on"},
+            {"Timeline · Off", "off"}
+          ],
+          @choice
+        )}
+      </select>
+    </form>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :entries, :list, required: true
+
+  defp slot_summary(assigns) do
+    assigns = assign(assigns, :latest, List.last(assigns.entries))
+
+    ~H"""
+    <details
+      id={@id}
+      phx-mounted={JS.ignore_attributes(["open"])}
+      class="group/summary mb-2 ml-9 mr-4 min-w-0"
+    >
+      <summary class="flex cursor-pointer list-none items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-deep/55 focus-visible:outline-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden">
+        <span id={"#{@id}-label"} class="shrink-0 text-[11px] font-medium text-ink">
+          Summary timeline
+        </span>
+        <span class="hidden group-open/summary:hidden sm:block">
+          <.summary_timestamp at={@latest.at} compact />
+        </span>
+        <span
+          class="min-w-0 flex-1 truncate text-[11px] text-muted group-open/summary:hidden sm:border-l sm:border-line sm:pl-2"
+          title={@latest.title}
+        >
+          {@latest.title}
+        </span>
+        <.icon
+          name="hero-chevron-down-micro"
+          class="ml-auto size-3.5 shrink-0 text-faint transition-transform group-open/summary:rotate-180"
+        />
+      </summary>
+      <%!-- The reverse scroll area opens at the latest entry and keeps reading order. --%>
+      <div class="pt-0.5">
+        <div
+          data-summary-viewport
+          phx-mounted={JS.ignore_attributes(["style"])}
+          class="flex max-h-[88px] flex-col-reverse overflow-y-auto rounded-md has-[[data-expanded=true]]:max-h-[min(11rem,calc(88px+var(--summary-expanded-height,0px)))]"
+          tabindex="0"
+          role="region"
+          aria-labelledby={"#{@id}-label"}
+        >
+          <ul role="list" class="shrink-0 list-none text-[11px] text-muted">
+            <li
+              :for={{entry, index} <- Enum.with_index(@entries)}
+              class="group/entry grid min-h-[22px] grid-cols-[1.25rem_5.5rem_minmax(0,1fr)] items-center rounded-md px-1.5 last:bg-accent-soft/25 last:font-medium last:text-ink"
+            >
+              <.summary_marker />
+              <.summary_timestamp at={entry.at} compact />
+              <div class="min-w-0 border-l border-line pl-2">
+                <.summary_entry_text
+                  id={summary_entry_id(@id, entry, index)}
+                  entry={entry}
+                />
+              </div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </details>
+    """
+  end
 
   defp slots_error({:error, reason}), do: MWTClient.Sandbox.Projects.explain(reason)
   defp slots_error(_), do: "The worktree slots couldn't be read."

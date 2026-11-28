@@ -52,13 +52,13 @@ const liveSocket = new LiveSocket("/live", Socket, {
     }),
   },
   dom: {
-    // A <details> you opened stays open when the page updates: its open
-    // state lives only in the browser, so a re-render (a clock ticking, a
-    // grant changing) would otherwise put back the server's and close it.
-    // The server may still open one (a field inside it with an error); it
-    // never closes one you opened.
+    // Disclosures and native dialogs can be opened by the browser. A patch
+    // must preserve that state. Stripping open from a modal dialog would
+    // hide it without removing it from the top layer, blocking the page.
     onBeforeElUpdated(from, to) {
-      if (from.tagName === "DETAILS" && from.open) to.setAttribute("open", "")
+      if ((from.tagName === "DETAILS" || from.tagName === "DIALOG") && from.open) {
+        to.setAttribute("open", "")
+      }
     },
   },
 })

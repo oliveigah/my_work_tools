@@ -36,7 +36,8 @@ defmodule MWTClientWeb.SandboxLive do
     RequestView,
     Resources,
     Shares,
-    Slots
+    Slots,
+    SlotSummaries
   }
 
   alias MWTClient.Places
@@ -159,6 +160,7 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(:handoff_place, HandoffsPage.place())
      |> assign(:handoff_listing, nil)
      |> assign(:handoff_view, nil)
+     |> assign(:summary_entry, nil)
      |> assign(:handoff_decision, "land")
      |> assign(:project_overview, %{open: [], shares?: false})
      |> assign(:project_editing, nil)
@@ -185,8 +187,7 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(layer_versions: [], layer_versions_open: false, layer_version: nil)
      |> assign(:image_pane, nil)
      |> assign_name_form()
-     |> assign_host_form()
-     |> assign_way_form()
+     |> assign_features_form()
      |> restore_place()}
   end
 
@@ -236,7 +237,16 @@ defmodule MWTClientWeb.SandboxLive do
 
   @impl true
   def handle_params(params, _uri, socket) do
-    socket = assign(socket, :page, socket.assigns.live_action)
+    page = socket.assigns.live_action
+
+    same_timeline? =
+      socket.assigns[:page] == page and
+        (page != :handoffs or socket.assigns.handoff_id == handoff_id(params["id"]))
+
+    socket =
+      socket
+      |> assign(:page, page)
+      |> then(&if(same_timeline?, do: &1, else: assign(&1, :summary_entry, nil)))
 
     socket =
       case socket.assigns.live_action do
@@ -531,10 +541,8 @@ defmodule MWTClientWeb.SandboxLive do
                   share_error={@share_error}
                   sync={@sync}
                   host={@host}
-                  host_form={@host_form}
-                  host_error={@host_error}
-                  way_form={@way_form}
-                  way_error={@way_error}
+                  features_form={@features_form}
+                  features_errors={@features_errors}
                 />
               <% :handoffs -> %>
                 <HandoffsPage.page
@@ -556,6 +564,7 @@ defmodule MWTClientWeb.SandboxLive do
                   worktrees={@project_worktrees}
                   ports={@ports}
                   leftovers={@leftovers}
+                  settings={@settings}
                   vm={@vm}
                   now={@now}
                 />
@@ -583,6 +592,7 @@ defmodule MWTClientWeb.SandboxLive do
         mints={Sandbox.credential_endpoints(@username)}
         presets={MWTClient.Sandbox.Presets.presets(@username)}
       />
+      <.summary_entry_dialog :if={@summary_entry} entry={@summary_entry} />
       <.confirm_dialog :if={@confirm} confirm={@confirm} />
       <Dialogs.create
         :if={@create_dialog}
@@ -1606,25 +1616,6 @@ defmodule MWTClientWeb.SandboxLive do
     {:noreply, refresh(socket)}
   end
 
-  def handle_event("save_host_notes", %{"host" => %{"notes" => notes} = host}, socket) do
-    attrs = %{"host_notes" => notes, "confine_reads" => Map.get(host, "reads", "")}
-
-    case Sandbox.update_settings(socket.assigns.username, attrs) do
-      {:ok, _settings} ->
-        {:noreply,
-         socket
-         |> refresh()
-         |> assign_host_form()
-         |> put_notice(:info, "Notes saved; agents see them with mwt host")}
-
-      {:error, errors} ->
-        {:noreply,
-         socket
-         |> assign(:host_form, to_form(Map.put(host, "notes", notes), as: :host))
-         |> assign(:host_error, errors[:host_notes] || errors[:confine_reads])}
-    end
-  end
-
   def handle_event("probe_host", _params, socket) do
     _ = Sandbox.probe_host(socket.assigns.username)
     {:noreply, refresh(socket)}
@@ -2422,61 +2413,71 @@ defmodule MWTClientWeb.SandboxLive do
     {:noreply, refresh(socket)}
   end
 
-  def handle_event("set_nested_virt", %{"on" => on}, socket) do
-    case Sandbox.update_settings(socket.assigns.username, %{"nested_virt" => on}) do
-      {:ok, settings} ->
-        title =
-          if settings.nested_virt,
-            do: "VMs inside the VM turned on",
-            else: "VMs inside the VM turned off"
-
-        {:noreply,
-         socket
-         |> refresh()
-         |> put_notice(:success, title, body: "It applies when the VM is next created.")}
-
-      {:error, _errors} ->
-        {:noreply, put_notice(socket, :error, "That setting couldn't be changed")}
-    end
+  def handle_event("change_features", %{"features" => params}, socket) do
+    {:noreply, assign_feature_draft(socket, params, %{})}
   end
 
-  def handle_event("save_way_of_working", %{"way" => %{"text" => text}}, socket) do
-    case Sandbox.update_settings(socket.assigns.username, %{"way_of_working" => text}) do
-      {:ok, settings} ->
-        title =
-          if settings.way_of_working == "",
-            do: "Your way of working is cleared",
-            else: "Your way of working is saved"
+  def handle_event("apply_features", %{"features" => params}, socket) do
+    attrs =
+      params
+      |> Map.take(Map.keys(socket.assigns.features_base))
+      |> Map.reject(fn {field, value} -> socket.assigns.features_base[field] == value end)
+
+    result =
+      cond do
+        attrs["nested_virt"] == "true" and MWTClient.Sandbox.NestedVirt.host() != :allowed ->
+          {:error, %{nested_virt: "This machine needs to allow nested virtualization first."}}
+
+        attrs == %{} ->
+          {:ok, socket.assigns.settings}
+
+        true ->
+          Sandbox.update_settings(socket.assigns.username, attrs)
+      end
+
+    case result do
+      {:ok, _settings} ->
+        info =
+          cond do
+            Map.has_key?(attrs, "nested_virt") and socket.assigns.vm.exists? ->
+              "Recreate the VM to apply VMs inside the VM."
+
+            Map.has_key?(attrs, "way_of_working") ->
+              "Your way of working reaches agents at the VM's next start."
+
+            true ->
+              nil
+          end
 
         {:noreply,
          socket
          |> refresh()
-         |> assign_way_form()
-         |> put_notice(:success, title, body: "It reaches agents at the VM's next start.")}
+         |> assign_features_form()
+         |> put_notice(:success, "Features applied", body: info)}
 
       {:error, errors} ->
-        {:noreply,
-         socket
-         |> assign(:way_form, to_form(%{"text" => text}, as: :way))
-         |> assign(:way_error, errors[:way_of_working])}
+        {:noreply, assign_feature_draft(socket, params, errors)}
     end
   end
 
-  # Fills the field only: nothing reaches agents until it is saved. The form
-  # alone would not reach a field you typed in, since the server never sees
-  # that typing: when it already holds the example there is no change to send,
-  # and a focused field is left as it is. So the field also gets it as an event.
   def handle_event("way_of_working_example", _params, socket) do
     example = Instructions.way_of_working_example()
+    params = Map.put(socket.assigns.features_form.params, "way_of_working", example)
 
     {:noreply,
      socket
-     |> assign(:way_form, to_form(%{"text" => example}, as: :way))
-     |> assign(:way_error, nil)
+     |> assign_feature_draft(params, Map.delete(socket.assigns.features_errors, :way_of_working))
      |> push_event("way_of_working_fill", %{text: example})}
   end
 
   ## Projects
+
+  def handle_event("set_thread_timeline", %{"thread" => thread, "mode" => mode}, socket) do
+    case Sandbox.set_timeline_override(socket.assigns.username, thread, mode) do
+      :ok -> {:noreply, refresh(socket)}
+      {:error, reason} -> {:noreply, put_notice(socket, :warning, reason)}
+    end
+  end
 
   def handle_event("open_project", %{"path" => project} = params, socket) do
     case Projects.open(socket.assigns.username, project, params["folder"]) do
@@ -2743,6 +2744,14 @@ defmodule MWTClientWeb.SandboxLive do
 
     {:noreply, socket |> refresh() |> assign_overview()}
   end
+
+  def handle_event("open_summary_entry", params, socket) do
+    entry = find_summary_entry(socket.assigns, params["entry"])
+    {:noreply, assign(socket, :summary_entry, entry)}
+  end
+
+  def handle_event("close_summary_entry", _params, socket),
+    do: {:noreply, assign(socket, :summary_entry, nil)}
 
   ## Handoffs
 
@@ -3528,6 +3537,31 @@ defmodule MWTClientWeb.SandboxLive do
     end
   end
 
+  defp find_summary_entry(%{page: :projects, project_worktrees: projects}, id) do
+    Enum.find_value(projects, fn
+      {project, {:ok, %{slots: slots}}} ->
+        Enum.find_value(slots, fn slot ->
+          find_summary_entry(slot[:summary] || [], "slot-summary-#{project}-#{slot.name}", id)
+        end)
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp find_summary_entry(%{page: :handoffs, handoff_view: %{handoff: handoff}}, id),
+    do: find_summary_entry(handoff.summary, "handoff-summary", id)
+
+  defp find_summary_entry(_assigns, _id), do: nil
+
+  defp find_summary_entry(entries, timeline, id) do
+    entries
+    |> Enum.with_index()
+    |> Enum.find_value(fn {entry, index} ->
+      if summary_entry_id(timeline, entry, index) == id, do: entry
+    end)
+  end
+
   # The open projects, read when the page opens, after you act on a project
   # and every few seconds (`tick_projects/1`), with their slots, read from
   # the VM apart from the page; what was read last stays shown meanwhile.
@@ -3865,24 +3899,23 @@ defmodule MWTClientWeb.SandboxLive do
     %{host: host, suggested: Resources.suggested(host), most: Resources.most(host)}
   end
 
-  defp assign_way_form(socket) do
-    form = to_form(%{"text" => socket.assigns.settings.way_of_working}, as: :way)
-    socket |> assign(:way_form, form) |> assign(:way_error, nil)
+  defp assign_features_form(socket) do
+    settings = socket.assigns.settings
+
+    base = %{
+      "timeline_recording" => to_string(SlotSummaries.default_enabled?(settings)),
+      "nested_virt" => to_string(settings.nested_virt),
+      "host_notes" => settings.host_notes,
+      "confine_reads" => Enum.join(settings.confine_reads || [], "\n"),
+      "way_of_working" => settings.way_of_working
+    }
+
+    socket |> assign(:features_base, base) |> assign_feature_draft(base, %{})
   end
 
-  defp assign_host_form(socket) do
-    socket
-    |> assign(
-      :host_form,
-      to_form(
-        %{
-          "notes" => socket.assigns.settings.host_notes,
-          "reads" => Enum.join(Map.get(socket.assigns.settings, :confine_reads) || [], "\n")
-        },
-        as: :host
-      )
-    )
-    |> assign(:host_error, nil)
+  defp assign_feature_draft(socket, params, errors) do
+    params = Map.merge(socket.assigns.features_base, params)
+    assign(socket, features_form: to_form(params, as: :features), features_errors: errors)
   end
 
   defp assign_name_form(socket) do

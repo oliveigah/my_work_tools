@@ -83,7 +83,7 @@ defmodule MWTClient.Sandbox.Slots do
   one.
   """
 
-  alias MWTClient.Sandbox.{Handoff, Project, Shown, TaskBase, Zed}
+  alias MWTClient.Sandbox.{SlotSummaries, Handoff, Project, Shown, TaskBase, Zed}
 
   @type state :: :absent | :missing | :foreign | :clean | :dirty
 
@@ -152,8 +152,8 @@ defmodule MWTClient.Sandbox.Slots do
   # started from, as git config has them (`branch.NAME.mwt-thread ID`,
   # `branch.NAME.mwt-base REF`).
   @look """
-  m=$1 b=$2
-  shift 2
+  m=$1 b=$2 summaries=$3
+  shift 3
   list=$(git -C "$m" worktree list --porcelain) || exit 1
   printf '%s\\n--states\\n' "$list"
   { printf '%s\\n' "$list" | sed -n 's/^worktree //p'; for p in "$@"; do printf '%s\\n' "$p"; done; } |
@@ -165,7 +165,11 @@ defmodule MWTClient.Sandbox.Slots do
   echo "--branch"
   if [ -n "$b" ]; then git -C "$m" rev-parse -q --verify "refs/heads/$b" || true; fi
   echo "--threads"
-  git -C "$m" config --get-regexp '^branch[.].*[.]mwt-(thread|base)$' || true
+  git -C "$m" config --get-regexp '^branch[.].*[.]mwt-(thread|review-thread|base)$' || true
+  if [ -n "$summaries" ]; then
+    printf '\\000'
+    git -C "$m" config --local --null --get-regexp "$summaries" || true
+  fi
   """
 
   # Puts the slot $2 on a new branch $4 from $5 ($3 = new), or on the
@@ -309,13 +313,25 @@ defmodule MWTClient.Sandbox.Slots do
   with whether it is free. With `branch`, also whether that
   branch exists (`:branch`, its commit, or nil).
   """
-  @spec look(Project.t(), map(), latest(), String.t() | nil) ::
+  @spec look(Project.t(), map(), latest(), String.t() | nil, keyword()) ::
           {:ok, look()} | {:error, String.t()}
-  def look(project, guest, latest, branch \\ nil) when is_function(latest, 1) do
+  def look(project, guest, latest, branch \\ nil, opts \\ []) when is_function(latest, 1) do
     mirror = Project.mirror_path(project, guest)
     paths = Enum.map(names(project), &path(project, guest, &1))
 
-    case guest.exec.(["sh", "-c", @look, "mwt-slots", mirror, branch || "" | paths]) do
+    summaries = if opts[:summaries], do: SlotSummaries.key_pattern(), else: ""
+
+    case guest.exec.(["sh", "-c", @look, "mwt-slots", mirror, branch || "", summaries | paths]) do
+      {:ok, output} when summaries != "" ->
+        case :binary.split(output, <<0>>) do
+          [output, config] ->
+            look = read(output, project, guest, latest)
+            {:ok, Map.put(look, :summary_config, SlotSummaries.config(config))}
+
+          [_output] ->
+            {:error, "MWT couldn't read the project's slot summaries."}
+        end
+
       {:ok, output} ->
         {:ok, read(output, project, guest, latest)}
 
@@ -352,6 +368,12 @@ defmodule MWTClient.Sandbox.Slots do
           into: %{},
           do: {Shown.text(branch), id}
 
+    review_threads =
+      for line <- sections.threads,
+          [_, branch, id] <- [Regex.run(~r/\Abranch\.(.+)\.mwt-review-thread (\S+)\z/, line)],
+          into: %{},
+          do: {Shown.text(branch), id}
+
     bases =
       for line <- sections.threads,
           [_, branch, ref] <- [Regex.run(~r/\Abranch\.(.+)\.mwt-base (\S+)\z/, line)],
@@ -362,7 +384,7 @@ defmodule MWTClient.Sandbox.Slots do
       for name <- names(project) do
         path = path(project, guest, name)
         state = Map.get(states, path, :missing)
-        slot(name, path, registered[path], state, {threads, bases})
+        slot(name, path, registered[path], state, {threads, review_threads, bases})
       end
 
     slot_paths = MapSet.new(slots, & &1.path)
@@ -424,7 +446,7 @@ defmodule MWTClient.Sandbox.Slots do
     )
   end
 
-  defp slot(name, path, worktree, state, {threads, bases}) do
+  defp slot(name, path, worktree, state, {threads, review_threads, bases}) do
     state =
       case {worktree, state} do
         {nil, :missing} -> :absent
@@ -443,6 +465,7 @@ defmodule MWTClient.Sandbox.Slots do
       head: worktree && worktree.head,
       handoff: handoff,
       thread: branch && threads[branch],
+      review_thread: branch && review_threads[branch],
       base: branch && bases[branch],
       task?: branch != nil and (Map.has_key?(bases, branch) or Map.has_key?(threads, branch))
     }

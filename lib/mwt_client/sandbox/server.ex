@@ -101,6 +101,7 @@ defmodule MWTClient.Sandbox.Server do
     SavedRequest,
     Secrets,
     Settings,
+    SlotSummaries,
     Share,
     Shares,
     VM,
@@ -1416,6 +1417,28 @@ defmodule MWTClient.Sandbox.Server do
       {:error, errors} ->
         {:reply, {:error, errors}, state}
     end
+  end
+
+  defp answer({:timeline_enabled, thread}, _from, state),
+    do: {:reply, Settings.timeline_enabled?(state.settings, thread), state}
+
+  defp answer({:set_timeline_override, thread, mode}, _from, state) do
+    case Settings.put_timeline_override(state.settings, thread, mode) do
+      {:ok, settings} ->
+        {:reply, :ok, state |> State.change(:settings, fn _ -> settings end) |> State.changed()}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  defp answer({:record_summary, thread, project, branch, token, entry}, _from, state) do
+    result =
+      if Settings.timeline_enabled?(state.settings, thread),
+        do: SlotSummaries.persist(state.username, project, branch, token, entry),
+        else: {:error, :timeline_disabled}
+
+    {:reply, result, state}
   end
 
   defp answer({:restore_layer, number}, _from, state) do

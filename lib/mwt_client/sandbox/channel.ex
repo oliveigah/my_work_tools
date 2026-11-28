@@ -82,6 +82,7 @@ defmodule MWTClient.Sandbox.Channel do
     Server,
     Shares,
     Shown,
+    SlotSummaries,
     Slots,
     Sockets,
     TaskBase,
@@ -115,7 +116,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   # The asks `answer/3` takes, each answered by a clause of `reply/3`;
   # `mcp` and `git` are served apart (`serve/2`).
-  @commands ~w(grants host why ports sync project worktree review handoff handoffs call propose run
+  @commands ~w(grants host why ports sync project worktree review summary handoff handoffs call propose run
                request wait vm)
   # What acts on the user's behalf, refused while the VM is isolated.
   @acting ~w(request run call propose handoff)
@@ -640,6 +641,14 @@ defmodule MWTClient.Sandbox.Channel do
       Enum.map_join(shown, ", ", &("host-origin/" <> &1)) <> more <> "."
   end
 
+  defp timeline_words(username, thread) do
+    if SlotSummaries.enabled?(username, thread) do
+      "\nTimeline recording is on. Read mwt help timeline and record the user's prompt before acting."
+    else
+      ""
+    end
+  end
+
   defp project_words(project, where, look, thread, branches) do
     clone = if look, do: look.mirror, else: "/work/#{project.name}"
 
@@ -962,7 +971,14 @@ defmodule MWTClient.Sandbox.Channel do
     case Projects.place(username, ask["cwd"]) do
       {:ok, project, where, look} ->
         branches = Projects.mirrored(username, project.name)
-        {0, project_words(project, where, look, ask["thread_id"], branches)}
+        slot = look && Slots.slot_at(look, elem(where, 1))
+        thread = ask["thread_id"]
+
+        recording_thread =
+          if thread in [nil, ""], do: slot && SlotSummaries.thread(slot), else: thread
+
+        words = if slot, do: timeline_words(username, recording_thread), else: ""
+        {0, project_words(project, where, look, thread, branches) <> words}
 
       {:error, reason} ->
         {1, Projects.explain(reason)}
@@ -1030,7 +1046,9 @@ defmodule MWTClient.Sandbox.Channel do
             do: "\n" <> Projects.remote_freshness(username, ask["cwd"]),
             else: ""
 
-        {0, taken_words(slot, outcome, onto, where) <> fresh}
+        {0,
+         taken_words(slot, outcome, onto, where) <>
+           fresh <> timeline_words(username, ask["thread_id"] || slot.thread)}
 
       {:error, reason} ->
         {1, Projects.explain(reason)}
@@ -1049,7 +1067,7 @@ defmodule MWTClient.Sandbox.Channel do
 
   defp reply("review", ask, username) do
     case Reviews.start(username, ask) do
-      {:ok, words} -> {0, words}
+      {:ok, words} -> {0, words <> timeline_words(username, ask["thread_id"])}
       {:error, reason} -> {1, Reviews.explain(reason)}
     end
   end
@@ -1142,6 +1160,19 @@ defmodule MWTClient.Sandbox.Channel do
          }) do
       {:ok, handoff, how} -> {0, handed_words(handoff, how)}
       {:error, reason} -> {1, Handoffs.explain(reason)}
+    end
+  end
+
+  defp reply("summary", ask, username) do
+    case SlotSummaries.append(username, ask) do
+      :ok ->
+        {0, "Added to the slot timeline."}
+
+      {:error, :timeline_disabled} ->
+        {1, "Timeline recording is off for this thread. Skip updates until it is enabled."}
+
+      {:error, reason} ->
+        {1, Projects.explain(reason)}
     end
   end
 

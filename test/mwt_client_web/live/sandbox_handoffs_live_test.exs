@@ -35,6 +35,80 @@ defmodule MWTClientWeb.SandboxHandoffsLiveTest do
     assert has_element?(view, "#handoff-row-#{handoff.id}")
   end
 
+  test "the handoff has a separate panel for the saved summary", %{
+    conn: conn,
+    username: username,
+    vm: vm
+  } do
+    assert {:ok, _} = MWTClient.Sandbox.update_settings(username, %{"timeline_recording" => true})
+
+    handoff =
+      hand_off(username, vm, "fix", "Fix the login", fn tree ->
+        for line <- ["Traced the timeout.", "Simplified the retry.", "Verified the fix."] do
+          assert {0, _} = Channel.answer("summary", %{"cwd" => tree, "text" => line}, username)
+        end
+
+        file = Path.join(vm, "prompt.txt")
+        File.write!(file, "Keep the **original checkout timeout** when retrying the payment.")
+
+        assert {0, _} =
+                 Channel.answer(
+                   "summary",
+                   %{
+                     "cwd" => tree,
+                     "kind" => "prompt",
+                     "text" => "Keep the deadline",
+                     "details" => file
+                   },
+                   username
+                 )
+
+        File.write!(Path.join(tree, "a.txt"), "fixed\n")
+      end)
+
+    assert {:ok, _closed} = Handoffs.close(username, handoff.id)
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/handoffs?id=#{handoff.id}")
+
+    assert has_element?(view, "#handoff-summary h2", "Summary timeline")
+
+    for entry <- handoff.summary do
+      timestamp = DateTime.to_iso8601(entry.at)
+      assert has_element?(view, ~s(#handoff-summary li time[datetime="#{timestamp}"]), "UTC")
+    end
+
+    assert has_element?(view, "#handoff-summary li:first-child", "Traced the timeout.")
+    assert has_element?(view, "#handoff-summary li:first-child", "Update")
+    assert has_element?(view, "#handoff-summary li:last-child", "Prompt")
+    assert has_element?(view, "#handoff-summary li:last-child", "Keep the deadline")
+
+    refute has_element?(view, "#summary-entry-dialog")
+    view |> element("#handoff-summary li:last-child button", "Details") |> render_click()
+
+    assert has_element?(view, "#summary-entry-dialog-title", "Keep the deadline")
+    assert has_element?(view, "#summary-entry-document-tab-rendered", "Markdown")
+    assert has_element?(view, "#summary-entry-document-tab-raw", "Raw")
+
+    assert has_element?(
+             view,
+             "#summary-entry-document-rendered strong",
+             "original checkout timeout"
+           )
+
+    assert has_element?(view, "#summary-entry-document-raw", "**original checkout timeout**")
+
+    render_patch(view, ~p"/tools/sandbox/handoffs?id=#{handoff.id}&diff=1")
+    assert has_element?(view, "#summary-entry-dialog-title", "Keep the deadline")
+
+    render_click(view, "close_summary_entry")
+    refute has_element?(view, "#summary-entry-dialog")
+
+    view |> element("#handoff-summary li:first-child button", "Details") |> render_click()
+    assert has_element?(view, "#summary-entry-document-rendered", "Traced the timeout.")
+
+    assert has_element?(view, "#handoff-description")
+    assert has_element?(view, "#handoff-history")
+  end
+
   test "an open handoff is notified until you accept, close or send it back", %{
     username: username,
     vm: vm

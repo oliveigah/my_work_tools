@@ -3,7 +3,7 @@ defmodule MWTClient.Sandbox.ReviewsBranchCommitTest do
   use MWTClient.ReviewsCase
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.Projects
+  alias MWTClient.Sandbox.{Channel, Projects}
 
   test "a branch is named on one remote when both have it; a commit is against its parent",
        context do
@@ -47,6 +47,47 @@ defmodule MWTClient.Sandbox.ReviewsBranchCommitTest do
     assert said =~ "Reviewing commit #{binary_part(lone, 0, 12)}"
     assert status(slot(mirror, 3)) == [" A e.txt"]
     assert git(server, ["for-each-ref", "refs/review/"]) == ""
+  end
+
+  test "a review thread can record a timeline without becoming a task", context do
+    %{username: username, mirror: mirror, colleague: colleague, server: server} = context
+    commit(colleague, [{"d.txt", "reviewed\n"}], "Review this")
+    git(colleague, ["push", "-q", "origin", "HEAD:refs/heads/feature"])
+    git(mirror, ["fetch", "-q", server, "refs/heads/feature:refs/remotes/remote-origin/feature"])
+    cwd = slot(mirror, 1)
+    thread = "review-thread"
+    assert :ok = Sandbox.set_timeline_override(username, thread, "on")
+
+    assert {0, words} =
+             Channel.answer(
+               "review",
+               %{
+                 "action" => "commit",
+                 "target" => sha(colleague, "HEAD"),
+                 "cwd" => cwd,
+                 "thread_id" => thread
+               },
+               username
+             )
+
+    assert words =~ "mwt help timeline"
+
+    assert {0, _} =
+             Channel.answer(
+               "summary",
+               %{"cwd" => cwd, "thread_id" => thread, "text" => "Review started."},
+               username
+             )
+
+    assert {:ok,
+            %{
+              slots: [
+                _,
+                %{task?: false, review_thread: ^thread, summary: [%{title: "Review started."}]}
+                | _
+              ]
+            }} =
+             Projects.slots(username, "app")
   end
 
   test "a pull request needs Git: fetch from your remotes, and a link of the project's remote",

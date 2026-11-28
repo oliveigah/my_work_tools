@@ -98,7 +98,7 @@ defmodule MWTClient.Sandbox.Reviews do
   # not, on one line.
   @start ~S"""
   set -e
-  m=$1 p=$2 b=$3 h=$4 o=$5 lock=$6
+  m=$1 p=$2 b=$3 h=$4 o=$5 lock=$6 thread=$7
   if [ "$o" = - ]; then
     base=$(git -C "$m" rev-parse -q --verify "$h^1^{commit}") || { echo root; exit 0; }
   else
@@ -134,6 +134,10 @@ defmodule MWTClient.Sandbox.Reviews do
     git -C "$m" worktree lock --reason "$lock" "$p"
   fi
   git -C "$p" reset -q -N "$base"
+  git -C "$m" config --unset-all "branch.$b.mwt-summary-id" 2>/dev/null || true
+  git -C "$m" config --unset-all "branch.$b.mwt-summary-0" 2>/dev/null || true
+  if [ -n "$thread" ]; then git -C "$m" config "branch.$b.mwt-review-thread" "$thread"
+  else git -C "$m" config --unset "branch.$b.mwt-review-thread" 2>/dev/null || true; fi
   echo "started $base"
   git -C "$p" diff --shortstat "$base" "$h"
   """
@@ -194,7 +198,8 @@ defmodule MWTClient.Sandbox.Reviews do
              name,
              head,
              onto || "-",
-             @lock
+             @lock,
+             text(ask["thread_id"])
            ]) do
       Projects.used(username, at.project.name)
 

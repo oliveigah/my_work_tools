@@ -37,6 +37,8 @@ defmodule MWTClient.Sandbox.Handoff do
     status: :open,
     revision: 1,
     stats: %{},
+    summary_group: 0,
+    summary: [],
     timeline: []
   ]
 
@@ -93,6 +95,8 @@ defmodule MWTClient.Sandbox.Handoff do
           status: status(),
           revision: pos_integer(),
           stats: map(),
+          summary_group: non_neg_integer(),
+          summary: [MWTClient.Sandbox.SlotSummaries.entry()],
           timeline: [event()]
         }
 
@@ -221,6 +225,11 @@ defmodule MWTClient.Sandbox.Handoff do
       |> Map.put_new(:base_branch, branch)
       |> Map.put_new(:base_ref, "refs/remotes/host/" <> branch)
       |> Map.update(:status, :open, &if(&1 == :sent_back, do: :open, else: &1))
+      |> Map.update(
+        :summary,
+        [],
+        &Enum.map(&1, fn entry -> MWTClient.Sandbox.SlotSummaries.upgrade(entry) end)
+      )
     )
   end
 

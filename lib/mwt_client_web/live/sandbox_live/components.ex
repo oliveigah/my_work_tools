@@ -141,6 +141,214 @@ defmodule MWTClientWeb.SandboxLive.Components do
     end
   end
 
+  attr :at, DateTime, required: true
+  attr :compact, :boolean, default: false
+
+  def summary_timestamp(assigns) do
+    ~H"""
+    <time
+      datetime={DateTime.to_iso8601(@at)}
+      title={Calendar.strftime(@at, "%Y-%m-%d %H:%M:%S UTC")}
+      class="shrink-0 whitespace-nowrap text-[10px] tabular-nums text-muted"
+    >
+      {Calendar.strftime(@at, "%b %-d, %H:%M")}{unless @compact, do: " UTC"}
+    </time>
+    """
+  end
+
+  @doc "Connects adjacent summary entries, with the ends stopping at their markers."
+  def summary_marker(assigns) do
+    ~H"""
+    <span aria-hidden="true" class="relative grid self-stretch place-items-center">
+      <span class="absolute top-0 bottom-1/2 left-1/2 w-px -translate-x-1/2 bg-line group-first/entry:hidden" />
+      <span class="absolute top-1/2 bottom-0 left-1/2 w-px -translate-x-1/2 bg-line group-last/entry:hidden" />
+      <span class="relative size-1.5 rounded-full bg-muted group-last/entry:bg-accent" />
+    </span>
+    """
+  end
+
+  @doc "A stable DOM identifier for a timeline entry in its current list."
+  def summary_entry_id(timeline, entry, index),
+    do: "#{timeline}-entry-#{DateTime.to_unix(entry.at, :microsecond)}-#{index}"
+
+  attr :id, :string, required: true
+  attr :entry, :map, required: true
+
+  def summary_entry_text(assigns) do
+    ~H"""
+    <div class="flex min-w-0 items-baseline gap-2">
+      <span class={[
+        "w-10 shrink-0 rounded text-center text-[9px] leading-4 font-semibold",
+        if(@entry.kind == :prompt,
+          do: "bg-violet/10 text-violet-strong",
+          else: "bg-deep/45 text-muted"
+        )
+      ]}>
+        {if @entry.kind == :prompt, do: "Prompt", else: "Update"}
+      </span>
+      <div
+        id={"#{@id}-headline"}
+        phx-hook=".SummaryHeadline"
+        phx-mounted={JS.ignore_attributes(["data-expanded", "data-overflow"])}
+        class="group/headline flex min-w-0 flex-1 items-baseline"
+      >
+        <span
+          id={"#{@id}-title"}
+          data-headline-text
+          class="min-w-0 flex-1 truncate group-data-[overflow=true]/headline:text-clip group-data-[expanded=true]/headline:overflow-visible group-data-[expanded=true]/headline:wrap-anywhere group-data-[expanded=true]/headline:whitespace-normal"
+        >
+          {@entry.title}
+        </span>
+        <button
+          type="button"
+          data-headline-toggle
+          aria-controls={"#{@id}-title"}
+          aria-expanded="false"
+          class="hidden shrink-0 rounded px-1 text-accent-strong hover:bg-hover focus-visible:outline-2 focus-visible:outline-accent group-data-[overflow=true]/headline:inline-flex"
+        >
+          <span class="group-data-[expanded=true]/headline:hidden">
+            <span aria-hidden="true">…</span>
+            <span class="sr-only">Expand headline</span>
+          </span>
+          <span class="hidden group-data-[expanded=true]/headline:inline">
+            <.icon name="hero-chevron-up-micro" class="size-3" />
+            <span class="sr-only">Collapse headline</span>
+          </span>
+        </button>
+      </div>
+      <button
+        id={@id}
+        type="button"
+        phx-click="open_summary_entry"
+        phx-value-entry={@id}
+        aria-haspopup="dialog"
+        aria-describedby={"#{@id}-title"}
+        class="shrink-0 rounded px-0.5 text-[10px] font-medium text-accent-strong hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+      >
+        Details
+      </button>
+    </div>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".SummaryHeadline">
+      export default {
+        mounted() {
+          this.toggle = event => {
+            const button = event.target.closest("[data-headline-toggle]")
+            if (!button) return
+            this.el.dataset.expanded = String(this.el.dataset.expanded !== "true")
+            this.updated()
+            this.resizeTimeline()
+            button.scrollIntoView({ block: "nearest", inline: "nearest" })
+          }
+          this.el.addEventListener("click", this.toggle)
+          this.observer = new ResizeObserver(() => {
+            this.measure()
+            if (this.el.dataset.expanded === "true") this.resizeTimeline()
+          })
+          this.observer.observe(this.el)
+          this.updated()
+        },
+        updated() {
+          this.el.querySelector("[data-headline-toggle]").setAttribute(
+            "aria-expanded", this.el.dataset.expanded || "false"
+          )
+          this.measure()
+        },
+        destroyed() {
+          this.observer.disconnect()
+          this.el.removeEventListener("click", this.toggle)
+        },
+        measure() {
+          if (this.el.dataset.expanded === "true" || !this.el.clientWidth) return
+          const text = this.el.querySelector("[data-headline-text]")
+          // Measure against the whole headline so the ellipsis doesn't create overflow.
+          this.el.dataset.overflow = String(text.scrollWidth > this.el.clientWidth)
+        },
+        resizeTimeline() {
+          const viewport = this.el.closest("[data-summary-viewport]")
+          if (!viewport) return
+          const expanded = Array.from(viewport.querySelectorAll("[data-expanded=true]"))
+          const extra = expanded.reduce((height, entry) => {
+            const row = entry.closest("li")
+            return height + Math.max(0, row.offsetHeight - parseFloat(getComputedStyle(row).minHeight))
+          }, 0)
+          viewport.style.setProperty("--summary-expanded-height", `${extra}px`)
+        }
+      }
+    </script>
+    """
+  end
+
+  attr :entry, :map, required: true
+
+  def summary_entry_dialog(assigns) do
+    ~H"""
+    <dialog
+      id="summary-entry-dialog"
+      phx-hook=".SummaryEntryDialog"
+      aria-labelledby="summary-entry-dialog-title"
+      class="m-auto max-h-[85dvh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-line bg-panel p-0 text-ink shadow-2xl backdrop:bg-black/55"
+    >
+      <div>
+        <header class="flex items-start gap-4 px-4 py-3">
+          <h2
+            id="summary-entry-dialog-title"
+            class="min-w-0 flex-1 wrap-anywhere text-sm font-semibold"
+          >
+            {@entry.title}
+          </h2>
+          <form method="dialog">
+            <.button
+              id="summary-entry-dialog-close"
+              type="submit"
+              variant="ghost"
+              aria-label="Close entry details"
+              autofocus
+            >
+              <.icon name="hero-x-mark-micro" class="size-4" />
+            </.button>
+          </form>
+        </header>
+
+        <.markdown_view
+          id="summary-entry-document"
+          text={if(@entry.detail == "", do: @entry.title, else: @entry.detail)}
+          class="border-t border-line-soft"
+        >
+          <:header>
+            <span class="font-medium text-ink">
+              {if @entry.kind == :prompt, do: "Prompt", else: "Update"}
+            </span>
+            <.summary_timestamp at={@entry.at} />
+          </:header>
+        </.markdown_view>
+      </div>
+    </dialog>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".SummaryEntryDialog">
+      export default {
+        mounted() {
+          this.previousFocus = document.activeElement
+          this.onClose = () => this.pushEvent("close_summary_entry", {}, () => {})
+          this.onBackdrop = event => {
+            if (event.target === this.el) this.el.close()
+          }
+          this.el.addEventListener("close", this.onClose)
+          this.el.addEventListener("click", this.onBackdrop)
+          this.el.showModal()
+        },
+        reconnected() {
+          if (!this.el.open) this.onClose()
+        },
+        destroyed() {
+          this.el.removeEventListener("close", this.onClose)
+          this.el.removeEventListener("click", this.onBackdrop)
+          this.el.close()
+          if (this.previousFocus?.isConnected) this.previousFocus.focus({ preventScroll: true })
+        }
+      }
+    </script>
+    """
+  end
+
   defp pad(n), do: n |> Integer.to_string() |> String.pad_leading(2, "0")
 
   @doc "A byte count in the unit that reads best."

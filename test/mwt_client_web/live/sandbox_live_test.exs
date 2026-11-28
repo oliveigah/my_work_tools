@@ -1987,7 +1987,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#settings-tab-runtime[aria-current=page]")
 
     for card <-
-          ~w(settings-shares settings-vm settings-nested-virt settings-vm-memory settings-host),
+          ~w(settings-shares settings-vm settings-vm-memory settings-features settings-nested-virt settings-host settings-way-of-working),
         do: assert(has_element?(view, "##{card}"))
 
     # What only informed is gone: the network's rules, and what the VM keeps.

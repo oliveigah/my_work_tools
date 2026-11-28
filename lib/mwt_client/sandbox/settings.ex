@@ -34,6 +34,9 @@ defmodule MWTClient.Sandbox.Settings do
   at the cost of exposing more of this machine's KVM to it; off unless you
   turn it on, and it applies when the VM is recreated.
 
+  `timeline_recording` is the live default for slot timelines.
+  `timeline_overrides` keeps explicit choices by agent thread ID.
+
   `log_body_kib` is how much of each request's and answer's body the
   activity log keeps (`MWTClient.Sandbox.Exchange`), 0 for heads only:
   every request MWT reads is kept, and this sizes each. At most 1 MiB, as
@@ -64,6 +67,8 @@ defmodule MWTClient.Sandbox.Settings do
             hold_seconds: 180,
             log_body_kib: 64,
             nested_virt: false,
+            timeline_recording: false,
+            timeline_overrides: %{},
             way_of_working: "",
             shares: [],
             host_notes: "",
@@ -83,6 +88,8 @@ defmodule MWTClient.Sandbox.Settings do
           hold_seconds: pos_integer(),
           log_body_kib: non_neg_integer(),
           nested_virt: boolean(),
+          timeline_recording: boolean(),
+          timeline_overrides: %{String.t() => boolean()},
           way_of_working: String.t(),
           shares: [Share.t()],
           host_notes: String.t(),
@@ -111,6 +118,7 @@ defmodule MWTClient.Sandbox.Settings do
       {:cache_gib, attrs["cache_gib"], &cast_int(&1, 1, 4_096)},
       {:work_gib, attrs["work_gib"], &cast_int(&1, 1, 4_096)},
       {:nested_virt, attrs["nested_virt"], &cast_boolean/1},
+      {:timeline_recording, attrs["timeline_recording"], &cast_boolean/1},
       {:way_of_working, attrs["way_of_working"], &cast_way_of_working/1},
       {:image_layer, attrs["image_layer"], &cast_layer/1},
       {:image_name, attrs["image_name"], &cast_image_name/1},
@@ -132,6 +140,34 @@ defmodule MWTClient.Sandbox.Settings do
 
     if errors == %{}, do: {:ok, struct!(settings, changes)}, else: {:error, errors}
   end
+
+  @doc "The explicit recording choice for a thread, or `:default`."
+  def timeline_override(settings, thread),
+    do: settings |> Map.get(:timeline_overrides, %{}) |> Map.get(thread, :default)
+
+  @doc "Whether the thread records its timeline, using the live default if it has no override."
+  def timeline_enabled?(settings, thread) do
+    case timeline_override(settings, thread) do
+      :default -> Map.get(settings, :timeline_recording, false)
+      enabled -> enabled
+    end
+  end
+
+  @doc "Sets or removes a thread's recording override."
+  def put_timeline_override(settings, thread, mode)
+      when is_binary(thread) and byte_size(thread) in 1..256 and mode in ["default", "on", "off"] do
+    overrides = Map.get(settings, :timeline_overrides, %{})
+
+    overrides =
+      if mode == "default",
+        do: Map.delete(overrides, thread),
+        else: Map.put(overrides, thread, mode == "on")
+
+    {:ok, Map.put(settings, :timeline_overrides, overrides)}
+  end
+
+  def put_timeline_override(_settings, _thread, _mode),
+    do: {:error, "Choose a recording setting for a known thread."}
 
   defp cast_layer(value) do
     layer = String.replace(value, "\r\n", "\n")

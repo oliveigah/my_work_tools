@@ -155,17 +155,23 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     assert has_element?(view, "#host-text", "# The user's machine")
 
     view
-    |> form("#host-notes-form", host: %{notes: "Kubernetes contexts: staging, prod"})
+    |> form("#features-form", features: %{host_notes: "Kubernetes contexts: staging, prod"})
     |> render_submit()
 
     assert has_element?(view, "#host-text", "Kubernetes contexts: staging, prod")
     assert Sandbox.snapshot(username).settings.host_notes == "Kubernetes contexts: staging, prod"
 
     view
-    |> form("#host-notes-form", host: %{notes: String.duplicate("x", 4_001)})
+    |> form("#features-form",
+      features: %{
+        host_notes: String.duplicate("x", 4_001),
+        timeline_recording: "true"
+      }
+    )
     |> render_submit()
 
     assert has_element?(view, "#host-notes-error", "4,000")
+    refute Sandbox.snapshot(username).settings.timeline_recording
   end
 
   test "a command an agent wrote is saved from its card, which still waits", %{

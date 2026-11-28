@@ -78,7 +78,7 @@ defmodule MWTClient.Sandbox.InboxTest do
     assert {usage, 0} = System.cmd(mwt, ["help"])
 
     assert usage =~
-             "Guides, mwt help TOPIC: #{guides |> Map.keys() |> Enum.sort() |> Enum.join(" ")}\n"
+             "Guides, mwt help TOPIC: #{guides |> Map.delete("timeline") |> Map.keys() |> Enum.sort() |> Enum.join(" ")}\n"
 
     for topic <- ["gone", "nope", "../AGENTS"] do
       assert {said, 1} = System.cmd(mwt, ["help", topic], stderr_to_stdout: true)

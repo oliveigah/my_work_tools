@@ -17,21 +17,41 @@ defmodule MWTClientWeb.SandboxNestedVirtLiveTest do
     conn: conn,
     username: username
   } do
+    server = MWTClient.Vault.Store.whereis(Sandbox.Server, username)
+    :sys.replace_state(server, &%{&1 | vm: %{&1.vm | exists?: true}})
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
 
-    assert has_element?(view, "#nested-virt--false[aria-checked=true]")
+    assert has_element?(view, "#nested-virt option[value=false][selected]")
+    assert has_element?(view, "#timeline-recording option[value=false][selected]")
     assert has_element?(view, "#nested-virt-host", "This machine allows it.")
-    # Switching on asks first; switching back off doesn't.
-    assert has_element?(view, "#nested-virt--true[data-confirm*='escapes']")
+    refute has_element?(view, "#features-recreate-required")
 
-    view |> element("#nested-virt--true") |> render_click()
+    view |> form("#features-form", features: %{timeline_recording: "true"}) |> render_change()
+    refute has_element?(view, "#features-recreate-required")
+    refute Sandbox.snapshot(username).settings.timeline_recording
 
-    assert has_element?(view, "#notices", "VMs inside the VM turned on")
-    assert has_element?(view, "#nested-virt--true[aria-checked=true]")
+    view
+    |> form("#features-form", features: %{nested_virt: "true", timeline_recording: "true"})
+    |> render_change()
+
+    assert has_element?(view, "#features-recreate-required", "requires recreation")
+    assert has_element?(view, "#features-apply[data-confirm*='escapes']")
+    refute Sandbox.snapshot(username).settings.nested_virt
+    refute Sandbox.snapshot(username).settings.timeline_recording
+
+    view
+    |> form("#features-form", features: %{nested_virt: "true", timeline_recording: "true"})
+    |> render_submit()
+
+    assert has_element?(view, "#notices", "Recreate the VM")
+    assert has_element?(view, "#nested-virt option[value=true][selected]")
     assert Sandbox.snapshot(username).settings.nested_virt
+    assert Sandbox.snapshot(username).settings.timeline_recording
 
-    refute has_element?(view, "#nested-virt--false[data-confirm]")
-    view |> element("#nested-virt--false") |> render_click()
+    view |> form("#features-form", features: %{nested_virt: "false"}) |> render_change()
+    assert has_element?(view, "#features-recreate-required")
+    refute has_element?(view, "#features-apply[data-confirm]")
+    view |> form("#features-form", features: %{nested_virt: "false"}) |> render_submit()
     refute Sandbox.snapshot(username).settings.nested_virt
   end
 
@@ -58,6 +78,6 @@ defmodule MWTClientWeb.SandboxNestedVirtLiveTest do
     # A VM that has it on can still turn it off.
     assert {:ok, _} = Sandbox.update_settings(username, %{"nested_virt" => "true"})
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
-    assert has_element?(view, "#nested-virt--false")
+    assert has_element?(view, "#nested-virt option[value=false]")
   end
 end

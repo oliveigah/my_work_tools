@@ -79,10 +79,8 @@ defmodule MWTClientWeb.SandboxLive.Settings do
       "each shared folder's copy in the VM, by path: its status, a sync under way, one due (`MWTClient.Sandbox.Server.ShareSync.view/1`)"
 
   attr :host, :map, required: true
-  attr :host_form, :any, required: true
-  attr :host_error, :string, default: nil
-  attr :way_form, :any, required: true
-  attr :way_error, :string, default: nil
+  attr :features_form, :any, required: true
+  attr :features_errors, :map, default: %{}
 
   def page(assigns) do
     assigns = assign(assigns, :tabs, @tabs)
@@ -272,14 +270,16 @@ defmodule MWTClientWeb.SandboxLive.Settings do
         resources={@resources}
       />
 
-      <div class="grid items-start gap-5 lg:grid-cols-2">
-        <.nested_virt_card settings={@settings} host={@tools.nested_virt} />
-        <.memory_card memory={@memory} vm={@vm} />
-      </div>
+      <.memory_card memory={@memory} vm={@vm} />
 
-      <.host_card host={@host} host_form={@host_form} host_error={@host_error} />
-
-      <.way_of_working_card way_form={@way_form} way_error={@way_error} />
+      <.features
+        form={@features_form}
+        errors={@features_errors}
+        settings={@settings}
+        vm={@vm}
+        nested_host={@tools.nested_virt}
+        host={@host}
+      />
     </div>
     <script :type={Phoenix.LiveView.ColocatedHook} name=".PickFolders">
       export default {
@@ -818,55 +818,145 @@ defmodule MWTClientWeb.SandboxLive.Settings do
 
   defp slug(text), do: text |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-")
 
+  attr :form, :any, required: true
+  attr :errors, :map, required: true
+  attr :settings, :any, required: true
+  attr :vm, :any, required: true
+  attr :nested_host, :any, required: true
+  attr :host, :map, required: true
+
+  defp features(assigns) do
+    nested = assigns.form[:nested_virt].value in [true, "true"]
+
+    assigns =
+      assign(assigns,
+        recreates?: assigns.vm.exists? and nested != assigns.settings.nested_virt,
+        enabling_nested?: nested and not assigns.settings.nested_virt
+      )
+
+    ~H"""
+    <.card id="settings-features" title="Features" body_class="">
+      <.form
+        for={@form}
+        id="features-form"
+        phx-change="change_features"
+        phx-submit="apply_features"
+        class="divide-y divide-line-soft"
+      >
+        <.feature_row
+          id="settings-timeline-recording"
+          title="Timeline recording"
+          effect="Applies immediately"
+        >
+          <:controls>
+            <.input
+              id="timeline-recording"
+              field={@form[:timeline_recording]}
+              type="select"
+              aria-labelledby="settings-timeline-recording-label"
+              options={[{"Off", "false"}, {"On", "true"}]}
+              class={[input_classes(), "w-24"]}
+              errors={List.wrap(@errors[:timeline_recording])}
+            />
+          </:controls>
+          <p class="text-[11px] leading-4 text-muted">
+            Default for agent threads. Set a different choice for a thread in Projects.
+          </p>
+        </.feature_row>
+
+        <.nested_virt_feature
+          form={@form}
+          settings={@settings}
+          host={@nested_host}
+          error={@errors[:nested_virt]}
+        />
+        <.host_feature host={@host} form={@form} errors={@errors} />
+        <.way_of_working_feature form={@form} error={@errors[:way_of_working]} />
+
+        <div class="flex flex-wrap items-center justify-end gap-3 px-4 py-3">
+          <p
+            :if={@recreates?}
+            id="features-recreate-required"
+            class="mr-auto flex items-center gap-1.5 text-[11px] text-warn-strong"
+          >
+            <.icon name="hero-arrow-path-micro" class="size-3.5" />
+            Changing VMs inside the VM requires recreation.
+          </p>
+          <.button
+            id="features-apply"
+            type="submit"
+            variant="primary"
+            data-confirm={if @enabling_nested?, do: nested_virt_warning()}
+          >
+            Apply
+          </.button>
+        </div>
+      </.form>
+    </.card>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :effect, :string, required: true
+  slot :help
+  slot :controls
+  slot :inner_block, required: true
+
+  defp feature_row(assigns) do
+    ~H"""
+    <section id={@id} class="space-y-2 px-4 py-3">
+      <header class="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <h3
+          id={"#{@id}-label"}
+          class="flex min-w-0 flex-1 items-center gap-1.5 text-xs font-medium text-ink"
+        >
+          {@title}
+          <.help :if={@help != []} id={"#{@id}-help"} label={"About #{@title}"}>
+            {render_slot(@help)}
+          </.help>
+        </h3>
+        <span class="text-[11px] text-muted">{@effect}</span>
+        {render_slot(@controls)}
+      </header>
+      {render_slot(@inner_block)}
+    </section>
+    """
+  end
+
+  attr :form, :any, required: true
   attr :settings, :any, required: true
   attr :host, :any, required: true
+  attr :error, :string, default: nil
 
-  # Off and On, with what this machine allows beneath. On is offered only
-  # where the machine allows it; a VM that has it on can always turn it off.
-  defp nested_virt_card(assigns) do
+  defp nested_virt_feature(assigns) do
     ~H"""
-    <.card id="settings-nested-virt" title="VMs inside the VM">
+    <.feature_row id="settings-nested-virt" title="VMs inside the VM" effect="On VM creation">
       <:help>
-        <span class="block">
-          On, the VM can run VMs of its own: MWT's own VM tests, a development instance of MWT with a real VM, QEMU, an Android emulator. Containers don't need it.
-        </span>
-        <span class="mt-1.5 block">
-          The cost is exposure: every process in the VM, all of them root, can reach the part of this machine's kernel that emulates the CPU's virtualization for a VM's own VMs. Several published escapes from a VM to its host were in that code, so keep this machine's kernel up to date while it is on. It applies when the VM is recreated, and so does turning it off.
-        </span>
+        This lets the VM run VMs of its own, such as QEMU, an Android emulator, or MWT's own VM tests. It exposes the host virtualization interface to processes inside the VM. The change applies when the VM is recreated.
       </:help>
-      <:actions>
-        <.segmented
+      <:controls>
+        <.input
           :if={@settings.nested_virt or @host == :allowed}
           id="nested-virt"
-          options={[{false, "Off"}, {true, "On"}]}
-          value={@settings.nested_virt}
-          event="set_nested_virt"
-          name="on"
-          tone={:risk}
-          confirm={%{"true" => nested_virt_warning()}}
+          field={@form[:nested_virt]}
+          type="select"
+          aria-labelledby="settings-nested-virt-label"
+          options={[{"Off", "false"}, {"On", "true"}]}
+          class={[input_classes(), "w-24"]}
+          errors={List.wrap(@error)}
         />
-      </:actions>
-      <p id="nested-virt-host" class="flex items-start gap-1.5 text-xs leading-5 text-muted">
-        <.icon
-          name={
-            if @host == :allowed,
-              do: "hero-check-circle-micro",
-              else: "hero-exclamation-triangle-micro"
-          }
-          class={["mt-0.5 size-3.5 shrink-0", if(@host == :allowed, do: "text-ok", else: "text-warn")]}
-        />
-        <span>
-          {nested_virt_text(@host)}
-          <code
-            :if={match?({:off, _}, @host)}
-            id="nested-virt-enable"
-            class="mt-1 block w-fit rounded bg-deep px-1.5 py-0.5 font-mono text-[11px] text-ink"
-          >
-            {NestedVirt.enable_line(elem(@host, 1))}
-          </code>
-        </span>
+      </:controls>
+      <p id="nested-virt-host" class="text-[11px] leading-4 text-muted">
+        {nested_virt_text(@host)}
+        <code :if={match?({:off, _}, @host)} id="nested-virt-enable" class="font-mono text-ink">
+          {NestedVirt.enable_line(elem(@host, 1))}
+        </code>
       </p>
-    </.card>
+      <p :if={@error && !@settings.nested_virt && @host != :allowed} class="text-xs text-bad">
+        {@error}
+      </p>
+    </.feature_row>
     """
   end
 
@@ -922,21 +1012,14 @@ defmodule MWTClientWeb.SandboxLive.Settings do
     """
   end
 
-  ## This machine, for agents
-
   attr :host, :map, required: true
-  attr :host_form, :any, required: true
-  attr :host_error, :string, default: nil
+  attr :form, :any, required: true
+  attr :errors, :map, required: true
 
-  # Your notes are the part you write; MWT adds the rest of what agents
-  # read (`mwt host`), which shows on asking.
-  defp host_card(assigns) do
+  defp host_feature(assigns) do
     ~H"""
-    <.card id="settings-host" title="This machine, for agents">
-      <:help>
-        What agents in the VM read about this machine with mwt host (also /mnt/mwt/host.md), so the commands they ask to run here fit it: its system, shell, shared folders and the tools found, then your notes. They never probe it themselves.
-      </:help>
-      <.form for={@host_form} id="host-notes-form" phx-submit="save_host_notes" class="space-y-2">
+    <.feature_row id="settings-host" title="This machine, for agents" effect="Applies immediately">
+      <div class="space-y-2">
         <label for="host-notes" class="flex items-center gap-1.5 text-xs font-medium text-ink">
           Your notes
           <.help id="host-notes-help" label="About your notes">
@@ -944,15 +1027,23 @@ defmodule MWTClientWeb.SandboxLive.Settings do
           </.help>
         </label>
         <.input
-          field={@host_form[:notes]}
+          field={@form[:host_notes]}
           id="host-notes"
           type="textarea"
           rows="3"
           placeholder="e.g. The work VPN comes up with openvpn3 session-start --config work. Kubernetes contexts: staging, prod."
-          class={[input_classes(), "leading-5", @host_error && "border-bad/70"]}
+          class={[
+            input_classes(),
+            "leading-5",
+            if(@errors[:host_notes] || @errors[:confine_reads], do: "border-bad/70")
+          ]}
         />
-        <p :if={@host_error} id="host-notes-error" class="text-[11px] text-bad">
-          {@host_error}
+        <p
+          :if={@errors[:host_notes] || @errors[:confine_reads]}
+          id="host-notes-error"
+          class="text-[11px] text-bad"
+        >
+          {@errors[:host_notes] || @errors[:confine_reads]}
         </p>
         <label for="host-reads" class="flex items-center gap-1.5 pt-1 text-xs font-medium text-ink">
           Folders confined commands may read
@@ -961,7 +1052,7 @@ defmodule MWTClientWeb.SandboxLive.Settings do
           </.help>
         </label>
         <.input
-          field={@host_form[:reads]}
+          field={@form[:confine_reads]}
           id="host-reads"
           type="textarea"
           rows="2"
@@ -994,7 +1085,6 @@ defmodule MWTClientWeb.SandboxLive.Settings do
               Look for tools again
             </button>
           </p>
-          <.button type="submit" id="host-notes-save">Save</.button>
         </div>
         <details id="host-preview" class="group/preview">
           <summary class="flex cursor-pointer list-none items-center gap-1 text-[11px] text-accent hover:underline [&::-webkit-details-marker]:hidden">
@@ -1008,67 +1098,55 @@ defmodule MWTClientWeb.SandboxLive.Settings do
             class="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-lg border border-line-soft bg-deep/50 p-2.5 font-mono text-[10px] leading-4 text-ink"
           >{@host.text}</pre>
         </details>
-      </.form>
-    </.card>
+      </div>
+    </.feature_row>
     """
   end
 
-  attr :way_form, :any, required: true
-  attr :way_error, :string, default: nil
+  attr :form, :any, required: true
+  attr :error, :string, default: nil
 
-  # How you like to work with agents, in your own words: your taste rather
-  # than a fact of the VM, so empty until you write it.
-  defp way_of_working_card(assigns) do
+  defp way_of_working_feature(assigns) do
     ~H"""
-    <.card id="settings-way-of-working" title="Your way of working">
-      <:help>
-        Your own text for the agents in the VM: which decisions to bring you, how you like a system built, anything about working with you. MWT adds it after its own instructions, in ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md, under a heading that says it is yours. It reaches them at the VM's next start.
-      </:help>
-      <.form
-        for={@way_form}
-        id="way-of-working-form"
-        phx-submit="save_way_of_working"
-        class="space-y-2"
-      >
+    <.feature_row id="settings-way-of-working" title="Your way of working" effect="Next VM start">
+      <div class="space-y-2">
         <.input
-          field={@way_form[:text]}
+          field={@form[:way_of_working]}
           id="way-of-working-text"
           type="textarea"
           phx-hook=".WayOfWorkingText"
           rows="12"
+          aria-labelledby="settings-way-of-working-label"
           placeholder="Empty, agents read only MWT's instructions. Write how you like to work with them, or start from MWT's example."
-          class={[input_classes(), "font-mono text-xs leading-5", @way_error && "border-bad/70"]}
+          class={[input_classes(), "font-mono text-xs leading-5", @error && "border-bad/70"]}
         />
-        <p :if={@way_error} id="way-of-working-error" class="text-[11px] text-bad">
-          {@way_error}
+        <p :if={@error} id="way-of-working-error" class="text-[11px] text-bad">
+          {@error}
         </p>
         <div class="flex flex-wrap items-center justify-end gap-3">
           <button
             type="button"
             id="way-of-working-example"
             phx-click="way_of_working_example"
-            data-confirm="Put MWT's example in the field, in place of what is there? Nothing changes for agents until you save."
+            data-confirm="Put MWT's example in the field, in place of what is there? It takes effect after Apply and the next VM start."
             class="cursor-pointer text-[11px] text-accent hover:underline"
           >
             Start from MWT's example
           </button>
-          <.button type="submit" id="way-of-working-save">Save</.button>
         </div>
-      </.form>
-      <script :type={Phoenix.LiveView.ColocatedHook} name=".WayOfWorkingText">
-        // The server never sees what you type here, so a text it puts in the
-        // field comes as an event, set even over unsaved typing or while the
-        // field has focus, when a page update leaves the field as it is.
-        export default {
-          mounted() {
-            this.handleEvent("way_of_working_fill", ({text}) => {
-              this.el.value = text
-              this.el.scrollTop = 0
-            })
-          }
+      </div>
+    </.feature_row>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".WayOfWorkingText">
+      // A focused field keeps its browser value during ordinary patches.
+      export default {
+        mounted() {
+          this.handleEvent("way_of_working_fill", ({text}) => {
+            this.el.value = text
+            this.el.scrollTop = 0
+          })
         }
-      </script>
-    </.card>
+      }
+    </script>
     """
   end
 

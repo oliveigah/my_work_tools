@@ -319,7 +319,7 @@ defmodule MWTClient.Sandbox.InstructionsTest do
     guides = Instructions.guides()
 
     assert Map.keys(guides) |> Enum.sort() ==
-             ~w(access handoff projects propose resources run workspace)
+             ~w(access handoff projects propose resources run timeline workspace)
 
     # Every guide is named in the text, or in another guide, so an agent
     # finds it; and every guide named exists.
@@ -329,7 +329,11 @@ defmodule MWTClient.Sandbox.InstructionsTest do
         topic != "TOPIC",
         do: assert(Map.has_key?(guides, topic), "mwt help #{topic} names no guide")
 
+    # Project commands name this guide when the thread is recording.
+    refute Enum.any?(named, &(&1 == ["mwt help timeline", "timeline"]))
+
     for topic <- Map.keys(guides),
+        topic != "timeline",
         do: assert(Enum.any?(named, &(&1 == ["mwt help " <> topic, topic])), "#{topic} unnamed")
 
     # The rules every task needs stay in the text itself.

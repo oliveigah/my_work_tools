@@ -71,7 +71,8 @@ defmodule MWTClient.Storage.Database do
     library: [
       {1, MWTClient.Storage.Migrations.LibraryItems},
       {2, MWTClient.Storage.Migrations.LibraryHandoffs},
-      {3, MWTClient.Storage.Migrations.FlashcardsUncertain}
+      {3, MWTClient.Storage.Migrations.FlashcardsUncertain},
+      {4, MWTClient.Storage.Migrations.LibrarySlotSummaries}
     ],
     journal: [
       {1, MWTClient.Storage.Migrations.JournalHttpHistory},

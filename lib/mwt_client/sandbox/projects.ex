@@ -36,6 +36,7 @@ defmodule MWTClient.Sandbox.Projects do
     Share,
     Shares,
     Shown,
+    SlotSummaries,
     Slots,
     TaskBase,
     Zed
@@ -503,9 +504,23 @@ defmodule MWTClient.Sandbox.Projects do
       # Two trips into the VM, side by side: each is mostly msb exec's.
       opened = Task.async(fn -> Zed.opened(guest) end)
 
-      case Slots.look(project, guest, latest(username, project)) do
+      case Slots.look(project, guest, latest(username, project), nil, summaries: true) do
         {:ok, look} ->
-          {:ok, %{look | slots: Slots.mark_zed(look.slots, Task.await(opened, :infinity))}}
+          {config, look} = Map.pop(look, :summary_config)
+          secrets = if map_size(config) > 0, do: Server.call(username, :secrets)
+
+          slots =
+            look.slots
+            |> Slots.mark_zed(Task.await(opened, :infinity))
+            |> Enum.map(
+              &Map.put(
+                &1,
+                :summary,
+                SlotSummaries.for_slot(username, project, &1, config, secrets)
+              )
+            )
+
+          {:ok, %{look | slots: slots}}
 
         error ->
           Task.shutdown(opened, :brutal_kill)

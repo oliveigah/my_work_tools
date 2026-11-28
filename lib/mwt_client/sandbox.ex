@@ -723,6 +723,10 @@ defmodule MWTClient.Sandbox do
           {:ok, Settings.t()} | {:error, %{atom() => String.t()}}
   def update_settings(username, attrs), do: Server.call(username, {:update_settings, attrs})
 
+  @doc "Applies a thread's live timeline recording override."
+  def set_timeline_override(username, thread, mode),
+    do: Server.call(username, {:set_timeline_override, thread, mode})
+
   @doc "The versions kept of your layer of the image, the newest first."
   @spec layer_versions(username()) :: [MWTClient.Versions.Version.t()]
   def layer_versions(username), do: MWTClient.Sandbox.LayerVersions.list(username)

@@ -4,7 +4,7 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
   import Phoenix.LiveViewTest
 
   alias MWTClient.Sandbox
-  alias MWTClient.Sandbox.{Guest, Projects}
+  alias MWTClient.Sandbox.{Channel, Guest, Projects}
   alias MWTClientWeb.SandboxLive.Projects, as: Page
 
   @me [
@@ -329,12 +329,42 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
     # Every few seconds the page reads them again, by itself.
     MWTClient.StandIns.put_guest(username, local)
 
+    cwd = Path.join(vm, "app")
+    thread = "test-thread"
+
     {:ok, _, _, :started, _, _} =
-      Projects.take_slot(username, Path.join(vm, "app"), :new, "fix", from: "master")
+      Projects.take_slot(username, cwd, :new, "fix", from: "master", thread: thread)
 
     send(view.pid, :projects_tick)
     render_async(view, 5_000)
     assert has_element?(view, "#slot-state-app-slot-0", "busy")
+    assert has_element?(view, "#slot-timeline-app-slot-0 option[value=default][selected]", "off")
+
+    view |> form("#slot-timeline-app-slot-0-form", mode: "on") |> render_change()
+    assert has_element?(view, "#slot-timeline-app-slot-0 option[value=on][selected]")
+
+    assert {0, _} =
+             Channel.answer("summary", %{"cwd" => cwd, "text" => "Checked the mirror."}, username)
+
+    view |> form("#slot-timeline-app-slot-0-form", mode: "off") |> render_change()
+
+    assert {1, _} =
+             Channel.answer("summary", %{"cwd" => cwd, "text" => "Do not record."}, username)
+
+    view |> form("#slot-timeline-app-slot-0-form", mode: "default") |> render_change()
+    assert has_element?(view, "#slot-timeline-app-slot-0 option[value=default][selected]")
+    send(view.pid, :projects_tick)
+    render_async(view, 5_000)
+
+    view |> element("#slot-summary-app-slot-0 li button", "Details") |> render_click()
+    assert has_element?(view, "#summary-entry-document-rendered", "Checked the mirror.")
+
+    send(view.pid, :projects_tick)
+    render_async(view, 5_000)
+    assert has_element?(view, "#summary-entry-dialog-title", "Checked the mirror.")
+
+    render_patch(view, ~p"/tools/sandbox/handoffs")
+    refute has_element?(view, "#summary-entry-dialog")
   end
 
   defp wait(test, what, words, local) do
@@ -503,6 +533,17 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
     {:ok, _, _, :started, _, _} =
       Projects.take_slot(username, "#{mirror}.wt/slot-2", :new, "cart", from: "master")
 
+    assert {:ok, _} = Sandbox.update_settings(username, %{"timeline_recording" => true})
+
+    for line <- ["Started", "Chose a design", "Implemented it", "Ready for review"] do
+      assert {0, _} =
+               Channel.answer(
+                 "summary",
+                 %{"cwd" => "#{mirror}.wt/slot-1", "text" => line},
+                 username
+               )
+    end
+
     File.write!(Path.join(vm, "app.wt/slot-2/a.txt"), "changed\n")
     old = Path.join(vm, "app.wt/push-options")
 
@@ -541,6 +582,17 @@ defmodule MWTClientWeb.SandboxProjectsLiveTest do
 
     page = LazyHTML.from_fragment(html)
     text = fn selector -> page |> LazyHTML.query(selector) |> LazyHTML.text() end
+
+    assert String.trim(text.("#slot-summary-app-slot-1-label")) == "Summary timeline"
+    assert text.("#slot-summary-app-slot-1 > summary") =~ "Ready for review"
+    assert page |> LazyHTML.query("#slot-summary-app-slot-1 li") |> Enum.count() == 4
+
+    assert page |> LazyHTML.query("#slot-summary-app-slot-1 li time[datetime]") |> Enum.count() ==
+             4
+
+    assert text.("#slot-summary-app-slot-1 li:first-child") =~ "Started"
+    assert text.("#slot-summary-app-slot-1 li:last-child") =~ "Ready for review"
+    assert Enum.empty?(LazyHTML.query(page, "#slot-summary-app-slot-3"))
 
     # slot-0, the clone, on its own master, and slot-3 are free.
     assert text.("#project-slots-free-app") =~ "2 of 4 free"

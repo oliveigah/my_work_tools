@@ -497,6 +497,7 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
         <div id="handoff-information" class="min-w-0 space-y-4 lg:col-start-1 lg:row-start-1">
           <.details view={@view} vm={@vm} />
           <.description handoff={@handoff} now={@now} />
+          <.summary_timeline :if={@handoff.summary != []} entries={@handoff.summary} />
           <.what_lands handoff={@handoff} facts={@facts} diff={@view.diff} shown?={@diff} />
           <.timeline handoff={@handoff} now={@now} />
         </div>
@@ -527,6 +528,35 @@ defmodule MWTClientWeb.SandboxLive.Handoffs do
         </header>
         <p class="px-4 py-3 text-[13px] italic text-faint">No notes given.</p>
       <% end %>
+    </section>
+    """
+  end
+
+  attr :entries, :list, required: true
+
+  defp summary_timeline(assigns) do
+    ~H"""
+    <section id="handoff-summary" class="overflow-hidden rounded-xl border border-line bg-panel">
+      <header class="border-b border-line-soft bg-deep/40 px-4 py-2">
+        <h2 class="text-[12px] font-semibold text-ink">Summary timeline</h2>
+      </header>
+      <ul role="list" class="list-none px-4 py-3 text-[13px]">
+        <li
+          :for={{entry, index} <- Enum.with_index(@entries)}
+          class="group/entry grid min-h-10 grid-cols-[1.5rem_6.75rem_minmax(0,1fr)] items-center rounded-lg px-3 text-muted last:bg-accent-soft/40 last:font-medium last:text-ink"
+        >
+          <.summary_marker />
+          <.summary_timestamp at={entry.at} />
+          <div class="min-w-0 py-2">
+            <div class="border-l border-line pl-3">
+              <.summary_entry_text
+                id={summary_entry_id("handoff-summary", entry, index)}
+                entry={entry}
+              />
+            </div>
+          </div>
+        </li>
+      </ul>
     </section>
     """
   end

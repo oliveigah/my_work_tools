@@ -24,6 +24,7 @@ defmodule MWTClient.Sandbox.Handoffs do
     Projects,
     Secrets,
     Server,
+    SlotSummaries,
     Slots,
     TaskBase
   }
@@ -89,6 +90,8 @@ defmodule MWTClient.Sandbox.Handoffs do
          store = HandoffStore.path(dir, project.path),
          :ok <- HandoffStore.ensure(store, project.path),
          id = if(existing, do: existing.id, else: Server.call(username, :next_handoff_id)),
+         {:ok, summary_group, summary} <-
+           SlotSummaries.snapshot(username, project, guest, source, existing),
          :ok <- keep_previous(store, existing),
          {:ok, head} <-
            HandoffStore.receive(
@@ -100,7 +103,13 @@ defmodule MWTClient.Sandbox.Handoffs do
              Handoff.size_limit_mib()
            ) do
       handoff = build(existing, id, words, project, base, source, head)
-      handoff = %{handoff | base_commit: comparison_base(base)}
+
+      handoff = %{
+        handoff
+        | base_commit: comparison_base(base),
+          summary_group: summary_group,
+          summary: summary
+      }
 
       result =
         with {:ok, facts} <- Handoff.facts(store, handoff),
@@ -239,6 +248,8 @@ defmodule MWTClient.Sandbox.Handoffs do
     :status,
     :updated_at,
     :revision,
+    :summary_group,
+    :summary,
     :stats
   ]
 

@@ -37,16 +37,16 @@ defmodule MWTClientWeb.SandboxWayOfWorkingLiveTest do
     assert_push_event(view, "way_of_working_fill", %{text: ^example})
 
     view
-    |> form("#way-of-working-form", way: %{text: "Keep answers short.\r\n"})
+    |> form("#features-form", features: %{way_of_working: "Keep answers short.\r\n"})
     |> render_submit()
 
-    assert has_element?(view, "#notices", "Your way of working is saved")
+    assert has_element?(view, "#notices", "Features applied")
     assert Sandbox.snapshot(username).settings.way_of_working == "Keep answers short."
     assert File.read!(block) == Instructions.block(way_of_working: "Keep answers short.")
 
-    view |> form("#way-of-working-form", way: %{text: ""}) |> render_submit()
+    view |> form("#features-form", features: %{way_of_working: ""}) |> render_submit()
 
-    assert has_element?(view, "#notices", "Your way of working is cleared")
+    assert has_element?(view, "#notices", "Features applied")
     assert File.read!(block) == Instructions.block()
   end
 
@@ -57,7 +57,7 @@ defmodule MWTClientWeb.SandboxWayOfWorkingLiveTest do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/settings")
     long = String.duplicate("a", 20_001)
 
-    view |> form("#way-of-working-form", way: %{text: long}) |> render_submit()
+    view |> form("#features-form", features: %{way_of_working: long}) |> render_submit()
 
     assert has_element?(view, "#way-of-working-error", "under 20,000 characters")
     assert render(element(view, "#way-of-working-text")) =~ long

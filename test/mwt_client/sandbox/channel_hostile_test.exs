@@ -65,6 +65,7 @@ defmodule MWTClient.Sandbox.ChannelHostileTest do
       {"project", Map.put(me, "cwd", dir)},
       {"worktree",
        Map.merge(me, %{"action" => "new", "cwd" => dir, "name" => "t", "from" => "main"})},
+      {"summary", Map.merge(me, %{"cwd" => dir, "text" => "Ready for review."})},
       {"worktree", Map.merge(me, %{"action" => "free", "cwd" => dir})},
       {"review",
        Map.merge(me, %{
