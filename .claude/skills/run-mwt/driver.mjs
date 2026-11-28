@@ -69,7 +69,7 @@ const COMMANDS = {
   },
 
   // Signs in, creating the identity if the data directory does not have it.
-  async login([username = "demo", password = "demo password"]) {
+  async login([username = "demo", password = "demopass"]) {
     await ensurePage()
     await page.goto(BASE + "/")
     await connected()

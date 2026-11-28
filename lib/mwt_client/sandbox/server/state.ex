@@ -139,6 +139,21 @@ defmodule MWTClient.Sandbox.Server.State do
     )
   end
 
+  @doc "Keeps a finished approval in the journal before notifying the pages."
+  def keep_approval(state, %Approval{} = approval) do
+    if Approval.final?(approval) and approval.decided_at do
+      Journal.record_approval(
+        state.username,
+        approval.id,
+        approval.decided_at,
+        Approval.history_summary(approval),
+        Approval.history_card(approval)
+      )
+    end
+
+    state
+  end
+
   @doc """
   Counts one more use of a grant, now.
   """

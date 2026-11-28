@@ -151,6 +151,14 @@ defmodule MWTClient.Sandbox do
   @spec audit_card(username(), String.t()) :: map() | nil
   def audit_card(username, id), do: MWTClient.Storage.Journal.card(username, id)
 
+  @doc "The latest finished approvals kept in this identity's journal."
+  @spec approval_history(username()) :: [Approval.t()]
+  def approval_history(username), do: MWTClient.Storage.Journal.approvals(username)
+
+  @doc "The card of a decision in the approval history, or nil once it is gone."
+  @spec approval_card(username(), String.t()) :: Approval.t() | nil
+  def approval_card(username, id), do: MWTClient.Storage.Journal.approval_card(username, id)
+
   @doc """
   The activity log's figures over the events kept that pass the
   same filters as `events/2` (`:limit` and `:before` aside): counts per

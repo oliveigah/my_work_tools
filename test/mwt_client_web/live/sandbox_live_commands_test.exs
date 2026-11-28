@@ -71,7 +71,13 @@ defmodule MWTClientWeb.SandboxLiveCommandsTest do
     # The page catches up on its own once the run ends.
     until(fn -> has_element?(view, "#decided-#{approval.id}") end)
     assert has_element?(view, "#decided-#{approval.id}", "Ran")
-    assert has_element?(view, "#command-output-decided-#{approval.id}")
+    view |> element("#decided-toggle-#{approval.id}") |> render_click()
+    assert has_element?(view, "#kept-approval-#{approval.id} #command-output-#{approval.id}")
+    refute has_element?(view, "#kept-approval-#{approval.id} #command-form-#{approval.id}")
+    assert [%{id: id, run: run}] = Sandbox.approval_history(username)
+    assert id == approval.id
+    refute Map.has_key?(run, :output)
+    refute Map.has_key?(Sandbox.approval_card(username, id).run, :output)
   end
 
   test "the overview counts a waiting command, and leaves deciding to the approvals page", %{

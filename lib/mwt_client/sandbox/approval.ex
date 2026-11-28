@@ -388,6 +388,58 @@ defmodule MWTClient.Sandbox.Approval do
     do: false
 
   def final?(%__MODULE__{}), do: true
+
+  @doc "An approval id that remains unique across app restarts."
+  @spec new_id(String.t()) :: String.t()
+  def new_id(prefix),
+    do: prefix <> "-" <> Base.encode32(:crypto.strong_rand_bytes(9), case: :lower, padding: false)
+
+  @doc "The read-only card to keep, without command output or a tool's executable callback."
+  @spec history_card(t()) :: t()
+  def history_card(%__MODULE__{} = approval) do
+    %{
+      approval
+      | run: approval.run && Map.delete(approval.run, :output),
+        tool: approval.tool && Map.delete(approval.tool, :apply)
+    }
+  end
+
+  @doc "What the decided list keeps across restarts."
+  @spec history_summary(t()) :: t()
+  def history_summary(%__MODULE__{} = approval) do
+    fields =
+      Map.take(approval, [
+        :id,
+        :kind,
+        :title,
+        :grant_id,
+        :host,
+        :path,
+        :agent,
+        :thread,
+        :need,
+        :reason,
+        :minutes,
+        :status,
+        :decision,
+        :requested_at,
+        :deadline,
+        :decided_at,
+        :stage,
+        :script,
+        :script_from,
+        :dir
+      ])
+
+    struct!(
+      __MODULE__,
+      Map.merge(fields, %{
+        call: approval.call && Map.take(approval.call, [:host]),
+        run: approval.run && Map.take(approval.run, [:state, :exit, :error, :stopped, :timed_out])
+      })
+    )
+  end
+
   ## Details
 
   @doc """

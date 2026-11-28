@@ -1701,7 +1701,7 @@ defmodule MWTClient.Sandbox.Server do
         {:reply, answer, state}
 
       {:ask, grant, about} ->
-        id = "approval-" <> State.unique()
+        id = Approval.new_id("approval")
 
         approval = %Approval{
           id: id,
@@ -1996,7 +1996,7 @@ defmodule MWTClient.Sandbox.Server do
         {:noreply, Values.let_through(state, grant, request, from)}
 
       {:ask, grant, about} ->
-        id = "approval-" <> State.unique()
+        id = Approval.new_id("approval")
         # One resource's say has no list of who asks: its grant does.
         about = Map.put_new(about, :asking, [grant.id])
         also = about.asking -- [grant.id]
@@ -2679,7 +2679,7 @@ defmodule MWTClient.Sandbox.Server do
             host_entry_fact(about, grant)
 
         approval = %Approval{
-          id: "approval-" <> State.unique(),
+          id: Approval.new_id("approval"),
           grant_id: grant.id,
           kind: :connection,
           title: "Connect to #{if name, do: "#{name} (#{about.pattern})", else: about.pattern}",

@@ -45,7 +45,6 @@ defmodule MWTClientWeb.SandboxWhereLiveTest do
        %{conn: conn, username: username} do
     grant = github(username)
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants")
-    view |> form("#grant-filters", %{status: "all"}) |> render_change()
 
     for {id, kind} <- [
           {grant.id, "Open use"},
@@ -53,13 +52,13 @@ defmodule MWTClientWeb.SandboxWhereLiveTest do
           {"agent-commands", "Open use"},
           {"mwt-read", "Fixed call"}
         ] do
+      view |> form("#grant-filters", %{status: "all", term: id}) |> render_change()
       assert has_element?(view, "#grant-kind-#{id}", kind)
+
+      if id == "agent-commands",
+        do: assert(has_element?(view, "#grant-where-#{id}", "Runs on host")),
+        else: refute(has_element?(view, "#grant-where-#{id}"))
     end
-
-    assert has_element?(view, "#grant-where-agent-commands", "Runs on host")
-
-    for id <- [grant.id, "internet", "mwt-read"],
-        do: refute(has_element?(view, "#grant-where-#{id}"))
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
     assert has_element?(view, "#detail-kind", "Open use")

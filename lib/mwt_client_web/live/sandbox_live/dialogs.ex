@@ -207,6 +207,8 @@ defmodule MWTClientWeb.SandboxLive.Dialogs do
   attr :review, :map, required: true
 
   def memory_review(assigns) do
+    assigns = assign(assigns, :picked, Map.get(assigns.review, :picked))
+
     ~H"""
     <div
       id="memory-review"
@@ -230,7 +232,7 @@ defmodule MWTClientWeb.SandboxLive.Dialogs do
             Sync the VM's memory with yours
           </p>
           <p class="mt-1 text-xs leading-5 text-muted">
-            Tick what the VM noted that should join your own memory; each goes in as a new note, marked [vm]. Your agents act on what they remember, so read each as something a VM agent wants them to believe. Then your memory is copied into the VM, replacing what it remembers; what you leave unticked stays there only in the copy set aside.
+            Review the VM's notes and uncheck any you want to skip. Selected notes join your memory marked [vm]. Sync then replaces the VM's memory with yours and sets aside a copy of its previous memory.
           </p>
         </div>
 
@@ -250,8 +252,9 @@ defmodule MWTClientWeb.SandboxLive.Dialogs do
                 id={"memory-pick-#{entry.index}"}
                 name="review[pick][]"
                 value={entry.index}
-                checked={Map.has_key?(@review.errors, entry.index)}
-                class="mt-1 size-3.5 shrink-0 accent-[var(--color-accent)]"
+                checked={is_nil(@picked) or MapSet.member?(@picked, entry.index)}
+                aria-label={"Add memory #{entry.id}"}
+                class="mt-1 size-4 shrink-0 cursor-pointer accent-accent"
               />
               <div class="min-w-0 flex-1">
                 <p class="font-mono text-[10px] text-faint">#{entry.id} · {entry.date}</p>
@@ -278,40 +281,27 @@ defmodule MWTClientWeb.SandboxLive.Dialogs do
           id="memory-review-more"
           class="border-t border-line-soft px-5 py-2.5 text-[11px] leading-4 text-muted"
         >
-          {@review.more} more after these. Add or mark these reviewed, then review again; yours is copied in once you have seen them all.
+          {@review.more} more after these. Save this batch and reopen the review for the remaining notes.
         </p>
 
-        <div class="flex items-center gap-2 border-t border-line-soft px-5 py-3">
-          <button
-            :if={@review.entries != []}
-            type="button"
-            id="memory-dismiss"
-            phx-click="dismiss_memories"
-            class="cursor-pointer rounded px-2 py-1 text-[11px] text-muted transition-colors hover:bg-hover hover:text-ink"
-          >
-            Mark all reviewed
-          </button>
-          <span class="flex-1"></span>
-          <.button type="button" id="memory-close" phx-click="close_review">Close</.button>
+        <div class="flex flex-wrap items-center justify-end gap-2 border-t border-line-soft px-5 py-3">
+          <.button type="button" id="memory-close" phx-click="close_review">Cancel</.button>
           <.button
-            :if={@review.entries != []}
+            :if={@review.more > 0}
             type="submit"
             id="memory-bring-back"
-            name="then"
-            value="keep"
+            variant="primary"
           >
-            Only add ticked
+            Save this batch
           </.button>
           <.button
             :if={@review.more == 0}
             type="submit"
             id="memory-sync"
-            name="then"
-            value="sync"
             variant="primary"
           >
             <.icon name="hero-arrows-right-left-micro" class="size-3.5" />
-            {if @review.entries == [], do: "Copy mine in", else: "Add ticked, copy mine in"}
+            {if @review.entries == [], do: "Sync", else: "Add and sync"}
           </.button>
         </div>
       </.form>

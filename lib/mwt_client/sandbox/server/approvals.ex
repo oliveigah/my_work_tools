@@ -722,7 +722,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       true ->
         {:ok,
          %Approval{
-           id: "ask-" <> State.unique(),
+           id: Approval.new_id("ask"),
            kind: :activation,
            grant_id: grant && grant.id,
            title:
@@ -967,7 +967,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
       end
 
     %Approval{
-      id: "ask-" <> State.unique(),
+      id: Approval.new_id("ask"),
       kind: :activation,
       grant_id: grant_id,
       resource: resource,
@@ -1046,6 +1046,7 @@ defmodule MWTClient.Sandbox.Server.Approvals do
   """
   def settle(state, approval, status, decision) do
     approval = %{approval | status: status, decision: decision, decided_at: State.now()}
+    state = State.keep_approval(state, approval)
 
     # A change's contents are for deciding; the history keeps what it said.
     approval =

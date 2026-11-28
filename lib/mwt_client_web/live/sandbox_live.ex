@@ -20,6 +20,7 @@ defmodule MWTClientWeb.SandboxLive do
   alias MWTClient.Sandbox
 
   alias MWTClient.Sandbox.{
+    Approval,
     Decision,
     Event,
     Grant,
@@ -106,6 +107,10 @@ defmodule MWTClientWeb.SandboxLive do
      |> assign(:resource_filters, ResourcePages.resource_filters())
      |> assign(:resource_page, 1)
      |> assign(:grant_page, 1)
+     |> assign(:approval_term, "")
+     |> assign(:approval_page, 1)
+     |> assign(:approval_history, [])
+     |> assign(:open_decision, nil)
      |> assign(:console_history, [])
      |> assign(:console_term, "")
      |> assign(:console_page, 1)
@@ -281,20 +286,13 @@ defmodule MWTClientWeb.SandboxLive do
           socket
 
         :approvals ->
-          # A card a line of the activity log opened, as it was decided
-          # (`MWTClient.Sandbox.Decision`), read-only.
-          card_id = params["card"]
-
-          kept =
-            case is_binary(card_id) && Sandbox.audit_card(socket.assigns.username, card_id) do
-              false -> nil
-              nil -> :gone
-              # Kept before it was kept with its choice.
-              %MWTClient.Sandbox.Approval{} = card -> %{card: card, choice: nil}
-              kept -> kept
-            end
-
-          assign(socket, focus: params["focus"], kept_card: kept)
+          socket
+          |> assign(
+            focus: params["focus"],
+            kept_card: activity_approval(socket, params),
+            open_decision: nil
+          )
+          |> load_approval_history()
 
         :handoffs ->
           id = handoff_id(params["id"])
@@ -398,7 +396,10 @@ defmodule MWTClientWeb.SandboxLive do
                 <Approvals.page
                   waiting={@waiting}
                   running={@running}
-                  history={@history}
+                  history={@approval_history}
+                  history_term={@approval_term}
+                  history_page={@approval_page}
+                  open_decision={@open_decision}
                   grants={@grant_map}
                   credentials={@credentials}
                   networks={@networks}
@@ -916,6 +917,7 @@ defmodule MWTClientWeb.SandboxLive do
           upto: upto,
           more: more,
           size: size,
+          picked: nil,
           texts: %{},
           errors: %{}
         }
@@ -937,18 +939,12 @@ defmodule MWTClientWeb.SandboxLive do
   def handle_event("close_review", _params, socket),
     do: {:noreply, assign(socket, :memory_review, nil)}
 
-  def handle_event("dismiss_memories", _params, socket) do
-    :ok = Sandbox.dismiss_memories(socket.assigns.username, socket.assigns.memory_review.upto)
-    {:noreply, socket |> assign(:memory_review, nil) |> refresh()}
-  end
-
-  def handle_event("bring_back", params, socket) do
-    review = socket.assigns.memory_review
+  def handle_event("bring_back", params, %{assigns: %{memory_review: %{} = review}} = socket) do
     choices = Map.get(params, "review", %{})
     texts = Map.get(choices, "text", %{})
     # Copying yours in sets aside what the VM noted, so not while some of it
     # wasn't shown.
-    sync? = params["then"] == "sync" and review.more == 0
+    sync? = review.more == 0
 
     picked =
       for index <- Map.get(choices, "pick", []),
@@ -956,17 +952,10 @@ defmodule MWTClientWeb.SandboxLive do
           entry = Enum.find(review.entries, &(&1.index == index)),
           do: {entry, String.trim(texts[to_string(index)] || "[vm] " <> entry.text)}
 
-    cond do
-      picked == [] and sync? ->
-        {:noreply, copy_memory_in(socket, review, 0)}
-
-      picked == [] ->
-        {:noreply, put_notice(socket, :info, "Tick the memories to add first")}
-
-      true ->
-        bring_back(socket, review, picked, sync?)
-    end
+    bring_back(socket, review, picked, sync?)
   end
+
+  def handle_event("bring_back", _params, socket), do: {:noreply, socket}
 
   def handle_event("pick_duration", %{"id" => id, "minutes" => minutes}, socket) do
     {:noreply, update(socket, :durations, &Map.put(&1, id, parse_duration(minutes)))}
@@ -2225,6 +2214,31 @@ defmodule MWTClientWeb.SandboxLive do
      socket |> assign(:filters, filters) |> reset_events() |> load_stats() |> load_threads()}
   end
 
+  def handle_event("search_approvals", %{"term" => term}, socket) do
+    {:noreply,
+     assign(socket,
+       approval_term: String.slice(term, 0, 200),
+       approval_page: 1,
+       open_decision: nil
+     )}
+  end
+
+  def handle_event("approval_page", %{"page" => page}, socket) do
+    case page_asked(page) do
+      nil -> {:noreply, socket}
+      number -> {:noreply, assign(socket, approval_page: number, open_decision: nil)}
+    end
+  end
+
+  def handle_event("toggle_decided_approval", %{"id" => id}, socket) when is_binary(id) do
+    open =
+      if match?(%{id: ^id}, socket.assigns.open_decision),
+        do: nil,
+        else: %{id: id, kept: decided_approval(socket, id)}
+
+    {:noreply, assign(socket, open_decision: open, kept_card: nil)}
+  end
+
   # What MWT reads, the activity log's dialog: open and closed. It is set
   # now and then, so it isn't on the page until asked for.
   def handle_event("open_reading", _params, socket),
@@ -3272,6 +3286,11 @@ defmodule MWTClientWeb.SandboxLive do
     snapshot = Sandbox.snapshot(username)
     grant_map = Map.new(snapshot.grants, &{&1.id, &1})
 
+    socket =
+      if socket.assigns[:page] == :approvals and socket.assigns[:history] != snapshot.history,
+        do: load_approval_history(socket),
+        else: socket
+
     socket
     |> assign(:now, DateTime.utc_now() |> DateTime.truncate(:second))
     |> assign(snapshot)
@@ -3279,6 +3298,39 @@ defmodule MWTClientWeb.SandboxLive do
     |> assign(:marks, RequestView.marks(snapshot.grants))
     |> follow_handoff()
     |> assign_page_data(grant_map)
+  end
+
+  defp load_approval_history(socket),
+    do: assign(socket, :approval_history, Sandbox.approval_history(socket.assigns.username))
+
+  defp decided_approval(socket, id) do
+    username = socket.assigns.username
+    recent = Enum.find(socket.assigns.history, &(&1.id == id))
+
+    case Sandbox.approval_card(username, id) || recent do
+      nil ->
+        case audit_approval(username, id) do
+          %{card: card} = kept -> %{kept | card: Approval.history_card(card)}
+          :gone -> :gone
+        end
+
+      card ->
+        card = if recent && recent.run, do: %{card | run: recent.run}, else: card
+        %{card: card, choice: Approvals.decision_words(card)}
+    end
+  end
+
+  defp activity_approval(socket, %{"card" => id}) when is_binary(id),
+    do: audit_approval(socket.assigns.username, id)
+
+  defp activity_approval(_socket, _params), do: nil
+
+  defp audit_approval(username, id) do
+    case Sandbox.audit_card(username, id) do
+      nil -> :gone
+      %Approval{} = card -> %{card: card, choice: nil}
+      kept -> kept
+    end
   end
 
   # The handoff being looked at, with what MWT works out about it against
@@ -4036,7 +4088,7 @@ defmodule MWTClientWeb.SandboxLive do
     %{
       "name" => grant.name,
       "purpose" => grant.purpose,
-      "hosts" => Enum.join(grant.hosts, ", "),
+      "hosts" => Enum.join(grant.hosts, "\n"),
       "resolver" => grant.resolver || "",
       "anchor" => grant.anchor || "",
       "carriers" => Enum.join(grant.carriers, ", "),
@@ -4149,6 +4201,7 @@ defmodule MWTClientWeb.SandboxLive do
 
     cond do
       failed == [] and sync? ->
+        socket = assign(socket, :memory_review, %{review | entries: []})
         {:noreply, copy_memory_in(socket, review, added)}
 
       failed == [] ->
@@ -4156,9 +4209,7 @@ defmodule MWTClientWeb.SandboxLive do
          socket
          |> assign(:memory_review, nil)
          |> refresh()
-         |> put_notice(:success, "#{added} added to your memory",
-           body: "Your next agent session will be asked to summarize them."
-         )}
+         |> memory_review_notice(added)}
 
       true ->
         added_indexes =
@@ -4167,6 +4218,7 @@ defmodule MWTClientWeb.SandboxLive do
         review = %{
           review
           | entries: Enum.reject(review.entries, &MapSet.member?(added_indexes, &1.index)),
+            picked: MapSet.new(failed, fn {entry, _, _} -> entry.index end),
             texts: Map.new(failed, fn {entry, text, _} -> {entry.index, text} end),
             errors: Map.new(failed, fn {entry, _, message} -> {entry.index, message} end)
         }
@@ -4179,6 +4231,14 @@ defmodule MWTClientWeb.SandboxLive do
              "memo refused them; see each one. #{added} went in. Nothing was copied into the VM."
          )}
     end
+  end
+
+  defp memory_review_notice(socket, 0), do: put_notice(socket, :success, "Review saved")
+
+  defp memory_review_notice(socket, added) do
+    put_notice(socket, :success, "#{added} added to your memory",
+      body: "Your next agent session will be asked to summarize them."
+    )
   end
 
   # Yours into the VM, unless it noted more since the review read its log.

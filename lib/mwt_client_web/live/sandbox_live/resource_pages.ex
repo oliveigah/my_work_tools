@@ -19,7 +19,7 @@ defmodule MWTClientWeb.SandboxLive.ResourcePages do
 
   ## The Resources tab
 
-  @per_page 20
+  @per_page 10
   @resource_kinds [
     {"all", "All"},
     {"credential", "Credentials"},

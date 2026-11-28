@@ -107,6 +107,7 @@ defmodule MWTClient.Storage.Maintenance do
     Storage.run(username, :journal, & &1.query!("DELETE FROM events_exchanges"))
     Storage.run(username, :journal, & &1.query!("DELETE FROM events_details"))
     Storage.run(username, :journal, & &1.query!("DELETE FROM events_cards"))
+    Storage.run(username, :journal, & &1.query!("DELETE FROM events_approvals"))
     Storage.run(username, :journal, & &1.query!("DELETE FROM events"))
     :ok
   end

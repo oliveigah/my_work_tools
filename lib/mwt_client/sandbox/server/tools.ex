@@ -158,7 +158,7 @@ defmodule MWTClient.Sandbox.Server.Tools do
     claims = Map.get(use, :claims, %{})
 
     %Approval{
-      id: "tool-" <> State.unique(),
+      id: Approval.new_id("tool"),
       kind: :tool,
       grant_id: grant.id,
       title: about.title,

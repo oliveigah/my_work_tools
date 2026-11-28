@@ -37,9 +37,14 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
 
   alias MWTClient.Sandbox.Instructions
 
+  @history_per_page 10
+
   attr :waiting, :list, required: true
   attr :running, :list, default: []
   attr :history, :list, required: true
+  attr :history_term, :string, required: true
+  attr :history_page, :integer, required: true
+  attr :open_decision, :map, default: nil
   attr :grants, :map, required: true, doc: "grants by id"
   attr :marks, :list, required: true, doc: "`RequestView.marks/1` of every grant"
   attr :now, DateTime, required: true
@@ -47,8 +52,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
 
   attr :kept_card, :any,
     default: nil,
-    doc:
-      "a card a line of the activity log opened, as it was decided: `%{card: approval, choice: words}`, `:gone` when no longer kept"
+    doc: "a read-only card opened from the activity log, or `:gone`"
 
   attr :credentials, :list,
     default: [],
@@ -57,6 +61,18 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   attr :networks, :list, default: [], doc: "the networks, to name the resources grants are over"
 
   def page(assigns) do
+    found = search_history(assigns.history, assigns.history_term, assigns.grants)
+    {shown, page, pages} = paged(found, assigns.history_page, @history_per_page)
+
+    assigns =
+      assign(assigns,
+        history_shown: shown,
+        history_total: length(found),
+        history_page: page,
+        history_pages: pages,
+        history_per_page: @history_per_page
+      )
+
     ~H"""
     <.page_header id="approvals-header" title="Approvals">
       <:help>
@@ -68,7 +84,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       <section :if={@kept_card} id="kept-card" class="space-y-2">
         <div class="flex items-center gap-2">
           <h2 class="flex-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
-            A decided card, from the activity log
+            Decided approval
           </h2>
           <.link
             patch={~p"/tools/sandbox/approvals"}
@@ -78,19 +94,15 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
             Close
           </.link>
         </div>
-        <%= if @kept_card == :gone do %>
-          <p id="kept-card-gone" class="text-xs text-muted">
-            This card is no longer kept: every line of the log that named it is gone.
-          </p>
-        <% else %>
-          <.approval
-            approval={@kept_card.card}
-            grant={@kept_card.card.grant_id && @grants[@kept_card.card.grant_id]}
-            now={@now}
-            kept
-            kept_choice={@kept_card[:choice]}
-          />
-        <% end %>
+        <.kept_approval
+          result={@kept_card}
+          grants={@grants}
+          credentials={@credentials}
+          networks={@networks}
+          marks={@marks}
+          now={@now}
+          focused
+        />
       </section>
       <.running :if={@running != []} running={@running} now={@now} />
 
@@ -122,32 +134,96 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
 
       <.card id="approval-history" title="Decided" body_class="">
         <:help>The latest 100 decisions, newest first.</:help>
+        <form
+          id="approval-history-search"
+          phx-change="search_approvals"
+          phx-submit="search_approvals"
+          class="border-b border-line-soft px-4 py-2.5"
+        >
+          <div class="relative max-w-md">
+            <.icon
+              name="hero-magnifying-glass"
+              class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-faint"
+            />
+            <input
+              type="search"
+              name="term"
+              id="approval-history-term"
+              value={@history_term}
+              aria-label="Search decisions"
+              placeholder="Search decisions"
+              phx-debounce="120"
+              class="w-full rounded-lg border border-line bg-panel py-1.5 pl-8 pr-2 text-[12px] text-ink outline-none transition-colors placeholder:text-faint focus:border-accent/60"
+            />
+          </div>
+        </form>
         <div :if={@history == []}>
           <.empty icon="hero-clock">Decisions you make will be listed here.</.empty>
         </div>
+        <div :if={@history != [] and @history_shown == []}>
+          <.empty icon="hero-magnifying-glass">No decisions match your search.</.empty>
+        </div>
         <ul class="divide-y divide-line-soft">
-          <%= for approval <- @history do %>
-            <%= if approval.kind == :command do %>
-              <.decided_command approval={approval} now={@now} />
-            <% else %>
-              <li id={"decided-#{approval.id}"} class="flex items-center gap-3 px-4 py-2.5">
-                <.decided_badge approval={approval} />
-                <div class="min-w-0 flex-1">
-                  <p class="truncate text-xs text-ink">{history_title(approval, @grants)}</p>
-                  <p class="truncate text-[11px] text-faint">
-                    {grant_name(@grants, approval)} · {decision_words(approval)}
-                    <span :if={approval.kind == :activation and approval.thread}>· {who(approval)}</span>
-                  </p>
-                </div>
-                <span class="shrink-0 text-[11px] text-faint">
-                  <.clock id={"decided-at-#{approval.id}"} since={approval.decided_at} now={@now} />
-                </span>
-              </li>
-            <% end %>
-          <% end %>
+          <.decided_row
+            :for={approval <- @history_shown}
+            :key={approval.id}
+            approval={approval}
+            grants={@grants}
+            now={@now}
+            expanded={match?(%{id: id} when id == approval.id, @open_decision)}
+          >
+            <.kept_approval
+              result={@open_decision.kept}
+              grants={@grants}
+              credentials={@credentials}
+              networks={@networks}
+              marks={@marks}
+              now={@now}
+            />
+          </.decided_row>
         </ul>
+        <.pages
+          :if={@history_pages > 1}
+          name="approval-history"
+          label="Decision history pages"
+          page={@history_page}
+          pages={@history_pages}
+          per_page={@history_per_page}
+          total={@history_total}
+          event="approval_page"
+          class="border-t border-line-soft px-4 py-2.5"
+        />
       </.card>
     </div>
+    """
+  end
+
+  attr :result, :any, required: true
+  attr :grants, :map, required: true
+  attr :credentials, :list, required: true
+  attr :networks, :list, required: true
+  attr :marks, :list, required: true
+  attr :now, DateTime, required: true
+  attr :focused, :boolean, default: false
+
+  defp kept_approval(assigns) do
+    ~H"""
+    <%= if @result == :gone do %>
+      <p id="kept-card-gone" class="text-xs text-muted">This card is no longer available.</p>
+    <% else %>
+      <.approval
+        approval={@result.card}
+        grant={@result.card.grant_id && @grants[@result.card.grant_id]}
+        others={for id <- @result.card.also, grant = @grants[id], do: grant}
+        credentials={@credentials}
+        networks={@networks}
+        marks={@marks}
+        now={@now}
+        focused={@focused}
+        kept
+        kept_choice={@result[:choice]}
+      />
+    <% end %>
     """
   end
 
@@ -1071,13 +1147,13 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
                 "Your own script, as you saved it, in your folder. The agent sent no text: it only chose when."
             end}
             <.link
-              :if={@grant && not @approval.repin}
+              :if={not @kept && @grant && not @approval.repin}
               navigate={~p"/tools/sandbox/grants/#{@grant.id}"}
               class="text-accent underline-offset-2 hover:underline"
             >
               Auto-approve it on its page
             </.link>
-            <span :if={@grant && not @approval.repin}>to skip this card while it's on.</span>
+            <span :if={not @kept && @grant && not @approval.repin}>to skip this card while it's on.</span>
           </span>
         </p>
         <div :if={@approval.values != []} id={"approval-values-#{@approval.id}"}>
@@ -1117,7 +1193,7 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
         </details>
       <% else %>
         <div
-          :if={@approval.suggest_save && is_nil(@approval.saved_as)}
+          :if={not @kept && @approval.suggest_save && is_nil(@approval.saved_as)}
           id={"approval-suggest-save-#{@approval.id}"}
           class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-accent/30 bg-accent-soft/20 px-3 py-2"
         >
@@ -1143,6 +1219,11 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       <.pinned id={"approval-pins-#{@approval.id}"} pins={@approval.pins} />
 
       <.evidence approval={@approval} facts={@facts} hints={@approval.hints} />
+      <.output
+        :if={@kept && @approval.run && Map.has_key?(@approval.run, :output)}
+        id={@approval.id}
+        run={@approval.run}
+      />
 
       <:footer>
         <.form
@@ -1240,15 +1321,17 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
       <:meta>
         <.asked_by approval={@approval} />
         <.dot />
-        <span>Ran on this machine; its output waits for you</span>
+        <span>{if @kept,
+          do: "Ran on this machine",
+          else: "Ran on this machine; its output waits for you"}</span>
       </:meta>
       <:title>{@approval.title}</:title>
       <:subtitle>
         <.exit_status id={"output-exit-#{@approval.id}"} run={@run} /> · {run_words(@run)}
       </:subtitle>
 
-      <.held id={"output-held-#{@approval.id}"} run={@run} />
-      <.output id={@approval.id} run={@run} />
+      <.held :if={not @kept} id={"output-held-#{@approval.id}"} run={@run} />
+      <.output :if={Map.has_key?(@run, :output)} id={@approval.id} run={@run} />
       <details id={"output-script-#{@approval.id}"} class="group/script">
         <summary class="flex cursor-pointer list-none items-center gap-1 text-[11px] font-medium text-muted transition-colors hover:text-ink [&::-webkit-details-marker]:hidden">
           <.icon
@@ -1345,54 +1428,58 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   end
 
   attr :approval, Approval, required: true
+  attr :grants, :map, required: true
   attr :now, DateTime, required: true
+  attr :expanded, :boolean, required: true
+  slot :inner_block, required: true
 
-  defp decided_command(assigns) do
+  defp decided_row(assigns) do
     ~H"""
     <li id={"decided-#{@approval.id}"}>
-      <details class="group/decided">
-        <summary class="flex cursor-pointer list-none items-center gap-3 px-4 py-2.5 transition-colors hover:bg-hover/40 [&::-webkit-details-marker]:hidden">
-          <.decided_badge approval={@approval} />
-          <div class="min-w-0 flex-1">
-            <p class="flex min-w-0 items-center gap-2">
-              <.command_kind
-                id={"decided-kind-#{@approval.id}"}
-                saved={@approval.script_from == :grant}
-              />
-              <span class="truncate font-mono text-xs text-ink">{@approval.title}</span>
-            </p>
-            <p class="truncate text-[11px] text-faint">
-              {who(@approval)} · on this machine · {decision_words(@approval)}
-            </p>
-          </div>
-          <span class="shrink-0 text-[11px] text-faint">
-            <.clock id={"decided-at-#{@approval.id}"} since={@approval.decided_at} now={@now} />
-          </span>
-          <.icon
-            name="hero-chevron-down-micro"
-            class="size-3.5 shrink-0 text-faint transition-transform group-open/decided:rotate-180"
-          />
-        </summary>
-        <div class="space-y-3 px-4 pb-4">
-          <.script
-            id={"decided-#{@approval.id}"}
-            script={@approval.script}
-            label={script_label(@approval)}
-          />
-          <p class="text-[11px] text-muted">
-            <span :if={@approval.dir}>In <span class="font-mono">{@approval.dir}</span></span>
-            <span :if={@approval.call}>Sent to <span class="font-mono">{@approval.call.host}</span></span>
-            <span :if={@approval.reason}>
-              · the agent said: <span class="italic">“{@approval.reason}”</span>
+      <button
+        type="button"
+        id={"decided-toggle-#{@approval.id}"}
+        phx-click="toggle_decided_approval"
+        phx-value-id={@approval.id}
+        aria-expanded={to_string(@expanded)}
+        aria-controls={"decided-card-#{@approval.id}"}
+        class={[
+          "flex w-full cursor-pointer items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-hover/40 focus-visible:outline-2 focus-visible:outline-inset focus-visible:outline-accent",
+          @expanded && "bg-deep/50"
+        ]}
+      >
+        <.decided_badge approval={@approval} />
+        <span class="min-w-0 flex-1">
+          <span class="flex min-w-0 items-center gap-2 text-xs text-ink">
+            <.command_kind
+              :if={@approval.kind == :command}
+              id={"decided-kind-#{@approval.id}"}
+              saved={@approval.script_from == :grant}
+            />
+            <span class={["truncate", @approval.kind == :command && "font-mono"]}>
+              {history_title(@approval, @grants)}
             </span>
-          </p>
-          <.output
-            :if={@approval.run && @approval.run.state == :done}
-            id={"decided-#{@approval.id}"}
-            run={@approval.run}
-          />
-        </div>
-      </details>
+          </span>
+          <span class="block truncate text-[11px] text-faint">
+            <%= if @approval.kind == :command do %>
+              {who(@approval)} · on this machine · {decision_words(@approval)}
+            <% else %>
+              {grant_name(@grants, @approval)} · {decision_words(@approval)}
+              <span :if={@approval.kind == :activation and @approval.thread}>· {who(@approval)}</span>
+            <% end %>
+          </span>
+        </span>
+        <span class="shrink-0 text-[11px] text-faint">
+          <.clock id={"decided-at-#{@approval.id}"} since={@approval.decided_at} now={@now} />
+        </span>
+        <.icon
+          name="hero-chevron-right-micro"
+          class={["size-3.5 shrink-0 text-faint transition-transform", @expanded && "rotate-90"]}
+        />
+      </button>
+      <div id={"decided-card-#{@approval.id}"} hidden={not @expanded} class="bg-deep/20 px-4 pb-3">
+        {if @expanded, do: render_slot(@inner_block)}
+      </div>
     </li>
     """
   end
@@ -1929,6 +2016,39 @@ defmodule MWTClientWeb.SandboxLive.Approvals do
   end
 
   ## Words
+
+  defp search_history(history, term, grants) do
+    words = term |> String.downcase() |> String.split()
+
+    if words == [] do
+      history
+    else
+      Enum.filter(history, fn approval ->
+        text =
+          Enum.join(
+            [
+              history_title(approval, grants),
+              grant_name(grants, approval),
+              decision_words(approval),
+              who(approval),
+              approval.title,
+              approval.grant_id,
+              approval.host,
+              approval.path,
+              approval.reason,
+              approval.script,
+              approval.dir,
+              approval.kind,
+              approval.status
+            ],
+            " "
+          )
+          |> String.downcase()
+
+        Enum.all?(words, &String.contains?(text, &1))
+      end)
+    end
+  end
 
   defp history_title(%Approval{kind: :activation} = approval, grants) do
     case approval.grant_id && grants[approval.grant_id] do

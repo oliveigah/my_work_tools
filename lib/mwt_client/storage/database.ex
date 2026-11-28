@@ -78,7 +78,9 @@ defmodule MWTClient.Storage.Database do
       {2, MWTClient.Storage.Migrations.JournalEvents},
       {3, MWTClient.Storage.Migrations.JournalEventExchanges},
       {4, MWTClient.Storage.Migrations.JournalEventDetails},
-      {5, MWTClient.Storage.Migrations.JournalDecisions}
+      {5, MWTClient.Storage.Migrations.JournalDecisions},
+      {6, MWTClient.Storage.Migrations.JournalApprovalHistory},
+      {7, MWTClient.Storage.Migrations.JournalApprovalCards}
     ]
   }
 

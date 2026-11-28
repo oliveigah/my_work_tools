@@ -65,7 +65,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
   def tab(value) when value in ["resources", "console"], do: value
   def tab(_value), do: "grants"
 
-  @per_page 20
+  @per_page 10
 
   @doc "The durations a grant can be turned on for."
   def durations, do: @durations
@@ -2653,11 +2653,10 @@ defmodule MWTClientWeb.SandboxLive.Grants do
       </p>
 
       <div>
-        <.text_field
-          mono
+        <.host_list_field
           field={@adding.form[:hosts]}
           label="Hosts it may go to"
-          placeholder="api.example.com, *.example.com"
+          placeholder="api.example.com\n*.example.com"
           help={field_help(:hosts)}
         />
         <.mint_hint
@@ -2742,7 +2741,8 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         field={@adding.form[:destinations]}
         type="textarea"
         label="Request targets"
-        rows="3"
+        rows="5"
+        spellcheck="false"
         placeholder={
           Enum.join(["Empty: all of it.", "myhost.example.com", "*.api.corp.example:443"], "\n")
         }
@@ -2761,6 +2761,8 @@ defmodule MWTClientWeb.SandboxLive.Grants do
         type="textarea"
         label="Destinations"
         help={field_help(:destinations)}
+        rows="5"
+        spellcheck="false"
         placeholder={
           Enum.join(["10.20.0.0/16:443,5432", "git.corp.internal:443", "*.corp.example:443"], "\n")
         }
@@ -3363,7 +3365,7 @@ defmodule MWTClientWeb.SandboxLive.Grants do
     purpose_command:
       "What the script does, in words for any time it runs, such as Lists the pods of a namespace in the staging cluster; not why one agent needs it now. Agents read it in mwt grants to pick the call to make, and the search here finds it by these words. It allows nothing by itself: the script decides what runs.",
     hosts:
-      "The hosts the real value may be sent to, comma separated: api.example.com for that host only, *.example.com for it and every name under it. MWT swaps the placeholder for the real value only in HTTPS requests to these hosts; a placeholder sent anywhere else is refused, and the firewall may isolate the VM for it. MWT reads the requests to these hosts, instead of passing them through, to find the placeholder. Reaching them is a network grant's to give: the Internet's, for public hosts.",
+      "The hosts the real value may be sent to: api.example.com for that host only, *.example.com for it and every name under it. MWT swaps the placeholder for the real value only in HTTPS requests to these hosts; a placeholder sent anywhere else is refused, and the firewall may isolate the VM for it. MWT reads the requests to these hosts, instead of passing them through, to find the placeholder. Reaching them is a network grant's to give: the Internet's, for public hosts.",
     env:
       "Environment variables that hold the placeholder, comma separated, such as GH_TOKEN or STRIPE_API_KEY: the ones the tool reads its token from. Only a command run as mwt exec ID -- COMMAND, and its children, get them: never the VM's shells, so nothing else there holds it. Optional: the placeholder is also in /mnt/mwt/tokens/ID.",
     file_env:
@@ -3438,19 +3440,69 @@ defmodule MWTClientWeb.SandboxLive.Grants do
 
     ~H"""
     <div id={"#{@id}-box"} class={@class}>
+      <.host_list_field
+        field={@field}
+        label="Except these hosts"
+        placeholder="paste.example.com\n*.tracker.example"
+      />
+      <p class="mt-1 text-[10px] leading-4 text-faint">
+        Each entry covers the host and every name under it. Another grant over those hosts decides whether they can be reached.
+      </p>
+      <.field_error errors={@errors} field={:except} />
+    </div>
+    """
+  end
+
+  attr :field, Phoenix.HTML.FormField, required: true
+  attr :label, :string, required: true
+  attr :placeholder, :string, required: true
+  attr :help, :string, default: nil
+
+  defp host_list_field(assigns) do
+    field = assigns.field
+
+    value =
+      field.value
+      |> to_string()
+      |> String.split([",", "\n"], trim: true)
+      |> Enum.map_join("\n", &String.trim/1)
+
+    assigns = assign(assigns, :field, %{field | value: value})
+
+    ~H"""
+    <div id={"#{@field.id}-list-input"} phx-hook=".PasteHosts">
       <.text_field
         mono
         field={@field}
         type="textarea"
-        label="Except these hosts"
-        rows="2"
-        placeholder={Enum.join(["paste.example.com", "*.tracker.example"], "\n")}
+        label={@label}
+        help={@help}
+        hint="One host per line. You can paste a comma-separated list."
+        rows="5"
+        spellcheck="false"
+        placeholder={@placeholder}
       />
-      <p class="mt-1 text-[10px] leading-4 text-faint">
-        One a line: a host, and every name under it. This grant doesn't cover them, so another grant over them decides: one that asks makes them ask, even while this lets everything else through. With none on, they are refused.
-      </p>
-      <.field_error errors={@errors} field={:except} />
     </div>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".PasteHosts">
+      export default {
+        mounted() {
+          this.pasteHosts = (event) => {
+            const input = event.target
+            const pasted = event.clipboardData?.getData("text/plain")
+            if (input.tagName !== "TEXTAREA" || !pasted?.includes(",")) return
+
+            event.preventDefault()
+            const lines = pasted.split(/[,\r\n]+/).map(host => host.trim()).filter(Boolean)
+            input.setRangeText(lines.join("\n"), input.selectionStart, input.selectionEnd, "end")
+            input.dispatchEvent(new Event("input", { bubbles: true }))
+          }
+          this.el.addEventListener("paste", this.pasteHosts)
+        },
+        destroyed() {
+          this.el.removeEventListener("paste", this.pasteHosts)
+        }
+      }
+    </script>
     """
   end
 

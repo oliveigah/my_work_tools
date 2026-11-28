@@ -454,7 +454,7 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
     else
       {:ok,
        %Approval{
-         id: "run-" <> State.unique(),
+         id: Approval.new_id("run"),
          kind: :command,
          grant_id: grant && grant.id,
          also: if(grant, do: Map.get(checked, :asking, []) -- [grant.id], else: []),
@@ -635,6 +635,7 @@ defmodule MWTClient.Sandbox.Server.HostRuns do
         case if(run.error, do: :send, else: run.output_to) do
           :send ->
             state
+            |> State.keep_approval(approval)
             |> State.replace_approval(approval)
             |> Approvals.answer_waiters(approval, :allow)
 

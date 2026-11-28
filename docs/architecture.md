@@ -32,7 +32,7 @@ What MWT is and how to use it is in the [README](../README.md).
 | Database     | Holds | Writes |
 | ------------ | ----- | ------ |
 | `library.db` | what you make: notes, diagrams, flash cards, their versions, small state | each save its own transaction, durable when it returns |
-| `journal.db` | what happens: HTTP history and samples, the sandbox's activity log | batched about once a second: a power cut may lose that second, never consistency |
+| `journal.db` | what happens: HTTP history and samples, the sandbox's activity log and latest 100 approval decisions | batched about once a second: a power cut may lose that second, never consistency |
 
 Memory is a bounded cache, not the store (each connection's page cache
 is capped), so memory stays flat as data grows and a save costs what it

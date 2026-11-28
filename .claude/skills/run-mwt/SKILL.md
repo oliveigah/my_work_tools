@@ -19,6 +19,10 @@ It serves `http://127.0.0.1:4100` with data in `/tmp/mwt-run/data` and the
 log in `/tmp/mwt-run/server.log`. `PORT` and `MWT_RUN_DIR` override them.
 The first start compiles, so it can take a minute.
 
+For MWT test servers served from the VM, always use username `demo` and
+password `demopass`. Seed mock data under that identity and give the
+user those credentials with the preview URL.
+
 ## Drive it
 
 Pipe a script; screenshots land in `/tmp/mwt-run/shots/`:
@@ -54,7 +58,7 @@ script exits 1 if any did. The first run installs `playwright-core` into
 
 | command | does |
 |---|---|
-| `login [user] [password]` | signs in, as `demo` / `demo password` by default; a new name creates an identity |
+| `login [user] [password]` | signs in as `demo` / `demopass` by default; a new name creates an identity |
 | `nav <path>` | opens a path, such as `/tools/notes`, and waits for the LiveView to connect |
 | `click <sel>` / `rclick <sel>` / `hover <sel>` | pointer actions; `rclick` opens the row context menus |
 | `fill <sel> <text>` | sets an input's value; `\n` in the text is a new line |

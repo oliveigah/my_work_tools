@@ -46,6 +46,7 @@ defmodule MWTClient.Storage.Journal do
 
   @every_ms 1_000
   @batch 1_000
+  @approval_limit 100
   # Exchanges are up to a few hundred KB each: past this many bytes waiting,
   # they are written at once rather than at the next second.
   @batch_bytes 16 * 1024 * 1024
@@ -131,11 +132,44 @@ defmodule MWTClient.Storage.Journal do
     end
   end
 
+  @doc "Keeps a decided approval's summary and card in the recent history."
+  @spec record_approval(String.t(), String.t(), DateTime.t(), struct(), struct()) :: :ok
+  def record_approval(username, id, decided_at, summary, card) do
+    case Store.whereis(__MODULE__, username) do
+      nil ->
+        :ok
+
+      pid ->
+        GenServer.cast(
+          pid,
+          {:kept,
+           {:approval, id, Values.time(decided_at), Values.term(summary), Values.term(card)}}
+        )
+    end
+  end
+
+  @doc "The latest decided approval summaries, newest first."
+  @spec approvals(String.t()) :: [struct()]
+  def approvals(username) do
+    :ok = flush(username)
+
+    Storage.run(username, :journal, fn repo ->
+      for [blob] <-
+            repo.query!("SELECT approval FROM events_approvals ORDER BY at DESC, seq DESC").rows,
+          do: Values.from_term(blob)
+    end)
+  end
+
   defp now, do: Values.time(DateTime.utc_now())
 
   @doc "A card kept by `record_card/3`, or nil: never kept, or gone with every line naming it."
   @spec card(String.t(), String.t()) :: struct() | nil
   def card(username, id), do: kept(username, "SELECT card FROM events_cards WHERE id = ?", id)
+
+  @doc "The read-only card of a decision still in approval history."
+  @spec approval_card(String.t(), String.t()) :: struct() | nil
+  def approval_card(username, id),
+    do: kept(username, "SELECT card FROM events_approvals WHERE id = ? AND card IS NOT NULL", id)
 
   defp kept(username, query, id) do
     :ok = flush(username)
@@ -199,12 +233,20 @@ defmodule MWTClient.Storage.Journal do
     by_age =
       case rule[:days] do
         nil -> 0
-        days -> delete_before(username, Values.time(DateTime.add(now, -days, :day)), 0)
+        days -> trim_by_age(username, Values.time(DateTime.add(now, -days, :day)))
       end
 
     by_size = if rule[:gb], do: trim_to(username, rule.gb * 1_000_000_000, 0), else: 0
     if by_age + by_size > 0, do: unnamed_gone(username)
     by_age + by_size
+  end
+
+  defp trim_by_age(username, cutoff) do
+    Storage.run(username, :journal, fn repo ->
+      repo.query!("DELETE FROM events_approvals WHERE at < ?", [cutoff])
+    end)
+
+    delete_before(username, cutoff, 0)
   end
 
   # The cards no line names any more.
@@ -276,7 +318,7 @@ defmodule MWTClient.Storage.Journal do
        details: [],
        # How long requests took, `{exchange_id, ms}`.
        took: [],
-       # Cards to keep, `{:card, id, at, blob}`.
+       # Cards and approval summaries to keep.
        kept: [],
        count: 0,
        bytes: 0,
@@ -310,13 +352,11 @@ defmodule MWTClient.Storage.Journal do
     do: waiting(queue_took(state, exchange_id, ms))
 
   def handle_cast({:kept, record}, state) do
-    blob = elem(record, tuple_size(record) - 1) |> elem(1)
-
     waiting(%{
       state
       | kept: [record | state.kept],
         count: state.count + 1,
-        bytes: state.bytes + byte_size(blob)
+        bytes: state.bytes + kept_bytes(record)
     })
   end
 
@@ -328,6 +368,11 @@ defmodule MWTClient.Storage.Journal do
         bytes: state.bytes + byte_size(blob)
     })
   end
+
+  defp kept_bytes({:card, _, _, {:blob, blob}}), do: byte_size(blob)
+
+  defp kept_bytes({:approval, _, _, {:blob, summary}, {:blob, card}}),
+    do: byte_size(summary) + byte_size(card)
 
   defp queue_exchange(state, exchange_id, blob) do
     waiting(%{
@@ -397,6 +442,7 @@ defmodule MWTClient.Storage.Journal do
         for {event_id, blob} <- details, do: insert_details(repo, event_id, blob)
         for chunk <- Enum.chunk_every(took, 40), do: update_took(repo, chunk)
         for record <- kept, do: insert_kept(repo, record)
+        if Enum.any?(kept, &match?({:approval, _, _, _, _}, &1)), do: trim_approvals(repo)
       end)
 
       if state.lost do
@@ -543,6 +589,27 @@ defmodule MWTClient.Storage.Journal do
       ON CONFLICT (id) DO UPDATE SET at = excluded.at, card = excluded.card
       """,
       [id, at, blob]
+    )
+  end
+
+  defp insert_kept(repo, {:approval, id, at, summary, card}) do
+    repo.query!(
+      """
+      INSERT INTO events_approvals (id, at, approval, card) VALUES (?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET at = excluded.at, approval = excluded.approval, card = excluded.card
+      """,
+      [id, at, summary, card]
+    )
+  end
+
+  defp trim_approvals(repo) do
+    repo.query!(
+      """
+      DELETE FROM events_approvals WHERE seq IN (
+        SELECT seq FROM events_approvals ORDER BY at DESC, seq DESC LIMIT -1 OFFSET ?
+      )
+      """,
+      [@approval_limit]
     )
   end
 

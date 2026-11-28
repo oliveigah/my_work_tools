@@ -14,6 +14,26 @@ defmodule MWTClientWeb.SandboxResourcesLiveTest do
     sign_in(conn, "resources-live")
   end
 
+  test "resources show ten search results per page", %{conn: conn, username: username} do
+    for number <- 10..20 do
+      assert {:ok, _} =
+               Sandbox.create_resource(username, :credential, %{
+                 "name" => "API credential #{number}",
+                 "purpose" => "Pagination fixture"
+               })
+    end
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=resources")
+    view |> form("#resource-filters", %{term: "Pagination fixture"}) |> render_change()
+
+    assert has_element?(view, "#resources-pages-shown", "1–10 of 11")
+    refute has_element?(view, "#resource-credential-api-credential-20")
+
+    view |> element("#resources-page-2") |> render_click()
+    assert has_element?(view, "#resources-pages-shown", "11–11 of 11")
+    assert has_element?(view, "#resource-credential-api-credential-20")
+  end
+
   test "a credential is added on its own, edited, given a grant from its page, and removed with it",
        %{conn: conn, username: username} do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=resources")

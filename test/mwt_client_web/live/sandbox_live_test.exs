@@ -323,6 +323,16 @@ defmodule MWTClientWeb.SandboxLiveTest do
     refute has_element?(view, "#approval-#{approval.id}")
     assert has_element?(view, "#decided-#{approval.id}")
     refute has_element?(notes, "#sandbox-waiting")
+
+    view |> element("#decided-toggle-#{approval.id}") |> render_click()
+
+    assert has_element?(
+             view,
+             "#decided-#{approval.id} #kept-approval-#{approval.id} #approval-request-#{approval.id}"
+           )
+
+    assert has_element?(view, "#kept-choice-#{approval.id}", "Allowed once")
+    refute has_element?(view, "#allow-once-#{approval.id}")
   end
 
   test "a grant's settings hold nothing that always asks: Ask, and what a card allows, decide",
@@ -331,6 +341,74 @@ defmodule MWTClientWeb.SandboxLiveTest do
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
     refute has_element?(view, "[name='grant[ceiling]']")
     assert has_element?(view, "#detail-mode-#{grant.id}--all")
+  end
+
+  test "grant hosts are editable one per line and accept comma-separated hosts", %{
+    conn: conn,
+    username: username
+  } do
+    grant = github(username)
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants/#{grant.id}")
+    assert render(element(view, "textarea#grant_hosts")) =~ "api.github.com\ngithub.com"
+    assert has_element?(view, "#grant_hosts-list-input[phx-hook$='.PasteHosts']")
+
+    view
+    |> form("#grant-settings-form", grant: %{hosts: "api.github.com, uploads.github.com"})
+    |> render_submit()
+
+    assert [%{hosts: ["api.github.com", "uploads.github.com"]}] = added(username)
+    assert render(element(view, "textarea#grant_hosts")) =~ "api.github.com\nuploads.github.com"
+  end
+
+  test "decided approvals survive reopening the vault and search across pages", %{
+    conn: conn,
+    username: username,
+    password: password
+  } do
+    ids =
+      for number <- 1..12 do
+        {:ok, ask} =
+          Server.call(
+            username,
+            {:request_access,
+             %{need: "Staging service #{number}", agent: "codex", reason: "Check its status"}}
+          )
+
+        assert :ok = Sandbox.decide(username, ask.id, :decline)
+        ask.id
+      end
+
+    {:ok, _profile, key} = MWTClient.Accounts.sign_in(username, password)
+    :ok = MWTClient.Vault.Store.close(username)
+    :ok = MWTClient.Vault.Store.open(username, key)
+    assert Sandbox.snapshot(username).history == []
+
+    {:ok, view, _html} = live(conn, ~p"/tools/sandbox/approvals")
+    [oldest | _] = ids
+    assert has_element?(view, "#approval-history-pages-shown", "1–10 of 12")
+    assert has_element?(view, "#decided-#{List.last(ids)}")
+    refute has_element?(view, "#decided-#{oldest}")
+
+    view |> element("#approval-history-page-2") |> render_click()
+    assert has_element?(view, "#approval-history-pages-shown", "11–12 of 12")
+    assert has_element?(view, "#decided-#{oldest}")
+
+    toggle = "#decided-toggle-#{oldest}"
+    view |> element(toggle) |> render_click()
+    assert has_element?(view, toggle <> "[aria-expanded=true]")
+    assert has_element?(view, "#decided-#{oldest} #kept-approval-#{oldest}", "Staging service 1")
+    assert has_element?(view, "#approval-claims-#{oldest}", "Check its status")
+    assert has_element?(view, "#kept-choice-#{oldest}", "Declined")
+    refute has_element?(view, "#decided-card-#{oldest} [phx-click=decide]")
+    view |> element(toggle) |> render_click()
+    assert has_element?(view, toggle <> "[aria-expanded=false]")
+    refute has_element?(view, "#kept-approval-#{oldest}")
+    assert has_element?(view, "#approval-history-pages-shown", "11–12 of 12")
+
+    view |> form("#approval-history-search", %{term: "DECLINED service 12"}) |> render_change()
+    assert has_element?(view, "#decided-#{List.last(ids)}")
+    refute has_element?(view, "#decided-#{oldest}")
+    refute has_element?(view, "#approval-history-pages")
   end
 
   test "a credential is added first, from the Resources tab; then a grant over it, which lands on its page",
@@ -546,6 +624,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
   } do
     grant = github(username, false)
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    view |> form("#grant-filters", %{status: "all", term: "GitHub"}) |> render_change()
 
     view |> element("#grant-duration-#{grant.id}--15") |> render_click()
     before_switch = DateTime.utc_now() |> DateTime.truncate(:second)
@@ -611,9 +690,9 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#grant-status-on", "11")
     assert [first | _] = rows(view)
     assert first == "grant-row-#{grant.id}"
-    assert length(rows(view)) == 11
+    assert length(rows(view)) == 10
     refute has_element?(view, "#grant-row-check-1")
-    refute has_element?(view, "#grants-pages")
+    assert has_element?(view, "#grants-pages-shown", "1–10 of 11")
 
     # Each row: its resource, and at most one tag of its own.
     assert has_element?(
@@ -624,15 +703,15 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert has_element?(view, "#grant-start-internet", "Starts on")
     refute has_element?(view, "#grant-origin-#{grant.id}")
 
-    # Every grant, 20 a page.
+    # Every grant, 10 a page.
     view |> form("#grant-filters", %{status: "all"}) |> render_change()
-    assert has_element?(view, "#grants-pages-shown", "1–20 of 32")
-    assert length(rows(view)) == 20
-    view |> element("#grants-page-2") |> render_click()
-    assert length(rows(view)) == 12
+    assert has_element?(view, "#grants-pages-shown", "1–10 of 32")
+    assert length(rows(view)) == 10
+    view |> element("#grants-page-4") |> render_click()
+    assert length(rows(view)) == 2
 
     # Searching starts again from the first page; every word counts.
-    view |> form("#grant-filters", %{term: "CHECKS number 12"}) |> render_change()
+    view |> form("#grant-filters", %{term: "CHECKS check-12", status: "all"}) |> render_change()
     assert rows(view) == ["grant-row-check-12"]
 
     # By its labels: the resource it is over, each label counting what
@@ -678,7 +757,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     |> form("#grant-filters", %{labels: ["resource:machine", "kind:fixed"], status: "off"})
     |> render_change()
 
-    assert length(rows(view)) == 20
+    assert length(rows(view)) == 10
     assert hd(rows(view)) == "grant-row-check-1"
 
     # A picked label goes from its chip; Clear drops them all.
@@ -689,7 +768,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     view |> element("#grant-filters-clear") |> render_click()
     assert has_element?(view, "#grant-status-on input[checked]")
     refute has_element?(view, "#grant-labels-count")
-    assert length(rows(view)) == 11
+    assert length(rows(view)) == 10
 
     # What starts on: the built-in grants, not GitHub, on for an hour.
     view |> form("#grant-filters", %{labels: ["start:on"]}) |> render_change()
@@ -1056,6 +1135,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     # A card like any grant's, naming its resource.
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    view |> form("#grant-filters", %{status: "off"}) |> render_change()
     assert has_element?(view, "#grants-list #grant-row-deploy-docs", "./deploy.sh staging")
     assert has_element?(view, "#grant-row-deploy-docs", "mwt call deploy-docs")
     assert has_element?(view, "#grant-row-deploy-docs #grant-over-deploy-docs", "Host commands")
@@ -1207,10 +1287,10 @@ defmodule MWTClientWeb.SandboxLiveTest do
 
     {:ok, catalog, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
     assert has_element?(catalog, "#grants-to-review", "A grant an agent proposed waits for you")
+    catalog |> element("#grants-show-to-review") |> render_click()
     assert has_element?(catalog, "#grant-row-issue #grant-origin-issue", "Proposed by claude")
     assert has_element?(catalog, "#grant-row-issue #grant-review-issue")
     refute has_element?(catalog, "#grant-switch-issue")
-    catalog |> element("#grants-show-to-review") |> render_click()
     assert has_element?(catalog, "#grant-status-review input[checked]")
     assert rows(catalog) == ["grant-row-issue"]
 
@@ -1650,6 +1730,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
        %{conn: conn, username: username} do
     grant = github(username, false)
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    view |> form("#grant-filters", %{status: "all", term: "GitHub"}) |> render_change()
 
     # Ask each time is the default.
     assert has_element?(view, "#grant-mode-#{grant.id}--ask[aria-checked=true]")
@@ -1692,6 +1773,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     end
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    view |> form("#grant-filters", %{status: "off"}) |> render_change()
 
     ids =
       view
@@ -1722,6 +1804,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
       })
 
     {:ok, view, _html} = live(conn, ~p"/tools/sandbox/grants?tab=all")
+    view |> form("#grant-filters", %{status: "off"}) |> render_change()
     assert has_element?(view, "#grant-mode-make-docs--all")
     refute has_element?(view, "#grant-mode-make-docs--all[data-confirm]")
   end
@@ -2096,16 +2179,14 @@ defmodule MWTClientWeb.SandboxLiveTest do
     end
 
     with_entries = page.(review)
+    assert Enum.count(LazyHTML.query(with_entries, "#memory-pick-4[checked]")) == 1
     assert LazyHTML.text(LazyHTML.query(with_entries, "#memory-text-4")) =~ "[vm] the build"
-    assert LazyHTML.attribute(LazyHTML.query(with_entries, "#memory-sync"), "value") == ["sync"]
-
-    assert LazyHTML.attribute(LazyHTML.query(with_entries, "#memory-bring-back"), "value") == [
-             "keep"
-           ]
+    assert LazyHTML.text(LazyHTML.query(with_entries, "#memory-sync")) =~ "Add and sync"
+    assert Enum.count(LazyHTML.query(with_entries, "#memory-bring-back")) == 0
 
     nothing_new = page.(%{review | entries: []})
 
-    assert LazyHTML.text(LazyHTML.query(nothing_new, "#memory-sync")) =~ "Copy mine in"
+    assert LazyHTML.text(LazyHTML.query(nothing_new, "#memory-sync")) |> String.trim() == "Sync"
     assert Enum.count(LazyHTML.query(nothing_new, "#memory-bring-back")) == 0
 
     # More than one review takes: yours goes in only once all were seen,
@@ -2114,7 +2195,7 @@ defmodule MWTClientWeb.SandboxLiveTest do
     assert LazyHTML.text(LazyHTML.query(more, "#memory-review-more")) =~ "3 more after these"
     assert Enum.count(LazyHTML.query(more, "#memory-sync")) == 0
     assert Enum.count(LazyHTML.query(more, "#memory-bring-back")) == 1
-    assert Enum.count(LazyHTML.query(more, "#memory-dismiss")) == 1
+    assert Enum.count(LazyHTML.query(more, "#memory-dismiss")) == 0
     assert Enum.count(LazyHTML.query(with_entries, "#memory-review-more")) == 0
   end
 
